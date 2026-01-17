@@ -2,7 +2,7 @@ import { Component, Input, Output, EventEmitter, OnChanges, ChangeDetectorRef } 
 import { CommonModule } from '@angular/common';
 import { ParagraphEdit } from '../../../../core/models/message.model';
 import { allParagraphsDecided } from '../../../../core/utils/paragraph-edit.utils';
-import { EditorialFeedbackItem } from '../../../../core/utils/edit-content.utils';
+import { EditorialFeedbackItem, getEditorDisplayName } from '../../../../core/utils/edit-content.utils';
 
 type ParagraphFeedback = ParagraphEdit & {
   original: string;
@@ -213,11 +213,7 @@ type ParagraphFeedback = ParagraphEdit & {
                     }
                   </div>
                   <div class="timeline-editor-name">
-                    @if (i === (currentEditorIndex ?? 0)) {
-                      {{ getEditorDisplayName(currentEditor) || ('Editor ' + (i + 1)) }}
-                    } @else {
-                      Editor {{ i + 1 }}
-                    }
+                    {{ getEditorNameForStep(i) }}
                   </div>
                   <div class="timeline-status">
                     @if (i < (currentEditorIndex ?? 0)) { Completed }
@@ -1480,6 +1476,7 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
   @Input() currentEditorIndex?: number;
   @Input() totalEditors?: number;
   @Input() isGenerating?: boolean;
+  @Input() selectedEditors: string[] = []; // Array of editor IDs in order
   @Output('paragraphApproved') paragraphApproved = new EventEmitter<number>();
   @Output('paragraphDeclined') paragraphDeclined = new EventEmitter<number>();
   @Output('generateFinal') generateFinal = new EventEmitter<void>();
@@ -1956,6 +1953,20 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
     const total = this.totalEditors ?? 0;
     if (total <= 0) return [];
     return Array.from({ length: total }, (_, i) => i);
+  }
+
+  /** Get editor display name for a given step index */
+  getEditorNameForStep(stepIndex: number): string {
+    if (this.selectedEditors && this.selectedEditors.length > stepIndex) {
+      const editorId = this.selectedEditors[stepIndex];
+      return getEditorDisplayName(editorId);
+    }
+    // Fallback: if current editor matches step index, use currentEditor
+    if (stepIndex === (this.currentEditorIndex ?? 0) && this.currentEditor) {
+      return getEditorDisplayName(this.currentEditor);
+    }
+    // Final fallback
+    return `Editor ${stepIndex + 1}`;
   }
 
   /** Flatten all editorial feedback items across paragraphs */
