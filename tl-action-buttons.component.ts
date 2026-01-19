@@ -386,6 +386,83 @@ async def next_editor_workflow(request: NextEditorRequest):
 
 
 # ---------------------------------------------------------------------
+# SHARED FUNCTION: GENERATE BLOCK TYPES FROM PARAGRAPH EDITS
+# ---------------------------------------------------------------------
+def generate_block_types_from_paragraph_edits(
+    paragraph_edits: List[dict],
+    decisions: List[dict],
+    accept_all: bool = False,
+    reject_all: bool = False
+) -> tuple[List[str], List[dict]]:
+    """
+    Generate final_paragraphs and block_types from paragraph_edits.
+    Uses same logic as /final endpoint.
+    
+    This function is shared between /final endpoint and export endpoints
+    to ensure block_types are generated consistently.
+    
+    Args:
+        paragraph_edits: List of paragraph edit dictionaries with block_type, level, original, edited
+        decisions: List of decision dictionaries with index and approved status
+        accept_all: Global flag to accept all edits
+        reject_all: Global flag to reject all edits
+    
+    Returns:
+        Tuple of (final_paragraphs, block_types)
+        - final_paragraphs: List of text strings (final article content)
+        - block_types: List of dicts with index, type, level
+    """
+    if accept_all and reject_all:
+        raise ValueError("Cannot accept all and reject all")
+    
+    decision_map = {d["index"]: d.get("approved") for d in decisions}
+    
+    final_paragraphs = []
+    block_types = []
+    
+    for edit in sorted(paragraph_edits, key=lambda x: x["index"]):
+        idx = edit["index"]
+        approved = decision_map.get(idx)
+        auto = edit.get("autoApproved", False)
+        
+        # Determine which text to use (same logic as /final endpoint)
+        if reject_all:
+            text_to_append = edit["original"]
+        elif accept_all:
+            text_to_append = edit["edited"]
+        elif approved is True:
+            text_to_append = edit["edited"]
+        elif approved is False:
+            text_to_append = edit["original"]
+        elif auto:
+            text_to_append = edit["edited"]
+        else:
+            text_to_append = edit["original"]
+        
+        # Only create block_type and append if paragraph is not empty
+        # This ensures indices align with split_blocks() which filters empty blocks
+        text_stripped = text_to_append.strip() if text_to_append else ""
+        if text_stripped:  # Only process non-empty paragraphs
+            block_type = edit.get("block_type", "paragraph")
+            block_types.append({
+                "index": len(final_paragraphs),  # Index matches final_paragraphs position
+                "type": block_type,
+                "level": edit.get("level", 0)
+            })
+            final_paragraphs.append(text_to_append)
+    
+    # Debug: Log block_types distribution to verify they're not all 'paragraph'
+    type_counts = {}
+    for bt in block_types:
+        bt_type = bt.get("type", "paragraph")
+        type_counts[bt_type] = type_counts.get(bt_type, 0) + 1
+    logger.info(f"[Block Types Generation] Block types distribution: {type_counts}")
+    logger.info(f"[Block Types Generation] Total block_types: {len(block_types)}, Sample: {block_types[:5] if len(block_types) > 5 else block_types}")
+    
+    return final_paragraphs, block_types
+
+
+# ---------------------------------------------------------------------
 # FINAL ARTICLE GENERATION ENDPOINT 
 # ---------------------------------------------------------------------
 @router.post("/final")
@@ -411,49 +488,13 @@ async def generate_final_article(request: FinalArticleRequest):
     if request.accept_all and request.reject_all:
         raise HTTPException(400, "Cannot accept all and reject all")
 
-    decision_map = {d["index"]: d.get("approved") for d in request.decisions}
-
-    final_paragraphs = []
-    block_types = []
-
-    for edit in sorted(request.paragraph_edits, key=lambda x: x["index"]):
-        idx = edit["index"]
-        approved = decision_map.get(idx)
-        auto = edit.get("autoApproved", False)
-
-        # Determine which text to use
-        if request.reject_all:
-            text_to_append = edit["original"]
-        elif request.accept_all:
-            text_to_append = edit["edited"]
-        elif approved is True:
-            text_to_append = edit["edited"]
-        elif approved is False:
-            text_to_append = edit["original"]
-        elif auto:
-            text_to_append = edit["edited"]
-        else:
-            text_to_append = edit["original"]
-        
-        # Only create block_type and append if paragraph is not empty
-        # This ensures indices align with split_blocks() which filters empty blocks
-        text_stripped = text_to_append.strip() if text_to_append else ""
-        if text_stripped:  # Only process non-empty paragraphs
-            block_type = edit.get("block_type", "paragraph")
-            block_types.append({
-                "index": len(final_paragraphs),  # Index matches final_paragraphs position
-                "type": block_type,
-                "level": edit.get("level", 0)
-            })
-            final_paragraphs.append(text_to_append)
-
-    # Debug: Log block_types distribution to verify they're not all 'paragraph'
-    type_counts = {}
-    for bt in block_types:
-        bt_type = bt.get("type", "paragraph")
-        type_counts[bt_type] = type_counts.get(bt_type, 0) + 1
-    logger.info(f"[Final Article] Block types distribution: {type_counts}")
-    logger.info(f"[Final Article] Total block_types: {len(block_types)}, Sample: {block_types[:5] if len(block_types) > 5 else block_types}")
+    # Use shared function to generate block_types (same logic used by export endpoints)
+    final_paragraphs, block_types = generate_block_types_from_paragraph_edits(
+        paragraph_edits=request.paragraph_edits,
+        decisions=request.decisions,
+        accept_all=request.accept_all,
+        reject_all=request.reject_all
+    )
 
     return JSONResponse(
         content={
