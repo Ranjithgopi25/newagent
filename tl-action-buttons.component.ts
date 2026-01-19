@@ -1,2027 +1,531 @@
-import { Injectable } from '@angular/core';
-import { HttpClient, HttpHeaders } from '@angular/common/http';
-import { Observable, from, switchMap } from 'rxjs';
-import { Message, ChatRequest, DraftRequest, ThoughtLeadershipRequest, ResearchRequest, ArticleRequest, BestPracticesRequest, PodcastRequest, UpdateSectionRequest } from '../models';
-import { environment } from '../../../environments/environment';
-import { MsalService } from '@azure/msal-angular';
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
+from fastapi.responses import StreamingResponse, JSONResponse
+from app.features.export.schemas import ExportRequest
+from app.common.export_utils import (
+    export_to_pdf,
+    export_to_pdf_pwc_no_toc,
+    export_to_word_pwc_no_toc,
+    export_to_word,
+    export_to_word_with_metadata,
+    export_to_word_ui_plain,
+    export_to_text,
+    extract_subtitle_from_content,
+    export_to_pdf_with_pwc_template,
+    export_to_pdf_with_pwc_template_with_bullets,
+    export_to_pdf_edit_content,
+    export_to_word_edit_content,
+    html_to_marked_text,
+)
+from app.common.document_utils import extract_text_from_pdf, extract_text_from_docx,extract_text_from_txt, extract_text_from_pptx
+from io import BytesIO
+import logging
+import re
+from urllib.parse import quote
+from app.common.export_utils import export_to_word_pwc_standalone
+from app.services.auth_service import validate_jwt_token
+from app.core.config import get_settings
 
-// Chat History Models
-export interface ChatSessionSummary {
-  session_id: string;
-  source: string;
-  title?: string;
-  preview: string;
-  message_count: number;
-  created_at: string;
-  updated_at: string;
-}
+router = APIRouter(prefix="/export", tags=["Export"], dependencies=[Depends(validate_jwt_token)])
+logger = logging.getLogger(__name__)
 
-export interface ChatSessionDetail {
-  session_id: string;
-  source: string;
-  title?: string;
-  conversation: {
-    messages: Message[];
-  };
-  created_at: string;
-  updated_at: string;
-}
+@router.post("/word")
+async def export_word(request: ExportRequest):
+    """Export content to Word document using PwC template"""
+    try:
+        logger.info(f"[Export] Generating Word document: {request.title}")
+        
+        # Extract subtitle from first line of content if not provided
+        subtitle = request.subtitle
+        content = request.content
+        content_type = request.content_type  # From request body (sent by frontend)
+        
+        logger.info(f"[Export] Content Type from request body: {content_type}")
+        
+        if not subtitle and content:
+            extracted_subtitle, remaining_content = extract_subtitle_from_content(content)
+            if extracted_subtitle:
+                subtitle = extracted_subtitle
+                content = remaining_content
+                logger.info(f"[Export] Extracted subtitle from content: {subtitle[:50]}")
+        
+        # Clean subtitle by removing markdown asterisks
+        if subtitle:
+            subtitle = re.sub(r'\*\*(.+?)\*\*', r'\1', subtitle)
+            subtitle = subtitle.replace('**', '')
+        
+        # For draft content, use subtitle as title and remove original title
+        title = request.title
+        if subtitle:
+            # Use subtitle as the main title on the first page
+            title = subtitle
+            subtitle = None  # Clear subtitle so it doesn't appear twice
+            logger.info(f"[Export] Using subtitle as title for draft content export")
+        
+        # Use enhanced export with metadata if content_type provided or subtitle extracted
+        if content_type or subtitle:
+            logger.info(f"[Export] ✓ Applying content_type '{content_type}' to Word document")
+            word_bytes = export_to_word_with_metadata(
+                content=content, 
+                title=title,
+                subtitle=subtitle,
+                content_type=content_type
+            )
+        else:
+            word_bytes = export_to_word(content, title)
+        
+        buffer = BytesIO(word_bytes)
+        
+        # Sanitize filename to remove special characters and properly encode
+        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
+        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
+        filename = f"{safe_title}.docx"
+        
+        # Use RFC 5987 encoding for the filename in Content-Disposition header
+        encoded_filename = quote(filename, safe='')
+        
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+        )
+    except Exception as e:
+        logger.error(f"[Export] Word export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@Injectable({
-  providedIn: 'root'
-})
-export class ChatService {
-  private get apiUrl(): string {
-    // Support runtime configuration via window._env (for production)
-    return (window as any)._env?.apiUrl || environment.apiUrl || '';
-  }
-  
+@router.post("/ppt")
+async def export_ppt(request: ExportRequest):
+    """
+    Export content to PPT using PlusDocs Slides template
+    """
+    try:
+        settings = get_settings()
+        logger.info(f"[Export] Generating PPT document: {request.title}")
+        from app.features.ddc.services.slide_creation_service import PlusDocsClient
+        template_id = settings.PLUSDOCS_TEMPLATE_ID
+        API_TOKEN = settings.PLUSDOCS_API_TOKEN
+        client = PlusDocsClient(API_TOKEN)
+        download_url = client.create_and_wait(
+            prompt=request.content,
+            template_id=template_id,
+            isImage=False
+        )
+        if not download_url:
+            raise HTTPException(status_code=500, detail="PPT generation failed")
+        return JSONResponse({
+            "status": "success",
+            "download_url": download_url
+        })
+    except Exception as e:
+        logger.error(f"[Export] PPT export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-  constructor(
-    private http: HttpClient,
-    private msalService: MsalService
-  ) {
-    console.log('[ChatService] Constructor - apiUrl:', this.apiUrl);
-    console.log('[ChatService] window._env:', (window as any)._env);
-    console.log('[ChatService] environment.apiUrl:', environment.apiUrl);
-  }
 
-  /**
-   * Get authentication headers for JSON requests
-   * MSAL interceptor only works with HttpClient, so we need to manually add headers for fetch()
-   */
-  private async getAuthHeaders(): Promise<Record<string, string>> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
+@router.post("/pdf")
+async def export_pdf(request: ExportRequest):
+    """Export content to PDF document"""
+    try:
+        logger.info(f"[Export] Generating PDF document: {request.title}")
+        
+        pdf_bytes = export_to_pdf(request.content, request.title)
+        buffer = BytesIO(pdf_bytes)
+        
+        # Sanitize filename to remove special characters and properly encode
+        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
+        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
+        filename = f"{safe_title}.pdf"
+        
+        # Use RFC 5987 encoding for the filename in Content-Disposition header
+        encoded_filename = quote(filename, safe='')
+        
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+        )
+    except Exception as e:
+        logger.error(f"[Export] PDF export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    if (environment.useAuth) {
-      try {
-        const account = this.msalService.instance.getActiveAccount();
-        if (account) {
-          const response = await this.msalService.instance.acquireTokenSilent({
-            scopes: ['User.Read'], // Use the same scope as in protectedResourceMap
-            account: account
-          });
-          
-          if (response.idToken) {
-            headers['Authorization'] = `Bearer ${response.idToken}`;
-            console.log('[ChatService] Added auth header (ID token) to fetch() call');
-          }
+@router.post("/pdf-pwc")
+async def export_pdf_pwc(request: ExportRequest):
+    """Export content to PDF document using PwC template with logo and branding"""
+    try:
+        logger.info(f"[Export] Generating PDF document with PwC template: {request.title}")
+        
+        # Extract subtitle from first line of content if not provided
+        subtitle = request.subtitle
+        content = request.content
+        
+        if not subtitle and content:
+            extracted_subtitle, remaining_content = extract_subtitle_from_content(content)
+            if extracted_subtitle:
+                subtitle = extracted_subtitle
+                content = remaining_content
+                logger.info(f"[Export] Extracted subtitle from content: {subtitle[:50]}")
+        
+        # Clean subtitle by removing markdown asterisks
+        if subtitle:
+            subtitle = re.sub(r'\*\*(.+?)\*\*', r'\1', subtitle)
+            subtitle = subtitle.replace('**', '')
+        
+        # For draft content, use subtitle as title and remove original title
+        title = request.title
+        content_type = request.content_type  # From request body
+        if subtitle:
+            # Use subtitle as the main title on the cover page
+            title = subtitle
+            subtitle = None  # Clear subtitle so it doesn't appear twice
+            logger.info(f"[Export] Using subtitle as title for draft content export")
+        
+        logger.info(f"[Export] Content Type from request body: {content_type}")
+        
+        # Generate PWC branded PDF
+        pdf_bytes = export_to_pdf_with_pwc_template(
+            content=content, 
+            title=title,
+            subtitle=subtitle,
+            content_type=content_type
+        )
+        
+        logger.info(f"[Export] PDF generated: {len(pdf_bytes)} bytes")
+        
+        # Create buffer and reset position
+        buffer = BytesIO(pdf_bytes)
+        buffer.seek(0)
+        
+        # Create proper filename with sanitization
+        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
+        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
+        filename = f"{safe_title}.pdf"
+        encoded_filename = quote(filename, safe='')
+        logger.info(f"[Export] Returning PDF with filename: {encoded_filename}")
+        
+        return StreamingResponse(
+            iter([buffer.getvalue()]),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+                "Content-Length": str(len(pdf_bytes))
+            }
+        )
+    except Exception as e:
+        logger.error(f"[Export] PDF-PWC export error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/text")
+async def export_text(request: ExportRequest):
+    """Export content to plain text file"""
+    try:
+        logger.info(f"[Export] Generating text file: {request.title}")
+        
+        content_with_title = f"{request.title}\n{'='*len(request.title)}\n\n{request.content}"
+        text_bytes = export_to_text(content_with_title)
+        buffer = BytesIO(text_bytes)
+        
+        # Sanitize filename to remove special characters and properly encode
+        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
+        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
+        filename = f"{safe_title}.txt"
+        encoded_filename = quote(filename, safe='')
+        
+        return StreamingResponse(
+            buffer,
+            media_type="text/plain",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+        )
+    except Exception as e:
+        logger.error(f"[Export] Text export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/word-standalone")
+async def export_word_pwc(request: ExportRequest):
+    """
+    Standalone Word export (PwC template)
+    """
+    return StreamingResponse(
+        BytesIO(
+            export_to_word_pwc_standalone(
+                content=request.content,
+                title=request.title,
+                subtitle=request.subtitle,
+                content_type=request.content_type,
+                references=request.references
+            )
+        ),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+@router.post("/pdf-pwc-bullets")
+async def export_pdf_pwc_with_bullets(request: ExportRequest):
+    """
+    Standalone PDF export that supports bullet rendering.
+    Does NOT impact existing pdf-pwc flow.
+    """
+    try:
+        
+        pdf_bytes = export_to_pdf_with_pwc_template_with_bullets(
+            content=request.content,
+            title=request.title,
+            subtitle=request.subtitle
+        )
+
+        buffer = BytesIO(pdf_bytes)
+        buffer.seek(0)
+
+        # filename = f"{request.title}.pdf"
+        filename = f"{safe_filename(request.title)}.pdf"
+        return StreamingResponse(
+            iter([buffer.getvalue()]),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+
+    except Exception as e:
+        logger.error("PDF-PWC-BULLETS export failed", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+def safe_filename(value: str) -> str:
+    value = value.replace("“", '"').replace("”", '"')
+    value = value.replace("‘", "'").replace("’", "'")
+    value = re.sub(r"[^\w\-. ]", "", value)
+    return value.strip()
+
+@router.post("/extract-text", include_in_schema=True)
+@router.post("/extract-text/", include_in_schema=True)
+async def extract_text_from_file(file: UploadFile = File(...)):
+    """
+    Extract text from uploaded document (PDF, DOCX, TXT, MD).
+    Extracts content from the document for editing.
+    """
+    try:
+        logger.info(f"[Export] Extracting text from file: {file.filename}")
+        
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Filename is required")
+        
+        file_content = await file.read()
+        
+        if not file_content:
+            raise HTTPException(status_code=400, detail="File is empty")
+        
+        file_extension = file.filename.lower().split('.')[-1] if '.' in file.filename else ''
+        
+        if not file_extension:
+            raise HTTPException(status_code=400, detail="File extension is required")
+        
+        extracted_text = ""
+        
+        # Extract content from document
+        try:
+            if file_extension == 'pdf':
+                extracted_text = extract_text_from_pdf(file_content, max_chars=None)
+            elif file_extension in ['docx', 'doc']:
+                extracted_text = extract_text_from_docx(file_content, max_chars=None)
+            elif file_extension in ['txt', 'md']:
+                extracted_text = extract_text_from_txt(file_content, max_chars=None)
+            elif file_extension in ['pptx', 'ppt']:
+                extracted_text = extract_text_from_pptx(file_content, max_chars=None)
+            elif file_extension in ['jpeg','png', 'jpg']:
+                extracted_text = extract_text_from_image(file_content, file_extension, max_chars=None)
+            elif file_extension in ['xlsx']:
+                extracted_text = extract_text_from_xlsx(file_content, max_chars=None)
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_extension}")
+        except HTTPException:
+            raise
+        except Exception as extraction_error:
+            logger.error(f"[Export] Extraction failed for {file.filename}: {extraction_error}")
+            raise HTTPException(status_code=500, detail=f"Failed to extract text from file: {str(extraction_error)}")
+        
+        if not extracted_text:
+            logger.warning(f"[Export] No text extracted from {file.filename}")
+            # Return empty string instead of error - some files might legitimately be empty
+            return JSONResponse(content={"text": ""})
+        
+        logger.info(f"[Export] Successfully extracted {len(extracted_text)} characters from {file.filename}")
+        
+        return JSONResponse(content={"text": extracted_text})
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Export] Text extraction error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/word-ui")
+async def export_word_ui(request: ExportRequest):
+    """
+    UI-exact Word export (no template, no TOC)
+    """
+    try:
+        word_bytes = export_to_word_ui_plain(
+            content=request.content,
+            title=request.title
+        )
+
+        buffer = BytesIO(word_bytes)
+        filename = f"{re.sub(r'[^\\w\\s-]', '', request.title)}.docx"
+
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except Exception as e:
+        logger.error(f"UI Word export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/word-pwc-no-toc")
+async def export_word_pwc_no_toc_api(request: ExportRequest):
+    return StreamingResponse(
+        BytesIO(
+            export_to_word_pwc_no_toc(
+                content=request.content,
+                title=request.title,
+                subtitle=request.subtitle,
+                content_type=request.content_type,
+                references=request.references
+            )
+        ),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f"attachment; filename={safe_filename(request.title)}.docx"
         }
-      } catch (error) {
-        console.error('[ChatService] Failed to acquire token for fetch():', error);
-      }
+    )
+
+@router.post("/pdf-pwc-no-toc")
+async def export_pdf_pwc_no_toc_api(request: ExportRequest):
+    pdf_bytes = export_to_pdf_pwc_no_toc(
+        content=request.content,
+        title=request.title,
+        subtitle=request.subtitle
+    )
+
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={safe_filename(request.title)}.pdf"
+        }
+    )
+@router.post("/edit-content/word")
+async def export_edit_content_word(request: ExportRequest):
+    """Export edit content to Word document using PwC template"""
+    try:
+        logger.info(f"[Export] Generating Edit Content Word document: {request.title}")
+        
+        # Use formatted HTML content as-is from frontend (preserves HTML formatting)
+        clean_content = request.content
+        
+        word_bytes = export_to_word_edit_content(
+            content=clean_content,
+            title=request.title,
+            subtitle=request.subtitle,
+            references=request.references
+        )
+        
+        buffer = BytesIO(word_bytes)
+        filename = f"{safe_filename(request.title)}.docx"
+        
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+    except Exception as e:
+        logger.error(f"[Export] Edit Content Word export error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/edit-content/pdf")
+async def export_edit_content_pdf(request: ExportRequest):
+    """Export edit content to PDF document using PwC template"""
+    try:
+        logger.info(f"[Export] Generating Edit Content PDF document: {request.title}")
+        
+        # Use formatted HTML content as-is from frontend (preserves HTML formatting)
+        clean_content = request.content
+        
+        pdf_bytes = export_to_pdf_edit_content(
+            content=clean_content,
+            title=request.title,
+            subtitle=request.subtitle
+        )
+        
+        buffer = BytesIO(pdf_bytes)
+        filename = f"{safe_filename(request.title)}.pdf"
+        
+        return StreamingResponse(
+            iter([buffer.getvalue()]),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Length": str(len(pdf_bytes))
+            }
+        )
+    except Exception as e:
+        logger.error(f"[Export] Edit Content PDF export error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/word-pwc-mi-module")
+async def export_word_pwc_no_toc_module_api(request: ExportRequest):
+    title = build_cover_title(
+    module=normalize_module_name(request.content_type),
+    client=request.client)
+    return StreamingResponse(
+        BytesIO(
+            export_to_word_pwc_no_toc(
+                content=request.content,
+                title=title,
+                subtitle=request.subtitle,
+                content_type=request.content_type,
+                references=request.references,
+                client=request.client
+            )
+        ),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f"attachment; filename={safe_filename(title)}.docx"
+        }
+    )
+
+@router.post("/pdf-pwc-mi-module")
+async def export_pdf_pwc_no_toc_module_api(request: ExportRequest):
+    logger.info(f"[PDF API] client = received: {request.client}")
+    title = build_cover_title(
+        module=normalize_module_name(request.content_type),
+    client=request.client
+)
+
+    pdf_bytes = export_to_pdf_pwc_no_toc(
+        content=request.content,
+        title=title,
+        subtitle=request.subtitle,
+        content_type=request.content_type,
+        client=request.client
+    )
+
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={safe_filename(title)}.pdf"
+        }
+    )
+
+def get_router():
+    """Get export router for mounting"""
+    return router
+
+def normalize_module_name(module: str) -> str:
+    mapping = {
+        "industry-insights": "Industry Insights",
+        "industry_insights": "Industry Insights",
+        "proposal-inputs":"Proposal Inputs",
+        "pov": "Point of View",
+        "prep-meet": "Client Preparation Meeting",
     }
-
-    return headers;
-  }
-
-  /**
-   * Get authentication headers for FormData requests (no Content-Type header)
-   * Browser will automatically set Content-Type with multipart boundary
-   */
-  private async getAuthHeadersForFormData(): Promise<Record<string, string>> {
-    const headers: Record<string, string> = {};
-
-    if (environment.useAuth) {
-      try {
-        const account = this.msalService.instance.getActiveAccount();
-        if (account) {
-          const response = await this.msalService.instance.acquireTokenSilent({
-            scopes: ['User.Read'],
-            account: account
-          });
-          
-          if (response.idToken) {
-            headers['Authorization'] = `Bearer ${response.idToken}`;
-            console.log('[ChatService] Added auth header (ID token) to FormData fetch() call');
-          }
-        }
-      } catch (error) {
-        console.error('[ChatService] Failed to acquire token for FormData fetch():', error);
-      }
-    }
-
-    return headers;
-  }
-
-  /**
-   * Wrapper around fetch() that automatically adds authentication headers for JSON requests
-   * Use this instead of fetch() for all API calls with JSON body
-   */
-  private async authenticatedFetch(url: string, options: RequestInit = {}): Promise<Response> {
-    const authHeaders = await this.getAuthHeaders();
-    
-    // Merge auth headers with any existing headers
-    const headers: Record<string, string> = {
-      ...authHeaders,
-      ...(options.headers as Record<string, string> || {})
-    };
-
-    console.log('[ChatService] authenticatedFetch - URL:', url);
-    console.log('[ChatService] authenticatedFetch - Has Authorization:', !!headers['Authorization']);
-
-    return fetch(url, {
-      ...options,
-      headers
-    });
-  }
-
-  /**
-   * Wrapper around fetch() for FormData requests - doesn't set Content-Type (browser sets it with boundary)
-   * Use this for file uploads and multipart form data
-   */
-  private async authenticatedFetchFormData(url: string, options: RequestInit = {}): Promise<Response> {
-    const authHeaders = await this.getAuthHeadersForFormData();
-    
-    // Merge auth headers with any existing headers
-    const headers: Record<string, string> = {
-      ...authHeaders,
-      ...(options.headers as Record<string, string> || {})
-    };
-
-    console.log('[ChatService] authenticatedFetchFormData - URL:', url);
-    console.log('[ChatService] authenticatedFetchFormData - Has Authorization:', !!headers['Authorization']);
-
-    return fetch(url, {
-      ...options,
-      headers
-    });
-  }
-
-  detectEditIntent(input: string): Observable<{is_edit_intent: boolean, confidence: number, detected_editors?: string[]}> {
-    const fullUrl = `${this.apiUrl}/api/v1/chat/detect-edit-intent`;
-    console.log('[ChatService] detectEditIntent - Full URL:', fullUrl);
-    console.log('[ChatService] detectEditIntent - this.apiUrl:', this.apiUrl);
-    console.log('[ChatService] detectEditIntent - Expected to match: http://localhost:8000/api/v1/');
-    
-    return this.http.post<{is_edit_intent: boolean, confidence: number, detected_editors?: string[]}>(
-      fullUrl,
-      { input: input.trim() }
-    );
-  }
-
-  detectDraftIntent(input: string): Observable<{ is_draft_intent: boolean, confidence: number, detected_topic?: string, detected_content_type?: string[] }> {
-    return this.http.post<{ is_draft_intent: boolean, confidence: number, detected_topic?: string, detected_content_type?: string[] }>(
-      `${this.apiUrl}/api/v1/chat/detect-draft-intent`,
-      { input: input.trim() }
-    );
-  }
-
-  /**
-   * DDC Chat Agent
-   * Posts FormData to `/api/v1/ddc/ddc_chat_agent`.
-   * - Accepts a message string, optional conversation id, and optional PPT file.
-   * - Handles PPTX blob responses (sanitized/improved presentations) and JSON responses.
-   */
-  ddcChatAgent(message: string, conversationId?: string, file?: File): Observable<any> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      formData.append('message', message);
-      if (conversationId) {
-        formData.append('conversation_id', conversationId);
-      }
-      if (file) {
-        formData.append('file', file, file.name);
-      }
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ddc/ddc_chat_agent`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(`Network response was not ok: ${response.status} ${response.statusText}`);
-        }
-
-        const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
-        const convId = response.headers.get('X-Conversation-ID') || undefined;
-        const summaryHeader = response.headers.get('X-Sanitization-Summary');
-        let summary = null;
-        if (summaryHeader) {
-          try { summary = JSON.parse(summaryHeader); } catch (e) { /* ignore parse errors */ }
-        }
-
-        if (contentType.includes('application/vnd.openxmlformats-officedocument.presentationml.presentation') || contentType.includes('application/octet-stream')) {
-          return response.blob().then(blob => {
-            observer.next({ blob, conversation_id: convId, summary });
-          });
-        }
-
-        return response.json().then(json => {
-          if (convId && !json.conversation_id) json.conversation_id = convId;
-          if (summary && !json.sanitization_summary) json.sanitization_summary = summary;
-          observer.next(json);
-        });
-      })
-      .then(() => observer.complete())
-      .catch(error => observer.error(error));
-    });
-  }
- 
-
-  sendMessage(messages: Message[], userId?: string, sessionId?: string, threadId?: string, source?: string): Observable<any> {
-    const request: ChatRequest = {
-      messages: messages,
-      stream: false,
-      user_id: userId,
-      session_id: sessionId,
-      thread_id: threadId,
-      source: source || "Chat"
-    };
-    
-    console.log('[ChatService] sendMessage - URL:', `${this.apiUrl}/api/v1/chat`);
-    console.log('[ChatService] sendMessage - Request:', request);
-    console.log("Calling from sendMessage Chat");
-    return this.http.post(`${this.apiUrl}/api/v1/chat`, request);
-  }
-
-  createDraft(draftRequest: DraftRequest): Observable<any> {
-    return this.http.post(`${this.apiUrl}/api/draft`, draftRequest);
-  }
-
-  streamChat(messages: Message[], userId?: string, sessionId?: string, threadId?: string, source?: string): Observable<string> {
-    return new Observable(observer => {
-      const request: ChatRequest = {
-        messages: messages,
-        stream: true,
-        user_id: userId,
-        session_id: sessionId,
-        thread_id: threadId,
-        source: source || "Chat"
-      };
-      console.log("Calling from Stream Chat Source is:", source);
-      let endpointUrl= '';
-      if (source === 'Market_Intelligence'){
-        endpointUrl = '/api/v1/tl/mi_chat_agent'
-      }
-      else
-      {
-        endpointUrl= '/api/v1/chat'
-      }
-      this.authenticatedFetch(`${this.apiUrl}${endpointUrl}`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    if (parsed.content) {
-                      observer.next(parsed.content);
-                    } else if (parsed.done) {
-                      observer.complete();
-                    } else if (parsed.error) {
-                      observer.error(new Error(parsed.error));
-                    }
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e, 'Data:', data);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamDraft(draftRequest: DraftRequest): Observable<string> {
-    return new Observable(observer => {
-      this.authenticatedFetch(`${this.apiUrl}/api/draft`, {
-        method: 'POST',
-        body: JSON.stringify(draftRequest)
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    if (parsed.content) {
-                      observer.next(parsed.content);
-                    } else if (parsed.done) {
-                      observer.complete();
-                    } else if (parsed.error) {
-                      observer.error(new Error(parsed.error));
-                    }
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e, 'Data:', data);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamThoughtLeadership(tlRequest: ThoughtLeadershipRequest): Observable<string> {
-    return new Observable(observer => {
-      this.authenticatedFetch(`${this.apiUrl}/api/thought-leadership`, {
-        method: 'POST',
-        body: JSON.stringify(tlRequest)
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    if (parsed.content) {
-                      observer.next(parsed.content);
-                    } else if (parsed.done) {
-                      observer.complete();
-                    } else if (parsed.error) {
-                      observer.error(new Error(parsed.error));
-                    }
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e, 'Data:', data);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  improvePPT(originalFile: File, referenceFile: File | null): Observable<Blob> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      formData.append('original_ppt', originalFile);
-      if (referenceFile) {
-        formData.append('reference_ppt', referenceFile);
-      }
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ppt/improve`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        return response.blob();
-      })
-      .then(blob => {
-        observer.next(blob);
-        observer.complete();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  downloadDdcFormatted(formData: FormData) {
-    // Use HttpClient to get response with headers and blob body
-    // Return an Observable of the full HttpResponse containing the blob
-    return this.http.post(`${this.apiUrl}/api/v1/ddc/brand-format/format-file`, formData, {
-      responseType: 'blob',
-      observe: 'response' as 'body'
-    });
-  }
-
-  streamSanitizationConversation(
-    messages: Message[], 
-    uploadedFileName?: string,
-    clientIdentity?: string,
-    pageRange?: string,
-    tier1Services?: string[],
-    tier2Services?: string[]
-  ): Observable<string> {
-    return new Observable(observer => {
-      const request = {
-        messages: messages,
-        uploaded_file_name: uploadedFileName,
-        client_identity: clientIdentity,
-        page_range: pageRange,
-        tier1_services: tier1Services,
-        tier2_services: tier2Services,
-        stream: true
-      };
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/ppt/sanitize/conversation`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    if (parsed.content) {
-                      observer.next(parsed.content);
-                    } else if (parsed.done) {
-                      observer.complete();
-                    } else if (parsed.error) {
-                      observer.error(new Error(parsed.error));
-                    }
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e, 'Data:', data);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  sanitizePPT(file: File, clientName: string, products: string, options?: any): Observable<{blob: Blob, stats: any}> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      formData.append('original_ppt', file);
-      if (clientName) {
-        formData.append('client_name', clientName);
-      }
-      if (products) {
-        formData.append('client_products', products);
-      }
-      if (options) {
-        // Convert camelCase to snake_case for backend
-        const backendOptions = {
-          numeric_data: options.numericData,
-          personal_info: options.personalInfo,
-          financial_data: options.financialData,
-          locations: options.locations,
-          identifiers: options.identifiers,
-          names: options.names,
-          logos: options.logos,
-          metadata: options.metadata,
-          llm_detection: options.llmDetection,
-          hyperlinks: options.hyperlinks,
-          embedded_objects: options.embeddedObjects
-        };
-        formData.append('sanitization_options', JSON.stringify(backendOptions));
-      }
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ppt/sanitize`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        const statsHeader = response.headers.get('X-Sanitization-Stats');
-        let stats = null;
-        if (statsHeader) {
-          try {
-            stats = JSON.parse(statsHeader);
-          } catch (e) {
-            console.warn('Could not parse sanitization stats');
-          }
-        }
-        return response.blob().then(blob => ({blob, stats}));
-      })
-      .then(result => {
-        observer.next(result);
-        observer.complete();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamDdcWorkflow(workflow: 'brand-format' | 'professional-polish' | 'sanitization' | 'client-customization' | 'rfp-response' | 'ddc-format-translator' | 'slide-creation' | 'slide-creation-prompt', formData: FormData): Observable<string> {
-    return this.streamFormData(`${this.apiUrl}/api/v1/ddc/${workflow}`, formData);
-  }
-
-  streamDdcBrandFormat(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('brand-format', formData);
-  }
-
-  streamDdcProfessionalPolish(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('professional-polish', formData);
-  }
-
-  streamDdcSanitization(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('sanitization', formData);
-  }
-
-  streamDdcClientCustomization(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('client-customization', formData);
-  }
-
-  streamDdcRfpResponse(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('rfp-response', formData);
-  }
-
-  streamDdcFormatTranslator(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('ddc-format-translator', formData);
-  }
-
-  streamDdcSlideCreation(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('slide-creation', formData);
-  }
-  streamDdcSlideCreationPrompt(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('slide-creation-prompt', formData);
-  }
-
-  createDdcSlide(formData: FormData): Observable<any> {
-  return this.http.post(`${this.apiUrl}/api/v1/ddc/slide-creation`, formData);
-  }
-
-      createPhoenixRequest(formData: FormData): Observable<any> {
-  return this.http.post(
-    `${this.apiUrl}/api/v1/ddc/phoenix/create-request`,formData);
-  } 
-
-  getPhoenixRequestConfigDdc(): Observable<any> {
-  return this.http.get(
-    `${this.apiUrl}/api/v1/ddc/phoenix/request-config-ddc`
-  );
-}
-
-  getPhoenixRequestConfigTl(): Observable<any> {
-  return this.http.get(
-    `${this.apiUrl}/api/v1/ddc/phoenix/request-config-tl`
-  );
-}
-  private streamFormData(endpoint: string, formData: FormData): Observable<string> {
-    return new Observable(observer => {
-      this.authenticatedFetchFormData(endpoint, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(`Network response was not ok: ${response.status}`);
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    if (parsed.content) {
-                      observer.next(parsed.content);
-                    } else if (parsed.done) {
-                      observer.complete();
-                    } else if (parsed.error) {
-                      observer.error(new Error(parsed.error));
-                    }
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e, 'Data:', data);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  exportDocument(content: string, title: string, format: string): Observable<Blob> {
-    return new Observable(observer => {
-      const endpoint = format === 'pdf' ? '/api/v1/export/pdf-pwc' : '/api/v1/export/word';
-      
-      this.authenticatedFetch(`${this.apiUrl}${endpoint}`, {
-        method: 'POST',
-        body: JSON.stringify({ content, title, format })
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(`Export failed: ${response.statusText}`);
-        }
-        return response.blob();
-      })
-      .then(blob => {
-        observer.next(blob);
-        observer.complete();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamResearch(researchRequest: any): Observable<string> {
-    return new Observable(observer => {
-      this.authenticatedFetch(`${this.apiUrl}/api/research`, {
-        method: 'POST',
-        body: JSON.stringify(researchRequest)
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    if (parsed.content) {
-                      observer.next(parsed.content);
-                    } else if (parsed.done) {
-                      observer.complete();
-                    } else if (parsed.error) {
-                      observer.error(new Error(parsed.error));
-                    }
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e, 'Data:', data);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  draftArticle(articleData: any, outlineFile?: File, supportingDocs?: File[]): Observable<string> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      formData.append('topic', articleData.topic);
-      formData.append('content_type', articleData.content_type);
-      formData.append('desired_length', articleData.desired_length.toString());
-      formData.append('tone', articleData.tone);
-      
-      if (articleData.outline_text) {
-        formData.append('outline_text', articleData.outline_text);
-      }
-      if (articleData.additional_context) {
-        formData.append('additional_context', articleData.additional_context);
-      }
-      if (outlineFile) {
-        formData.append('outline_file', outlineFile);
-      }
-      if (supportingDocs && supportingDocs.length > 0) {
-        supportingDocs.forEach(doc => {
-          formData.append('supporting_docs', doc);
-        });
-      }
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/draft-article`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    if (parsed.content) {
-                      observer.next(parsed.content);
-                    } else if (parsed.done) {
-                      observer.complete();
-                    } else if (parsed.error) {
-                      observer.error(new Error(parsed.error));
-                    }
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e, 'Data:', data);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamBestPractices(file: File, categories?: string[]): Observable<string> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      formData.append('file', file);
-      if (categories && categories.length > 0) {
-        formData.append('categories', categories.join(','));
-      }
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ppt/validate-best-practices`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    if (parsed.content) {
-                      observer.next(parsed.content);
-                    } else if (parsed.done) {
-                      observer.complete();
-                    } else if (parsed.error) {
-                      observer.error(new Error(parsed.error));
-                    }
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e, 'Data:', data);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  generatePodcast(
-    files: File[] | null, 
-    contentText: string | null, 
-    customization: string | null, 
-    podcastStyle: string = 'dialogue',
-    speaker1Name?: string,
-    speaker1Voice?: string,
-    speaker1Accent?: string,
-    speaker2Name?: string,
-    speaker2Voice?: string,
-    speaker2Accent?: string
-  ): Observable<any> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      
-      if (files && files.length > 0) {
-        files.forEach(file => {
-          formData.append('files', file);
-        });
-      }
-      
-      if (contentText) {
-        formData.append('content_text', contentText);
-      }
-      
-      if (customization) {
-        formData.append('customization', customization);
-      }
-      
-      formData.append('podcast_style', podcastStyle);
-      
-      if (speaker1Name) formData.append('speaker1_name', speaker1Name);
-      if (speaker1Voice) formData.append('speaker1_voice', speaker1Voice);
-      if (speaker1Accent) formData.append('speaker1_accent', speaker1Accent);
-      if (speaker2Name) formData.append('speaker2_name', speaker2Name);
-      if (speaker2Voice) formData.append('speaker2_voice', speaker2Voice);
-      if (speaker2Accent) formData.append('speaker2_accent', speaker2Accent);
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/generate-podcast`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    observer.next(parsed);
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e, 'Data:', data);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamResearchWithMaterials(
-    files: File[] | null,
-    links: string[] | null,
-    query: string,
-    focusAreas: string[],
-    additionalContext: string | null
-  ): Observable<any> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      
-      if (files && files.length > 0) {
-        files.forEach(file => {
-          formData.append('files', file);
-        });
-      }
-      
-      if (links && links.length > 0) {
-        links.forEach(link => {
-          formData.append('links', link);
-        });
-      }
-      
-      formData.append('query', query);
-      
-      if (focusAreas && focusAreas.length > 0) {
-        formData.append('focus_areas', JSON.stringify(focusAreas));
-      }
-      
-      if (additionalContext) {
-        formData.append('additional_context', additionalContext);
-      }
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/research-with-materials`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    observer.next(parsed);
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e, 'Data:', data);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  // NEW: Thought Leadership Section Methods (5 Sections)
-
-  streamDraftContent(
-    payload: Message[] | {
-      messages: Message[],
-      content_type?: string,
-      topic?: string,
-      word_limit?: string,
-      audience_tone?: string,
-      outline?: { type: string, content: string },
-      supporting_documents?: { content: string },
-      research?: any,
-      stream: boolean
-    },
-    improvementPrompt?: string,
-    draftParams?: any
-  ): Observable<any> {
-    return new Observable(observer => {
-      let request: any;
-
-      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
-      if (Array.isArray(payload)) {
-        // Old format: Message[] for improvement iterations
-        request = { messages: payload, stream: true };
-        
-        // Add improvement_prompt to request if provided
-        if (improvementPrompt) {
-          request.improvement_prompt = improvementPrompt;
-        }
-        
-        // Add draft parameters for improvement iterations
-        if (draftParams) {
-          if (draftParams.contentType) request.content_type = draftParams.contentType;
-          if (draftParams.topic) request.topic = draftParams.topic;
-          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
-          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
-          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
-          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
-          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
-        }
-      } else {
-        // New format: Structured payload object with all fields
-        request = payload;
-      }
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/draft-content`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    observer.next(JSON.parse(data));
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-  /**
-   * Stream POV (Point of View) content generation
-   * Routes to /api/v1/tl/pov endpoint instead of draft-content
-   */
-  streamPOVContent(
-    payload: Message[] | {
-      messages: Message[],
-      content_type?: string,
-      topic?: string,
-      word_limit?: string,
-      audience_tone?: string,
-      outline?: { type: string, content: string },
-      supporting_documents?: { content: string },
-      research?: any,
-      stream: boolean
-    },
-    improvementPrompt?: string,
-    draftParams?: any
-  ): Observable<any> {
-    return new Observable(observer => {
-      let request: any;
-
-      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
-      if (Array.isArray(payload)) {
-        // Old format: Message[] for improvement iterations
-        request = { messages: payload, stream: true };
-        
-        // Add improvement_prompt to request if provided
-        if (improvementPrompt) {
-          request.improvement_prompt = improvementPrompt;
-        }
-        
-        // Add draft parameters for improvement iterations
-        if (draftParams) {
-          if (draftParams.contentType) request.content_type = draftParams.contentType;
-          if (draftParams.topic) request.topic = draftParams.topic;
-          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
-          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
-          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
-          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
-          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
-        }
-      } else {
-        // New format: Structured payload object with all fields
-        request = payload;
-      }
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/pov`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    observer.next(JSON.parse(data));
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-  /**
-   * Analyze user satisfaction with generated draft content using LLM backend
-   */
-  analyzeSatisfaction(request: {
-    user_input: string,
-    generated_content: string,
-    content_type: string,
-    topic: string
-  }): Observable<any> {
-    return this.http.post<any>(`${this.apiUrl}/api/v1/tl/draft-content/analyze-satisfaction`, request);
-  }
-
-  // streamConductResearch(messages: Message[], sourceGroups?: string[]): Observable<any> {
-  streamConductResearch(formData: FormData): Observable<any> {  
-  return new Observable(observer => {
-      // const request: any = { messages, stream: true };
-      // if (sourceGroups && sourceGroups.length > 0) {
-      //   request.source_groups = sourceGroups;
-      // }
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/conduct-research`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    observer.next(JSON.parse(data));
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-  /** Stream edit content workflow with specified editor types */
-  streamEditContent(
-    messages: Message[], 
-    editorTypes?: string[], 
-    temperature: number = 0,
-    maxTokens: number = 32000
-  ): Observable<any> {
-    if (temperature < 0 || temperature > 2) {
-      console.warn(`[ChatService] Temperature ${temperature} is outside valid range (0.0-2.0), using default 0`);
-      temperature = 0;
-    }
-    
-    if (maxTokens < 1000 || maxTokens > 128000) {
-      console.warn(`[ChatService] maxTokens ${maxTokens} is outside valid range (1000-128000), using default 32000`);
-      maxTokens = 32000;
-    }
-    
-    return new Observable(observer => {
-      const request: any = { 
-        messages, 
-        stream: true,
-        editor_types: editorTypes || [],
-        temperature: temperature,
-        max_tokens: maxTokens
-      };
-// streamEditContent(messages: Message[], editorTypes?: string[], temperature: number = 0.0): Observable<any> {
-//     return new Observable(observer => {
-//       const request = { 
-//         messages, 
-//         stream: true,
-//         editor_types: editorTypes || [],
-//         temperature: temperature
-//       };
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/edit-content`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    observer.next(JSON.parse(data));
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-  // Accept either an array of messages OR a structured payload { messages, original_content, services, stream }
-  streamRefineContent(payload: Message[] | { messages: Message[]; original_content?: string; services?: any[]; stream?: boolean }): Observable<any> {
-    return new Observable(observer => {
-      const request = Array.isArray(payload)
-        ? { messages: payload, stream: true }
-        : { messages: payload.messages || [], original_content: (payload as any).original_content, services: (payload as any).services, stream: (payload as any).stream ?? true };
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/refine-content`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    observer.next(JSON.parse(data));
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-  streamFormatTranslator(params: {
-    content: string;
-    uploadedFile: File;
-    sourceFormat: string;
-    targetFormat: string;
-    customization?: string;
-    podcastStyle?: string;
-    speaker1Name?: string;
-    speaker1Voice?: string;
-    speaker1Accent?: string;
-    speaker2Name?: string;
-    speaker2Voice?: string;
-    speaker2Accent?: string;
-    wordLimit?: string;
-  }): Observable<any> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      formData.append('content', params.content);
-      formData.append('source_format', params.sourceFormat);
-      formData.append('target_format', params.targetFormat);
-      formData.append('uploadedFile', params.uploadedFile, params.uploadedFile.name);
-      
-      if (params.customization) formData.append('customization', params.customization);
-      if (params.podcastStyle) formData.append('podcast_style', params.podcastStyle);
-      if (params.speaker1Name !== undefined) formData.append('speaker1_name', params.speaker1Name);
-      if (params.speaker1Voice !== undefined) formData.append('speaker1_voice', params.speaker1Voice);
-      if (params.speaker1Accent !== undefined) formData.append('speaker1_accent', params.speaker1Accent);
-      if (params.speaker2Name !== undefined) formData.append('speaker2_name', params.speaker2Name);
-      if (params.speaker2Voice !== undefined) formData.append('speaker2_voice', params.speaker2Voice);
-      if (params.speaker2Accent !== undefined) formData.append('speaker2_accent', params.speaker2Accent);
-      if (params.wordLimit) formData.append('word_limit', params.wordLimit);
-
-      console.log('[ChatService] Format Translator Request:', {
-        sourceFormat: params.sourceFormat,
-        targetFormat: params.targetFormat,
-        hasSpeaker1: !!params.speaker1Name,
-        hasSpeaker2: !!params.speaker2Name
-      });
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/format-translator`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          console.error('[ChatService] Format translator response not OK:', response.status, response.statusText);
-          throw new Error(`Server returned ${response.status}: ${response.statusText}`);
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        console.log(response.body)
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-            console.log(buffer)
-
-            if(buffer.includes("placemat"))
-            {
-              const parsed = JSON.parse(buffer);
-               observer.next({ type: 'placemat', content: buffer, url:parsed.download_url, status:parsed.status});
-
-            }
-           
-
-            lines.forEach(line => {
-              console.log(lines)
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                console.log(data)
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    console.log('[ChatService] Format Translator SSE data:', parsed);
-                    observer.next(parsed);
-                  } catch (e) {
-                    console.error('[ChatService] Error parsing SSE data:', e, 'Raw data:', data);
-                    // If parsing fails, try to send as string content
-                    observer.next({ type: 'content', content: data });
-                  }
-                }
-                
-                  
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-  streamSectionUpdate(request: UpdateSectionRequest): Observable<string> {
-    return new Observable(observer => {
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/update-section`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    if (parsed.content) {
-                      observer.next(parsed.content);
-                    } else if (parsed.done) {
-                      observer.complete();
-                    } else if (parsed.error) {
-                      observer.error(new Error(parsed.error));
-                    }
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e, 'Data:', data);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamPrepareClientMeeting(
-    payload: Message[] | {
-      messages: Message[],
-      content_type?: string,
-      topic?: string,
-      word_limit?: string,
-      audience_tone?: string,
-      outline?: { type: string, content: string },
-      supporting_documents?: { content: string },
-      research?: any,
-      stream: boolean
-    },
-    improvementPrompt?: string,
-    draftParams?: any
-  ): Observable<any> {
-    return new Observable(observer => {
-      let request: any;
-
-      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
-      if (Array.isArray(payload)) {
-        // Old format: Message[] for improvement iterations
-        request = { messages: payload, stream: true };
-        
-        // Add improvement_prompt to request if provided
-        if (improvementPrompt) {
-          request.improvement_prompt = improvementPrompt;
-        }
-        
-        // Add draft parameters for improvement iterations
-        if (draftParams) {
-          if (draftParams.contentType) request.content_type = draftParams.contentType;
-          if (draftParams.topic) request.topic = draftParams.topic;
-          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
-          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
-          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
-          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
-          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
-        }
-      } else {
-        // New format: Structured payload object with all fields
-        request = payload;
-      }
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/prep-client-meeting`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    observer.next(JSON.parse(data));
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-  streamProposalInsights(
-    payload: Message[] | {
-      messages: Message[],
-      content_type?: string,
-      topic?: string,
-      word_limit?: string,
-      audience_tone?: string,
-      outline?: { type: string, content: string },
-      supporting_documents?: { content: string },
-      research?: any,
-      stream: boolean
-    },
-    improvementPrompt?: string,
-    draftParams?: any
-  ): Observable<any> {
-    return new Observable(observer => {
-      let request: any;
-
-      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
-      if (Array.isArray(payload)) {
-        // Old format: Message[] for improvement iterations
-        request = { messages: payload, stream: true };
-        
-        // Add improvement_prompt to request if provided
-        if (improvementPrompt) {
-          request.improvement_prompt = improvementPrompt;
-        }
-        
-        // Add draft parameters for improvement iterations
-        if (draftParams) {
-          if (draftParams.contentType) request.content_type = draftParams.contentType;
-          if (draftParams.topic) request.topic = draftParams.topic;
-          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
-          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
-          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
-          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
-          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
-        }
-      } else {
-        // New format: Structured payload object with all fields
-        request = payload;
-      }
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/proposal_insights`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    observer.next(JSON.parse(data));
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-  streamIndustryInsights(
-    payload: Message[] | {
-      messages: Message[],
-      content_type?: string,
-      topic?: string,
-      word_limit?: string,
-      audience_tone?: string,
-      outline?: { type: string, content: string },
-      supporting_documents?: { content: string },
-      research?: any,
-      stream: boolean
-    },
-    improvementPrompt?: string,
-    draftParams?: any
-  ): Observable<any> {
-    return new Observable(observer => {
-      let request: any;
-
-      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
-      if (Array.isArray(payload)) {
-        // Old format: Message[] for improvement iterations
-        request = { messages: payload, stream: true };
-        
-        // Add improvement_prompt to request if provided
-        if (improvementPrompt) {
-          request.improvement_prompt = improvementPrompt;
-        }
-        
-        // Add draft parameters for improvement iterations
-        if (draftParams) {
-          if (draftParams.contentType) request.content_type = draftParams.contentType;
-          if (draftParams.topic) request.topic = draftParams.topic;
-          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
-          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
-          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
-          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
-          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
-        }
-      } else {
-        // New format: Structured payload object with all fields
-        request = payload;
-      }
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/industry_insights`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    observer.next(JSON.parse(data));
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-  // exportToWord(data: { content: string; title: string }): Observable<Blob> {
-  //   return this.http.post(`${this.apiUrl}/api/v1/export/word`, data, {
-
-  exportToWord(data: { content: string; title: string; content_type?: string }): Observable<Blob> {
-        return this.http.post(`${this.apiUrl}/api/v1/export/word`, data, {
-      responseType: 'blob'
-    });
-  }
-
-  exportToPDF(data: { content: string; title: string }): Observable<Blob> {
-    return this.http.post(`${this.apiUrl}/api/v1/export/pdf-pwc`, data, {
-      responseType: 'blob'
-    });
-  }
-  exportPdfWithBullets(payload: {content: string;title: string;}): Observable<Blob> {
-    return this.http.post(`${this.apiUrl}/api/v1/export/pdf-pwc-bullets`,payload,
-      { responseType: 'blob' }
-    );
-  }
-  exportToText(data: { content: string; title: string }): Observable<Blob> {
-    return this.http.post(`${this.apiUrl}/api/v1/export/text`, data, {
-      responseType: 'blob'
-    });
-  }
-
-
-  exportEditContentToWord(data: { content: string; title: string }): Observable<Blob> {
-      return this.http.post(`${this.apiUrl}/api/v1/export/edit-content/word`, data, {
-        responseType: 'blob'
-      });
-    }
-
-
-  exportEditContentToPDF(data: { content: string; title: string }): Observable<Blob> {
-      return this.http.post(`${this.apiUrl}/api/v1/export/edit-content/pdf`, data, {
-        responseType: 'blob'
-      });
-    }
-
-
-  // ===== Chat History Management Methods =====
-  // These methods manage chat history retrieval from database (lazy loading)
-
-  /**
-   * Get all chat session summaries for a user.
-   * Returns only titles and metadata, NOT full conversations.
-   * @param userId User email or identifier
-   * @param source Optional source filter (Chat, DDDC, Thought_Leadership, etc.)
-   * @returns List of session summaries
-   */
-  getUserSessions(userId: string, source?: string): Observable<ChatSessionSummary[]> {
-    let url = `${this.apiUrl}/api/v1/chat-history/sessions?user_id=${encodeURIComponent(userId)}`;
-    if (source) {
-      url += `&source=${encodeURIComponent(source)}`;
-    }
-    return this.http.get<ChatSessionSummary[]>(url);
-  }
-
-  /**
-   * Get full conversation for a specific session.
-   * Call this only when user clicks on a session to load the conversation.
-   * @param sessionId Session identifier
-   * @returns Complete session data with conversation messages
-   */
-  getSessionConversation(sessionId: string): Observable<ChatSessionDetail> {
-    return this.http.get<ChatSessionDetail>(
-      `${this.apiUrl}/api/v1/chat-history/sessions/${encodeURIComponent(sessionId)}`
-    );
-  }
-
-  /**
-   * Delete a chat session (soft delete).
-   * @param sessionId Session identifier
-   * @returns Deletion confirmation
-   */
-  deleteSession(sessionId: string): Observable<any> {
-    return this.http.delete(
-      `${this.apiUrl}/api/v1/chat-history/sessions/${encodeURIComponent(sessionId)}`
-    );
-  }
-  exportWordStandalone(payload: {
-  content: string;
-  title: string;
-  content_type?: string;
-}): Observable<Blob> {
-  return this.http.post(
-    `${this.apiUrl}/api/v1/export/word-standalone`,
-    payload,
-    { responseType: 'blob' }
-  );
-}
-exportWordUI(data: { content: string; title: string }): Observable<Blob> {
-  return this.http.post(
-    `${this.apiUrl}/api/v1/export/word-ui`,
-    data,
-    { responseType: 'blob' }
-  );
-}
-
-exportPdfStandalone(payload: {
-  content: string;
-  title: string;
-}): Observable<Blob> {
-  return this.http.post(
-    `${this.apiUrl}/api/v1/export/pdf-pwc`,
-    payload,
-    { responseType: 'blob' }
-  );
-}
-}
-
+    return mapping.get(module.lower(), module)
