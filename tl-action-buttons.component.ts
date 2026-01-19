@@ -5326,17 +5326,31 @@ Click one of the buttons below to get started, or you can type your selection.`,
       editorial_feedback_decisions: this.editWorkflowService.collectFeedbackDecisions(p)
     })) : undefined;
     
-    // Use same block_types generation logic as ChatEditWorkflowService.generateFinalArticle()
-    // This ensures export uses the exact same block_types structure as final article display
-    const { content: normalizedContent, blockTypes } = this.getBlockTypesForExport(metadata, content);
+    // REUSE generateFinalArticle: If paragraph_edits available, backend will generate content and block_types
+    // Only use frontend content/block_types as fallback if paragraph_edits not available
+    let exportContent = content;
+    let exportBlockTypes = undefined;
+    let exportTitle = extractDocumentTitle(content, metadata?.topic);
+    
+    if (paragraphEdits && paragraphEdits.length > 0 && originalContent) {
+      // Backend will regenerate content and block_types from paragraph_edits (same as /final endpoint)
+      // Don't send content/block_types - let backend generate them
+      exportContent = '';  // Backend will generate from paragraph_edits
+      exportBlockTypes = undefined;  // Backend will generate from paragraph_edits
+    } else {
+      // Fallback: Use metadata content and block_types
+      const { content: normalizedContent, blockTypes } = this.getBlockTypesForExport(metadata, content);
+      exportContent = normalizedContent;
+      exportBlockTypes = blockTypes;
+      exportTitle = extractDocumentTitle(normalizedContent, metadata?.topic);
+    }
     
     // Send paragraph_edits + original_content to backend (EXACT SAME format as generateFinalArticle)
-    // Backend will regenerate block_types using same logic as /final endpoint (100% accurate)
-    const title = extractDocumentTitle(normalizedContent, metadata?.topic);
+    // Backend will regenerate content and block_types using same logic as /final endpoint (100% accurate)
     this.chatService.exportEditContentToWord({
-      content: normalizedContent,  // Normalized plain text content
-      title: title,
-      block_types: blockTypes,  // Fallback if paragraph_edits not available
+      content: exportContent,
+      title: exportTitle,
+      block_types: exportBlockTypes,  // Only used if paragraph_edits not available
       paragraph_edits: paragraphEdits && paragraphEdits.length > 0 ? paragraphEdits.map(p => ({
         index: p.index,
         original: p.original,
@@ -5402,17 +5416,31 @@ Click one of the buttons below to get started, or you can type your selection.`,
       editorial_feedback_decisions: this.editWorkflowService.collectFeedbackDecisions(p)
     })) : undefined;
     
-    // Use same block_types generation logic as ChatEditWorkflowService.generateFinalArticle()
-    // This ensures export uses the exact same block_types structure as final article display
-    const { content: normalizedContent, blockTypes } = this.getBlockTypesForExport(metadata, content);
+    // REUSE generateFinalArticle: If paragraph_edits available, backend will generate content and block_types
+    // Only use frontend content/block_types as fallback if paragraph_edits not available
+    let exportContent = content;
+    let exportBlockTypes = undefined;
+    let exportTitle = extractDocumentTitle(content, metadata?.topic);
+    
+    if (paragraphEdits && paragraphEdits.length > 0 && originalContent) {
+      // Backend will regenerate content and block_types from paragraph_edits (same as /final endpoint)
+      // Don't send content/block_types - let backend generate them
+      exportContent = '';  // Backend will generate from paragraph_edits
+      exportBlockTypes = undefined;  // Backend will generate from paragraph_edits
+    } else {
+      // Fallback: Use metadata content and block_types
+      const { content: normalizedContent, blockTypes } = this.getBlockTypesForExport(metadata, content);
+      exportContent = normalizedContent;
+      exportBlockTypes = blockTypes;
+      exportTitle = extractDocumentTitle(normalizedContent, metadata?.topic);
+    }
     
     // Send paragraph_edits + original_content to backend (EXACT SAME format as generateFinalArticle)
-    // Backend will regenerate block_types using same logic as /final endpoint (100% accurate)
-    const title = extractDocumentTitle(normalizedContent, metadata?.topic);
+    // Backend will regenerate content and block_types using same logic as /final endpoint (100% accurate)
     this.chatService.exportEditContentToPDF({
-      content: normalizedContent,  // Normalized plain text content
-      title: title,
-      block_types: blockTypes,  // Fallback if paragraph_edits not available
+      content: exportContent,
+      title: exportTitle,
+      block_types: exportBlockTypes,  // Only used if paragraph_edits not available
       paragraph_edits: paragraphEdits && paragraphEdits.length > 0 ? paragraphEdits.map(p => ({
         index: p.index,
         original: p.original,
