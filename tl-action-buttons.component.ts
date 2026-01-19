@@ -1,557 +1,867 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
-from fastapi.responses import StreamingResponse, JSONResponse
-from app.features.export.schemas import ExportRequest
-from app.common.export_utils import (
-    export_to_pdf,
-    export_to_pdf_pwc_no_toc,
-    export_to_word_pwc_no_toc,
-    export_to_word,
-    export_to_word_with_metadata,
-    export_to_word_ui_plain,
-    export_to_text,
-    extract_subtitle_from_content,
-    export_to_pdf_with_pwc_template,
-    export_to_pdf_with_pwc_template_with_bullets,
-    export_to_pdf_edit_content,
-    export_to_word_edit_content,
-    html_to_marked_text,
-)
-from app.common.document_utils import extract_text_from_pdf, extract_text_from_docx,extract_text_from_txt, extract_text_from_pptx
-from io import BytesIO
-import logging
-import re
-from urllib.parse import quote
-from app.common.export_utils import export_to_word_pwc_standalone
-from app.services.auth_service import validate_jwt_token
-from app.core.config import get_settings
 
-router = APIRouter(prefix="/export", tags=["Export"], dependencies=[Depends(validate_jwt_token)])
-logger = logging.getLogger(__name__)
+import { Component, Input, ViewChild, ElementRef, HostListener, Output, EventEmitter, OnInit } from '@angular/core';
 
-@router.post("/word")
-async def export_word(request: ExportRequest):
-    """Export content to Word document using PwC template"""
-    try:
-        logger.info(f"[Export] Generating Word document: {request.title}")
-        
-        # Extract subtitle from first line of content if not provided
-        subtitle = request.subtitle
-        content = request.content
-        content_type = request.content_type  # From request body (sent by frontend)
-        
-        logger.info(f"[Export] Content Type from request body: {content_type}")
-        
-        if not subtitle and content:
-            extracted_subtitle, remaining_content = extract_subtitle_from_content(content)
-            if extracted_subtitle:
-                subtitle = extracted_subtitle
-                content = remaining_content
-                logger.info(f"[Export] Extracted subtitle from content: {subtitle[:50]}")
-        
-        # Clean subtitle by removing markdown asterisks
-        if subtitle:
-            subtitle = re.sub(r'\*\*(.+?)\*\*', r'\1', subtitle)
-            subtitle = subtitle.replace('**', '')
-        
-        # For draft content, use subtitle as title and remove original title
-        title = request.title
-        if subtitle:
-            # Use subtitle as the main title on the first page
-            title = subtitle
-            subtitle = None  # Clear subtitle so it doesn't appear twice
-            logger.info(f"[Export] Using subtitle as title for draft content export")
-        
-        # Use enhanced export with metadata if content_type provided or subtitle extracted
-        if content_type or subtitle:
-            logger.info(f"[Export] ✓ Applying content_type '{content_type}' to Word document")
-            word_bytes = export_to_word_with_metadata(
-                content=content, 
-                title=title,
-                subtitle=subtitle,
-                content_type=content_type
-            )
-        else:
-            word_bytes = export_to_word(content, title)
-        
-        buffer = BytesIO(word_bytes)
-        
-        # Sanitize filename to remove special characters and properly encode
-        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
-        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
-        filename = f"{safe_title}.docx"
-        
-        # Use RFC 5987 encoding for the filename in Content-Disposition header
-        encoded_filename = quote(filename, safe='')
-        
-        return StreamingResponse(
-            buffer,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
-        )
-    except Exception as e:
-        logger.error(f"[Export] Word export error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+import { HttpClient } from '@angular/common/http';
+import { ThoughtLeadershipMetadata } from '../../../../../core/models';
+import { CanvasStateService } from '../../../../../core/services/canvas-state.service';
+import { TlChatBridgeService } from '../../../../../core/services/tl-chat-bridge.service';
+import { ChatService } from '../../../../../core/services/chat.service';
+import { ToastService } from '../../../../../core/services/toast.service';
+import { environment } from '../../../../../../environments/environment';
+import { TlRequestFormComponent } from '../../../../phoenix/TL/request-form';
+import { AuthFetchService } from '../../../../../core/services/auth-fetch.service';
+import { extractDocumentTitle } from '../../../../../core/utils/edit-content.utils';
+import { formatFinalArticleWithBlockTypes} from '../../../../../core/utils/edit-content.utils';
+import { BlockTypeInfo } from '../../../../../core/utils/edit-content.utils';
 
-@router.post("/ppt")
-async def export_ppt(request: ExportRequest):
-    """
-    Export content to PPT using PlusDocs Slides template
-    """
-    try:
-        settings = get_settings()
-        logger.info(f"[Export] Generating PPT document: {request.title}")
-        from app.features.ddc.services.slide_creation_service import PlusDocsClient
-        template_id = settings.PLUSDOCS_TEMPLATE_ID
-        API_TOKEN = settings.PLUSDOCS_API_TOKEN
-        client = PlusDocsClient(API_TOKEN)
-        download_url = client.create_and_wait(
-            prompt=request.content,
-            template_id=template_id,
-            isImage=False
-        )
-        if not download_url:
-            raise HTTPException(status_code=500, detail="PPT generation failed")
-        return JSONResponse({
-            "status": "success",
-            "download_url": download_url
-        })
-    except Exception as e:
-        logger.error(f"[Export] PPT export error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+@Component({
+    selector: 'app-tl-action-buttons',
+    imports: [TlRequestFormComponent],
+    templateUrl: './tl-action-buttons.component.html',
+    styleUrls: ['./tl-action-buttons.component.scss']
+})
+export class TlActionButtonsComponent implements OnInit {
+  @Input() metadata!: ThoughtLeadershipMetadata;
+  @Input() messageId?: string;
+  @Input() selectedFlow?: 'ppt' | 'thought-leadership' | 'market-intelligence';
+  @ViewChild('exportButton') exportButton?: ElementRef<HTMLButtonElement>;
+  
+  isConvertingToPodcast = false;
+  showExportDropdown = false;
+  isCopied = false;
+  isExporting = false;
+  isExported = false;
+  exportFormat = '';
+  showRequestForm = false;
+  translatedContent = '';
 
+  @Output() raisePhoenix = new EventEmitter<void>();
 
-@router.post("/pdf")
-async def export_pdf(request: ExportRequest):
-    """Export content to PDF document"""
-    try:
-        logger.info(f"[Export] Generating PDF document: {request.title}")
-        
-        pdf_bytes = export_to_pdf(request.content, request.title)
-        buffer = BytesIO(pdf_bytes)
-        
-        # Sanitize filename to remove special characters and properly encode
-        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
-        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
-        filename = f"{safe_title}.pdf"
-        
-        # Use RFC 5987 encoding for the filename in Content-Disposition header
-        encoded_filename = quote(filename, safe='')
-        
-        return StreamingResponse(
-            buffer,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
-        )
-    except Exception as e:
-        logger.error(f"[Export] PDF export error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/pdf-pwc")
-async def export_pdf_pwc(request: ExportRequest):
-    """Export content to PDF document using PwC template with logo and branding"""
-    try:
-        logger.info(f"[Export] Generating PDF document with PwC template: {request.title}")
-        
-        # Extract subtitle from first line of content if not provided
-        subtitle = request.subtitle
-        content = request.content
-        
-        if not subtitle and content:
-            extracted_subtitle, remaining_content = extract_subtitle_from_content(content)
-            if extracted_subtitle:
-                subtitle = extracted_subtitle
-                content = remaining_content
-                logger.info(f"[Export] Extracted subtitle from content: {subtitle[:50]}")
-        
-        # Clean subtitle by removing markdown asterisks
-        if subtitle:
-            subtitle = re.sub(r'\*\*(.+?)\*\*', r'\1', subtitle)
-            subtitle = subtitle.replace('**', '')
-        
-        # For draft content, use subtitle as title and remove original title
-        title = request.title
-        content_type = request.content_type  # From request body
-        if subtitle:
-            # Use subtitle as the main title on the cover page
-            title = subtitle
-            subtitle = None  # Clear subtitle so it doesn't appear twice
-            logger.info(f"[Export] Using subtitle as title for draft content export")
-        
-        logger.info(f"[Export] Content Type from request body: {content_type}")
-        
-        # Generate PWC branded PDF
-        pdf_bytes = export_to_pdf_with_pwc_template(
-            content=content, 
-            title=title,
-            subtitle=subtitle,
-            content_type=content_type
-        )
-        
-        logger.info(f"[Export] PDF generated: {len(pdf_bytes)} bytes")
-        
-        # Create buffer and reset position
-        buffer = BytesIO(pdf_bytes)
-        buffer.seek(0)
-        
-        # Create proper filename with sanitization
-        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
-        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
-        filename = f"{safe_title}.pdf"
-        encoded_filename = quote(filename, safe='')
-        logger.info(f"[Export] Returning PDF with filename: {encoded_filename}")
-        
-        return StreamingResponse(
-            iter([buffer.getvalue()]),
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
-                "Content-Length": str(len(pdf_bytes))
-            }
-        )
-    except Exception as e:
-        logger.error(f"[Export] PDF-PWC export error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/text")
-async def export_text(request: ExportRequest):
-    """Export content to plain text file"""
-    try:
-        logger.info(f"[Export] Generating text file: {request.title}")
-        
-        content_with_title = f"{request.title}\n{'='*len(request.title)}\n\n{request.content}"
-        text_bytes = export_to_text(content_with_title)
-        buffer = BytesIO(text_bytes)
-        
-        # Sanitize filename to remove special characters and properly encode
-        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
-        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
-        filename = f"{safe_title}.txt"
-        encoded_filename = quote(filename, safe='')
-        
-        return StreamingResponse(
-            buffer,
-            media_type="text/plain",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
-        )
-    except Exception as e:
-        logger.error(f"[Export] Text export error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/word-standalone")
-async def export_word_pwc(request: ExportRequest):
-    """
-    Standalone Word export (PwC template)
-    """
-    return StreamingResponse(
-        BytesIO(
-            export_to_word_pwc_standalone(
-                content=request.content,
-                title=request.title,
-                subtitle=request.subtitle,
-                content_type=request.content_type,
-                references=request.references
-            )
-        ),
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
-
-@router.post("/pdf-pwc-bullets")
-async def export_pdf_pwc_with_bullets(request: ExportRequest):
-    """
-    Standalone PDF export that supports bullet rendering.
-    Does NOT impact existing pdf-pwc flow.
-    """
-    try:
-        
-        pdf_bytes = export_to_pdf_with_pwc_template_with_bullets(
-            content=request.content,
-            title=request.title,
-            subtitle=request.subtitle
-        )
-
-        buffer = BytesIO(pdf_bytes)
-        buffer.seek(0)
-
-        # filename = f"{request.title}.pdf"
-        filename = f"{safe_filename(request.title)}.pdf"
-        return StreamingResponse(
-            iter([buffer.getvalue()]),
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}"
-            }
-        )
-
-    except Exception as e:
-        logger.error("PDF-PWC-BULLETS export failed", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-def safe_filename(value: str) -> str:
-    value = value.replace("“", '"').replace("”", '"')
-    value = value.replace("‘", "'").replace("’", "'")
-    value = re.sub(r"[^\w\-. ]", "", value)
-    return value.strip()
-
-@router.post("/extract-text", include_in_schema=True)
-@router.post("/extract-text/", include_in_schema=True)
-async def extract_text_from_file(file: UploadFile = File(...)):
-    """
-    Extract text from uploaded document (PDF, DOCX, TXT, MD).
-    Extracts content from the document for editing.
-    """
-    try:
-        logger.info(f"[Export] Extracting text from file: {file.filename}")
-        
-        if not file.filename:
-            raise HTTPException(status_code=400, detail="Filename is required")
-        
-        file_content = await file.read()
-        
-        if not file_content:
-            raise HTTPException(status_code=400, detail="File is empty")
-        
-        file_extension = file.filename.lower().split('.')[-1] if '.' in file.filename else ''
-        
-        if not file_extension:
-            raise HTTPException(status_code=400, detail="File extension is required")
-        
-        extracted_text = ""
-        
-        # Extract content from document
-        try:
-            if file_extension == 'pdf':
-                extracted_text = extract_text_from_pdf(file_content, max_chars=None)
-            elif file_extension in ['docx', 'doc']:
-                extracted_text = extract_text_from_docx(file_content, max_chars=None)
-            elif file_extension in ['txt', 'md']:
-                extracted_text = extract_text_from_txt(file_content, max_chars=None)
-            elif file_extension in ['pptx', 'ppt']:
-                extracted_text = extract_text_from_pptx(file_content, max_chars=None)
-            elif file_extension in ['jpeg','png', 'jpg']:
-                extracted_text = extract_text_from_image(file_content, file_extension, max_chars=None)
-            elif file_extension in ['xlsx']:
-                extracted_text = extract_text_from_xlsx(file_content, max_chars=None)
-            else:
-                raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_extension}")
-        except HTTPException:
-            raise
-        except Exception as extraction_error:
-            logger.error(f"[Export] Extraction failed for {file.filename}: {extraction_error}")
-            raise HTTPException(status_code=500, detail=f"Failed to extract text from file: {str(extraction_error)}")
-        
-        if not extracted_text:
-            logger.warning(f"[Export] No text extracted from {file.filename}")
-            # Return empty string instead of error - some files might legitimately be empty
-            return JSONResponse(content={"text": ""})
-        
-        logger.info(f"[Export] Successfully extracted {len(extracted_text)} characters from {file.filename}")
-        
-        return JSONResponse(content={"text": extracted_text})
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[Export] Text extraction error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/word-ui")
-async def export_word_ui(request: ExportRequest):
-    """
-    UI-exact Word export (no template, no TOC)
-    """
-    try:
-        word_bytes = export_to_word_ui_plain(
-            content=request.content,
-            title=request.title
-        )
-
-        buffer = BytesIO(word_bytes)
-        filename = f"{re.sub(r'[^\\w\\s-]', '', request.title)}.docx"
-
-        return StreamingResponse(
-            buffer,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
-        )
-    except Exception as e:
-        logger.error(f"UI Word export error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/word-pwc-no-toc")
-async def export_word_pwc_no_toc_api(request: ExportRequest):
-    return StreamingResponse(
-        BytesIO(
-            export_to_word_pwc_no_toc(
-                content=request.content,
-                title=request.title,
-                subtitle=request.subtitle,
-                content_type=request.content_type,
-                references=request.references
-            )
-        ),
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={
-            "Content-Disposition": f"attachment; filename={safe_filename(request.title)}.docx"
-        }
-    )
-
-@router.post("/pdf-pwc-no-toc")
-async def export_pdf_pwc_no_toc_api(request: ExportRequest):
-    pdf_bytes = export_to_pdf_pwc_no_toc(
-        content=request.content,
-        title=request.title,
-        subtitle=request.subtitle
-    )
-
-    return StreamingResponse(
-        BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"attachment; filename={safe_filename(request.title)}.pdf"
-        }
-    )
-@router.post("/edit-content/word")
-async def export_edit_content_word(request: ExportRequest):
-    """
-    Export edit content to Word document using PwC template.
-    Uses same block_types generation logic as final article generation.
-    Format matches frontend formatFinalArticleWithBlockTypes() and PDF export.
-    """
-    try:
-        logger.info(f"[Export] Generating Edit Content Word document: {request.title}")
-        
-        # Convert block_types from Pydantic models to dicts if provided
-        # block_types come from same source as final article generation (backend /final endpoint)
-        # Frontend uses same getBlockTypesForExport() logic as generateFinalArticle()
-        block_types = None
-        if request.block_types:
-            block_types = [bt.model_dump() if hasattr(bt, 'model_dump') else bt for bt in request.block_types]
-
-        # Content is plain text final_article format (same as final article generation)
-        # Backend will format using block_types (same logic as frontend formatFinalArticleWithBlockTypes)
-        clean_content = request.content
-        
-        word_bytes = export_to_word_edit_content(
-            content=clean_content,
-            title=request.title,
-            subtitle=request.subtitle,
-            references=request.references,
-            block_types=block_types
-        )
-        
-        buffer = BytesIO(word_bytes)
-        filename = f"{safe_filename(request.title)}.docx"
-        
-        return StreamingResponse(
-            buffer,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}"
-            }
-        )
-    except Exception as e:
-        logger.error(f"[Export] Edit Content Word export error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/edit-content/pdf")
-async def export_edit_content_pdf(request: ExportRequest):
-    """
-    Export edit content to PDF document using PwC template.
-    Uses same block_types generation logic as final article generation.
-    Format matches frontend formatFinalArticleWithBlockTypes() and Word export.
-    """
-    try:
-        logger.info(f"[Export] Generating Edit Content PDF document: {request.title}")
-        
-        # Convert block_types from Pydantic models to dicts if provided
-        # block_types come from same source as final article generation (backend /final endpoint)
-        # Frontend uses same getBlockTypesForExport() logic as generateFinalArticle()
-        block_types = None
-        if request.block_types:
-            block_types = [bt.model_dump() if hasattr(bt, 'model_dump') else bt for bt in request.block_types]
-
-        # Content is plain text final_article format (same as final article generation)
-        # Backend will format using block_types (same logic as frontend formatFinalArticleWithBlockTypes)
-        clean_content = request.content
-        
-        pdf_bytes = export_to_pdf_edit_content(
-            content=clean_content,
-            title=request.title,
-            subtitle=request.subtitle,
-            block_types=block_types
-        )
-        
-        buffer = BytesIO(pdf_bytes)
-        filename = f"{safe_filename(request.title)}.pdf"
-        
-        return StreamingResponse(
-            iter([buffer.getvalue()]),
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}",
-                "Content-Length": str(len(pdf_bytes))
-            }
-        )
-    except Exception as e:
-        logger.error(f"[Export] Edit Content PDF export error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/word-pwc-mi-module")
-async def export_word_pwc_no_toc_module_api(request: ExportRequest):
-    title = build_cover_title(
-    module=normalize_module_name(request.content_type),
-    client=request.client)
-    return StreamingResponse(
-        BytesIO(
-            export_to_word_pwc_no_toc(
-                content=request.content,
-                title=title,
-                subtitle=request.subtitle,
-                content_type=request.content_type,
-                references=request.references,
-                client=request.client
-            )
-        ),
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={
-            "Content-Disposition": f"attachment; filename={safe_filename(title)}.docx"
-        }
-    )
-
-@router.post("/pdf-pwc-mi-module")
-async def export_pdf_pwc_no_toc_module_api(request: ExportRequest):
-    logger.info(f"[PDF API] client = received: {request.client}")
-    title = build_cover_title(
-        module=normalize_module_name(request.content_type),
-    client=request.client
-)
-
-    pdf_bytes = export_to_pdf_pwc_no_toc(
-        content=request.content,
-        title=title,
-        subtitle=request.subtitle,
-        content_type=request.content_type,
-        client=request.client
-    )
-
-    return StreamingResponse(
-        BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"attachment; filename={safe_filename(title)}.pdf"
-        }
-    )
-
-def get_router():
-    """Get export router for mounting"""
-    return router
-
-def normalize_module_name(module: str) -> str:
-    mapping = {
-        "industry-insights": "Industry Insights",
-        "industry_insights": "Industry Insights",
-        "proposal-inputs":"Proposal Inputs",
-        "pov": "Point of View",
-        "prep-meet": "Client Preparation Meeting",
+  @HostListener('document:click', ['$event'])
+  onDocumentClick(event: MouseEvent): void {
+    const target = event.target as HTMLElement;
+    const exportDropdown = target.closest('.export-dropdown');
+    if (!exportDropdown && this.showExportDropdown) {
+      this.showExportDropdown = false;
     }
-    return mapping.get(module.lower(), module)
+  }
+
+  constructor(
+    private canvasStateService: CanvasStateService,
+    private http: HttpClient,
+    private tlChatBridge: TlChatBridgeService,
+    private authFetchService: AuthFetchService,
+    private chatService: ChatService,
+    private toastService: ToastService
+  ) {}
+  
+
+  ngOnInit(): void {
+    console.log('[TL Action Buttons] Component initialized with metadata:', {
+      contentType: this.metadata?.contentType,
+      hasPodcastUrl: !!this.metadata?.podcastAudioUrl,
+      podcastUrl: this.metadata?.podcastAudioUrl?.substring(0, 80),
+      showActions: this.metadata?.showActions,
+      isPodcast: this.isPodcast
+    });
+  }
+private exportWordNewLogic(): void {
+  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+    this.toastService.error('Content is not available yet.');
+    return;
+  }
+
+  // Prepare content according to new logic
+  const plainText = this.metadata.fullContent
+    .replace(/<br>/g, '\n')
+    .replace(/<[^>]+>/g, ''); // strip HTML
+
+  const title = this.metadata.topic?.trim() || 'Generated Document';
+
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  const endpoint = `${apiUrl}/api/v1/export/word-standalone`; 
+
+  this.authFetchService.authenticatedFetch(endpoint, {
+    method: 'POST',
+    body: JSON.stringify({
+      content: plainText,
+      title,
+      content_type: this.metadata.contentType
+    })
+  })
+    .then(response => {
+      if (!response.ok) throw new Error('Failed to generate Word document');
+      return response.blob();
+    })
+    .then(blob => {
+      // Use existing download mechanism
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${this.sanitizeFilename(title)}.docx`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+      this.resetExportState();
+    })
+    .catch(err => {
+      console.error('New Word export error:', err);
+      this.toastService.error('Failed to generate Word document. Please try again.');
+      this.isExporting = false;
+    });
+}
+
+  // private isEditContent(): boolean {
+  //   // Check if this is edit content workflow
+  //   // Edit content may have contentType 'edit-content' 
+  //   return this.metadata?.contentType === 'edit-content';
+  // }
+
+
+
+  downloadWord(): void {
+    // this.exportDocument('/api/v1/export/word', 'docx', 'docx');
+    const isSocialModule = this.metadata?.contentType === 'socialMedia';
+    const isEditContent = this.metadata?.contentType === 'article';
+    const isMarketModule = this.metadata?.contentType === 'conduct-research' || this.selectedFlow === 'market-intelligence';
+    const isindustryModule = this.metadata?.contentType === 'industry-insights';
+    const isproposalModule = this.metadata?.contentType === 'proposal-inputs';
+    const isprepMeetModule = this.metadata?.contentType === 'prep-meet';
+    const isPovModule = this.metadata?.contentType === 'pov';
+    
+    console.log('[TL Action Buttons] downloadWord() called:', {
+      contentType: this.metadata?.contentType,
+      selectedFlow: this.selectedFlow,
+      isSocialModule,
+      isMarketModule,
+      timestamp: new Date().toISOString()
+    });
+    
+    if (isEditContent) {
+      this.exportEditContentWord();
+    } else if (isSocialModule) {
+      this.exportUIWord();  
+    }
+    else if (isindustryModule || isPovModule || isprepMeetModule || isproposalModule){
+       this.exportDocument('/api/v1/export/word-pwc-mi-module', 'docx', 'docx'); 
+    }
+    
+    else if (isMarketModule) {
+      this.exportDocument('/api/v1/export/word-pwc-no-toc', 'docx', 'docx'); 
+    }
+    else {
+      console.log("Export word 2")
+      this.exportDocument('/api/v1/export/word', 'docx', 'docx'); 
+    }
+  }
+
+  /**
+   * Get block types using the same logic as final article generation
+   * This ensures consistency between display and export
+   * Uses exact same logic as ChatEditWorkflowService.generateFinalArticle()
+   */
+  private getBlockTypesForExport(): { content: string; blockTypes: BlockTypeInfo[] } {
+    // Use exact backend final_article (metadata.fullContent) - no processing needed
+    // Backend returns: final_article = "\n\n".join(final_paragraphs)
+    const content = this.metadata.fullContent || '';
+    
+    // Use exact same block_types normalization logic as generateFinalArticle()
+    // Backend provides block_types with sequential indices matching final_paragraphs
+    let blockTypes: BlockTypeInfo[] = [];
+    const metadataBlockTypes = (this.metadata as any).block_types;
+    
+    if (metadataBlockTypes && Array.isArray(metadataBlockTypes) && metadataBlockTypes.length > 0) {
+      // Backend provides correctly aligned block_types with indices matching final_article split
+      // Use same normalization as generateFinalArticle() (lines 1977-1983)
+      // IMPORTANT: Only default to 'paragraph' if type is truly missing (undefined/null), preserve actual values
+      blockTypes = metadataBlockTypes.map((bt: any) => ({
+        index: bt.index !== undefined && bt.index !== null ? bt.index : 0,
+        type: (bt.type !== undefined && bt.type !== null && bt.type !== '') ? bt.type : 'paragraph',
+        level: bt.level !== undefined && bt.level !== null ? bt.level : 0
+      }));
+      
+      // Debug: Log block_types to verify they're not all 'paragraph'
+      const typeCounts = blockTypes.reduce((acc, bt) => {
+        acc[bt.type] = (acc[bt.type] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+      console.log('[TL Action Buttons] Export block_types distribution:', typeCounts);
+      console.log('[TL Action Buttons] Total block_types:', blockTypes.length, 'Sample:', blockTypes.slice(0, 5));
+    } else {
+      // Fallback: generate from paragraphEdits if available (same as generateFinalArticle fallback)
+      // This shouldn't happen if backend is working correctly, but provides safety
+      console.warn('[TL Action Buttons] Backend did not provide block_types, using default paragraph');
+      // Split content into paragraphs and create default block_types
+      const paragraphs = content.split(/\n\n+/).filter(p => p.trim());
+      blockTypes = paragraphs.map((_, idx) => ({
+        index: idx,
+        type: 'paragraph',
+        level: 0
+      }));
+    }
+    
+    return { content, blockTypes };
+  }
+
+  private exportEditContentWord(): void {
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      alert('Content is not available yet.');
+      return;
+    }
+
+    this.isExporting = true;
+    
+    // Use same block_types generation logic as ChatEditWorkflowService.generateFinalArticle()
+    // This ensures export uses the exact same block_types structure as final article display
+    const { content, blockTypes } = this.getBlockTypesForExport();
+    
+    // Send plain text content + block_types to backend
+    // Backend will format using block_types (same logic as frontend formatFinalArticleWithBlockTypes)
+    const title = extractDocumentTitle(content, this.metadata.topic);
+    this.chatService.exportEditContentToWord({
+      content: content,  // Normalized plain text content
+      title: title,
+      block_types: blockTypes
+    }).subscribe({
+      next: (blob: Blob) => {
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${this.sanitizeFilename(title)}.docx`;
+        link.click();
+        window.URL.revokeObjectURL(url);
+        this.resetExportState();
+      },
+      error: (error) => {
+        console.error('Edit Content Word export error:', error);
+        alert('Failed to generate Word document. Please try again.');
+        this.isExporting = false;
+      }
+    });
+  }
+
+  downloadPDF(): void {
+    // Consider message as 'market module' when contentType is conduct-research or selectedFlow is market-intelligence
+    const contentType = String(this.metadata?.contentType || '');
+    const isEditContent = this.metadata?.contentType === 'article';
+    const isMarketModule = contentType === 'conduct-research' || this.selectedFlow === 'market-intelligence';
+    const isIndustryModule = contentType === 'industry-insights';
+    const isproposalModule = contentType === 'proposal-inputs';
+    const isprepMeetModule = contentType === 'prep-meet';
+    const isPovModule = contentType === 'pov';
+    
+    console.log('[TL Action Buttons] downloadPDF() called:', {
+      contentType,
+      selectedFlow: this.selectedFlow,
+      isMarketModule,
+      isIndustryModule,
+      isPovModule,
+      isprepMeetModule,
+      isproposalModule,
+      timestamp: new Date().toISOString()
+    });
+      if (isEditContent) {
+        this.exportEditContentPDF();
+        return;
+    }
+      else if (isIndustryModule || isPovModule || isprepMeetModule || isproposalModule){
+          this.exportDocument('/api/v1/export/pdf-pwc-mi-module', 'pdf', 'pdf'); 
+          return;
+
+      }
+      else if (isMarketModule) {
+        this.exportDocument('/api/v1/export/pdf-pwc-no-toc', 'pdf', 'pdf');
+        return;
+      }
+      this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
+    // const endpoint = isMarketModule
+    //   ? '/api/v1/export/pdf-pwc-no-toc'
+    //   : '/api/v1/export/pdf-pwc';
+    
+    // console.log('[TL Action Buttons] Using endpoint:', endpoint);
+    // this.exportDocument(endpoint, 'pdf', 'pdf');
+  }
+
+  private exportEditContentPDF(): void {
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      alert('Content is not available yet.');
+      return;
+    }
+
+    this.isExporting = true;
+    
+    // Use same block_types generation logic as ChatEditWorkflowService.generateFinalArticle()
+    // This ensures export uses the exact same block_types structure as final article display
+    const { content, blockTypes } = this.getBlockTypesForExport();
+    
+    // Send plain text content + block_types to backend
+    // Backend will format using block_types (same logic as frontend formatFinalArticleWithBlockTypes)
+    const title = extractDocumentTitle(content, this.metadata.topic);
+    this.chatService.exportEditContentToPDF({
+      content: content,  // Normalized plain text content
+      title: title,
+      block_types: blockTypes
+    }).subscribe({
+      next: (blob: Blob) => {
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${this.sanitizeFilename(title)}.pdf`;
+        link.click();
+        window.URL.revokeObjectURL(url);
+        this.resetExportState();
+      },
+      error: (error) => {
+        console.error('Edit Content PDF export error:', error);
+        alert('Failed to generate PDF document. Please try again.');
+        this.isExporting = false;
+      }
+    });
+  }
+  
+  downloadPPT(): void {
+    this.exportPPT('/api/v1/export/ppt');
+  }
+
+  downloadPodcast(): void {
+    if (this.metadata.podcastAudioUrl && this.metadata.podcastFilename) {
+      const link = document.createElement('a');
+      link.href = this.metadata.podcastAudioUrl;
+      link.download = this.metadata.podcastFilename;
+      link.click();
+    }
+  }
+
+  cleanedDocumentText!: string;
+  documentTitle!: string;
+  onRaisePhoenix(): void {
+
+    this.cleanedDocumentText = this.metadata.fullContent
+    .replace(/<br>/g, '\n')
+    .replace(/<[^>]+>/g, '');
+
+    const lines = this.cleanedDocumentText
+    .split('\n')
+    .filter(line => line.trim());
+
+    this.documentTitle = lines.length > 0
+    ? lines[0].substring(0, 150)
+    : 'Generated Document';
+
+    this.showRequestForm = true;
+    this.raisePhoenix.emit();
+  }
+  
+  phoenixRdpLink = '';
+  ticketNumber = '';
+
+  onTicketCreated(event: {
+  requestNumber: string;
+  phoenixRdpLink: string;
+  }): void {
+ this.phoenixRdpLink = event.phoenixRdpLink;
+ this.ticketNumber = event.requestNumber;
+  console.log('Ticket created:', event.requestNumber);
+  this.translatedContent = `✅ Request created successfully! Your request number is: <a href="${event.phoenixRdpLink}" target="_blank" rel="noopener noreferrer">${event.requestNumber}</a>`.trim();
+  this.showRequestForm = false; 
+  this.sendToChat();
+}
+
+sendToChat(): void {
+
+  const topic = `Phoenix Request - ${this.ticketNumber}`;
+  let contentType: string;
+
+   
+    // Create metadata for the message
+    const metadata: ThoughtLeadershipMetadata = {
+      contentType: 'Phoenix_Request',
+      topic: topic,
+      fullContent: this.translatedContent,
+      showActions: false
+    };
+  const chatMessage = this.translatedContent;
+   
+    // Send to chat via bridge
+    console.log('[FormatTranslatorFlow] Sending to chat with metadata:', metadata);
+    this.tlChatBridge.sendToChat(chatMessage, metadata);
+    //this.onClose();
+}
+
+  copyToClipboard(): void {
+    // Convert markdown to plain text for better readability when pasted
+    const plainText = this.convertMarkdownToPlainText(this.metadata.fullContent);
+    
+    navigator.clipboard.writeText(plainText).then(() => {
+      this.isCopied = true;
+      // Reset the "copied" feedback after 2 seconds
+      setTimeout(() => {
+        this.isCopied = false;
+      }, 2000);
+    }).catch(err => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }
+
+  private convertMarkdownToPlainText(markdown: string): string {
+    let text = markdown;
+    
+    // Remove markdown links [text](url) -> text
+    text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
+    
+    // Remove markdown images ![alt](url) -> alt
+    text = text.replace(/!\[([^\]]*)\]\([^\)]+\)/g, '$1');
+    
+    // Convert bold **text** -> text
+    text = text.replace(/\*\*([^\*]+)\*\*/g, '$1');
+    
+    // Convert italic *text* -> text
+    text = text.replace(/\*([^\*]+)\*/g, '$1');
+    
+    // Convert italic _text_ -> text
+    text = text.replace(/_([^_]+)_/g, '$1');
+    
+    // Convert strikethrough ~~text~~ -> text
+    text = text.replace(/~~([^~]+)~~/g, '$1');
+    
+    // Convert headers # text -> text
+    text = text.replace(/^#+\s+/gm, '');
+    
+    // Convert horizontal rules
+    text = text.replace(/^[-*_]{3,}$/gm, '');
+    
+    // Convert code blocks ``` -> remove backticks
+    text = text.replace(/```[\s\S]*?```/g, (match) => {
+      return match.replace(/```/g, '').trim();
+    });
+    
+    // Convert inline code `text` -> text
+    text = text.replace(/`([^`]+)`/g, '$1');
+    
+    // Convert blockquotes > text -> text
+    text = text.replace(/^>\s+/gm, '');
+    
+    // Convert unordered lists - * text -> text
+    text = text.replace(/^[\s]*[-*+]\s+/gm, '');
+    
+    // Convert ordered lists 1. text -> text
+    text = text.replace(/^[\s]*\d+\.\s+/gm, '');
+    
+    // Remove extra blank lines (more than 2 consecutive)
+    text = text.replace(/\n\n\n+/g, '\n\n');
+    
+    // Trim leading and trailing whitespace
+    text = text.trim();
+    
+    return text;
+  }
+
+  openInCanvas(): void {
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      this.toastService.error('Content is not available yet.');
+      return;
+    }
+    // Only allow supported types for canvas
+    const allowedTypes = ['article', 'blog', 'white_paper', 'executive_brief', 'socialMedia','conduct-research'];
+    if (!allowedTypes.includes(this.metadata.contentType)) {
+      this.toastService.warning('Canvas is only available for articles, blogs, white papers, executive briefs, social media posts, and conduct research.');
+      return;
+    }
+    // Map socialMedia and conduct-research to an accepted canvas type (they function like articles)
+    let canvasContentType: 'article' | 'blog' | 'white_paper' | 'executive_brief';
+    switch (this.metadata.contentType) {
+      case 'article':
+      case 'blog':
+      case 'white_paper':
+      case 'executive_brief':
+        canvasContentType = this.metadata.contentType;
+        break;
+      case 'socialMedia':
+      case 'conduct-research':
+      default:
+        canvasContentType = 'article';
+        break;
+    }
+    this.canvasStateService.loadFromContent(
+      this.metadata.fullContent,
+      this.metadata.topic || 'Untitled',
+      canvasContentType,
+      this.messageId
+    );
+  }
+
+  toggleExportDropdown(): void {
+    this.showExportDropdown = !this.showExportDropdown;
+  }
+  // downloadProcessedFile(): void {
+  //   if (!this.downloadUrl) {
+  //     console.warn('[SlideCreationFlow] No download URL available');
+  //     return;
+  //   }
+
+  //   const link = document.createElement('a');
+  //   link.href = this.downloadUrl;
+  //   link.target = '_blank';
+  //   link.download = 'Slide.pptx'; // default filename
+  //   link.click();
+  // }
+  exportSelected(format: 'word' | 'pdf' | 'ppt'): void {
+    this.showExportDropdown = false;
+    this.isExporting = true;
+    this.isExported = false;
+    this.exportFormat = format.toUpperCase();
+    
+    if (format === 'word') {
+    //  if (this.metadata?.contentType === 'conduct-research') {
+    //     this.exportWordNewLogic();   
+    //   } else {
+        this.downloadWord();       
+      // }
+    } else if(format === 'pdf') {
+      this.downloadPDF();
+    } else if (format === 'ppt') {
+      this.downloadPPT();
+    }
+       
+  }
+
+  private resetExportState(): void {
+    setTimeout(() => {
+      this.isExporting = false;
+    }, 500);
+    
+    this.isExported = true;
+    // Reset success indicator after 3 seconds
+    setTimeout(() => {
+      this.isExported = false;
+    }, 3000);
+  }
+
+  private exportDocument(endpoint: string, extension: string, format: string): void {
+    // Reuse the same approach as EditContentFlowComponent.downloadRevised()
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      this.toastService.error('Content is not available yet.');
+      return;
+    }
+
+    // Clean content the same way as the working implementation
+    const plainText = this.metadata.fullContent.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    
+    // Extract first line as subtitle (title for download)
+    const lines = plainText.split('\n').filter(line => line.trim());
+    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : 'Generated Document'; // First line as title, max 150 chars
+    const title = subtitle; // Use subtitle as the main title, not the topic
+    
+    // console.log(`>>>>>>>>>>>>>`,plainText);
+
+    // Get API URL from environment (supports runtime config via window._env)
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const fullEndpoint = `${apiUrl}${endpoint}`;
+
+    // Use fetch API like the working implementation (same as EditContentFlowComponent.downloadRevised)
+    this.authFetchService.authenticatedFetch(fullEndpoint, {
+      method: 'POST',
+      body: JSON.stringify({
+        content: plainText,
+        title,
+        subtitle: '',  // Don't pass subtitle separately since title is already set to it
+        content_type: this.metadata.contentType,  // Use snake_case to match backend
+
+      })
+    })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
+      }
+      return response.blob();
+    })
+    .then(blob => {
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${this.sanitizeFilename(title)}.${extension}`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+      this.resetExportState();
+    })
+    .catch(error => {
+      console.error(`Error generating ${extension.toUpperCase()}:`, error);
+      this.toastService.error(`Failed to generate ${extension.toUpperCase()} file. Please try again.`);
+      this.isExporting = false;
+    });
+  }
+  private exportUIWord(): void {
+  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+    this.toastService.error('Content is not available yet.');
+    return;
+  }
+
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  const endpoint = `${apiUrl}/api/v1/export/word-ui`;
+
+  // IMPORTANT: send content AS-IS (no stripping)
+  const content = this.metadata.fullContent;
+
+  // Title logic can stay simple
+  const title = 'Generated Document';
+
+  this.authFetchService.authenticatedFetch(endpoint, {
+    method: 'POST',
+    body: JSON.stringify({
+      content,
+      title
+    })
+  })
+  .then(response => {
+    if (!response.ok) {
+      throw new Error('Failed to generate Word document');
+    }
+    return response.blob();
+  })
+  .then(blob => {
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${this.sanitizeFilename(title)}.docx`;
+    link.click();
+    window.URL.revokeObjectURL(url);
+  })
+  .catch(error => {
+    console.error('UI Word export failed:', error);
+    this.toastService.error('Failed to generate Word file.');
+  });
+}
+
+  private exportPPT(endpoint: string): void {
+  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+    this.toastService.error('Content is not available yet.');
+    return;
+  }
+
+  const plainText = this.metadata.fullContent
+    .replace(/<br>/g, '\n')
+    .replace(/<[^>]+>/g, '');
+
+  const title = this.metadata.topic?.trim() || 'Generated Presentation';
+
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  const fullEndpoint = `${apiUrl}${endpoint}`;
+
+  this.authFetchService.authenticatedFetch(fullEndpoint, {
+    method: 'POST',
+    body: JSON.stringify({
+      content: plainText,
+      title
+    })
+  })
+  .then(response => {
+    if (!response.ok) throw new Error("Failed to start PPT generation");
+    return response.json(); 
+  })
+  .then(data => {
+    console.log("PPT download URL:", data.download_url);
+
+    const downloadUrl = data.download_url;
+    if (!downloadUrl) throw new Error("No download URL returned");
+
+    return fetch(downloadUrl, {
+      method: "GET",
+      headers: {
+        "Accept": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+      }
+    });
+  })
+  .then(response => {
+    if (!response.ok) throw new Error("Failed to retrieve PPT file");
+    return response.blob();
+  })
+  .then(blob => {
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${this.sanitizeFilename(title)}.pptx`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+    this.resetExportState();
+  })
+  .catch(err => {
+    console.error(err);
+    this.toastService.error("Failed to generate PPT file.");
+    this.isExporting = false;
+  });
+}
+
+
+  private downloadFile(extension: string, mimeType: string): void {
+    const blob = new Blob([this.metadata.fullContent], { type: mimeType });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${this.sanitizeFilename(this.metadata.topic)}.${extension}`;
+    link.click();
+    window.URL.revokeObjectURL(url);
+  }
+
+  private sanitizeFilename(filename: string): string {
+    return filename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  }
+
+  get isPodcast(): boolean {
+    const result = this.metadata.contentType === 'podcast' && !!this.metadata.podcastAudioUrl;
+    // console.log('[TL Action Buttons] isPodcast check:', {
+    //   contentType: this.metadata.contentType,
+    //   hasPodcastUrl: !!this.metadata.podcastAudioUrl,
+    //   podcastUrl: this.metadata.podcastAudioUrl?.substring(0, 50),
+    //   result: result
+    // });
+    return result;
+  }
+  
+  convertToPodcast(): void {
+    if (this.isConvertingToPodcast) return;
+    
+    this.isConvertingToPodcast = true;
+    
+    // Prepare the podcast generation request with correct backend schema
+    const formData = new FormData();
+    formData.append('topic', this.metadata.topic); // Required field
+    formData.append('style', 'dialogue'); // dialogue or monologue
+    formData.append('duration', 'medium'); // short, medium, or long
+    formData.append('context', this.metadata.fullContent); // The content to convert
+    
+    let scriptContent = '';
+    let audioBase64 = '';
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    
+    // Get API URL from environment (supports runtime config via window._env)
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    
+    // Use fetch for SSE streaming
+    this.authFetchService.authenticatedFetchFormData(`${apiUrl}/api/v1/tl/generate-podcast`, {
+      method: 'POST',
+      body: formData
+    })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      
+      const readStream = (): any => {
+        return reader?.read().then(({ done, value }) => {
+          if (done) {
+            this.isConvertingToPodcast = false;
+            
+            console.log('[Podcast Debug] Stream complete');
+            console.log('[Podcast Debug] audioBase64 length:', audioBase64?.length || 0);
+            console.log('[Podcast Debug] scriptContent length:', scriptContent?.length || 0);
+            
+            // Send podcast to chat with metadata
+            if (audioBase64 && scriptContent) {
+              console.log('[Podcast Debug] Converting base64 to blob...');
+              const audioBlob = this.base64ToBlob(audioBase64, 'audio/mpeg');
+              console.log('[Podcast Debug] Blob size:', audioBlob.size, 'bytes');
+              
+              const audioUrl = URL.createObjectURL(audioBlob);
+              console.log('[Podcast Debug] Audio URL created:', audioUrl);
+              
+              // Create metadata for the podcast message
+              const podcastMetadata: ThoughtLeadershipMetadata = {
+                contentType: 'podcast',
+                topic: `${this.metadata.topic} (Podcast)`,
+                fullContent: scriptContent,
+                showActions: true,
+                podcastAudioUrl: audioUrl,
+                podcastFilename: `${this.sanitizeFilename(this.metadata.topic)}_podcast.mp3`
+              };
+              
+              console.log('[Podcast Debug] Metadata:', podcastMetadata);
+              
+              // Send to chat via bridge
+              const podcastMessage = `📻 **Podcast Generated Successfully!**\n\n**Script:**\n\n${scriptContent}\n\n🎧 **Audio Ready!** Listen below or download the MP3 file.`;
+              this.tlChatBridge.sendToChat(podcastMessage, podcastMetadata);
+              
+              console.log('[Podcast Debug] Sent to chat via bridge');
+              this.toastService.success('Podcast generated and added to chat!');
+            } else {
+              console.error('[Podcast Debug] Missing data - audioBase64:', !!audioBase64, 'scriptContent:', !!scriptContent);
+            }
+            return;
+          }
+          
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          
+          lines.forEach(line => {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6).trim();
+              if (data) {
+                try {
+                  const parsed = JSON.parse(data);
+                  console.log('[Podcast Debug] SSE event type:', parsed.type);
+                  
+                  if (parsed.type === 'script') {
+                    scriptContent = parsed.content;
+                    console.log('[Podcast Debug] Script received, length:', scriptContent.length);
+                  } else if (parsed.type === 'complete') {
+                    audioBase64 = parsed.audio;
+                    console.log('[Podcast Debug] Audio received, base64 length:', audioBase64?.length || 0);
+                  } else if (parsed.type === 'error') {
+                    console.error('Podcast generation error:', parsed.message);
+                    this.toastService.error(`Error generating podcast: ${parsed.message}`);
+                    
+                    // Abort the reader and reset state immediately
+                    reader?.cancel();
+                    this.isConvertingToPodcast = false;
+                    throw new Error(parsed.message);
+                  } else if (parsed.type === 'progress') {
+                    console.log('[Podcast Debug] Progress:', parsed.message);
+                  }
+                } catch (e) {
+                  console.error('Error parsing SSE data:', e);
+                }
+              }
+            }
+          });
+          
+          return readStream();
+        }).catch((error) => {
+          // Handle stream reading errors
+          this.isConvertingToPodcast = false;
+          reader?.cancel();
+          throw error;
+        });
+      };
+      
+      return readStream();
+    })
+    .catch(error => {
+      console.error('Error converting to podcast:', error);
+      this.toastService.error(`Failed to convert content to podcast: ${error.message || 'Unknown error'}`);
+      this.isConvertingToPodcast = false;
+      reader?.cancel();
+    });
+  }
+  
+  private base64ToBlob(base64: string, contentType: string): Blob {
+    const byteCharacters = atob(base64);
+    const byteArrays = [];
+    
+    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+      const slice = byteCharacters.slice(offset, offset + 512);
+      const byteNumbers = new Array(slice.length);
+      for (let i = 0; i < slice.length; i++) {
+        byteNumbers[i] = slice.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      byteArrays.push(byteArray);
+    }
+    
+    return new Blob(byteArrays, { type: contentType });
+  }
+
+ 
+}
