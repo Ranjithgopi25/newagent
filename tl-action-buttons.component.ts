@@ -1,504 +1,596 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel
-from typing import List, Optional
-from langchain_core.messages import HumanMessage
-
-# Reuse existing components
-from app.features.thought_leadership.services.edit_content.graph import build_sequential_graph
-from app.features.thought_leadership.services.edit_content.utils import (
-    segment_document_with_llm,
-    apply_decisions_to_document
+from app.features.export.schemas import ExportRequest
+from app.common.export_utils import (
+    export_to_pdf,
+    export_to_pdf_pwc_no_toc,
+    export_to_word_pwc_no_toc,
+    export_to_word,
+    export_to_word_with_metadata,
+    export_to_word_ui_plain,
+    export_to_text,
+    extract_subtitle_from_content,
+    export_to_pdf_with_pwc_template,
+    export_to_pdf_with_pwc_template_with_bullets,
+    export_to_pdf_edit_content,
+    export_to_word_edit_content,
+    html_to_marked_text,
 )
-from app.features.thought_leadership.services.edit_content.schema import (
-    ConsolidateResult,
-    EditorResult
-)
-from app.core.deps import get_llm_client_agent
-
-import json
+from app.common.document_utils import extract_text_from_pdf, extract_text_from_docx,extract_text_from_txt, extract_text_from_pptx
+from app.features.thought_leadership.services.edit_content.edit_content_agent import generate_block_types_from_paragraph_edits
+from io import BytesIO
 import logging
-import asyncio
-import uuid
-from dotenv import load_dotenv
+import re
+from urllib.parse import quote
+from app.common.export_utils import export_to_word_pwc_standalone
+from app.services.auth_service import validate_jwt_token
+from app.core.config import get_settings
 
-load_dotenv(".env", override=True)
-
-# ---------------------------------------------------------------------
-# GLOBAL SETUP
-# ---------------------------------------------------------------------
-llm = get_llm_client_agent()
+router = APIRouter(prefix="/export", tags=["Export"], dependencies=[Depends(validate_jwt_token)])
 logger = logging.getLogger(__name__)
-router = APIRouter()
 
-# ---------------------------------------------------------------------
-# REQUEST MODELS
-# ---------------------------------------------------------------------
-class EditContentRequest(BaseModel):
-    """Initial request to start sequential editing workflow"""
-    messages: List[dict]
-    editor_types: Optional[List[str]] = None
-
-
-class NextEditorRequest(BaseModel):
-    """Request to continue to next editor after user approval"""
-    thread_id: str
-    paragraph_edits: List[dict]
-    decisions: List[dict]
-    accept_all: bool = False
-    reject_all: bool = False
-
-
-class FinalArticleRequest(BaseModel):
-    """Request to generate final article from all decisions"""
-    original_content: str
-    paragraph_edits: List[dict]
-    decisions: List[dict]
-    accept_all: bool = False
-    reject_all: bool = False
-
-
-# ---------------------------------------------------------------------
-# FRONTEND CONVERSION HELPER
-# ---------------------------------------------------------------------
-def convert_into_frontend(
-    result: ConsolidateResult,
-    original: str,
-    current_editor: str = None
-) -> dict:
-    """
-    Convert ConsolidateResult to frontend format.
-    
-    If current_editor is provided, show ONLY that editor's feedback.
-    Otherwise, show all feedback (for final view).
-    
-    Args:
-        result: ConsolidateResult from graph
-        original: Original content text
-        current_editor: Name of current editor to filter feedback (optional)
-    
-    Returns:
-        Formatted dict for frontend consumption
-    """
-    paragraphs = []
-    final_text = []
-    
-    # helper to normalize editor names used in models vs UI
-    def _normalize_editor_name(e: str) -> str:
-        if not e:
-            return e
-        # The pydantic schema uses 'brand' as the attribute but elsewhere we
-        # use 'brand-alignment' as the editor id. Normalize to attribute name.
-        mapping = {
-            "brand-alignment": "brand"
-        }
-        return mapping.get(e, e)
-
-    for i, block in enumerate(result.blocks):
-        # Collect feedback - ONLY from current editor if specified
-        all_feedback = []
+@router.post("/word")
+async def export_word(request: ExportRequest):
+    """Export content to Word document using PwC template"""
+    try:
+        logger.info(f"[Export] Generating Word document: {request.title}")
         
-        if current_editor:
-            # Show ONLY current editor's feedback
-            normalized = _normalize_editor_name(current_editor)
-            editor_feedback_list = getattr(block.editorial_feedback, normalized, [])
-            for feedback_item in editor_feedback_list:
-                all_feedback.append({
-                    "editor": normalized,
-                    "issue": feedback_item.issue,
-                    "fix": feedback_item.fix,
-                    "impact": feedback_item.impact,
-                    "rule_used": feedback_item.rule_used,
-                    "priority": feedback_item.priority
-                })
+        # Extract subtitle from first line of content if not provided
+        subtitle = request.subtitle
+        content = request.content
+        content_type = request.content_type  # From request body (sent by frontend)
+        
+        logger.info(f"[Export] Content Type from request body: {content_type}")
+        
+        if not subtitle and content:
+            extracted_subtitle, remaining_content = extract_subtitle_from_content(content)
+            if extracted_subtitle:
+                subtitle = extracted_subtitle
+                content = remaining_content
+                logger.info(f"[Export] Extracted subtitle from content: {subtitle[:50]}")
+        
+        # Clean subtitle by removing markdown asterisks
+        if subtitle:
+            subtitle = re.sub(r'\*\*(.+?)\*\*', r'\1', subtitle)
+            subtitle = subtitle.replace('**', '')
+        
+        # For draft content, use subtitle as title and remove original title
+        title = request.title
+        if subtitle:
+            # Use subtitle as the main title on the first page
+            title = subtitle
+            subtitle = None  # Clear subtitle so it doesn't appear twice
+            logger.info(f"[Export] Using subtitle as title for draft content export")
+        
+        # Use enhanced export with metadata if content_type provided or subtitle extracted
+        if content_type or subtitle:
+            logger.info(f"[Export] ✓ Applying content_type '{content_type}' to Word document")
+            word_bytes = export_to_word_with_metadata(
+                content=content, 
+                title=title,
+                subtitle=subtitle,
+                content_type=content_type
+            )
         else:
-            # Show all feedback (for final view)
-            for editor_name in ["development", "content", "copy", "line", "brand"]:
-                editor_feedback_list = getattr(block.editorial_feedback, editor_name, [])
-                for feedback_item in editor_feedback_list:
-                    all_feedback.append({
-                        "editor": editor_name,
-                        "issue": feedback_item.issue,
-                        "fix": feedback_item.fix,
-                        "impact": feedback_item.impact,
-                        "rule_used": feedback_item.rule_used,
-                        "priority": feedback_item.priority
-                    })
+            word_bytes = export_to_word(content, title)
         
-        # Check if paragraph is unchanged for auto-approval
-        is_unchanged = block.original_text.strip() == block.final_text.strip()
+        buffer = BytesIO(word_bytes)
         
-        # Filter editorial_feedback to only include current editor if specified
-        if current_editor:
-            # Only include current editor's feedback in editorial_feedback structure
-            filtered_editorial_feedback = {
-                "development": [],
-                "content": [],
-                "copy": [],
-                "line": [],
-                "brand": []
-            }
-            # Populate only the current editor's feedback (use normalized key)
-            normalized = _normalize_editor_name(current_editor)
-            editor_feedback_list = getattr(block.editorial_feedback, normalized, [])
-            filtered_editorial_feedback[normalized] = [
-                {
-                    "issue": fb.issue,
-                    "fix": fb.fix,
-                    "impact": fb.impact,
-                    "rule_used": fb.rule_used,
-                    "priority": fb.priority
-                }
-                for fb in editor_feedback_list
-            ]
-            editorial_feedback_to_send = filtered_editorial_feedback
-        else:
-            # Show all feedback (for final view)
-            editorial_feedback_to_send = block.editorial_feedback.model_dump()
+        # Sanitize filename to remove special characters and properly encode
+        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
+        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
+        filename = f"{safe_title}.docx"
         
-        paragraphs.append({
-            "index": i,
-            "block_id": block.id,
-            "block_type": block.type,
-            "level": block.level,
-            "original": block.original_text,  # This will be updated doc for next editor
-            "edited": block.final_text,
-            "has_changes": block.original_text != block.final_text,
-            "tags": [],
-            "feedback": all_feedback,  # ONLY current editor's feedback (if specified)
-            "editorial_feedback": editorial_feedback_to_send,  # Filtered to current editor only
-            "approved": True if is_unchanged else None,  # Auto-approve unchanged paragraphs
-            "autoApproved": is_unchanged  # Mark unchanged paragraphs as auto-approved
+        # Use RFC 5987 encoding for the filename in Content-Disposition header
+        encoded_filename = quote(filename, safe='')
+        
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+        )
+    except Exception as e:
+        logger.error(f"[Export] Word export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/ppt")
+async def export_ppt(request: ExportRequest):
+    """
+    Export content to PPT using PlusDocs Slides template
+    """
+    try:
+        settings = get_settings()
+        logger.info(f"[Export] Generating PPT document: {request.title}")
+        from app.features.ddc.services.slide_creation_service import PlusDocsClient
+        template_id = settings.PLUSDOCS_TEMPLATE_ID
+        API_TOKEN = settings.PLUSDOCS_API_TOKEN
+        client = PlusDocsClient(API_TOKEN)
+        download_url = client.create_and_wait(
+            prompt=request.content,
+            template_id=template_id,
+            isImage=False
+        )
+        if not download_url:
+            raise HTTPException(status_code=500, detail="PPT generation failed")
+        return JSONResponse({
+            "status": "success",
+            "download_url": download_url
         })
-        final_text.append(block.final_text)
-    
-    return {
-        "type": "editor_complete" if current_editor else "final_complete",
-        "original_content": original,
-        "final_revised": "\n\n".join(final_text),
-        "paragraph_edits": paragraphs,
-        "total_blocks": len(paragraphs),
-        "total_feedback_items": sum(len(p["feedback"]) for p in paragraphs)
-    }
+    except Exception as e:
+        logger.error(f"[Export] PPT export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ---------------------------------------------------------------------
-# HELPER: WAIT FOR INTERRUPT + LOAD STATE
-# ---------------------------------------------------------------------
-def wait_for_interrupt(graph, input_state, config):
-    interrupted = False
-    for event in graph.stream(input_state, config=config):
-        logger.info("STREAM EVENT: %s", event)
-        if "__interrupt__" in event:
-            interrupted = True
-            break
-
-    if not interrupted:
-        return None
-
-    checkpoint = graph.get_state(config)
-    if not checkpoint or not checkpoint.values:
-        return None
-
-    return checkpoint.values
-
-
-# ---------------------------------------------------------------------
-# INITIAL WORKFLOW ENDPOINT
-# ---------------------------------------------------------------------
-@router.post("")
-async def edit_content_workflow(request: EditContentRequest):
-    """
-    Start sequential editing workflow - runs first editor.
-    
-    Flow:
-    1. Validate input
-    2. Segment document
-    3. Select and order editors
-    4. Generate thread_id for checkpointing
-    5. Build graph input state
-    6. Invoke graph (stops at interrupt after first editor)
-    7. Extract and format result
-    8. Stream response to frontend
-    """
-    if not request.messages:
-        raise HTTPException(400, "Messages cannot be empty")
-
-    content = request.messages[-1].get("content", "").strip()
-    if not content:
-        raise HTTPException(400, "Content cannot be empty")
-
-    async def stream():
-        try:
-            loop = asyncio.get_event_loop()
-
-            # 1. Segment document
-            doc = await loop.run_in_executor(None, segment_document_with_llm, content)
-
-            # 2. Editor selection
-            editor_sequence = ["development", "content", "line", "copy", "brand-alignment"]
-            requested = request.editor_types or editor_sequence
-            selected_editors = [e for e in editor_sequence if e in requested]
-
-            if not selected_editors:
-                raise ValueError("No valid editors selected")
-
-            # 3. Thread id
-            thread_id = str(uuid.uuid4())
-
-            # 4. Graph input
-            graph_input = {
-                "messages": [HumanMessage(content=doc.model_dump_json(indent=2))],
-                "document": doc,
-                "selected_editors": selected_editors,
-                "current_editor_index": 0,
-                "editor_results": [],
-                "final_result": None,
-            }
-
-            graph = build_sequential_graph()
-            config = {"configurable": {"thread_id": thread_id}}
-
-            # 5. Run until interrupt
-            state = wait_for_interrupt(graph, graph_input, config)
-            if not state:
-                raise ValueError("Expected interrupt but graph completed")
-
-            current_editor = selected_editors[0]
-
-            result = state["final_result"]
-            if isinstance(result, dict):
-                result = ConsolidateResult.model_validate(result)
-
-            # FRONTEND PAYLOAD
-            payload = convert_into_frontend(
-                result,
-                content,
-                current_editor=current_editor
-            )
-            payload["thread_id"] = thread_id
-            payload["current_editor"] = current_editor
-            payload["editor_index"] = 0
-            payload["total_editors"] = len(selected_editors)
-
-            yield f"data: {json.dumps(payload)}\n\n"
-            yield "data: [DONE]\n\n"
-
-        except Exception as e:
-            logger.exception("Edit content workflow failed")
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
-
-    return StreamingResponse(stream(), media_type="text/event-stream")
-
-
-# ---------------------------------------------------------------------
-# NEXT EDITOR ENDPOINT
-# ---------------------------------------------------------------------
-@router.post("/next")
-async def next_editor_workflow(request: NextEditorRequest):
-    """
-    Continue to next editor after user approval.
-    
-    Flow:
-    1. Load checkpointed state
-    2. Get current editor result
-    3. Apply user decisions to update document
-    4. Check if all editors complete
-    5. Update state with approved document
-    6. Resume graph execution (runs next editor)
-    7. Extract and format next editor result
-    8. Stream response to frontend
-    """
-    async def stream():
-        try:
-            graph = build_sequential_graph()
-            config = {"configurable": {"thread_id": request.thread_id}}
-
-            # 1. Load paused state
-            checkpoint = graph.get_state(config)
-            if not checkpoint or not checkpoint.values:
-                raise ValueError(f"Session not found: {request.thread_id}")
-
-            state = checkpoint.values
-
-            editor_results = state["editor_results"]
-            current_idx = state["current_editor_index"]
-            selected_editors = state["selected_editors"]
-            original_doc = state["document"]
-
-            # 2. Apply decisions
-            updated_doc = apply_decisions_to_document(
-                original_doc,
-                editor_results[-1],
-                request.paragraph_edits,
-                request.decisions,
-                request.accept_all,
-                request.reject_all
-            )
-
-            next_idx = current_idx + 1
-            if next_idx >= len(selected_editors):
-                yield f"data: {json.dumps({'type': 'all_complete'})}\n\n"
-                yield "data: [DONE]\n\n"
-                return
-
-            # 3. Resume graph
-            resume_input = {
-                **state,
-                "document": updated_doc,
-                "current_editor_index": next_idx,
-                "messages": [
-                    HumanMessage(content=updated_doc.model_dump_json(indent=2))
-                ],
-            }
-
-            next_state = wait_for_interrupt(graph, resume_input, config)
-            if not next_state:
-                raise ValueError("Expected interrupt after next editor")
-
-            next_editor = selected_editors[next_idx]
-
-            result = next_state["final_result"]
-            if isinstance(result, dict):
-                result = ConsolidateResult.model_validate(result)
-
-            original_content = "\n\n".join([b.text for b in updated_doc.blocks])
-
-            # FRONTEND PAYLOAD
-            payload = convert_into_frontend(
-                result,
-                original_content,
-                current_editor=next_editor
-            )
-            payload["thread_id"] = request.thread_id
-            payload["current_editor"] = next_editor
-            payload["editor_index"] = next_idx
-            payload["total_editors"] = len(selected_editors)
-
-            yield f"data: {json.dumps(payload)}\n\n"
-            yield "data: [DONE]\n\n"
-
-        except Exception as e:
-            logger.exception("Next editor workflow failed")
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
-
-    return StreamingResponse(stream(), media_type="text/event-stream")
-
-
-# ---------------------------------------------------------------------
-# SHARED FUNCTION: GENERATE BLOCK TYPES FROM PARAGRAPH EDITS
-# ---------------------------------------------------------------------
-def generate_block_types_from_paragraph_edits(
-    paragraph_edits: List[dict],
-    decisions: List[dict],
-    accept_all: bool = False,
-    reject_all: bool = False
-) -> tuple[List[str], List[dict]]:
-    """
-    Generate final_paragraphs and block_types from paragraph_edits.
-    Uses same logic as /final endpoint.
-    
-    This function is shared between /final endpoint and export endpoints
-    to ensure block_types are generated consistently.
-    
-    Args:
-        paragraph_edits: List of paragraph edit dictionaries with block_type, level, original, edited
-        decisions: List of decision dictionaries with index and approved status
-        accept_all: Global flag to accept all edits
-        reject_all: Global flag to reject all edits
-    
-    Returns:
-        Tuple of (final_paragraphs, block_types)
-        - final_paragraphs: List of text strings (final article content)
-        - block_types: List of dicts with index, type, level
-    """
-    if accept_all and reject_all:
-        raise ValueError("Cannot accept all and reject all")
-    
-    decision_map = {d["index"]: d.get("approved") for d in decisions}
-    
-    final_paragraphs = []
-    block_types = []
-    
-    for edit in sorted(paragraph_edits, key=lambda x: x["index"]):
-        idx = edit["index"]
-        approved = decision_map.get(idx)
-        auto = edit.get("autoApproved", False)
+@router.post("/pdf")
+async def export_pdf(request: ExportRequest):
+    """Export content to PDF document"""
+    try:
+        logger.info(f"[Export] Generating PDF document: {request.title}")
         
-        # Determine which text to use (same logic as /final endpoint)
-        if reject_all:
-            text_to_append = edit["original"]
-        elif accept_all:
-            text_to_append = edit["edited"]
-        elif approved is True:
-            text_to_append = edit["edited"]
-        elif approved is False:
-            text_to_append = edit["original"]
-        elif auto:
-            text_to_append = edit["edited"]
-        else:
-            text_to_append = edit["original"]
+        pdf_bytes = export_to_pdf(request.content, request.title)
+        buffer = BytesIO(pdf_bytes)
         
-        # Only create block_type and append if paragraph is not empty
-        # This ensures indices align with split_blocks() which filters empty blocks
-        text_stripped = text_to_append.strip() if text_to_append else ""
-        if text_stripped:  # Only process non-empty paragraphs
-            block_type = edit.get("block_type", "paragraph")
-            block_types.append({
-                "index": len(final_paragraphs),  # Index matches final_paragraphs position
-                "type": block_type,
-                "level": edit.get("level", 0)
-            })
-            final_paragraphs.append(text_to_append)
-    
-    # Debug: Log block_types distribution to verify they're not all 'paragraph'
-    type_counts = {}
-    for bt in block_types:
-        bt_type = bt.get("type", "paragraph")
-        type_counts[bt_type] = type_counts.get(bt_type, 0) + 1
-    logger.info(f"[Block Types Generation] Block types distribution: {type_counts}")
-    logger.info(f"[Block Types Generation] Total block_types: {len(block_types)}, Sample: {block_types[:5] if len(block_types) > 5 else block_types}")
-    
-    return final_paragraphs, block_types
+        # Sanitize filename to remove special characters and properly encode
+        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
+        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
+        filename = f"{safe_title}.pdf"
+        
+        # Use RFC 5987 encoding for the filename in Content-Disposition header
+        encoded_filename = quote(filename, safe='')
+        
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+        )
+    except Exception as e:
+        logger.error(f"[Export] PDF export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/pdf-pwc")
+async def export_pdf_pwc(request: ExportRequest):
+    """Export content to PDF document using PwC template with logo and branding"""
+    try:
+        logger.info(f"[Export] Generating PDF document with PwC template: {request.title}")
+        
+        # Extract subtitle from first line of content if not provided
+        subtitle = request.subtitle
+        content = request.content
+        
+        if not subtitle and content:
+            extracted_subtitle, remaining_content = extract_subtitle_from_content(content)
+            if extracted_subtitle:
+                subtitle = extracted_subtitle
+                content = remaining_content
+                logger.info(f"[Export] Extracted subtitle from content: {subtitle[:50]}")
+        
+        # Clean subtitle by removing markdown asterisks
+        if subtitle:
+            subtitle = re.sub(r'\*\*(.+?)\*\*', r'\1', subtitle)
+            subtitle = subtitle.replace('**', '')
+        
+        # For draft content, use subtitle as title and remove original title
+        title = request.title
+        content_type = request.content_type  # From request body
+        if subtitle:
+            # Use subtitle as the main title on the cover page
+            title = subtitle
+            subtitle = None  # Clear subtitle so it doesn't appear twice
+            logger.info(f"[Export] Using subtitle as title for draft content export")
+        
+        logger.info(f"[Export] Content Type from request body: {content_type}")
+        
+        # Generate PWC branded PDF
+        pdf_bytes = export_to_pdf_with_pwc_template(
+            content=content, 
+            title=title,
+            subtitle=subtitle,
+            content_type=content_type
+        )
+        
+        logger.info(f"[Export] PDF generated: {len(pdf_bytes)} bytes")
+        
+        # Create buffer and reset position
+        buffer = BytesIO(pdf_bytes)
+        buffer.seek(0)
+        
+        # Create proper filename with sanitization
+        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
+        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
+        filename = f"{safe_title}.pdf"
+        encoded_filename = quote(filename, safe='')
+        logger.info(f"[Export] Returning PDF with filename: {encoded_filename}")
+        
+        return StreamingResponse(
+            iter([buffer.getvalue()]),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+                "Content-Length": str(len(pdf_bytes))
+            }
+        )
+    except Exception as e:
+        logger.error(f"[Export] PDF-PWC export error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
-# ---------------------------------------------------------------------
-# FINAL ARTICLE GENERATION ENDPOINT 
-# ---------------------------------------------------------------------
-@router.post("/final")
-async def generate_final_article(request: FinalArticleRequest):
+@router.post("/text")
+async def export_text(request: ExportRequest):
+    """Export content to plain text file"""
+    try:
+        logger.info(f"[Export] Generating text file: {request.title}")
+        
+        content_with_title = f"{request.title}\n{'='*len(request.title)}\n\n{request.content}"
+        text_bytes = export_to_text(content_with_title)
+        buffer = BytesIO(text_bytes)
+        
+        # Sanitize filename to remove special characters and properly encode
+        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
+        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
+        filename = f"{safe_title}.txt"
+        encoded_filename = quote(filename, safe='')
+        
+        return StreamingResponse(
+            buffer,
+            media_type="text/plain",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+        )
+    except Exception as e:
+        logger.error(f"[Export] Text export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/word-standalone")
+async def export_word_pwc(request: ExportRequest):
     """
-    Generate final article from all user decisions.
-    
-    Decision priority:
-    1. Global flags (reject_all > accept_all)
-    2. Explicit paragraph decisions (approved=True/False)
-    3. Auto-approval (for unchanged paragraphs)
-    4. Default to original
-    
-    Args:
-        request: FinalArticleRequest with all paragraph edits and decisions
-    
-    Returns:
-        JSONResponse with final_article text
+    Standalone Word export (PwC template)
     """
-    if not request.original_content:
-        raise HTTPException(400, "Original content cannot be empty")
-
-    if request.accept_all and request.reject_all:
-        raise HTTPException(400, "Cannot accept all and reject all")
-
-    # Use shared function to generate block_types (same logic used by export endpoints)
-    final_paragraphs, block_types = generate_block_types_from_paragraph_edits(
-        paragraph_edits=request.paragraph_edits,
-        decisions=request.decisions,
-        accept_all=request.accept_all,
-        reject_all=request.reject_all
+    return StreamingResponse(
+        BytesIO(
+            export_to_word_pwc_standalone(
+                content=request.content,
+                title=request.title,
+                subtitle=request.subtitle,
+                content_type=request.content_type,
+                references=request.references
+            )
+        ),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
-    return JSONResponse(
-        content={
-            "final_article": "\n\n".join(final_paragraphs),
-            "block_types": block_types
+@router.post("/pdf-pwc-bullets")
+async def export_pdf_pwc_with_bullets(request: ExportRequest):
+    """
+    Standalone PDF export that supports bullet rendering.
+    Does NOT impact existing pdf-pwc flow.
+    """
+    try:
+        
+        pdf_bytes = export_to_pdf_with_pwc_template_with_bullets(
+            content=request.content,
+            title=request.title,
+            subtitle=request.subtitle
+        )
+
+        buffer = BytesIO(pdf_bytes)
+        buffer.seek(0)
+
+        # filename = f"{request.title}.pdf"
+        filename = f"{safe_filename(request.title)}.pdf"
+        return StreamingResponse(
+            iter([buffer.getvalue()]),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+
+    except Exception as e:
+        logger.error("PDF-PWC-BULLETS export failed", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+def safe_filename(value: str) -> str:
+    value = value.replace("“", '"').replace("”", '"')
+    value = value.replace("‘", "'").replace("’", "'")
+    value = re.sub(r"[^\w\-. ]", "", value)
+    return value.strip()
+
+@router.post("/extract-text", include_in_schema=True)
+@router.post("/extract-text/", include_in_schema=True)
+async def extract_text_from_file(file: UploadFile = File(...)):
+    """
+    Extract text from uploaded document (PDF, DOCX, TXT, MD).
+    Extracts content from the document for editing.
+    """
+    try:
+        logger.info(f"[Export] Extracting text from file: {file.filename}")
+        
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Filename is required")
+        
+        file_content = await file.read()
+        
+        if not file_content:
+            raise HTTPException(status_code=400, detail="File is empty")
+        
+        file_extension = file.filename.lower().split('.')[-1] if '.' in file.filename else ''
+        
+        if not file_extension:
+            raise HTTPException(status_code=400, detail="File extension is required")
+        
+        extracted_text = ""
+        
+        # Extract content from document
+        try:
+            if file_extension == 'pdf':
+                extracted_text = extract_text_from_pdf(file_content, max_chars=None)
+            elif file_extension in ['docx', 'doc']:
+                extracted_text = extract_text_from_docx(file_content, max_chars=None)
+            elif file_extension in ['txt', 'md']:
+                extracted_text = extract_text_from_txt(file_content, max_chars=None)
+            elif file_extension in ['pptx', 'ppt']:
+                extracted_text = extract_text_from_pptx(file_content, max_chars=None)
+            elif file_extension in ['jpeg','png', 'jpg']:
+                extracted_text = extract_text_from_image(file_content, file_extension, max_chars=None)
+            elif file_extension in ['xlsx']:
+                extracted_text = extract_text_from_xlsx(file_content, max_chars=None)
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_extension}")
+        except HTTPException:
+            raise
+        except Exception as extraction_error:
+            logger.error(f"[Export] Extraction failed for {file.filename}: {extraction_error}")
+            raise HTTPException(status_code=500, detail=f"Failed to extract text from file: {str(extraction_error)}")
+        
+        if not extracted_text:
+            logger.warning(f"[Export] No text extracted from {file.filename}")
+            # Return empty string instead of error - some files might legitimately be empty
+            return JSONResponse(content={"text": ""})
+        
+        logger.info(f"[Export] Successfully extracted {len(extracted_text)} characters from {file.filename}")
+        
+        return JSONResponse(content={"text": extracted_text})
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Export] Text extraction error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/word-ui")
+async def export_word_ui(request: ExportRequest):
+    """
+    UI-exact Word export (no template, no TOC)
+    """
+    try:
+        word_bytes = export_to_word_ui_plain(
+            content=request.content,
+            title=request.title
+        )
+
+        buffer = BytesIO(word_bytes)
+        filename = f"{re.sub(r'[^\\w\\s-]', '', request.title)}.docx"
+
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except Exception as e:
+        logger.error(f"UI Word export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/word-pwc-no-toc")
+async def export_word_pwc_no_toc_api(request: ExportRequest):
+    return StreamingResponse(
+        BytesIO(
+            export_to_word_pwc_no_toc(
+                content=request.content,
+                title=request.title,
+                subtitle=request.subtitle,
+                content_type=request.content_type,
+                references=request.references
+            )
+        ),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f"attachment; filename={safe_filename(request.title)}.docx"
         }
     )
+
+@router.post("/pdf-pwc-no-toc")
+async def export_pdf_pwc_no_toc_api(request: ExportRequest):
+    pdf_bytes = export_to_pdf_pwc_no_toc(
+        content=request.content,
+        title=request.title,
+        subtitle=request.subtitle
+    )
+
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={safe_filename(request.title)}.pdf"
+        }
+    )
+@router.post("/edit-content/word")
+async def export_edit_content_word(request: ExportRequest):
+    """
+    Export edit content to Word document using PwC template.
+    Uses same block_types generation logic as final article generation.
+    Format matches frontend formatFinalArticleWithBlockTypes() and PDF export.
+    
+    If paragraph_edits and original_content are provided, regenerates block_types
+    using the same logic as /final endpoint (100% accurate).
+    Otherwise, uses provided block_types as fallback.
+    """
+    try:
+        logger.info(f"[Export] Generating Edit Content Word document: {request.title}")
+        
+        # Priority 1: If paragraph_edits provided, regenerate block_types using same logic as /final endpoint
+        # This ensures 100% accuracy and consistency with final article generation
+        block_types = None
+        clean_content = request.content
+        
+        if request.paragraph_edits and request.original_content:
+            logger.info(f"[Export] Regenerating block_types from paragraph_edits using /final endpoint logic")
+            # Use same logic as /final endpoint to generate block_types
+            decisions = request.decisions or []
+            final_paragraphs, regenerated_block_types = generate_block_types_from_paragraph_edits(
+                paragraph_edits=request.paragraph_edits,
+                decisions=decisions,
+                accept_all=request.accept_all or False,
+                reject_all=request.reject_all or False
+            )
+            block_types = regenerated_block_types
+            # Use regenerated content to ensure alignment with block_types
+            clean_content = "\n\n".join(final_paragraphs)
+            logger.info(f"[Export] Regenerated {len(block_types)} block_types from paragraph_edits")
+        elif request.block_types:
+            # Priority 2: Use provided block_types (fallback)
+            logger.info(f"[Export] Using provided block_types from request")
+            block_types = [bt.model_dump() if hasattr(bt, 'model_dump') else bt for bt in request.block_types]
+        else:
+            logger.warning(f"[Export] No block_types or paragraph_edits provided, export will use default formatting")
+        
+        word_bytes = export_to_word_edit_content(
+            content=clean_content,
+            title=request.title,
+            subtitle=request.subtitle,
+            references=request.references,
+            block_types=block_types
+        )
+        
+        buffer = BytesIO(word_bytes)
+        filename = f"{safe_filename(request.title)}.docx"
+        
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+    except Exception as e:
+        logger.error(f"[Export] Edit Content Word export error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/edit-content/pdf")
+async def export_edit_content_pdf(request: ExportRequest):
+    """
+    Export edit content to PDF document using PwC template.
+    Uses same block_types generation logic as final article generation.
+    Format matches frontend formatFinalArticleWithBlockTypes() and Word export.
+    
+    If paragraph_edits and original_content are provided, regenerates block_types
+    using the same logic as /final endpoint (100% accurate).
+    Otherwise, uses provided block_types as fallback.
+    """
+    try:
+        logger.info(f"[Export] Generating Edit Content PDF document: {request.title}")
+        
+        # Priority 1: If paragraph_edits provided, regenerate block_types using same logic as /final endpoint
+        # This ensures 100% accuracy and consistency with final article generation
+        block_types = None
+        clean_content = request.content
+        
+        if request.paragraph_edits and request.original_content:
+            logger.info(f"[Export] Regenerating block_types from paragraph_edits using /final endpoint logic")
+            # Use same logic as /final endpoint to generate block_types
+            decisions = request.decisions or []
+            final_paragraphs, regenerated_block_types = generate_block_types_from_paragraph_edits(
+                paragraph_edits=request.paragraph_edits,
+                decisions=decisions,
+                accept_all=request.accept_all or False,
+                reject_all=request.reject_all or False
+            )
+            block_types = regenerated_block_types
+            # Use regenerated content to ensure alignment with block_types
+            clean_content = "\n\n".join(final_paragraphs)
+            logger.info(f"[Export] Regenerated {len(block_types)} block_types from paragraph_edits")
+        elif request.block_types:
+            # Priority 2: Use provided block_types (fallback)
+            logger.info(f"[Export] Using provided block_types from request")
+            block_types = [bt.model_dump() if hasattr(bt, 'model_dump') else bt for bt in request.block_types]
+        else:
+            logger.warning(f"[Export] No block_types or paragraph_edits provided, export will use default formatting")
+        
+        pdf_bytes = export_to_pdf_edit_content(
+            content=clean_content,
+            title=request.title,
+            subtitle=request.subtitle,
+            block_types=block_types
+        )
+        
+        buffer = BytesIO(pdf_bytes)
+        filename = f"{safe_filename(request.title)}.pdf"
+        
+        return StreamingResponse(
+            iter([buffer.getvalue()]),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Length": str(len(pdf_bytes))
+            }
+        )
+    except Exception as e:
+        logger.error(f"[Export] Edit Content PDF export error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/word-pwc-mi-module")
+async def export_word_pwc_no_toc_module_api(request: ExportRequest):
+    title = build_cover_title(
+    module=normalize_module_name(request.content_type),
+    client=request.client)
+    return StreamingResponse(
+        BytesIO(
+            export_to_word_pwc_no_toc(
+                content=request.content,
+                title=title,
+                subtitle=request.subtitle,
+                content_type=request.content_type,
+                references=request.references,
+                client=request.client
+            )
+        ),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f"attachment; filename={safe_filename(title)}.docx"
+        }
+    )
+
+@router.post("/pdf-pwc-mi-module")
+async def export_pdf_pwc_no_toc_module_api(request: ExportRequest):
+    logger.info(f"[PDF API] client = received: {request.client}")
+    title = build_cover_title(
+        module=normalize_module_name(request.content_type),
+    client=request.client
+)
+
+    pdf_bytes = export_to_pdf_pwc_no_toc(
+        content=request.content,
+        title=title,
+        subtitle=request.subtitle,
+        content_type=request.content_type,
+        client=request.client
+    )
+
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={safe_filename(title)}.pdf"
+        }
+    )
+
+def get_router():
+    """Get export router for mounting"""
+    return router
+
+def normalize_module_name(module: str) -> str:
+    mapping = {
+        "industry-insights": "Industry Insights",
+        "industry_insights": "Industry Insights",
+        "proposal-inputs":"Proposal Inputs",
+        "pov": "Point of View",
+        "prep-meet": "Client Preparation Meeting",
+    }
+    return mapping.get(module.lower(), module)
