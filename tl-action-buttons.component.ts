@@ -174,7 +174,49 @@ private exportWordNewLogic(): void {
     plainTextContent = plainTextContent.replace(/\n{3,}/g, '\n\n');
     plainTextContent = plainTextContent.trim();
     
-    // Get blockTypes from metadata (stored during final article generation - same source as display)
+    // PRIORITY 1: Use paragraphEdits directly (same format as final article generation)
+    // Use the exact same format: {index, block_type, level} from paragraphEdits
+    // Same format as chat-edit-workflow.service.ts (1941-1947): p.block_type || 'paragraph', p.level || 0
+    const paragraphEdits = (this.metadata as any).paragraphEdits;
+    if (Array.isArray(paragraphEdits) && paragraphEdits.length > 0) {
+      // Split content the same way backend does (matches split_blocks())
+      const contentBlocks = plainTextContent.split(/\n\n+/).filter(b => b.trim());
+      
+      // Create map from paragraphEdits using same format as final article generation
+      // Format matches: {block_type: p.block_type || 'paragraph', level: p.level || 0}
+      const blockTypesMap = new Map<number, {type: string, level: number}>();
+      paragraphEdits.forEach((edit: any) => {
+        if (edit.index !== undefined && edit.index !== null) {
+          // Use same format as final article generation: edit.block_type || 'paragraph', edit.level || 0
+          blockTypesMap.set(edit.index, {
+            type: edit.block_type || 'paragraph',  // Same as: p.block_type || 'paragraph'
+            level: edit.level || 0  // Same as: p.level || 0
+          });
+        }
+      });
+      
+      // Generate blockTypes with sequential indices matching content blocks
+      // Backend creates sequential indices (0, 1, 2, ...) as it builds final_article
+      const generatedBlockTypes = contentBlocks.map((block: string, idx: number) => {
+        // Try to find matching block_type by index
+        let matchedType = blockTypesMap.get(idx);
+        if (!matchedType) {
+          // Try nearby indices (for minor misalignments)
+          matchedType = blockTypesMap.get(idx - 1) || blockTypesMap.get(idx + 1);
+        }
+        
+        return {
+          index: idx,  // Sequential index (same as backend: len(final_paragraphs))
+          type: matchedType?.type || 'paragraph',
+          level: matchedType?.level || 0
+        } as BlockTypeInfo;
+      });
+      
+      console.log('[Export] Generated blockTypes from paragraphEdits (same format as final article):', generatedBlockTypes);
+      return { content: plainTextContent, blockTypes: generatedBlockTypes };
+    }
+    
+    // PRIORITY 2: Use blockTypes from metadata (stored during final article generation)
     let blockTypes = (this.metadata as any).block_types;
     
     // If blockTypes exist, verify alignment with content
@@ -197,12 +239,11 @@ private exportWordNewLogic(): void {
         console.log('[Export] Using blockTypes from metadata (aligned):', normalizedBlockTypes);
         return { content: plainTextContent, blockTypes: normalizedBlockTypes };
       } else {
-        console.warn(`[Export] BlockTypes count (${blockTypes.length}) doesn't match content blocks (${contentBlocks.length}), regenerating...`);
+        console.warn(`[Export] BlockTypes count (${blockTypes.length}) doesn't match content blocks (${contentBlocks.length}), using fallback...`);
       }
     }
     
-    // Fallback: regenerate from paragraphEdits (same logic as backend final article generation)
-    const paragraphEdits = (this.metadata as any).paragraphEdits;
+    // FALLBACK: Regenerate from paragraphEdits with simpler logic
     if (Array.isArray(paragraphEdits) && paragraphEdits.length > 0) {
       // Replicate backend logic: only include non-empty paragraphs, sequential indices
       const contentBlocks = plainTextContent.split(/\n\n+/).filter(b => b.trim());
