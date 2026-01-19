@@ -5350,6 +5350,22 @@ Click one of the buttons below to get started, or you can type your selection.`,
     
     // Send paragraph_edits + original_content to backend (EXACT SAME format as generateFinalArticle)
     // Backend will regenerate content and block_types using same logic as /final endpoint (100% accurate)
+    
+    // Debug: Log paragraph_edits block_type distribution before sending
+    if (paragraphEdits && paragraphEdits.length > 0) {
+      const blockTypeCounts = paragraphEdits.reduce((acc, p) => {
+        const bt = p.block_type || 'undefined';
+        acc[bt] = (acc[bt] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+      console.log('[Chat Component] Export paragraph_edits block_type distribution:', blockTypeCounts);
+      console.log('[Chat Component] Sample paragraph_edits:', paragraphEdits.slice(0, 3).map(p => ({
+        index: p.index,
+        block_type: p.block_type,
+        level: p.level
+      })));
+    }
+    
     this.chatService.exportEditContentToWord({
       content: exportContent,
       title: exportTitle,
@@ -5359,7 +5375,7 @@ Click one of the buttons below to get started, or you can type your selection.`,
         original: p.original,
         edited: p.edited,
         tags: p.tags,  // SAME as generateFinalArticle
-        block_type: p.block_type || 'paragraph',  // SAME as generateFinalArticle
+        block_type: p.block_type,  // Send as-is, backend will default if missing
         level: p.level || 0,
         editorial_feedback: p.editorial_feedback || {}  // SAME as generateFinalArticle
       })) : undefined,
@@ -5443,6 +5459,17 @@ Click one of the buttons below to get started, or you can type your selection.`,
     
     // Send paragraph_edits + original_content to backend (EXACT SAME format as generateFinalArticle)
     // Backend will regenerate content and block_types using same logic as /final endpoint (100% accurate)
+    
+    // Debug: Log paragraph_edits block_type distribution before sending
+    if (paragraphEdits && paragraphEdits.length > 0) {
+      const blockTypeCounts = paragraphEdits.reduce((acc, p) => {
+        const bt = p.block_type || 'undefined';
+        acc[bt] = (acc[bt] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+      console.log('[Chat Component] Export PDF paragraph_edits block_type distribution:', blockTypeCounts);
+    }
+    
     this.chatService.exportEditContentToPDF({
       content: exportContent,
       title: exportTitle,
@@ -5452,7 +5479,7 @@ Click one of the buttons below to get started, or you can type your selection.`,
         original: p.original,
         edited: p.edited,
         tags: p.tags,  // SAME as generateFinalArticle
-        block_type: p.block_type || 'paragraph',  // SAME as generateFinalArticle
+        block_type: p.block_type,  // Send as-is, backend will default if missing
         level: p.level || 0,
         editorial_feedback: p.editorial_feedback || {}  // SAME as generateFinalArticle
       })) : undefined,
