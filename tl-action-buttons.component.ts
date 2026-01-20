@@ -203,9 +203,28 @@ def _create_new_numbering_instance(doc: Document, list_type: str, level: int = 0
     """
     numbering_part = doc.part.numbering_part
     
-    # Create a new abstract numbering definition
-    abstract_num_id = numbering_part._next_abstract_num_id
-    numbering_part._next_abstract_num_id += 1
+    # Calculate next abstract_num_id from existing numbering definitions
+    # Find the maximum existing abstractNumId and add 1
+    abstract_num_id = 0
+    if hasattr(numbering_part, '_next_abstract_num_id'):
+        abstract_num_id = numbering_part._next_abstract_num_id
+        numbering_part._next_abstract_num_id += 1
+    else:
+        # Calculate from existing numbering
+        # Use XPath to find all abstractNum elements
+        existing_abstract_nums = numbering_part._numbering.xpath('.//w:abstractNum')
+        if existing_abstract_nums:
+            max_id = 0
+            for abstract_num in existing_abstract_nums:
+                num_id_attr = abstract_num.get(qn('w:abstractNumId'))
+                if num_id_attr:
+                    try:
+                        max_id = max(max_id, int(num_id_attr))
+                    except (ValueError, TypeError):
+                        pass
+            abstract_num_id = max_id + 1
+        else:
+            abstract_num_id = 0
     
     abstract_num = OxmlElement("w:abstractNum")
     abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
@@ -242,9 +261,27 @@ def _create_new_numbering_instance(doc: Document, list_type: str, level: int = 0
     abstract_num.append(lvl)
     numbering_part._numbering.append(abstract_num)
     
-    # Create a new numbering instance
-    num_id = numbering_part._next_num_id
-    numbering_part._next_num_id += 1
+    # Calculate next num_id from existing numbering instances
+    # Find the maximum existing numId and add 1
+    if hasattr(numbering_part, '_next_num_id'):
+        num_id = numbering_part._next_num_id
+        numbering_part._next_num_id += 1
+    else:
+        # Calculate from existing numbering
+        # Use XPath to find all num elements
+        existing_nums = numbering_part._numbering.xpath('.//w:num')
+        if existing_nums:
+            max_id = 0
+            for num in existing_nums:
+                num_id_attr = num.get(qn('w:numId'))
+                if num_id_attr:
+                    try:
+                        max_id = max(max_id, int(num_id_attr))
+                    except (ValueError, TypeError):
+                        pass
+            num_id = max_id + 1
+        else:
+            num_id = 1
     
     num = OxmlElement("w:num")
     num.set(qn("w:numId"), str(num_id))
@@ -1659,9 +1696,26 @@ def _add_numbered_paragraph(doc: Document, text: str):
     """
     numbering_part = doc.part.numbering_part
 
-    # Create a new abstract numbering definition
-    abstract_num_id = numbering_part._next_abstract_num_id
-    numbering_part._next_abstract_num_id += 1
+    # Calculate next abstract_num_id from existing numbering definitions
+    abstract_num_id = 0
+    if hasattr(numbering_part, '_next_abstract_num_id'):
+        abstract_num_id = numbering_part._next_abstract_num_id
+        numbering_part._next_abstract_num_id += 1
+    else:
+        # Calculate from existing numbering
+        existing_abstract_nums = numbering_part._numbering.xpath('.//w:abstractNum')
+        if existing_abstract_nums:
+            max_id = 0
+            for abstract_num in existing_abstract_nums:
+                num_id_attr = abstract_num.get(qn('w:abstractNumId'))
+                if num_id_attr:
+                    try:
+                        max_id = max(max_id, int(num_id_attr))
+                    except (ValueError, TypeError):
+                        pass
+            abstract_num_id = max_id + 1
+        else:
+            abstract_num_id = 0
 
     abstract_num = OxmlElement("w:abstractNum")
     abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
@@ -1684,9 +1738,25 @@ def _add_numbered_paragraph(doc: Document, text: str):
     abstract_num.append(lvl)
     numbering_part._numbering.append(abstract_num)
 
-    # Create a new numbering instance
-    num_id = numbering_part._next_num_id
-    numbering_part._next_num_id += 1
+    # Calculate next num_id from existing numbering instances
+    if hasattr(numbering_part, '_next_num_id'):
+        num_id = numbering_part._next_num_id
+        numbering_part._next_num_id += 1
+    else:
+        # Calculate from existing numbering
+        existing_nums = numbering_part._numbering.xpath('.//w:num')
+        if existing_nums:
+            max_id = 0
+            for num in existing_nums:
+                num_id_attr = num.get(qn('w:numId'))
+                if num_id_attr:
+                    try:
+                        max_id = max(max_id, int(num_id_attr))
+                    except (ValueError, TypeError):
+                        pass
+            num_id = max_id + 1
+        else:
+            num_id = 1
 
     num = OxmlElement("w:num")
     num.set(qn("w:numId"), str(num_id))
@@ -3501,8 +3571,12 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
         
         # Process list items: detect type and preserve original order
         # Check if this is a list item (bullet, number, or alpha)
-        # Always detect from content, even if block_type says "bullet_item"
         list_type, detected_level = _detect_list_type(block, level)
+        
+        # If block_type is "bullet_item", ALWAYS treat as bullet (use bullet icons)
+        # This ensures bullet items with numbers use bullet icons instead of numbers
+        if block_type == "bullet_item":
+            list_type = 'bullet'  # Force bullet type for bullet_item block_type
         
         # Use level from block_types first, fallback to detected level
         final_level = level if level > 0 else detected_level
@@ -3900,8 +3974,12 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
             continue
         
         # Process list items: detect type and preserve original order (same as Word)
-        # Always detect from content, even if block_type says "bullet_item"
         list_type, detected_level = _detect_list_type(block, level)
+        
+        # If block_type is "bullet_item", ALWAYS treat as bullet (use bullet icons)
+        # This ensures bullet items with numbers use bullet icons instead of numbers
+        if block_type == "bullet_item":
+            list_type = 'bullet'  # Force bullet type for bullet_item block_type
         
         # Use level from block_types first, fallback to detected level
         final_level = level if level > 0 else detected_level
