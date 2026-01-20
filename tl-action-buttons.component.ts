@@ -3409,7 +3409,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
                 run.bold = True
                 # Set spacing: margin-top: 0.9em equivalent, margin-bottom: 0.2em equivalent
                 p.paragraph_format.space_before = DocxPt(11)  # ~0.9em
-                p.paragraph_format.space_after = DocxPt(2)     # ~0.2em
+                p.paragraph_format.space_after = DocxPt(6)     # Increased from 2pt to add spacing before following paragraph
             
             elif block_type == "paragraph":
                 # Paragraph: proper spacing with Body Text style
@@ -3422,8 +3422,11 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
                 # Set spacing: margin-top: 0.15em equivalent, margin-bottom: 0.7em equivalent
                 para.paragraph_format.space_before = DocxPt(2)   # ~0.15em
                 para.paragraph_format.space_after = DocxPt(8)   # ~0.7em
+                # Add spacing if followed by heading
+                if next_block and next_block.get('type') == 'heading':
+                    para.paragraph_format.space_after = DocxPt(12)  # Add extra spacing before heading
                 # Reduce spacing if followed by list
-                if next_block and (next_block.get('type') == 'list_item' or next_block.get('type') == 'bullet_item'):
+                elif next_block and (next_block.get('type') == 'list_item' or next_block.get('type') == 'bullet_item'):
                     para.paragraph_format.space_after = DocxPt(3)  # ~0.25em
                 # Reduce spacing if following heading
                 if prev_block_type == 'heading':
@@ -3490,6 +3493,25 @@ def export_to_word_edit_content(
     clean_title = re.sub(r'\*+', '', page_title).strip()
     title_para = doc.paragraphs[0]
     _set_paragraph_text_with_breaks(title_para, sanitize_text_for_word(clean_title))
+    
+    # Apply PDF page 1 font size and alignment to Word
+    # Calculate font size based on title length (same as PDF)
+    title_font_size = 32
+    if len(clean_title) > 80:
+        title_font_size = 20
+    elif len(clean_title) > 60:
+        title_font_size = 22
+    elif len(clean_title) > 40:
+        title_font_size = 26
+    
+    # Set font size for all runs in the title paragraph
+    for run in title_para.runs:
+        run.font.size = DocxPt(title_font_size)
+        run.bold = True
+    
+    # Set center alignment (same as PDF)
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
     # Set title style to "Page 1"
     try:
         title_para.style = "Page 1"
@@ -3526,7 +3548,8 @@ def export_to_word_edit_content(
             block_info = block_type_map.get(idx)
             if block_info:
                 block_type = block_info.get("type", "paragraph")
-                if block_type in ["title", "heading"]:
+                # Only include headings in TOC, not title
+                if block_type == "heading":
                     # Remove markdown formatting and number prefixes
                     heading_text = re.sub(r'^\d+[.)]\s+', '', block).strip()
                     heading_text = re.sub(r'\*+', '', heading_text).strip()
@@ -3878,7 +3901,7 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                     parent=heading_style,
                     fontSize=heading_font_size,
                     textColor='black',  # Changed from '#D04A02' (orange) to black
-                    spaceAfter=2,   # ~0.2em
+                    spaceAfter=6,   # Increased from 2pt to add spacing before following paragraph
                     spaceBefore=11, # ~0.9em
                     fontName='Helvetica-Bold'
                 )
@@ -3892,8 +3915,11 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                     spaceAfter=8,   # ~0.7em
                     spaceBefore=2,  # ~0.15em
                 )
+                # Add spacing if followed by heading
+                if next_block and next_block['type'] == 'heading':
+                    para_style.spaceAfter = 12  # Add extra spacing before heading
                 # Reduce spacing if followed by bullet list
-                if next_block and next_block['type'] == 'bullet_item':
+                elif next_block and next_block['type'] == 'bullet_item':
                     para_style.spaceAfter = 3  # ~0.25em
                 # Reduce spacing if following heading
                 if prev_block_type == 'heading':
@@ -4116,7 +4142,8 @@ def export_to_pdf_edit_content(
             block_info = block_type_map.get(idx)
             if block_info:
                 block_type = block_info.get("type", "paragraph")
-                if block_type in ["title", "heading"]:
+                # Only include headings in TOC, not title
+                if block_type == "heading":
                     # Remove markdown formatting and number prefixes
                     heading_text = re.sub(r'^\d+[.)]\s+', '', block).strip()
                     heading_text = re.sub(r'\*+', '', heading_text).strip()
