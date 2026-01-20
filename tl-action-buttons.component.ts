@@ -254,8 +254,9 @@ type ParagraphFeedback = ParagraphEdit & {
             <!-- Status logic: 
                  - Previous editors: "Completed"
                  - Current editor: 
-                   - If isEditorLoading or isGenerating: "In Progress" (blinking)
-                   - If NOT loading: "Review Pending"
+                   - If isEditorLoading or isGenerating: "In Progress" (blinking) - shows immediately when editor starts
+                   - If NOT loading and has paragraphs: "Review Pending"
+                   - If NOT loading and no paragraphs: "In Progress" (initial state, like guided journey)
                  - Future editors: "Not Started"
                  
                  When nextEditor is clicked, currentEditorIndex updates immediately,
@@ -271,20 +272,20 @@ type ParagraphFeedback = ParagraphEdit & {
                     'upcoming': i > (currentEditorIndex ?? 0)
                   }"
                 >
-                  <div class="timeline-marker" [ngClass]="{ 'blink-marker': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating) }">
+                  <div class="timeline-marker" [ngClass]="{ 'blink-marker': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating || (hasNoParagraphs && isSequentialMode)) }">
                     @if (i < (currentEditorIndex ?? 0)) {
                       ✓
                     } @else {
-                      <span [ngClass]="{ 'blink-number': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating) }">{{ i + 1 }}</span>
+                      <span [ngClass]="{ 'blink-number': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating || (hasNoParagraphs && isSequentialMode)) }">{{ i + 1 }}</span>
                     }
                   </div>
                   <div class="timeline-editor-name">
                     {{ getEditorDisplayName(editorId) }}
                   </div>
-                  <div class="timeline-status" [ngClass]="{ 'loading-status': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating) }">
+                  <div class="timeline-status" [ngClass]="{ 'loading-status': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating || (hasNoParagraphs && isSequentialMode)) }">
                     @if (i < (currentEditorIndex ?? 0)) { Completed }
                     @if (i === (currentEditorIndex ?? 0)) {
-                      @if (isEditorLoading || isGenerating) {
+                      @if (isEditorLoading || isGenerating || (hasNoParagraphs && isSequentialMode)) {
                         <span class="blink-animation">In Progress</span>
                       } @else {
                         Review Pending
@@ -343,7 +344,7 @@ type ParagraphFeedback = ParagraphEdit & {
       }
 
       <!-- Sequential Workflow: Show both Next Editor and Generate Final Output options -->
-      @if (isSequentialMode && paragraphEdits.length > 0 && !showFinalOutput) {
+      @if (isSequentialMode && !showFinalOutput) {
         <div class="sequential-actions-container">
           <div class="final-output-actions">
             <button 
@@ -387,7 +388,7 @@ type ParagraphFeedback = ParagraphEdit & {
       }
 
       <!-- Non-sequential mode: Show only Generate Final Output -->
-      @if (!isSequentialMode && !showFinalOutput && paragraphEdits.length > 0) {
+      @if (!isSequentialMode && !showFinalOutput) {
         <div class="final-output-actions">
           <button
             type="button"
@@ -1639,6 +1640,11 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
   constructor(private cdr: ChangeDetectorRef) {}
 
   get allParagraphsDecided(): boolean {
+    // If there are no paragraphs at all, buttons should be enabled (nothing to decide)
+    if (!this.paragraphEdits || this.paragraphEdits.length === 0) {
+      return true;
+    }
+    
     // If all feedback is decided, buttons should enable (even if paragraphs aren't explicitly approved)
     // This allows "Approve All" / "Reject All" to enable buttons when they only affect feedback items
     const feedbackDecided = this.allParagraphFeedbackDecided;
@@ -2106,11 +2112,18 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
   /** Get effective status for an editor, overriding with 'processing' if currently loading */
   getEffectiveEditorStatus(editor: EditorProgressItem, index: number): 'pending' | 'processing' | 'review-pending' | 'completed' | 'error' {
     const isCurrentEditor = index === (this.currentEditorIndex ?? 0);
-    // Override status for current editor if isGenerating/isEditorLoading is true
-    // This ensures "In Progress" shows immediately when nextEditor is clicked
+    
+    // If this is the current editor and we're loading/generating, show "In Progress"
     if (isCurrentEditor && (this.isEditorLoading || this.isGenerating)) {
       return 'processing';
     }
+    
+    // If this is the current editor and status is 'pending', it means editor just started
+    // Show "In Progress" initially (like guided journey)
+    if (isCurrentEditor && editor.status === 'pending' && this.isSequentialMode) {
+      return 'processing';
+    }
+    
     return editor.status;
   }
 
