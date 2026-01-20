@@ -529,23 +529,32 @@ export function formatFinalArticleWithBlockTypes(
         
         case 'bullet_item':
           // Process bullet item: all lists use bullet icons (matches backend export)
-          // Remove number/letter prefixes, preserve or add bullet icon, format before/after colon
+          // Remove ALL number/letter prefixes, always use bullet icon, format before/after colon
           let processedContent = trimmedPara;
           
-          // Check if content already has a bullet icon (•, -, *, etc.)
-          const bulletIconMatch = processedContent.match(/^([•\-\*])\s+/);
-          const existingBulletIcon = bulletIconMatch ? bulletIconMatch[1] : null;
-          
-          // Remove existing bullet icon temporarily (we'll add it back)
-          if (existingBulletIcon) {
-            processedContent = processedContent.replace(/^[•\-\*]\s+/, '');
+          // Remove ALL prefixes - loop until no more prefixes found to handle nested cases
+          let previousContent = '';
+          while (previousContent !== processedContent) {
+            previousContent = processedContent;
+            
+            // Remove number prefixes (e.g., "1.", "2.", "10.", "1)", "2)", "10)", "1. ", "2) ", etc.)
+            processedContent = processedContent.replace(/^\d+[.)]\s*/g, '');
+            
+            // Remove letter prefixes (e.g., "A.", "a.", "B)", "b)", "A. ", "a) ", etc.)
+            processedContent = processedContent.replace(/^[A-Za-z][.)]\s*/g, '');
+            
+            // Remove roman numerals (e.g., "i.", "ii.", "I.", "II.", "iv.", "IV.", etc.)
+            processedContent = processedContent.replace(/^[ivxlcdmIVXLCDM]+[.)]\s*/gi, '');
+            
+            // Remove existing bullet icons (•, -, *) if present
+            processedContent = processedContent.replace(/^[•\-\*]\s*/g, '');
+            
+            // Remove any whitespace at the start
+            processedContent = processedContent.replace(/^\s+/, '');
           }
           
-          // Remove number prefix (e.g., "1. ", "2. ", "10. ", "1) ", "2) ") - all lists become bullets
-          processedContent = processedContent.replace(/^\d+[.)]\s+/, '');
-          
-          // Remove letter prefix (e.g., "A. ", "a. ", "B) ", "b) ") - all lists become bullets
-          processedContent = processedContent.replace(/^[A-Za-z][.)]\s+/, '');
+          // Final trim
+          processedContent = processedContent.trim();
           
           // Format text before ":" as bold, after ":" as normal
           const colonIndex = processedContent.indexOf(':');
@@ -562,16 +571,14 @@ export function formatFinalArticleWithBlockTypes(
             afterFormatted = afterFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
             
             // Apply bold to before part, normal to after part
-            // Always add bullet icon (•) if one doesn't exist - all lists use bullets (matches backend)
-            const bulletIcon = existingBulletIcon || '•';
-            processedContent = `${bulletIcon} <strong>${beforeFormatted}</strong>: ${afterFormatted}`;
+            // Always use bullet icon (•) - all lists use bullets (matches backend)
+            processedContent = `• <strong>${beforeFormatted}</strong>: ${afterFormatted}`;
           } else {
             // No colon found, just convert markdown and remove <p> tags
             processedContent = convertMarkdownToHtml(processedContent);
             processedContent = processedContent.replace(/^<p>(.*)<\/p>$/s, '$1');
-            // Always add bullet icon (•) if one doesn't exist - all lists use bullets (matches backend)
-            const bulletIcon = existingBulletIcon || '•';
-            processedContent = `${bulletIcon} ${processedContent}`;
+            // Always use bullet icon (•) - all lists use bullets (matches backend)
+            processedContent = `• ${processedContent}`;
           }
           
           return {
@@ -640,9 +647,9 @@ export function formatFinalArticleWithBlockTypes(
         if (nextPara && nextPara.type === 'bullet_item') {
           para.content = para.content.replace(/margin-bottom:\s*[^;]+;?/g, 'margin-bottom: 0.25em;');
         }
-        // Reduce top margin if following heading (0 matches backend spaceBefore=0)
+        // Reduce top margin if following heading - decrease line spacing between heading and paragraph
         if (prevBlockType === 'heading') {
-          para.content = para.content.replace(/margin-top:\s*[^;]+;?/g, 'margin-top: 0;');
+          para.content = para.content.replace(/margin-top:\s*[^;]+;?/g, 'margin-top: 0.05em;');
         }
       }
 
