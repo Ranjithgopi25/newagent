@@ -291,7 +291,7 @@ type ParagraphFeedback = ParagraphEdit & {
               @if (isGeneratingFinal) {
                 <span class="spinner"></span>
               }
-              {{ isGeneratingFinal ? 'Generating Final Output...' : 'Generate Final Output' }}
+              {{ isGeneratingFinal ? 'Generating Final Output...' : (isSequentialMode && !isLastEditor ? 'Generate Output' : 'Generate Final Output') }}
             </button>
             @if (!allParagraphsDecided) {
               <p class="final-output-hint">
@@ -1629,6 +1629,10 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
   // Initialize displayOriginal/displayEdited with highlights when input changes
   // Use a lifecycle hook to prepare initial highlighted views so UI shows yellow highlights by default
   ngOnChanges(): void {
+    // Reset isNextEditorClicked when new paragraph edits arrive (new editor loaded)
+    if (this.paragraphEdits && this.paragraphEdits.length > 0) {
+      this.isNextEditorClicked = false;
+    }
     this.initializeHighlights();
   }
 
