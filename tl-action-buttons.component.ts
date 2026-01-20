@@ -139,7 +139,7 @@ export class ChatEditWorkflowService {
    * Get authentication headers for fetch() requests
    * MSAL interceptor only works with HttpClient, so we need to manually add headers for fetch()
    */
-  private async getAuthHeaders(): Promise<Record<string, string>> {
+  public async getAuthHeaders(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
@@ -1468,12 +1468,6 @@ export class ChatEditWorkflowService {
         originalContent = this.reconstructOriginalContent(paragraphEdits);
       }
       
-      // Debug: Log paragraph edits being synced
-      console.log('[ChatEditWorkflowService] Syncing paragraph edits:', {
-        count: paragraphEdits.length,
-        approvals: paragraphEdits.map(p => ({ index: p.index, approved: p.approved, hasFeedback: !!p.editorial_feedback }))
-      });
-      
       this.updateState({
         ...this.currentState,
         paragraphEdits: [...paragraphEdits],
@@ -1574,23 +1568,6 @@ export class ChatEditWorkflowService {
     }
     
     return decisions;
-  }
-
-  /** Check if a paragraph has any approved editorial feedback items */
-  private hasApprovedEditorialFeedback(para: ParagraphEdit): boolean {
-    if (!para.editorial_feedback) {
-      return false;
-    }
-    
-    const feedbackTypes = Object.keys(para.editorial_feedback);
-    for (const editorType of feedbackTypes) {
-      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-      if (feedbacks.some((fb: any) => fb.approved === true)) {
-        return true;
-      }
-    }
-    
-    return false;
   }
   
   /** Move to next editor in sequential workflow */
@@ -1950,42 +1927,11 @@ export class ChatEditWorkflowService {
     
     try {
       // Collect decisions with feedback decisions (matches guided journey)
-      // IMPORTANT: If paragraph has approved editorial feedback, set approved=true even if paragraph-level approved is null
-      // This ensures backend uses edited content instead of defaulting to original
-      const decisions = this.currentState.paragraphEdits.map(p => {
-        // Check if paragraph has any approved editorial feedback
-        const hasApprovedFeedback = this.hasApprovedEditorialFeedback(p);
-        // Paragraph is approved if: explicitly approved OR has approved feedback items
-        const isApproved = p.approved === true || (p.approved !== false && hasApprovedFeedback);
-        
-        const decision = {
-          index: p.index,
-          approved: isApproved,
-          editorial_feedback_decisions: this.collectFeedbackDecisions(p)
-        };
-        
-        // Debug: Log decision for paragraphs with feedback
-        if (hasApprovedFeedback || p.editorial_feedback) {
-          console.log('[ChatEditWorkflowService] Decision for paragraph', p.index, ':', {
-            paragraphApproved: p.approved,
-            hasApprovedFeedback,
-            finalApproved: isApproved,
-            feedbackDecisions: decision.editorial_feedback_decisions
-          });
-        }
-        
-        return decision;
-      });
-      
-      // Debug: Log summary of decisions
-      const approvedCount = decisions.filter(d => d.approved === true).length;
-      const rejectedCount = decisions.filter(d => d.approved === false).length;
-      console.log('[ChatEditWorkflowService] Final decisions summary:', {
-        total: decisions.length,
-        approved: approvedCount,
-        rejected: rejectedCount,
-        withFeedback: decisions.filter(d => Object.keys(d.editorial_feedback_decisions || {}).length > 0).length
-      });
+      const decisions = this.currentState.paragraphEdits.map(p => ({
+        index: p.index,
+        approved: p.approved === true,
+        editorial_feedback_decisions: this.collectFeedbackDecisions(p)
+      }));
       
       // Get originalContent - use service state if available, otherwise reconstruct from paragraphEdits
       let originalContent = this.currentState.originalContent;
