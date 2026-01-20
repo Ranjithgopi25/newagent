@@ -280,7 +280,7 @@ type ParagraphFeedback = ParagraphEdit & {
       }
 
       <!-- Sequential Workflow: Show both Next Editor and Generate Final Output options -->
-      @if (isSequentialMode && paragraphEdits.length > 0 && !showFinalOutput) {
+      @if (isSequentialMode && !showFinalOutput) {
         <div class="sequential-actions-container">
           <div class="final-output-actions">
             <button 
@@ -293,7 +293,7 @@ type ParagraphFeedback = ParagraphEdit & {
               }
               {{ isGeneratingFinal ? 'Generating Final Output...' : (isSequentialMode && !isLastEditor ? 'Generate Output' : 'Generate Final Output') }}
             </button>
-            @if (!allParagraphsDecided) {
+            @if (!allParagraphsDecided && paragraphEdits.length > 0) {
               <p class="final-output-hint">
                 Please approve or reject all paragraph edits and feedback to generate the final article.
               </p>
@@ -313,7 +313,7 @@ type ParagraphFeedback = ParagraphEdit & {
                 }
                 {{ isGenerating ? 'Loading Next Editor...' : 'Next Editor →' }}
               </button>
-              @if (!allParagraphsDecided) {
+              @if (!allParagraphsDecided && paragraphEdits.length > 0) {
                 <p class="next-editor-hint">
                   Please approve or reject all paragraph edits before proceeding to the next editor.
                 </p>
