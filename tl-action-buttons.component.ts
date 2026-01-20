@@ -214,37 +214,37 @@ type ParagraphFeedback = ParagraphEdit & {
                 <div
                   class="timeline-item"
                   [ngClass]="{
-                    'completed': editor.status === 'completed',
-                    'active': editor.status === 'processing' || editor.status === 'review-pending',
-                    'upcoming': editor.status === 'pending'
+                    'completed': getEffectiveEditorStatus(editor, i) === 'completed',
+                    'active': getEffectiveEditorStatus(editor, i) === 'processing' || getEffectiveEditorStatus(editor, i) === 'review-pending',
+                    'upcoming': getEffectiveEditorStatus(editor, i) === 'pending'
                   }"
                 >
-                  <div class="timeline-marker" [ngClass]="{ 'blink-marker': editor.status === 'processing' }">
-                    @if (editor.status === 'completed') {
+                  <div class="timeline-marker" [ngClass]="{ 'blink-marker': getEffectiveEditorStatus(editor, i) === 'processing' }">
+                    @if (getEffectiveEditorStatus(editor, i) === 'completed') {
                       ✓
                     } @else {
-                      <span [ngClass]="{ 'blink-number': editor.status === 'processing' }">{{ i + 1 }}</span>
+                      <span [ngClass]="{ 'blink-number': getEffectiveEditorStatus(editor, i) === 'processing' }">{{ i + 1 }}</span>
                     }
                   </div>
                   <div class="timeline-editor-name">
                     {{ editor.editorName }}
                   </div>
-                  <div class="timeline-status" [ngClass]="{ 'loading-status': editor.status === 'processing' }">
-                    @if (editor.status === 'completed') { Completed }
-                    @if (editor.status === 'processing') {
+                  <div class="timeline-status" [ngClass]="{ 'loading-status': getEffectiveEditorStatus(editor, i) === 'processing' }">
+                    @if (getEffectiveEditorStatus(editor, i) === 'completed') { Completed }
+                    @if (getEffectiveEditorStatus(editor, i) === 'processing') {
                       <span class="blink-animation">In Progress</span>
                     }
-                    @if (editor.status === 'review-pending') {
+                    @if (getEffectiveEditorStatus(editor, i) === 'review-pending') {
                       Review Pending
                     }
-                    @if (editor.status === 'pending') { Not Started }
+                    @if (getEffectiveEditorStatus(editor, i) === 'pending') { Not Started }
                   </div>
                 </div>
                 <!-- Connector line between steps -->
                 @if (!last) {
                   <div 
                     class="timeline-connector"
-                    [ngClass]="{ 'completed': editor.status === 'completed' }">
+                    [ngClass]="{ 'completed': getEffectiveEditorStatus(editor, i) === 'completed' }">
                   </div>
                 }
               }
@@ -252,10 +252,14 @@ type ParagraphFeedback = ParagraphEdit & {
           } @else if ((totalEditors ?? 0) > 0 && editorOrder && editorOrder.length > 0) {
             <!-- Fallback to editorOrder if editorProgressList not available -->
             <!-- Status logic: 
-                 - If isEditorLoading or isGenerating: current editor is "In Progress" (blinking)
-                 - If NOT loading and current editor: "Review Pending"
                  - Previous editors: "Completed"
+                 - Current editor: 
+                   - If isEditorLoading or isGenerating: "In Progress" (blinking)
+                   - If NOT loading: "Review Pending"
                  - Future editors: "Not Started"
+                 
+                 When nextEditor is clicked, currentEditorIndex updates immediately,
+                 so the next editor will show "In Progress" right away (if isGenerating is true)
             -->
             <div class="editor-timeline horizontal">
               @for (editorId of editorOrder; track editorId; let i = $index; let last = $last) {
@@ -2097,6 +2101,17 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
     };
     
     return editorMap[editorId] || editorId;
+  }
+
+  /** Get effective status for an editor, overriding with 'processing' if currently loading */
+  getEffectiveEditorStatus(editor: EditorProgressItem, index: number): 'pending' | 'processing' | 'review-pending' | 'completed' | 'error' {
+    const isCurrentEditor = index === (this.currentEditorIndex ?? 0);
+    // Override status for current editor if isGenerating/isEditorLoading is true
+    // This ensures "In Progress" shows immediately when nextEditor is clicked
+    if (isCurrentEditor && (this.isEditorLoading || this.isGenerating)) {
+      return 'processing';
+    }
+    return editor.status;
   }
 
   /** Paragraphs that require review (exclude autoApproved) */
