@@ -287,7 +287,7 @@ type ParagraphFeedback = ParagraphEdit & {
               type="button"
               class="final-output-btn"
               (click)="onGenerateFinal(); $event.stopPropagation()"
-              [disabled]="!allParagraphsDecided || isGeneratingFinal">
+              [disabled]="!allParagraphsDecided || isGeneratingFinal || isNextEditorClicked">
               @if (isGeneratingFinal) {
                 <span class="spinner"></span>
               }
@@ -330,7 +330,7 @@ type ParagraphFeedback = ParagraphEdit & {
             type="button"
             class="final-output-btn"
             (click)="onGenerateFinal(); $event.stopPropagation()"
-            [disabled]="!allParagraphsDecided || isGeneratingFinal">
+            [disabled]="!allParagraphsDecided || isGeneratingFinal || isNextEditorClicked">
             @if (isGeneratingFinal) {
               <span class="spinner"></span>
             }
@@ -1469,6 +1469,26 @@ type ParagraphFeedback = ParagraphEdit & {
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
     }
+
+    /* No feedback message styling (same as guided journey) */
+    .paragraph-no-feedback {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.2rem;
+      margin-top: 5rem;
+      border-radius: 0.5rem;
+      border: 1px dashed rgba(0, 0, 0, 0.12);
+      background-color: #fd5108;
+      text-align: center;
+      font-size: 0.95rem;
+      color: rgba(0, 0, 0, 0.7);
+    }
+
+    .paragraph-no-feedback p {
+      margin: 0;
+      font-size: 1.12rem;
+    }
     
   `]
 })
@@ -1493,6 +1513,9 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
 
   // Hover state tracking
   private hoveredFeedback: { paragraphIndex: number, editorType: string, feedbackIndex: number } | null = null;
+
+  // Track when next editor is clicked to disable generate final output
+  isNextEditorClicked: boolean = false;
 
   constructor(private cdr: ChangeDetectorRef) {}
 
@@ -2021,6 +2044,7 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
 
   /** Handle next editor button click */
   onNextEditor(): void {
+    this.isNextEditorClicked = true;
     this.nextEditor.emit();
   }
 
