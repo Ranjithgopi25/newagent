@@ -1,2132 +1,4188 @@
-import { Component, Input, Output, EventEmitter, OnChanges, ChangeDetectorRef } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { ParagraphEdit } from '../../../../core/models/message.model';
-import { allParagraphsDecided } from '../../../../core/utils/paragraph-edit.utils';
-import { EditorialFeedbackItem } from '../../../../core/utils/edit-content.utils';
+import copy
+from csv import writer
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.pdfgen import canvas
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Flowable, ListFlowable, ListItem
+from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT, TA_CENTER
+import docx
+from docx import Document
+from docx.shared import Pt as DocxPt, Inches as DocxInches, RGBColor as DocxRGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+from pypdf import PdfReader, PdfWriter
+from html import unescape
+import io
+import logging
+import os
+import re
+import zipfile
+import itertools
+import tempfile
+from typing import List, Dict, Optional
+from xml.etree import ElementTree as ET
+from io import BytesIO
+logger = logging.getLogger(__name__)
 
-type ParagraphFeedback = ParagraphEdit & {
-  original: string;
-  edited: string;
-  displayOriginal?: string;
-  displayEdited?: string;
-  editorial_feedback?: { [key: string]: EditorialFeedbackItem[] };
-  approved?: boolean | null;
-  autoApproved?: boolean;
-  index?: number;
-};
 
-@Component({
-    selector: 'app-paragraph-edits',
-    imports: [CommonModule],
-    template: `
-    <div class="result-section">
-      <h4 class="result-title">Paragraph Edits</h4>
-      @if (!showFinalOutput) {
-        <p class="paragraph-instructions">
-          @if (autoApprovedCount > 0) {
-            Review each paragraph edit below. Click the buttons to approve (✓) or reject (✗) each edit.
-            <span class="auto-approved-hint">({{ autoApprovedCount }} paragraph{{ autoApprovedCount !== 1 ? 's' : '' }} auto-approved)</span>
-          } @else {
-            Review each paragraph edit below. Click the buttons to approve (✓) or reject (✗) each edit.
-          }
-        </p>
-      }
-      @if (showFinalOutput) {
-        <p class="paragraph-instructions">
-          Below are the paragraph-by-paragraph edits. The revised article is shown below.
-        </p>
-      }
+# Path to PwC templates
+PWC_TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),"app","features","thought_leadership","template", "pwc_doc_template_2025.docx")
+PWC_PDF_TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),"app","features","thought_leadership","template", "pwc_pdf_template_2025.pdf")
+
+_bookmark_counter = itertools.count(1)
+
+def sanitize_text_for_word(text: str) -> str:
+    """
+    Sanitize text for Word export by ensuring all Unicode characters are properly encoded.
+    This fixes encoding issues with special characters like em dashes, smart quotes, etc.
+    """
+    if not isinstance(text, str):
+        text = str(text)
     
-      <!-- Single Approve All / Reject All buttons (applies to feedback and paragraphs) -->
-      @if (paragraphFeedbackData &&paragraphFeedbackData.length > 0 &&paragraphsForReview.length > 0 &&!showFinalOutput &&!hasNoParagraphFeedback) {
-        <div class="bulk-actions">
-          <button
-            type="button"
-            class="bulk-action-btn ef-approve-btn"
-            (click)="approveAll(); $event.stopPropagation()"
-            [disabled]="allParagraphsApproved && allFeedbackApproved"
-            title="Approve all feedback and paragraph edits">
-            ✓ Approve All
-          </button>
-          <button
-            type="button"
-            class="bulk-action-btn ef-reject-btn"
-            (click)="declineAll(); $event.stopPropagation()"
-            [disabled]="allParagraphsDeclined && allFeedbackRejected"
-            title="Reject all feedback and paragraph edits">
-            ✗ Reject All
-          </button>
-        </div>
-      }
-      
+    # Ensure the text is valid Unicode
+    try:
+        # Normalize unicode (NFKC normalization handles most compatibility issues)
+        text = text.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+    except Exception as e:
+        logger.warning(f"Error sanitizing text: {e}, using as-is")
     
-      <div class="paragraph-edits-container">
-        @if (hasNoParagraphFeedback && !showFinalOutput) {
-          <div class="paragraph-no-feedback">
-            <p>
-              There are no feedback changes from
-              <strong>{{ getEditorDisplayName(currentEditor) }}</strong>.
-            </p>
-          </div>
-        }
-        <!-- Show paragraph edits (previous editor stays visible while loading next editor) -->
-        @if (paragraphsForReview.length > 0 && !hasNoParagraphFeedback) {
-          @for (paragraph of paragraphsForReview; track paragraph) {
-            <div class="paragraph-edit-item"
-              [ngClass]="{ 'approved': paragraph.approved === true, 'declined': paragraph.approved === false }">
-              <div class="paragraph-header">
-                <!-- Paragraph-level approve/reject removed; use the bulk actions or editorial feedback actions -->
-                @if (showFinalOutput) {
-                  <div class="approval-status">
-                    @if (paragraph.approved === true) {
-                      <span class="status-badge approved-badge">✓ Approved</span>
-                    }
-                    @if (paragraph.approved === false) {
-                      <span class="status-badge declined-badge">✗ Rejected</span>
-                    }
-                  </div>
-                }
-              </div>
-              <div class="paragraph-comparison-boxes">
-                <div class="paragraph-box paragraph-box-original">
-                  <h5>Original</h5>
-                  <div class="paragraph-text-box"
-                    [innerHTML]="paragraph.displayOriginal ? paragraph.displayOriginal : highlightAllFeedbacks(paragraph).original">
-                  </div>
-                </div>
-                <div class="paragraph-box paragraph-box-edited"
-                  [class.approved-box]="paragraph.approved === true"
-                  [class.declined-box]="paragraph.approved === false">
-                  <h5>Edited</h5>
-                  <div class="paragraph-text-box"
-                    [innerHTML]="paragraph.displayEdited ? paragraph.displayEdited : highlightAllFeedbacks(paragraph).edited"
-                    [class.declined-text]="paragraph.approved === false">
-                  </div>
-                </div>
-              </div>
-              <!-- Editorial Feedback List (same as guided journey) -->
-              @if (paragraph.editorial_feedback) {
-                <div class="editorial-feedback-list">
-                  <div class="ef-cards">
-                    @for (editorType of objectKeys(paragraph.editorial_feedback); track editorType) {
-                      @if (paragraph.editorial_feedback![editorType]?.length) {
-                        <div class="editor-type-label">{{ editorType | titlecase }} Editor Feedback</div>
-                        @for (fb of paragraph.editorial_feedback![editorType]; track fb; let fbIndex = $index) {
-                          <div class="ef-card"
-                            [id]="'fb-' + paragraph.index + '-' + editorType + '-' + fbIndex"
-                            (mouseenter)="onFeedbackHover(paragraph, editorType, fb, fbIndex)"
-                            (mouseleave)="onFeedbackLeave(paragraph)">
-                            <div class="ef-header">
-                              <span class="ef-issue">{{ fb.issue }}</span>
-                              <span
-                                class="ef-priority"
-                            [ngClass]="{
-                              'priority-critical': fb.priority === 'Critical',
-                              'priority-important': fb.priority === 'Important',
-                              'priority-enhancement': fb.priority === 'Enhancement'
-                            }"
-                                >
-                                {{ fb.priority }}
-                              </span>
-                            </div>
-                            <div class="ef-body">
-                              <div class="ef-row ef-fix">
-                                <span class="ef-label">Fix:</span>
-                                <span class="ef-value">{{ fb.fix }}</span>
-                              </div>
-                              @if (fb.rule || fb.rule_used) {
-                                <div class="ef-row ef-rule">
-                                  <span class="ef-label-small">Rule:</span>
-                                  <span class="ef-value-small">{{ fb.rule || fb.rule_used }}</span>
-                                </div>
-                              }
-                              @if (fb.impact) {
-                                <div class="ef-row ef-impact">
-                                  <span class="ef-label-small">Impact:</span>
-                                  <span class="ef-value-small">{{ fb.impact }}</span>
-                                </div>
-                              }
-                              @if (!showFinalOutput) {
-                                <div class="ef-actions">
-                                  <button class="ef-approve-btn"
-                                    (click)="applyEditorialFix(paragraph, editorType, fb); $event.stopPropagation()"
-                                  [disabled]="fb.approved === true || showFinalOutput">✓ Approve</button>
-                                  <button class="ef-reject-btn"
-                                    (click)="rejectEditorialFeedback(paragraph, editorType, fb); $event.stopPropagation()"
-                                  [disabled]="fb.approved === false || showFinalOutput">✗ Reject</button>
-                                </div>
-                              }
-                              @if (fb.approved === true) {
-                                <div class="ef-status">
-                                  <span class="ef-approved">✓ Approved</span>
-                                </div>
-                              }
-                              @if (fb.approved === false) {
-                                <div class="ef-status">
-                                  <span class="ef-rejected">✗ Rejected</span>
-                                </div>
-                              }
-                            </div>
-                          </div>
-                        }
-                      }
-                    }
-                  </div>
-                </div>
-              }
-            </div>
-          }
-        } @else {
-          <div class="paragraph-no-feedback">
-            <p>
-              There are no paragraphs to review from
-              <strong>{{ getEditorDisplayName(currentEditor) }}</strong>.
-            </p>
-          </div>
-        }
+    return text
+
+
+def _fix_docx_encoding(buffer_bytes: bytes) -> bytes:
+    """
+    Fix DOCX encoding issues by re-serializing XML with proper UTF-8 encoding.
+    This ensures all Unicode characters are properly handled in the Word document.
+    """
+    try:
+        # Work with the bytes directly without temp file to avoid locking issues
+        import io as io_module
+        
+        # Read the DOCX (which is a ZIP) directly from bytes
+        try:
+            input_zip = io_module.BytesIO(buffer_bytes)
+            file_contents = {}
+            
+            with zipfile.ZipFile(input_zip, 'r') as zip_read:
+                # Extract all files
+                for name in zip_read.namelist():
+                    try:
+                        file_contents[name] = zip_read.read(name)
+                    except Exception as e:
+                        logger.warning(f"Could not read {name} from ZIP: {e}")
+                        continue
+            
+            # Re-create the DOCX with proper UTF-8 encoding
+            output_buffer = io_module.BytesIO()
+            with zipfile.ZipFile(output_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_write:
+                for name, content in file_contents.items():
+                    # For XML files, ensure proper encoding
+                    if name.endswith('.xml'):
+                        try:
+                            # Try to parse and re-serialize to ensure UTF-8
+                            tree = ET.fromstring(content)
+                            # Convert back to string with UTF-8 encoding
+                            xml_str = ET.tostring(tree, encoding='unicode')
+                            # Prepend XML declaration with UTF-8 encoding if not present
+                            if not xml_str.startswith('<?xml'):
+                                xml_str = '<?xml version="1.0" encoding="UTF-8"?>' + xml_str
+                            content = xml_str.encode('utf-8')
+                        except ET.ParseError as e:
+                            logger.warning(f"Could not parse XML {name}: {e}, keeping original bytes")
+                        except Exception as e:
+                            logger.warning(f"Could not re-encode {name}: {e}, keeping original")
+                    
+                    try:
+                        zip_write.writestr(name, content)
+                    except Exception as e:
+                        logger.warning(f"Could not write {name} to ZIP: {e}")
+                        continue
+            
+            result = output_buffer.getvalue()
+            logger.info(f"[_fix_docx_encoding] Successfully re-encoded DOCX with UTF-8, size: {len(result)} bytes")
+            return result
+        
+        except Exception as e:
+            logger.warning(f"[_fix_docx_encoding] Error during ZIP processing: {e}, returning original")
+            return buffer_bytes
     
-      </div>
-
-      <!-- Sequential Workflow Progress Indicator -->
-      @if (isSequentialMode && currentEditor) {
-        <div class="sequential-progress">
-          <div class="progress-header">
-            <h4 class="progress-title">Editor Progress</h4>
-            <span class="progress-badge">
-              {{ (currentEditorIndex ?? 0) + 1 }} of {{ totalEditors ?? 0 }}
-            </span>
-          </div>
-          <!-- Horizontal Editor Timeline -->
-          @if ((totalEditors ?? 0) > 0) {
-            <div class="editor-timeline horizontal">
-              @for (step of editorSteps; track step; let i = $index; let last = $last) {
-                <div
-                  class="timeline-item"
-                  [ngClass]="{
-                    'completed': i < (currentEditorIndex ?? 0),
-                    'active': i === (currentEditorIndex ?? 0),
-                    'upcoming': i > (currentEditorIndex ?? 0)
-                  }"
-                >
-                  <div class="timeline-marker">
-                    @if (i < (currentEditorIndex ?? 0)) {
-                      ✓
-                    } @else {
-                      {{ i + 1 }}
-                    }
-                  </div>
-                  <div class="timeline-editor-name">
-                    @if (editorOrder && editorOrder.length > 0 && editorOrder[i]) {
-                      {{ getEditorDisplayName(editorOrder[i]) }}
-                    } @else if (i === (currentEditorIndex ?? 0)) {
-                      {{ getEditorDisplayName(currentEditor) || ('Editor ' + (i + 1)) }}
-                    } @else {
-                      Editor {{ i + 1 }}
-                    }
-                  </div>
-                  <div class="timeline-status">
-                    @if (i < (currentEditorIndex ?? 0)) { Completed }
-                    @if (i === (currentEditorIndex ?? 0)) { In Progress }
-                    @if (i > (currentEditorIndex ?? 0)) { Not Started }
-                  </div>
-                </div>
-                <!-- Connector line between steps -->
-                @if (!last) {
-                  <div 
-                    class="timeline-connector"
-                    [ngClass]="{ 'completed': i < (currentEditorIndex ?? 0) }">
-                  </div>
-                }
-              }
-            </div>
-          }
-
-          <!-- Status Summary Pills -->
-          @if (paragraphEdits && paragraphEdits.length > 0) {
-            <div class="status-summary">
-              <h5 class="status-summary-title">Feedback Summary</h5>
-              <div class="status-pills-container">
-                <button
-                  type="button"
-                  class="status-pill status-pill-approved"
-                  (click)="scrollToFirstFeedbackByStatus('approved')"
-                  [disabled]="approvedFeedbackCount === 0"
-                  title="Scroll to first approved feedback">
-                  <span class="pill-label">Approved</span>
-                  <span class="pill-count">{{ approvedFeedbackCount }}</span>
-                </button>
-                <button
-                  type="button"
-                  class="status-pill status-pill-rejected"
-                  (click)="scrollToFirstFeedbackByStatus('rejected')"
-                  [disabled]="rejectedFeedbackCount === 0"
-                  title="Scroll to first rejected feedback">
-                  <span class="pill-label">Rejected</span>
-                  <span class="pill-count">{{ rejectedFeedbackCount }}</span>
-                </button>
-                <button
-                  type="button"
-                  class="status-pill status-pill-pending"
-                  (click)="scrollToFirstFeedbackByStatus('pending')"
-                  [disabled]="pendingFeedbackCount === 0"
-                  title="Scroll to first pending feedback">
-                  <span class="pill-label">Pending</span>
-                  <span class="pill-count">{{ pendingFeedbackCount }}</span>
-                </button>
-              </div>
-            </div>
-          }
-        </div>
-      }
-
-      <!-- Sequential Workflow: Show both Next Editor and Generate Final Output options -->
-      @if (isSequentialMode && paragraphEdits.length > 0 && !showFinalOutput) {
-        <div class="sequential-actions-container">
-          <div class="final-output-actions">
-            <button 
-              type="button"
-              class="final-output-btn"
-              (click)="onGenerateFinal(); $event.stopPropagation()"
-              [disabled]="!allParagraphsDecided || isGeneratingFinal || isNextEditorClicked">
-              @if (isGeneratingFinal) {
-                <span class="spinner"></span>
-              }
-              {{ isGeneratingFinal ? 'Generating Final Output...' : (isSequentialMode && !isLastEditor ? 'Generate Output' : 'Generate Final Output') }}
-            </button>
-            @if (!allParagraphsDecided) {
-              <p class="final-output-hint">
-                Please approve or reject all paragraph edits and feedback to generate the final article.
-              </p>
-            }
-          </div>
-
-          <!-- Next Editor Button (only if not last editor) -->
-          @if (!isLastEditor && !showFinalOutput) {
-            <div class="next-editor-actions">
-              <button 
-                type="button"
-                class="next-editor-btn"
-                (click)="onNextEditor(); $event.stopPropagation()"
-                [disabled]="!allParagraphsDecided || isGenerating || showFinalOutput">
-                @if (isGenerating) {
-                  <span class="spinner"></span>
-                }
-                {{ isGenerating ? 'Loading Next Editor...' : 'Next Editor →' }}
-              </button>
-              @if (!allParagraphsDecided) {
-                <p class="next-editor-hint">
-                  Please approve or reject all paragraph edits before proceeding to the next editor.
-                </p>
-              }
-            </div>
-          }
-        </div>
-      }
-
-      <!-- Non-sequential mode: Show only Generate Final Output -->
-      @if (!isSequentialMode && !showFinalOutput && paragraphEdits.length > 0) {
-        <div class="final-output-actions">
-          <button
-            type="button"
-            class="final-output-btn"
-            (click)="onGenerateFinal(); $event.stopPropagation()"
-            [disabled]="!allParagraphsDecided || isGeneratingFinal || isGenerating">
-            @if (isGeneratingFinal) {
-              <span class="spinner"></span>
-            }
-            {{ isGeneratingFinal ? 'Generating Final Output...' : 'Generate Final Output' }}
-          </button>
-          @if (!allParagraphsDecided) {
-            <p class="final-output-hint">
-              Please approve or reject all paragraph edits and feedback to generate the final article.
-            </p>
-          }
-        </div>
-      }
-    </div>
-    `,
-    styles: [`
-    :host {
-      display: block;
-      position: relative;
-      pointer-events: auto;
-    }
-
-    .result-section {
-      margin-top: 16px;
-      position: relative;
-      pointer-events: auto;
-    }
-
-    .result-title {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--text-primary, #1F2937);
-      margin-bottom: 8px;
-    }
-
-    .paragraph-instructions {
-      font-size: 13px;
-      color: #6B7280;
-      margin-bottom: 16px;
-    }
-
-    .bulk-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 8px;
-      margin-bottom: 16px;
-      padding: 8px 12px;
-      background: var(--bg-secondary, #F9FAFB);
-      border-radius: 8px;
-      border: 1px solid var(--border-color, #E5E7EB);
-      width: fit-content;
-      margin-left: auto;
-    }
-
-    .bulk-action-btn {
-      padding: 6px 16px;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      border: 2px solid transparent;
-      display: inline-block;
-      text-align: center;
-      text-decoration: none;
-      -webkit-appearance: none;
-      -moz-appearance: none;
-      appearance: none;
-      user-select: none;
-      margin: 0;
-      font-family: inherit;
-      position: relative;
-      pointer-events: auto;
-      touch-action: manipulation;
-    }
-
-    .bulk-action-btn:hover:not(:disabled) {
-      transform: translateY(-1px);
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-    }
-
-    .bulk-action-btn:active:not(:disabled) {
-      transform: translateY(0);
-    }
-
-    .bulk-action-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      pointer-events: none;
-    }
-
-    .bulk-action-btn:focus:not(:disabled) {
-      outline: 2px solid #fd5108;
-      outline-offset: 2px;
-    }
-
-    .approve-all-btn {
-      background-color: #F0FDF4;
-      color: #059669;
-      border-color: #10b981;
-    }
-
-    .approve-all-btn:hover:not(:disabled) {
-      background-color: #D1FAE5;
-      border-color: #059669;
-    }
-
-    .decline-all-btn {
-      background-color: #FEF2F2;
-      color: #DC2626;
-      border-color: #EF4444;
-    }
-
-    .decline-all-btn:hover:not(:disabled) {
-      background-color: #FEE2E2;
-      border-color: #DC2626;
-    }
-
-    @media (max-width: 768px) {
-      .bulk-actions {
-        flex-direction: row;
-        width: 100%;
-        justify-content: flex-end;
-      }
-      
-      .bulk-action-btn {
-        flex: 0 0 auto;
-      }
-    }
-
-    .paragraph-edits-container {
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-      margin-top: 16px;
-    }
-
-    .paragraph-edit-item {
-      border: 1px solid var(--border-color, #E5E7EB);
-      border-radius: 8px;
-      padding: 16px;
-      background: var(--bg-primary, #FFFFFF);
-      position: relative;
-      pointer-events: auto;
-    }
-
-    .paragraph-edit-item.approved {
-      border-color: #10b981;
-      background: #F0FDF4;
-    }
-
-    .paragraph-edit-item.declined {
-      border-color: #EF4444;
-      background: #FEF2F2;
-    }
-
-    .paragraph-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 12px;
-      padding-bottom: 12px;
-      border-bottom: 1px solid var(--border-color, #E5E7EB);
-    }
-
-    .paragraph-number {
-      font-weight: 600;
-      font-size: 14px;
-      color: var(--text-primary, #1F2937);
-    }
-
-    .approval-buttons {
-      display: flex;
-      gap: 8px;
-      position: relative;
-      z-index: 20;
-      pointer-events: auto;
-    }
-
-    .approve-btn,
-    .decline-btn {
-      padding: 6px 16px;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      border: 2px solid transparent;
-      display: inline-block;
-      text-align: center;
-      text-decoration: none;
-      -webkit-appearance: none;
-      -moz-appearance: none;
-      appearance: none;
-      user-select: none;
-      margin: 0;
-      font-family: inherit;
-      position: relative;
-      z-index: 25;
-      pointer-events: auto;
-      touch-action: manipulation;
-    }
-
-    .approve-btn:hover:not(:disabled),
-    .decline-btn:hover:not(:disabled) {
-      transform: translateY(-1px);
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-    }
-
-    .approve-btn:active:not(:disabled),
-    .decline-btn:active:not(:disabled) {
-      transform: translateY(0);
-    }
-
-    .approve-btn:disabled,
-    .decline-btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-      pointer-events: none;
-    }
-
-    .approve-btn:focus,
-    .decline-btn:focus {
-      outline: 2px solid #fd5108;
-      outline-offset: 2px;
-    }
-
-    .approve-btn {
-      background-color: #F0FDF4;
-      color: #059669;
-      border-color: #10b981;
-    }
-
-    .approve-btn:hover:not(:disabled) {
-      background-color: #D1FAE5;
-      border-color: #059669;
-    }
-
-    .approve-btn.active {
-      background-color: #10b981;
-      color: white;
-      border-color: #10b981;
-    }
-
-    .decline-btn {
-      background-color: #FEF2F2;
-      color: #DC2626;
-      border-color: #EF4444;
-    }
-
-    .decline-btn:hover:not(:disabled) {
-      background-color: #FEE2E2;
-      border-color: #DC2626;
-    }
-
-    .decline-btn.active {
-      background-color: #EF4444;
-      color: white;
-      border-color: #EF4444;
-    }
-
-    .approval-status {
-      display: flex;
-      align-items: center;
-    }
-
-    .status-badge {
-      padding: 4px 12px;
-      border-radius: 12px;
-      font-size: 12px;
-      font-weight: 500;
-    }
-
-    .approved-badge {
-      background-color: #F0FDF4;
-      color: #059669;
-      border: 1px solid #10b981;
-    }
-
-    .declined-badge {
-      background-color: #FEF2F2;
-      color: #DC2626;
-      border: 1px solid #EF4444;
-    }
-
-    .undecided-badge {
-      background-color: #F5F5F5;
-      color: #6B7280;
-      border: 1px solid #E5E7EB;
-    }
-
-    .paragraph-comparison-boxes {
-      display: flex;
-      flex-direction: row;
-      gap: 16px;
-      margin-bottom: 12px;
-      width: 100%;
-    }
-
-    @media (max-width: 768px) {
-      .paragraph-comparison-boxes {
-        flex-direction: column;
-      }
-    }
-
-    .paragraph-box {
-      flex: 1 1 0;
-      min-width: 0;
-      border: 2px solid var(--border-color, #E5E7EB);
-      border-radius: 8px;
-      padding: 16px;
-      background: white;
-      min-height: 150px;
-      display: flex;
-      flex-direction: column;
-    }
-
-    .paragraph-box h5 {
-      margin: 0 0 12px 0;
-      font-size: 13px;
-      font-weight: 600;
-      color: #6B7280;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      flex-shrink: 0;
-    }
-
-    .paragraph-box-original {
-      border-color: #E5E7EB;
-    }
-
-    .paragraph-box-original h5 {
-      color: #6B7280;
-    }
-
-    .paragraph-box-edited {
-      border-color: #D1D5DB;
-      transition: border-color 0.2s ease, background-color 0.2s ease;
-    }
-
-    .paragraph-box-edited.approved-box {
-      border-color: #10b981 !important;
-      background: #F0FDF4 !important;
-    }
-
-    .paragraph-box-edited.declined-box {
-      border-color: #EF4444 !important;
-      background: #FEF2F2 !important;
-    }
-
-    .paragraph-box-edited h5 {
-      color: #1F2937;
-    }
-
-    .paragraph-text-box {
-      font-size: 14px;
-      line-height: 1.6;
-      color: var(--text-primary, #1F2937);
-      white-space: pre-wrap;
-      word-wrap: break-word;
-      flex: 1;
-      min-height: 50px;
-    }
-
-    .paragraph-text-box:empty::before {
-      content: '(No content)';
-      color: #9CA3AF;
-      font-style: italic;
-    }
-
-    .no-content-placeholder {
-      color: #9CA3AF;
-      font-style: italic;
-      display: block;
-    }
-
-    .paragraph-text-box.declined-text {
-      text-decoration: line-through;
-      opacity: 0.7;
-    }
-
-    .paragraph-tags {
-      margin-top: 12px;
-      padding-top: 12px;
-      border-top: 1px solid var(--border-color, #E5E7EB);
-      font-size: 12px;
-    }
-
-    .paragraph-tags strong {
-      color: #6B7280;
-      margin-right: 8px;
-    }
-
-    .tag-badge {
-      display: inline-block;
-      padding: 4px 10px;
-      margin: 4px 4px 4px 0;
-      background: #E0E7FF;
-      color: #4338CA;
-      border-radius: 12px;
-      font-size: 11px;
-      font-weight: 500;
-    }
-
-    .final-output-actions {
-      margin-top: 24px;
-      padding-top: 16px;
-      border-top: 2px solid var(--border-color, #E5E7EB);
-    }
-
-    .spinner {
-      display: inline-block;
-      width: 14px;
-      height: 14px;
-      border: 2px solid rgba(255, 255, 255, 0.3);
-      border-radius: 50%;
-      border-top-color: white;
-      animation: spin 0.6s linear infinite;
-      margin-right: 8px;
-    }
-
-    @keyframes spin {
-      to {
-        transform: rotate(360deg);
-      }
-    }
-
-    /* Editorial feedback styles (same as guided journey) */
-    .editorial-feedback-list {
-      margin-top: 16px;
-      margin-bottom: 12px;
-      /* Keep feedback lists usable when very long */
-      max-height: 280px;
-      overflow: auto;
-      padding-right: 8px;
-    }
-
-    .editor-type-label {
-      font-weight: 600;
-      margin: 12px 0 6px 0;
-      color: #0369a1;
-      font-size: 13px;
-    }
-
-    .ef-cards {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      margin-top: 8px;
-    }
-
-    .ef-card {
-      border: 1px solid #e5e7eb;
-      border-radius: 6px;
-      padding: 12px;
-      background: #fff;
-      margin-bottom: 8px;
-    }
-
-    .ef-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 8px;
-    }
-
-    .ef-issue {
-      font-weight: 600;
-      font-size: 13px;
-      color: #111827;
-      flex: 1;
-    }
-
-    .ef-priority {
-      display: inline-block;
-      padding: 3px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 600;
-    }
-
-    .priority-critical {
-      background: #fee2e2;
-      color: #991b1b;
-    }
-
-    .priority-important {
-      background: #fef3c7;
-      color: #92400e;
-    }
-
-    .priority-enhancement {
-      background: #dbeafe;
-      color: #1e40af;
-    }
-
-    .ef-body {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-
-    .ef-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-    }
-
-    .ef-label {
-      font-weight: 600;
-      min-width: 40px;
-      color: #374151;
-      background: #dcfce7;
-      border-radius: 4px;
-      padding: 2px 8px;
-      font-size: 12px;
-    }
-
-    .ef-value {
-      flex: 1;
-      color: #1f2937;
-      font-size: 13px;
-      line-height: 1.5;
-    }
-
-    .ef-label-small {
-      font-weight: 500;
-      min-width: 50px;
-      color: #6b7280;
-      font-size: 11px;
-    }
-
-    .ef-value-small {
-      flex: 1;
-      color: #6b7280;
-      font-size: 11px;
-      line-height: 1.4;
-    }
-
-    .ef-actions {
-      display: flex;
-      gap: 8px;
-      margin-top: 8px;
-    }
-
-    .ef-approve-btn, .ef-reject-btn {
-      padding: 4px 12px;
-      border-radius: 5px;
-      font-size: 12px;
-      font-weight: 500;
-      cursor: pointer;
-      border: none;
-      transition: all 0.2s ease;
-    }
-
-    .ef-approve-btn {
-      background: #d1fae5;
-      color: #059669;
-    }
-
-    .ef-approve-btn:hover:not(:disabled) {
-      background: #10b981;
-      color: #fff;
-    }
-
-    .ef-approve-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    .ef-reject-btn {
-      background: #fee2e2;
-      color: #dc2626;
-    }
-
-    .ef-reject-btn:hover:not(:disabled) {
-      background: #dc2626;
-      color: #fff;
-    }
-
-    .ef-reject-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    .ef-status {
-      margin-top: 4px;
-      font-size: 12px;
-      font-weight: 600;
-    }
-
-    .ef-approved {
-      color: #059669;
-    }
-
-    .ef-rejected {
-      color: #dc2626;
-    }
-
-    :host ::ng-deep .highlight-yellow {
-      background: #fef08a;
-      color: #92400e;
-      font-weight: 700;
-      padding: 2px 4px;
-      border-radius: 3px;
-    }
-
-    :host ::ng-deep .highlight-hover {
-      // Enhance existing highlight colors with hover effect instead of replacing with yellow
-      box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2);
-      transform: scale(1.02);
-      transition: all 0.2s ease;
-      // Darken existing background slightly
-      filter: brightness(0.95);
+    except Exception as e:
+        logger.warning(f"[_fix_docx_encoding] Failed to fix DOCX encoding: {e}, returning original")
+        return buffer_bytes
+
+def extract_subtitle_from_content(content: str) -> tuple[str, str]:
+    """
+    Extract subtitle from the first line of content.
+    Returns (subtitle, remaining_content)
+    
+    The first non-empty line (after any markdown heading markers) becomes the subtitle,
+    and the rest becomes the content.
+    """
+    lines = content.strip().split('\n')
+    
+    if not lines:
+        return "", content
+    
+    # Get first non-empty line
+    first_line = ""
+    remaining_lines = []
+    found_first = False
+    
+    for line in lines:
+        stripped = line.strip()
+        if not found_first and stripped:
+            # Remove markdown heading markers from first line if present
+            first_line = re.sub(r'^#+\s*', '', stripped)
+            # Remove bold markers (both paired and stray **)
+            first_line = re.sub(r'\*\*(.+?)\*\*', r'\1', first_line)
+            # Remove any remaining stray ** characters
+            first_line = first_line.replace('**', '')
+            found_first = True
+        elif found_first:
+            remaining_lines.append(line)
+    
+    # Reconstruct remaining content
+    remaining_content = '\n'.join(remaining_lines).strip()
+    
+    return first_line, remaining_content
+
+def _apply_body_text_style_word(para):
+    """
+    Apply PwC Body Text style to a Word paragraph.
+    Font size: 11pt, Line spacing: 1.5 lines, Space After pre-set.
+    """
+    para.paragraph_format.space_after = DocxPt(6)  # Pre-set spacing
+    if para.runs:
+        para.runs[0].font.size = DocxPt(11)
+    para.paragraph_format.line_spacing = 1.5
+
+def _detect_list_type(line: str, level: int = 0) -> tuple[str, int]:
+    """
+    Detect list type from a line of content.
+    Returns: (list_type, detected_level)
+    list_type: 'bullet', 'number', 'alpha_upper', 'alpha_lower', 'none'
+    detected_level: 0 for first level, 1+ for nested (based on indentation)
+    """
+    line_stripped = line.strip()
+    if not line_stripped:
+        return 'none', 0
+    
+    # Check for numbered list (1., 2., 3., etc.)
+    number_match = re.match(r'^(\d+)\.\s+(.*)', line_stripped)
+    if number_match:
+        # Check indentation for nesting level
+        indent_level = (len(line) - len(line.lstrip())) // 4  # Approximate: 4 spaces = 1 level
+        return 'number', max(0, indent_level)
+    
+    # Check for uppercase alphabetical list (A., B., C., etc.)
+    alpha_upper_match = re.match(r'^([A-Z])\.\s+(.*)', line_stripped)
+    if alpha_upper_match:
+        indent_level = (len(line) - len(line.lstrip())) // 4
+        return 'alpha_upper', max(0, indent_level)
+    
+    # Check for lowercase alphabetical list (a., b., c., etc.)
+    alpha_lower_match = re.match(r'^([a-z])\.\s+(.*)', line_stripped)
+    if alpha_lower_match:
+        indent_level = (len(line) - len(line.lstrip())) // 4
+        return 'alpha_lower', max(0, indent_level)
+    
+    # Check for bullet list (•, -, *, etc.)
+    bullet_match = re.match(r'^[•\-\*]\s+(.*)', line_stripped)
+    if bullet_match:
+        indent_level = (len(line) - len(line.lstrip())) // 4
+        return 'bullet', max(0, indent_level)
+    
+    return 'none', 0
+
+def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str):
+    """
+    Add a list of items to Word document with appropriate style based on type and level.
+    """
+    if not list_items:
+        return
+    
+    for item in list_items:
+        content = item.get('content', '')
+        level = item.get('level', 0)
+        parsed = item.get('parsed', parse_bullet(content))
+        
+        # Determine style based on list type and level
+        if list_type == 'bullet':
+            if level >= 1:
+                style_name = "List Bullet 2"
+            else:
+                style_name = "List Bullet"
+        elif list_type == 'number':
+            if level >= 1:
+                style_name = "List Number 2"
+            else:
+                style_name = "List Number"
+        elif list_type == 'alpha_upper':
+            if level >= 1:
+                style_name = "List Alpha 2"
+            else:
+                style_name = "List Alpha"
+        elif list_type == 'alpha_lower':
+            if level >= 1:
+                style_name = "List Alpha 2"
+            else:
+                style_name = "List Alpha"
+        else:
+            # Default to List Bullet
+            style_name = "List Bullet" if level == 0 else "List Bullet 2"
+        
+        try:
+            para = doc.add_paragraph(style=style_name)
+        except:
+            # Fallback if style doesn't exist
+            para = doc.add_paragraph(style="List Bullet")
+        
+        # Apply Body Text style configuration
+        _apply_body_text_style_word(para)
+        
+        # Remove number/letter prefix if present (Word will auto-number)
+        clean_content = content
+        if list_type == 'number':
+            clean_content = re.sub(r'^\d+\.\s+', '', content.strip())
+        elif list_type in ['alpha_upper', 'alpha_lower']:
+            clean_content = re.sub(r'^[A-Za-z]\.\s+', '', content.strip())
+        elif list_type == 'bullet':
+            clean_content = re.sub(r'^[•\-\*]\s+', '', content.strip())
+        
+        # Reconstruct with consistent formatting
+        if parsed.get('label') and parsed.get('body'):
+            # Format: "Label: Body" with label bold
+            run = para.add_run(sanitize_text_for_word(parsed['label']))
+            run.bold = True
+            para.add_run(f": {sanitize_text_for_word(parsed['body'])}")
+        else:
+            # No colon, add as-is
+            _add_markdown_text_runs(para, clean_content)
+
+def _order_list_items(items: list[dict]) -> list[dict]:
+    """
+    Order list items correctly if they are numbered or alphabetical.
+    For numbered lists: ensure 1, 2, 3... sequence
+    For alphabetical lists: ensure A, B, C... or a, b, c... sequence
+    For bullets: preserve original order (no sorting)
+    Returns ordered list of items.
+    """
+    if not items:
+        return items
+    
+    # Determine list type from first item
+    first_item = items[0]
+    list_type = first_item.get('list_type', 'bullet')  # Default to bullet if not set
+    
+    if list_type == 'number':
+        # Extract numbers and check if ordering is needed
+        numbers = []
+        for item in items:
+            content = item.get('content', '')
+            number_match = re.match(r'^(\d+)\.\s+', content.strip())
+            if number_match:
+                numbers.append(int(number_match.group(1)))
+            else:
+                numbers.append(0)
+        
+        # Check if already in order
+        is_ordered = all(numbers[i] <= numbers[i+1] for i in range(len(numbers)-1))
+        if not is_ordered:
+            # Re-order by number
+            sorted_items = sorted(zip(numbers, items), key=lambda x: x[0])
+            # Re-number sequentially
+            ordered_items = []
+            for idx, (_, item) in enumerate(sorted_items, start=1):
+                content = item.get('content', '')
+                # Replace number with sequential number
+                new_content = re.sub(r'^\d+\.\s+', f'{idx}. ', content.strip())
+                new_item = item.copy()
+                new_item['content'] = new_content
+                ordered_items.append(new_item)
+            return ordered_items
+    
+    elif list_type in ['alpha_upper', 'alpha_lower']:
+        # Extract letters and check if ordering is needed
+        letters = []
+        for item in items:
+            content = item.get('content', '')
+            alpha_match = re.match(r'^([A-Za-z])\.\s+', content.strip())
+            if alpha_match:
+                letter = alpha_match.group(1)
+                letters.append(ord(letter.upper()) if list_type == 'alpha_upper' else ord(letter.lower()))
+            else:
+                letters.append(0)
+        
+        # Check if already in order
+        is_ordered = all(letters[i] <= letters[i+1] for i in range(len(letters)-1))
+        if not is_ordered:
+            # Re-order by letter
+            sorted_items = sorted(zip(letters, items), key=lambda x: x[0])
+            # Re-letter sequentially
+            ordered_items = []
+            for idx, (_, item) in enumerate(sorted_items):
+                content = item.get('content', '')
+                if list_type == 'alpha_upper':
+                    letter = chr(ord('A') + idx)
+                else:
+                    letter = chr(ord('a') + idx)
+                # Replace letter with sequential letter
+                new_content = re.sub(r'^[A-Za-z]\.\s+', f'{letter}. ', content.strip())
+                new_item = item.copy()
+                new_item['content'] = new_content
+                ordered_items.append(new_item)
+            return ordered_items
+    
+    # For bullets or already ordered lists, return as-is
+    return items
+
+def export_to_pdf(content: str, title: str = "Document") -> bytes:
+    """Export content to PDF format"""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    
+    story = []
+    
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor='#D04A02',
+        spaceAfter=30,
+        alignment=TA_LEFT
+    )
+    
+    body_style = ParagraphStyle(
+        'CustomBody',
+        parent=styles['BodyText'],
+        fontSize=11,
+        leading=14,
+        alignment=TA_JUSTIFY,
+        spaceAfter=12
+    )
+    heading1_style = ParagraphStyle(
+    'Heading1Bold',
+    parent=styles['Heading1'],
+    fontSize=16,
+    leading=18,
+    spaceAfter=12,
+    alignment=TA_LEFT,
+    textColor='black',
+    fontName='Helvetica-Bold'
+    )
+
+    heading2_style = ParagraphStyle(
+        'Heading2Bold',
+        parent=styles['Heading2'],
+        fontSize=14,
+        leading=16,
+        spaceAfter=10,
+        alignment=TA_LEFT,
+        textColor='black',
+        fontName='Helvetica-Bold'
+    )
+
+    story.append(Paragraph(title, title_style))
+    story.append(Spacer(1, 0.2 * inch))
+    
+    paragraphs = content.split('\n\n')
+    for para in paragraphs:
+        p = para.strip()
+        if not p:
+            continue
+        bold_heading_match = re.match(r'^\*\*(.+?)\*\*$', p)
+        if bold_heading_match:
+            text = bold_heading_match.group(1).strip()
+            # Format and normalize text before rendering
+            text = _format_content_for_pdf(text)
+            story.append(Paragraph(f"<b>{text}</b>", heading1_style))
+            continue
+
+        # Check for bullet lists and render real bullets
+        if _is_bullet_list_block(p):
+            bullet_items = _parse_bullet_items(p)
+            list_items = [ListItem(Paragraph(_format_content_for_pdf(item), body_style)) for item in bullet_items]
+            story.append(
+                ListFlowable(
+                    list_items,
+                    bulletType='bullet',
+                    bulletFontName='Helvetica',
+                    bulletFontSize=11,
+                    leftIndent=12,
+                    bulletIndent=0,
+                )
+            )
+            continue
+
+        if p.startswith("## "):
+            text = p.replace("##", "").strip()
+            # Remove ** markers if present
+            text = text.replace("**", "")
+            # Format and normalize text for PDF rendering
+            text = _format_content_for_pdf(text)
+            story.append(Paragraph(text, heading2_style))
+        elif p.startswith("# "):
+            text = p.replace("#", "").strip()
+            # Remove ** markers if present
+            text = text.replace("**", "")
+            # Format and normalize text for PDF rendering
+            text = _format_content_for_pdf(text)
+            story.append(Paragraph(text, heading1_style))
+        else:
+            # Intelligently split long paragraphs into smaller chunks
+            sentence_count = len(re.findall(r'[.!?]', p))
+            if sentence_count > 3:
+                # This is a long paragraph, split it into smaller chunks (2-3 sentences each)
+                split_paragraphs = _split_paragraph_into_sentences(p, target_sentences=3)
+                for split_para in split_paragraphs:
+                    if split_para:
+                        # Use _format_content_for_pdf for consistent formatting and normalization
+                        p_html = _format_content_for_pdf(split_para)
+                        story.append(Paragraph(p_html, body_style))
+            else:
+               # Keep short paragraphs as is, but format for PDF rendering
+                p_html = _format_content_for_pdf(p)
+                story.append(Paragraph(p_html, body_style))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def export_to_pdf_with_pwc_template(content: str, title: str = "Document", subtitle: str = "", content_type: Optional[str] = None) -> bytes:
+    """
+    Export content to PDF format with PWC branded cover page.
+    
+    VALIDATED with test_branded_pdf.py - This function properly creates:
+    1. A branded cover page by overlaying title/subtitle on PWC template
+    2. Formatted content pages
+    3. Final PDF: Cover (with logo) + Content Pages (with conditional TOC)
+    
+    Args:
+        content: The main content to export (starts from page 2)
+        title: Document title (displays on cover page with logo)
+        subtitle: Optional subtitle (displays on cover page)
+        content_type: Type of content (article, whitepaper, executive-brief, blog)
+                     If 'blog' or 'executive_brief', Table of Contents is skipped
+    
+    Returns:
+        Bytes of the final PDF document with cover + TOC (if applicable) + content
+    """
+    try:
+        from reportlab.pdfgen import canvas
+        
+        logger.info("Creating PWC branded PDF with title, subtitle, and content")
+        
+        # Check if template exists
+        if not os.path.exists(PWC_PDF_TEMPLATE_PATH):
+            logger.warning(f"PwC PDF template not found at {PWC_PDF_TEMPLATE_PATH}")
+            return _generate_pdf_with_title_subtitle(content, title, subtitle)
+        
+        # ===== STEP 1: Create branded cover page =====
+        logger.info("Step 1: Creating branded cover page")
+        
+        template_reader = PdfReader(PWC_PDF_TEMPLATE_PATH)
+        template_page = template_reader.pages[0]
+        
+        page_width = float(template_page.mediabox.width)
+        page_height = float(template_page.mediabox.height)
+        
+        logger.info(f"Template page size: {page_width:.1f} x {page_height:.1f} points")
+        
+        # Create overlay with text
+        overlay_buffer = io.BytesIO()
+        c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
+        
+        # Add title
+        title_font_size = 32
+        if len(title) > 80:
+            title_font_size = 20
+        elif len(title) > 60:
+            title_font_size = 22
+        elif len(title) > 40:
+            title_font_size = 26
+        
+        c.setFont("Helvetica-Bold", title_font_size)
+        c.setFillColor('#000000')  # Black color
+        title_y = page_height * 0.72
+        
+        # Handle multi-line titles with better word wrapping
+        # Maximum width for title (leaving margins on left and right)
+        max_title_width = page_width * 0.70  # 70% of page width with margins
+        
+        # Better character width estimation - more conservative to avoid cutoff
+        # Estimate pixels needed per character based on font size
+        # At 20pt Helvetica: ~10 pixels per character average
+        char_width_at_font = (title_font_size / 20.0) * 10
+        max_chars_per_line = int(max_title_width / char_width_at_font)
+        
+        # Ensure reasonable minimum and maximum
+        max_chars_per_line = max(20, min(max_chars_per_line, 50))
+        
+        words = title.split()
+        lines = []
+        current_line = []
+        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            # Use calculated character limit
+            if len(test_line) > max_chars_per_line:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+            else:
+                current_line.append(word)
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        # Draw multi-line title
+        if len(lines) > 1:
+            line_height = title_font_size + 6
+            # Center vertically: start higher if multiple lines
+            start_y = title_y + (len(lines) - 1) * line_height / 2
+            for i, line in enumerate(lines):
+                c.drawCentredString(page_width / 2, start_y - (i * line_height), line)
+            last_title_y = start_y - (len(lines) * line_height)
+        else:
+            c.drawCentredString(page_width / 2, title_y, title)
+            last_title_y = title_y
+        
+        logger.info(f"Title added to overlay: {title} ({len(lines)} lines)")
+        
+        # Add subtitle if provided
+        if subtitle:
+            # Clean up markdown asterisks from subtitle
+            subtitle_clean = subtitle.replace('**', '')
+            
+            c.setFont("Helvetica-Bold", 14)  # Bold font
+            c.setFillColor('#000000')  # Black color
+            subtitle_y = last_title_y - 70
+            
+            # Wrap subtitle text to fit within page width
+            # Use a more conservative character limit for subtitle
+            # Page width is typically 612 points (8.5 inches) for letter size
+            # Helvetica 14pt: approximately 7-8 pixels per character
+            max_subtitle_width = page_width * 0.75  # 75% of page width with margins
+            subtitle_char_width = 8  # pixels per character at 14pt
+            max_chars_per_line = int(max_subtitle_width / subtitle_char_width)
+            
+            words = subtitle_clean.split()
+            lines = []
+            current_line = []
+            
+            for word in words:
+                test_line = ' '.join(current_line + [word])
+                # Use more conservative line breaking - shorter lines for better visibility
+                if len(test_line) > min(50, max_chars_per_line):
+                    if current_line:
+                        lines.append(' '.join(current_line))
+                    current_line = [word]
+                else:
+                    current_line.append(word)
+            
+            if current_line:
+                lines.append(' '.join(current_line))
+            
+            # Draw multi-line subtitle with proper centering
+            line_height = 22
+            # If multiple lines, center vertically
+            if len(lines) > 1:
+                start_y = subtitle_y + (len(lines) - 1) * line_height / 2
+            else:
+                start_y = subtitle_y
+            
+            for i, line in enumerate(lines):
+                c.drawCentredString(page_width / 2, start_y - (i * line_height), line)
+            
+            logger.info(f"Subtitle added to overlay: {subtitle} ({len(lines)} lines)")
+        
+        c.save()
+        overlay_buffer.seek(0)
+        
+        # Merge overlay with template
+        overlay_reader = PdfReader(overlay_buffer)
+        overlay_page = overlay_reader.pages[0]
+        
+        template_page.merge_page(overlay_page)
+        logger.info("Overlay merged onto template cover page")
+        
+        # ===== STEP 2: Create content pages =====
+        logger.info("Step 2: Creating formatted content pages")
+        
+        # First, extract all headings for Table of Contents
+        headings = []
+        blocks = content.split('\n\n')
+        for block in blocks:
+            if not block.strip():
+                continue
+            block = block.strip()
+            
+            # Check for various heading formats
+            standalone_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block)
+            if standalone_bold_match:
+                text = standalone_bold_match.group(1).strip()
+                # Remove leading numbers like "1. ", "5.1. ", etc.
+                text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+                headings.append(text)
+                continue
+            
+            first_line_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*\n', block)
+            if first_line_bold_match:
+                text = first_line_bold_match.group(1).strip()
+                # Remove leading numbers like "1. ", "5.1. ", etc.
+                text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+                headings.append(text)
+                continue
+            
+            # Markdown headings
+            if block.startswith('#'):
+                text = re.sub(r'^#+\s*', '', block.split('\n')[0]).strip()
+                # Remove ** markers if present
+                text = text.replace('**', '').strip()
+                # Remove leading numbers like "1. ", "5.1. ", etc.
+                text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+                headings.append(text)
+        
+        logger.info(f"Extracted {len(headings)} headings for Table of Contents")
+        
+        content_buffer = io.BytesIO()
+        doc = SimpleDocTemplate(content_buffer, pagesize=letter, topMargin=1*inch, bottomMargin=1*inch)
+        styles = getSampleStyleSheet()
+        
+        # Define custom styles
+        body_style = ParagraphStyle(
+            'PWCBody',
+            parent=styles['BodyText'],
+            fontSize=11,
+            leading=15,
+            alignment=TA_JUSTIFY,
+            spaceAfter=12,
+            fontName='Helvetica'
+        )
+        
+        heading_style = ParagraphStyle(
+            'PWCHeading',
+            parent=styles['Heading2'],
+            fontSize=14,
+            textColor='#D04A02',
+            spaceAfter=10,
+            spaceBefore=10,
+            fontName='Helvetica-Bold'
+        )
+        
+        # Citation style with left alignment (no justify to avoid extra spaces)
+        citation_style = ParagraphStyle(
+            'PWCCitation',
+            parent=styles['BodyText'],
+            fontSize=11,
+            leading=15,
+            alignment=TA_LEFT,
+            spaceAfter=12,
+            fontName='Helvetica'
+        )
+        
+        story = []
+        
+        # Parse and add content with formatting
+        blocks = content.split('\n\n')
+        for block in blocks:
+            if not block.strip():
+                continue
+            
+            block = block.strip()
+            
+            # Check for headings (bold text on its own line or markdown style)
+            standalone_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block)
+            if standalone_bold_match:
+                heading_text = standalone_bold_match.group(1).strip()
+                story.append(Paragraph(heading_text, heading_style))
+                continue
+            
+            # Check for bold text at start of paragraph
+            first_line_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*\n', block)
+            if first_line_bold_match:
+                heading_text = first_line_bold_match.group(1).strip()
+                remaining_content = block[first_line_bold_match.end():].strip()
+                # Format and normalize heading text
+                heading_text = _format_content_for_pdf(heading_text)
+                story.append(Paragraph(heading_text, heading_style))
+                if remaining_content:
+                    # Check if remaining content is a bullet list
+                    if _is_bullet_list_block(remaining_content):
+                        bullet_items = _parse_bullet_items(remaining_content)
+                        list_items = [ListItem(Paragraph(_format_content_for_pdf(item), body_style)) for item in bullet_items]
+                        story.append(
+                            ListFlowable(
+                                list_items,
+                                bulletType='bullet',
+                                bulletFontName='Helvetica',
+                                bulletFontSize=11,
+                                leftIndent=12,
+                                bulletIndent=0,
+                            )
+                        )
+                    else:
+                        para = Paragraph(_format_content_for_pdf(remaining_content), body_style)
+                        story.append(para)
+                continue
+            
+            # Check for markdown headings
+            if block.startswith('####'):
+                text = block.replace('####', '').strip()
+                # Remove ** markers if present
+                text = text.replace('**', '')
+                # Format and normalize text for PDF rendering
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+                continue
+            elif block.startswith('###'):
+                text = block.replace('###', '').strip()
+                # Remove ** markers if present
+                text = text.replace('**', '')
+                # Format and normalize text for PDF rendering
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+                continue
+            elif block.startswith('##'):
+                text = block.replace('##', '').strip()
+                # Remove ** markers if present
+                text = text.replace('**', '')
+                # Format and normalize text for PDF rendering
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+                continue
+            elif block.startswith('#'):
+                text = block.replace('#', '').strip()
+                # Remove ** markers if present
+                text = text.replace('**', '')
+                # Format and normalize text for PDF rendering
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+                continue
+            
+            # Check if block is a bullet list
+            if _is_bullet_list_block(block):
+                bullet_items = _parse_bullet_items(block)
+                list_items = [ListItem(Paragraph(_format_content_for_pdf(item), body_style)) for item in bullet_items]
+                story.append(
+                    ListFlowable(
+                        list_items,
+                        bulletType='bullet',
+                        bulletFontName='Helvetica',
+                        bulletFontSize=11,
+                        leftIndent=12,
+                        bulletIndent=0,
+                    )
+                )
+                continue
+            
+            # Check if block contains multiple lines with citation patterns
+            # Citations typically look like: [1] text or 1. text
+            lines = block.split('\n')
+            if len(lines) > 1:
+                # Check if this looks like a citation/reference block
+                citation_pattern = r'^\s*(\[\d+\]|\d+\.)\s+'
+                citation_count = sum(1 for line in lines if re.match(citation_pattern, line.strip()))
+                
+                # If at least 2 lines match citation pattern, treat as citation block
+                if citation_count >= 2:
+                    # Process each line separately with left alignment (no justify)
+                    for line in lines:
+                        line_stripped = line.strip()
+                        if line_stripped:
+                            para = Paragraph(_format_content_for_pdf(line_stripped), citation_style)
+                            story.append(para)
+                    continue
+            
+            # Regular paragraph - intelligently split long paragraphs into smaller chunks
+            sentence_count = len(re.findall(r'[.!?]', block))
+            if sentence_count > 3:
+                # This is a long paragraph, split it into smaller chunks (2-3 sentences each)
+                split_paragraphs = _split_paragraph_into_sentences(block, target_sentences=3)
+                for split_para in split_paragraphs:
+                    if split_para:
+                        para = Paragraph(_format_content_for_pdf(split_para), body_style)
+                        story.append(para)
+            else:
+                # Keep short paragraphs as is
+                para = Paragraph(_format_content_for_pdf(block), body_style)
+                story.append(para)
+        
+        # Build the content PDF
+        doc.build(story)
+        content_buffer.seek(0)
+        
+        # ===== STEP 2.5: Create Table of Contents pages (multi-page support) - CONDITIONAL =====
+        # Only generate TOC for Article and White Paper, skip for Blog and Executive Brief
+        should_add_toc = content_type and content_type.lower() not in ['blog', 'executive_brief', 'executive-brief']
+        toc_pages = []
+        
+        if headings and should_add_toc:
+            logger.info(f"Step 2.5: Creating Table of Contents pages for content_type: {content_type}")
+            toc_buffer = io.BytesIO()
+            toc_doc = SimpleDocTemplate(toc_buffer, pagesize=(page_width, page_height), topMargin=1*inch, bottomMargin=1*inch)
+            toc_styles = getSampleStyleSheet()
+            toc_title_style = ParagraphStyle(
+                'TOCTitle',
+                parent=toc_styles['Heading1'],
+                fontSize=24,
+                textColor='#000000',
+                spaceAfter=24,
+                alignment=TA_LEFT,
+                fontName='Helvetica-Bold'
+            )
+            toc_heading_style = ParagraphStyle(
+                'TOCHeading',
+                parent=toc_styles['BodyText'],
+                fontSize=11,
+                textColor='#000000',
+                spaceAfter=12,
+                alignment=TA_LEFT,
+                fontName='Helvetica',
+                leading=16,
+                rightIndent=20
+            )
+            toc_story = []
+            toc_story.append(Paragraph("Contents", toc_title_style))
+            toc_story.append(Spacer(1, 0.2 * inch))
+            for index, heading in enumerate(headings, start=1):
+                # Add serial number before heading (ReportLab will handle text wrapping automatically)
+                # Format and normalize heading text to handle dashes properly
+                formatted_heading = _format_content_for_pdf(heading)
+                toc_story.append(Paragraph(f"{index}. {formatted_heading}", toc_heading_style))
+            toc_doc.build(toc_story)
+            toc_buffer.seek(0)
+            toc_reader = PdfReader(toc_buffer)
+            toc_pages = [toc_reader.pages[i] for i in range(len(toc_reader.pages))]
+        else:
+            logger.info(f"Step 2.5: Skipping Table of Contents for content_type: {content_type}")
+        # ===== STEP 3: Merge cover + ToC + content =====
+        logger.info("Step 3: Merging cover page, ToC, and content pages")
+        
+        content_reader = PdfReader(content_buffer)
+        
+        writer = PdfWriter()
+        
+        # Add the branded cover page (Page 1)
+        writer.add_page(template_page)
+        logger.info("Added branded cover page with PWC logo, title, and subtitle")
+        
+        # Add the Table of Contents pages (Page 2+)
+        for idx, toc_page in enumerate(toc_pages):
+            writer.add_page(toc_page)
+            logger.info(f"Added Table of Contents page {idx+1}")
+        
+        # Add all content pages (Page 3+)
+        for page_num in range(len(content_reader.pages)):
+            logger.info(f"Adding content page {page_num + 1}")
+            writer.add_page(content_reader.pages[page_num])
+        
+        # Write final PDF
+        output_buffer = io.BytesIO()
+        writer.write(output_buffer)
+        output_buffer.seek(0)
+        
+        result_bytes = output_buffer.getvalue()
+        logger.info(f"PDF export complete: {len(writer.pages)} pages, {len(result_bytes)} bytes")
+        
+        return result_bytes
+            
+    except Exception as e:
+        logger.error(f"Error exporting to PDF with PwC template: {e}", exc_info=True)
+        # Fallback to basic PDF
+        return _generate_pdf_with_title_subtitle(content, title, subtitle)
+
+
+def _generate_pdf_with_title_subtitle(content: str, title: str, subtitle: str = "") -> bytes:
+    """
+    Generate a professional PDF with title, subtitle, and content.
+    Used as fallback when PWC template is unavailable.
+    """
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=28,
+        textColor='#D04A02',
+        spaceAfter=20,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    )
+    
+    subtitle_style = ParagraphStyle(
+        'CustomSubtitle',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor='#666666',
+        spaceAfter=40,
+        alignment=TA_CENTER,
+        fontName='Helvetica'
+    )
+    
+    body_style = ParagraphStyle(
+        'CustomBody',
+        parent=styles['BodyText'],
+        fontSize=11,
+        leading=14,
+        alignment=TA_JUSTIFY,
+        spaceAfter=12
+    )
+    
+    story = []
+    
+    # Add title
+    story.append(Paragraph(title, title_style))
+    
+    # Add subtitle
+    if subtitle:
+        story.append(Paragraph(subtitle, subtitle_style))
+    else:
+        story.append(Spacer(1, 0.3 * inch))
+    
+    # Add content with intelligent paragraph splitting
+    paragraphs = content.split('\n\n')
+    for para in paragraphs:
+        if para.strip():
+            # Check if this is a long paragraph that should be split
+            sentence_count = len(re.findall(r'[.!?]', para.strip()))
+            
+            if sentence_count > 3:
+                # This is a long paragraph, split it into smaller chunks
+                split_paragraphs = _split_paragraph_into_sentences(para.strip(), target_sentences=3)
+                for split_para in split_paragraphs:
+                    if split_para:
+                        story.append(Paragraph(split_para, body_style))
+            else:
+                # Keep short paragraphs as is
+                story.append(Paragraph(para.strip(), body_style))
+    
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def _format_content_for_pdf(text: str) -> str:
+    """
+    Format content for PDF by converting markdown-style formatting to HTML-like tags.
+    Reportlab supports a subset of HTML/XML tags for styling.
+    
+    Converts:
+    - **bold** to <b>bold</b>
+    - *italic* to <i>italic</i>
+    - [text](url) to <a href="url" color="blue">text</a>
+    - https?://... to <a href="url" color="blue">url</a>
+    - Normalizes all Unicode dash variants to standard hyphen for reliable PDF rendering
+    """
+    # First, handle special quotation marks and other problematic characters BEFORE processing HTML
+    # This ensures they are replaced before being wrapped in HTML tags
+    text = text.replace('\u201C', '"')  # Left double quotation mark
+    text = text.replace('\u201D', '"')  # Right double quotation mark
+    text = text.replace('\u2018', "'")  # Left single quotation mark
+    text = text.replace('\u2019', "'")  # Right single quotation mark
+    text = text.replace('\u2026', '...')  # Ellipsis
+    
+    # Normalize all Unicode dash/hyphen variants to standard ASCII hyphen-minus (-)
+    # This prevents ReportLab rendering issues with special Unicode characters
+    # Must be done BEFORE HTML processing to avoid encoding issues
+    dash_variants = [
+        '\u2010',  # Hyphen
+        '\u2011',  # Non-breaking hyphen
+        '\u2012',  # Figure dash
+        '\u2013',  # En dash (–)
+        '\u2014',  # Em dash (—)
+        '\u2015',  # Horizontal bar
+        '\u2212',  # Minus sign
+        '\u058A',  # Armenian hyphen
+        '\u05BE',  # Hebrew maqaf
+        '\u1400',  # Canadian syllabics hyphen
+        '\u1806',  # Mongolian todo soft hyphen
+        '\u2E17',  # Double oblique hyphen
+        '\u30A0',  # Katakana-hiragana double hyphen
+        '\uFE58',  # Small em dash
+        '\uFE63',  # Small hyphen-minus
+        '\uFF0D',  # Fullwidth hyphen-minus
+    ]
+    
+    for dash in dash_variants:
+        text = text.replace(dash, '-')
+    
+    # Convert markdown links [text](url) to <a href="url" color="blue">text</a>
+    text = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', r'<a href="\2" color="blue">\1</a>', text)
+    
+    # Convert plain URLs to clickable links (but not those already inside HTML tags)
+    # Match URLs that are not inside href= attributes or already converted
+    text = re.sub(r'(?<![="])(?<![a-zA-Z])(?<!href)(https?://[^\s)>\]]+)', r'<a href="\1" color="blue">\1</a>', text)
+    
+    # Convert **bold** to <b>bold</b>
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    
+    # Convert *italic* to <i>italic</i> (but not if it's part of **bold** or at line start for bullets)
+    # Use negative lookbehind/lookahead to avoid double-processing
+    text = re.sub(r'(?<!\*)\*([^\*]+?)\*(?!\*)', r'<i>\1</i>', text)
+    
+    return text
+
+
+def _is_bullet_list_block(block: str) -> bool:
+    """Check if a block contains bullet points"""
+    lines = block.split('\n')
+    bullet_count = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped and (stripped.startswith('- ') or stripped.startswith('• ') or stripped.startswith('* ')):
+            bullet_count += 1
+    return bullet_count > 0
+
+
+def _parse_bullet_items(block: str) -> list:
+    """Parse bullet items from a block and return list of bullet texts"""
+    lines = block.split('\n')
+    items = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and (stripped.startswith('- ') or stripped.startswith('• ') or stripped.startswith('* ')):
+            # Remove bullet marker and leading/trailing whitespace
+            bullet_text = re.sub(r'^[-•\*]\s+', '', stripped)
+            items.append(bullet_text)
+    return items
+
+
+def _split_paragraph_into_sentences(paragraph: str, target_sentences: int = 3) -> List[str]:
+    """
+    Split a long paragraph into smaller paragraphs by sentence boundaries.
+    
+    This ensures that even if content doesn't have explicit paragraph breaks (\n\n),
+    long blocks of text are divided into readable chunks of 2-3 sentences each.
+    
+    Args:
+        paragraph: The paragraph text to split
+        target_sentences: Target number of sentences per paragraph chunk (default: 3)
+    
+    Returns:
+        List of paragraph strings, each containing roughly target_sentences sentences
+    """
+    if not paragraph or not paragraph.strip():
+        return []
+    
+    # Split by sentence boundaries (period, question mark, exclamation mark followed by space)
+    # This regex splits on . ? ! followed by a space and capital letter, preserving the punctuation
+    sentence_pattern = r'(?<=[.!?])\s+(?=[A-Z])'
+    sentences = re.split(sentence_pattern, paragraph.strip())
+    
+    if len(sentences) <= target_sentences:
+        # If paragraph has 3 or fewer sentences, keep it as is
+        return [paragraph.strip()]
+    
+    # Group sentences into chunks
+    paragraphs = []
+    current_chunk = []
+    
+    for sentence in sentences:
+        current_chunk.append(sentence)
+        
+        # When we have enough sentences, create a new paragraph
+        if len(current_chunk) >= target_sentences:
+            paragraphs.append(' '.join(current_chunk).strip())
+            current_chunk = []
+    
+    # Add remaining sentences
+    if current_chunk:
+        paragraphs.append(' '.join(current_chunk).strip())
+    
+    return paragraphs
+
+def add_hyperlink(paragraph, url, text=None): #merge conflict resolved
+    """
+    Create a hyperlink in a Word paragraph with blue color and underline.
+    """
+    if not text:
+        text = url
+    
+    # Sanitize inputs
+    text = sanitize_text_for_word(text)
+    url = str(url).strip()
+
+    part = paragraph.part
+    r_id = part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(qn('r:id'), r_id)
+
+    run = OxmlElement('w:r')
+    rPr = OxmlElement('w:rPr')
+
+    # Apply Hyperlink character style
+    rStyle = OxmlElement('w:rStyle')
+    rStyle.set(qn('w:val'), 'Hyperlink')
+    rPr.append(rStyle)
+
+    # Style (blue + underline) - ensure color is applied
+    u = OxmlElement('w:u')
+    u.set(qn('w:val'), 'single')
+    rPr.append(u)
+
+    color = OxmlElement('w:color')
+    color.set(qn('w:val'), '0000FF')
+    rPr.append(color)
+
+    run.append(rPr)
+    
+    # Add text to run - ensure it's properly encoded
+    t = OxmlElement('w:t')
+    # Set text with proper XML text handling
+    if text:
+        t.text = text
+    run.append(t)
+
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+def export_to_word(content: str, title: str = "Document") -> bytes:
+    """Export content to Word DOCX format using PwC template"""
+    try:
+        # Load PwC template
+        if os.path.exists(PWC_TEMPLATE_PATH):
+            doc = Document(PWC_TEMPLATE_PATH)
+            logger.info(f"Loaded PwC template from: {PWC_TEMPLATE_PATH}")
+        else:
+            logger.warning(f"PwC template not found at {PWC_TEMPLATE_PATH}, using default formatting")
+            doc = Document()
+    except Exception as e:
+        logger.warning(f"Failed to load PwC template: {e}, using default formatting")
+        doc = Document()
+    
+    # Check if template has proper structure (Title, Subtitle, page breaks)
+    has_template_structure = (
+        len(doc.paragraphs) > 2 and 
+        doc.paragraphs[0].style.name == 'Title' and
+        doc.paragraphs[1].style.name == 'Subtitle'
+    )
+    
+    if has_template_structure:
+        # Use template structure: update title, clear subtitle, remove page break paragraphs
+        # Update title (paragraph 0)
+        _set_paragraph_text_with_breaks(doc.paragraphs[0], title)
+        
+        # Clear subtitle (paragraph 1) - will be empty for basic export
+        _set_paragraph_text_with_breaks(doc.paragraphs[1], '')
+        
+        # Remove ALL template content after title and subtitle (including old TOC and page breaks)
+        paragraphs_to_remove = list(doc.paragraphs[2:])
+        for para in paragraphs_to_remove:
+            p = para._element
+            p.getparent().remove(p)
+
+        # Add page break after subtitle
+        _ensure_page_break_after_paragraph(doc.paragraphs[1])
+        
+        # Extract headings from content before adding it
+        headings = _extract_headings_from_content(content)
+        
+        # Add Table of Contents on page 2
+        if headings:
+            _add_table_of_contents(doc, headings)
+        
+        # Add a page break before the generated content so it starts after the TOC page
+        page_break_para = doc.add_paragraph()
+        run = page_break_para.add_run()
+        run.add_break(WD_BREAK.PAGE)
+        
+        # Add content after the page break
+        _add_formatted_content(doc, content)
+    else:
+        # No template structure, clear everything and build from scratch
+        for para in doc.paragraphs[:]:
+            p = para._element
+            p.getparent().remove(p)
+        
+        # Add title using Title style
+        title_para = doc.add_paragraph(title, style='Title')
+        
+        # Add a blank line after title
+        doc.add_paragraph()
+        
+        # Parse and add content with proper formatting
+        _add_formatted_content(doc, content)
+    
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    docx_bytes = buffer.getvalue()
+    
+    # Apply encoding fix to ensure all Unicode characters are properly handled
+    docx_bytes = _fix_docx_encoding(docx_bytes)
+    
+    return docx_bytes
+
+def _add_bookmark_to_paragraph(para, bookmark_name: str):
+    """Add a bookmark to a paragraph"""
+    # Create bookmark start
+    bookmark_id = str(next(_bookmark_counter))
+    bookmark_start = OxmlElement('w:bookmarkStart')
+    bookmark_start.set(qn('w:id'), bookmark_id)
+    bookmark_start.set(qn('w:name'), bookmark_name)
+    
+    # Create bookmark end
+    bookmark_end = OxmlElement('w:bookmarkEnd')
+    bookmark_end.set(qn('w:id'), bookmark_id)
+    
+    # Add to paragraph
+    para._element.insert(0, bookmark_start)
+    para._element.append(bookmark_end)
+    
+def is_bullet_line(line: str) -> bool:
+    return re.match(r'^\s*[-•]\s+', line) is not None
+
+def export_to_word_pwc_standalone(
+    content: str,
+    title: str,
+    subtitle: str | None = None,
+    content_type: str | None = None,
+    references: list[dict] | None = None
+) -> bytes:
+    logger.error("export_to_word_pwc_standalone() IS BEING CALLED")
+    doc = Document(PWC_TEMPLATE_PATH) if os.path.exists(PWC_TEMPLATE_PATH) else Document()
+    main_heading = None
+    toc_items: list[str] = []
+    references_heading_added = False
+    # _set_paragraph_text_with_breaks(doc.paragraphs[0], sanitize_text_for_word(title))
+    _set_paragraph_text_with_breaks(doc.paragraphs[1], sanitize_text_for_word(subtitle or ""))
+    # for para in list(doc.paragraphs[2:]):
+    #     para._element.getparent().remove(para._element)
+    while len(doc.paragraphs) > 2:
+        p = doc.paragraphs[-1]
+        p._element.getparent().remove(p._element)
+    
+    # -------- FIRST PASS: collect TOC headings --------
+    for block in content.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+
+        # Main / section headings
+        if block.startswith("# ") and not block.startswith("##"):
+            text = block[2:].strip()
+            if not main_heading:
+                main_heading = text
+            toc_items.append(text.replace(":", ""))
+        # Sub-headings
+        elif block.startswith("##") and block.strip().lower() not in {"## references"}:
+            text = block.replace("##", "").strip()
+            # toc_items.append(text)
+            toc_items.append(text.replace(":", ""))
+
+        # Bold-only headings (**Heading**)
+        else:
+            m = re.match(r'^\*\*(.+?)\*\*$', block)
+            if m:
+                # toc_items.append(m.group(1).strip())
+                toc_items.append(m.group(1).strip().replace(":", ""))
+
+    title_para = doc.paragraphs[0]
+    title_para.style = "Heading 1"
+    print("Setting main heading:", main_heading," title",title_para)
+    if main_heading:
+        _set_paragraph_text_with_breaks(
+            title_para,
+            sanitize_text_for_word(main_heading)
+        )
+    else:
+        title_para.text = ""
+    
+    _ensure_page_break_after_paragraph(doc.paragraphs[1])
+
+    doc.add_paragraph("Contents", style="Heading 1")
+
+    for idx, heading in enumerate(toc_items, start=1):
+        p = doc.add_paragraph(style="Normal")
+        p.paragraph_format.space_after = DocxPt(6)        
+        run = p.add_run(f"{idx} {sanitize_text_for_word(heading)}")
+        run.bold = False
+    doc.add_page_break()
+    for block in content.split("\n\n"):
+        block = block.strip()
+
+        if re.fullmatch(r'[-•–—]+', block):
+            continue
+        if not block:
+            continue
+        if block.strip().lower() in {"references:", "references"}:
+            doc.add_paragraph("References", style="Heading 2")
+            references_heading_added = True
+            continue
+        if block.startswith("##"):
+            text = block.replace("##", "").strip()
+            p = doc.add_paragraph(style="Heading 2")
+            p.add_run(sanitize_text_for_word(text)).bold = True
+            continue
+
+        if block.startswith("#") and not block.startswith("##"):
+            text = block[2:].strip()
+            p = doc.add_paragraph(style="Heading 1")
+            p.add_run(sanitize_text_for_word(text)).bold = True
+            continue
+
+        m = re.match(r'^\*\*(.+?)\*\*$', block)
+        if m:
+            p = doc.add_paragraph(style="Heading 1")
+            p.add_run(sanitize_text_for_word(m.group(1))).bold = True
+            continue
+        lines = block.split("\n")
+        if all(is_bullet_line(l) for l in lines):
+            for line in lines:
+                clean = re.sub(r'^\s*[-•]\s+', '', line).strip()
+                if clean:
+                    para = doc.add_paragraph(style="List Bullet")
+                    _add_markdown_text_runs(para, clean)
+            continue
+        # if block.startswith(("-", "•", "*")):
+        #     for line in block.split("\n"):
+        #         line = re.sub(r'^[•\-\*]\s*', '', line.strip())
+        #         if line:
+        #             para = doc.add_paragraph(style="List Bullet")
+        #             _add_markdown_text_runs(para, line)
+        #             continue
+
+        para = doc.add_paragraph(style="Normal")
+        _add_markdown_text_runs(para, block)
+    
+    # doc.add_page_break()
+   
+
+    if references:
+        doc.add_page_break()
+        if not references_heading_added:
+            doc.add_paragraph("References", style="Heading 2")
+
+
+        for ref in references:
+            para = _add_numbered_paragraph(
+                doc,
+                sanitize_text_for_word(ref.get("title", ""))
+            )
+
+            if ref.get("url"):
+                add_hyperlink(para, ref["url"])
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return _fix_docx_encoding(buffer.getvalue())
+
+
+def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
+    """
+    Adds text to a paragraph with support for:
+    **bold** text
+    *italic* text
+    [text](url) - markdown links converted to hyperlinks
+    Plain URLs - converted to hyperlinks
+    """
+    if not text:
+        return
+    
+    # Start with markdown links to avoid conflicts with other patterns
+    # Replace markdown links [text](url) with a placeholder first
+    link_placeholders = {}
+    placeholder_counter = 0
+    
+    def replace_link(match):
+        nonlocal placeholder_counter
+        link_text = match.group(1)
+        link_url = match.group(2)
+        placeholder = f"__LINK_PLACEHOLDER_{placeholder_counter}__"
+        link_placeholders[placeholder] = (link_text, link_url)
+        placeholder_counter += 1
+        return placeholder
+    
+    # Replace all markdown links with placeholders
+    text_with_placeholders = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', replace_link, text)
+    
+    # Now process the text with placeholders
+    pos = 0
+    while pos < len(text_with_placeholders):
+        # Check for placeholder (hyperlink)
+        placeholder_match = re.search(r'__LINK_PLACEHOLDER_\d+__', text_with_placeholders[pos:])
+        # Check for bold
+        bold_match = re.search(r'\*\*(.+?)\*\*', text_with_placeholders[pos:])
+        # Check for italic
+        italic_match = re.search(r'(?<!\*)\*([^\*]+?)\*(?!\*)', text_with_placeholders[pos:])
+        # Check for plain URL (that wasn't converted to markdown)
+        url_match = re.search(r'https?://\S+?(?=[\s,.);\]"]|$)', text_with_placeholders[pos:])
+        
+        # Collect matches with positions
+        matches = []
+        if placeholder_match:
+            matches.append(('placeholder', pos + placeholder_match.start(), placeholder_match))
+        if allow_bold and bold_match:
+            matches.append(('bold', pos + bold_match.start(), bold_match))
+        if italic_match:
+            matches.append(('italic', pos + italic_match.start(), italic_match))
+        if url_match:
+            matches.append(('url', pos + url_match.start(), url_match))
+        
+        if not matches:
+            # No more patterns, add remaining text
+            if pos < len(text_with_placeholders):
+                remaining = text_with_placeholders[pos:]
+                if remaining:
+                    run = paragraph.add_run(sanitize_text_for_word(remaining))
+            break
+        
+        # Process the earliest match
+        matches.sort(key=lambda x: x[1])
+        match_type, match_pos, match = matches[0]
+        
+        # Add text before match
+        if match_pos > pos:
+            before_text = text_with_placeholders[pos:match_pos]
+            if before_text:
+                run = paragraph.add_run(sanitize_text_for_word(before_text))
+        
+        # Process the match
+        if match_type == 'placeholder':
+            placeholder_text = match.group(0)
+            if placeholder_text in link_placeholders:
+                link_text, link_url = link_placeholders[placeholder_text]
+                add_hyperlink(paragraph, link_url, link_text)
+            pos = match_pos + len(placeholder_text)
+        
+        elif match_type == 'bold':
+            bold_text = match.group(1)
+            run = paragraph.add_run(sanitize_text_for_word(bold_text))
+            run.bold = True
+            pos = match_pos + len(match.group(0))
+        
+        elif match_type == 'italic':
+            italic_text = match.group(1)
+            run = paragraph.add_run(sanitize_text_for_word(italic_text))
+            run.italic = True
+            pos = match_pos + len(match.group(0))
+        
+        elif match_type == 'url':
+            url = match.group(0).rstrip('.,;:')
+            add_hyperlink(paragraph, url, url)
+            pos = match_pos + len(url)
+
+
+def _add_numbered_paragraph(doc: Document, text: str):
+    """
+    Create a numbered paragraph with a BRAND-NEW numbering instance.
+    Always starts from 1. Never interferes with other lists.
+    """
+    numbering_part = doc.part.numbering_part
+
+    # Create a new abstract numbering definition
+    abstract_num_id = numbering_part._next_abstract_num_id
+    numbering_part._next_abstract_num_id += 1
+
+    abstract_num = OxmlElement("w:abstractNum")
+    abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
+
+    lvl = OxmlElement("w:lvl")
+    lvl.set(qn("w:ilvl"), "0")
+
+    start = OxmlElement("w:start")
+    start.set(qn("w:val"), "1")
+
+    lvl_restart = OxmlElement("w:lvlRestart")
+    lvl_restart.set(qn("w:val"), "1") 
+    num_fmt = OxmlElement("w:numFmt")
+    num_fmt.set(qn("w:val"), "decimal")
+
+    lvl_text = OxmlElement("w:lvlText")
+    lvl_text.set(qn("w:val"), "%1.")
+
+    lvl.extend([start, lvl_restart, num_fmt, lvl_text])
+    abstract_num.append(lvl)
+    numbering_part._numbering.append(abstract_num)
+
+    # Create a new numbering instance
+    num_id = numbering_part._next_num_id
+    numbering_part._next_num_id += 1
+
+    num = OxmlElement("w:num")
+    num.set(qn("w:numId"), str(num_id))
+
+    abstract_ref = OxmlElement("w:abstractNumId")
+    abstract_ref.set(qn("w:val"), str(abstract_num_id))
+
+    num.append(abstract_ref)
+    numbering_part._numbering.append(num)
+
+    # Create paragraph using this numbering
+    p = doc.add_paragraph()
+    pPr = p._p.get_or_add_pPr()
+
+    numPr = OxmlElement("w:numPr")
+    ilvl = OxmlElement("w:ilvl")
+    ilvl.set(qn("w:val"), "0")
+    numId = OxmlElement("w:numId")
+    numId.set(qn("w:val"), str(num_id))
+
+    numPr.extend([ilvl, numId])
+    pPr.append(numPr)
+
+    p.add_run(text)
+    return p
+
+def _add_references_section(doc: Document, references: list[dict]):
+    doc.add_page_break()
+    doc.add_paragraph("References", style="Heading 2")
+
+    for ref in references:
+        title = ref.get("title", "")
+        url = ref.get("url", "")
+        
+        # Create the reference text with URL
+        if url:
+            display_text = f"{title} (URL: {url})"
+        else:
+            display_text = title
+        
+        para = _add_numbered_paragraph(doc, display_text)
+        
+        # If URL exists, make the URL part a hyperlink
+        if url:
+            # Clear the paragraph and rebuild with hyperlink
+            for run in para.runs[:]:
+                run._element.getparent().remove(run._element)
+            
+            # Add title as plain text
+            para.add_run(title)
+            para.add_run(" (URL: ")
+            
+            # Add URL as hyperlink
+            add_hyperlink(para, url, url)
+            
+            para.add_run(")")
+
+def _add_formatted_content(doc: Document, content: str, references: list[dict] | None = None):
+    """Parse and add content to document with appropriate styles"""
+    
+    # Split content into blocks (paragraphs separated by blank lines)
+    blocks = content.split('\n\n')
+    
+    # Pre-process: Merge consecutive numbered list items and citations
+    # This handles cases where citations are split across blocks (title and URL on separate blocks)
+    merged_blocks = []
+    i = 0
+    while i < len(blocks):
+        block = blocks[i].strip()
+        if not block:
+            i += 1
+            continue
+        
+        # Check if this is a numbered item
+        if re.match(r'^\d+\.', block):
+            merged_block = block
+            # Look ahead for consecutive numbered items
+            j = i + 1
+            while j < len(blocks):
+                next_block = blocks[j].strip()
+                if not next_block:
+                    j += 1
+                    continue
+                
+                # Check if next block is also a numbered item
+                if re.match(r'^\d+\.', next_block):
+                    # Merge with current block
+                    merged_block += '\n' + next_block
+                    j += 1
+                else:
+                    # No more numbered items, stop looking
+                    break
+            
+            merged_blocks.append(merged_block)
+            i = j
+        else:
+            merged_blocks.append(block)
+            i += 1
+    
+    # Now process merged blocks
+    for block in merged_blocks:
+        if not block.strip():
+            continue
+        
+        # Check for headings (lines starting with # or **bold** markers)
+        block = block.strip()
+        
+        # Check if the block is a standalone bold text (likely a heading)
+        # Pattern: **Text** at the start of a line, possibly followed by newline or end of block
+        standalone_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block)
+        if standalone_bold_match:
+            # This is a standalone bold text, treat as Heading 2
+            text = standalone_bold_match.group(1).strip()
+            sanitized_text = sanitize_text_for_word(text)
+            para = doc.add_paragraph(style='Heading 2')
+            # para.add_run(text)
+            run = para.add_run(sanitized_text)
+            run.bold = True
+
+            # Add bookmark for TOC page number reference
+            bookmark_name = text.replace(" ", "_").replace("&", "and")
+            _add_bookmark_to_paragraph(para, bookmark_name)
+            continue
+        
+        # Check if the block starts with bold text on first line (likely a section header)
+        # Pattern: **Text** followed by newline and more content
+        first_line_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*\n', block)
+        if first_line_bold_match:
+            # Extract the bold heading and remaining content
+            heading_text = first_line_bold_match.group(1).strip()
+            sanitized_heading = sanitize_text_for_word(heading_text)
+            remaining_content = block[first_line_bold_match.end():].strip()
+            
+            # Add heading
+            para = doc.add_paragraph(style='Heading 2')
+            # para.add_run(heading_text)
+            run = para.add_run(sanitized_heading)
+            run.bold = True
+            # Add bookmark for TOC page number reference
+            bookmark_name = heading_text.replace(" ", "_").replace("&", "and")
+            _add_bookmark_to_paragraph(para, bookmark_name)
+            
+            # Process remaining content recursively
+            if remaining_content:
+                _add_formatted_content(doc, remaining_content)
+            continue
+        
+        # Detect markdown-style headings
+        if block.startswith('####'):
+            # Heading 4
+            text = block.replace('####', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '')
+            para = doc.add_paragraph(style='Heading 4')
+            _add_text_with_formatting(para, text)
+        elif block.startswith('###'):
+            # Heading 3
+            text = block.replace('###', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '')
+            para = doc.add_paragraph(style='Heading 3')
+            _add_text_with_formatting(para, text)
+        elif block.startswith('##'):
+            # Heading 2
+            text = block.replace('##', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '')
+            sanitized_text = sanitize_text_for_word(text)
+            para = doc.add_paragraph(style='Heading 2')
+            run = para.add_run(sanitized_text)
+            run.bold = True
+        elif block.startswith('#'):
+            # Heading 1
+            text = block.replace('#', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '')
+            para = doc.add_paragraph(style='Heading 1')
+            _add_text_with_formatting(para, text)
+        
+        # Detect bullet lists
+        elif block.startswith('•') or block.startswith('- ') or block.startswith('* '):
+            lines = block.split('\n')
+            for line in lines:
+                if line.strip():
+                    # Remove bullet markers
+                    text = re.sub(r'^[•\-\*]\s*', '', line.strip())
+                    para = doc.add_paragraph(style='List Bullet')
+                    _add_text_with_formatting(para, text)
+        
+        # Detect numbered lists and citations
+        elif re.match(r'^\d+\.', block):
+            lines = block.split('\n')
+            logger.debug(f"[_add_formatted_content] Detected numbered block with {len(lines)} lines")
+            
+            # Check if this is a citation/reference block with URL pattern
+            # URLs can be: "URL: https://..." or just "https://..." lines
+            is_citation_block = False
+            url_pattern = r'(URL:\s*)?https?://'
+            if any(re.search(url_pattern, line) for line in lines):
+                is_citation_block = True
+                logger.debug(f"[_add_formatted_content] Detected citation block (URL-based detection)")
+            
+            # Also check if this is a citation block by counting numbered lines (PDF-style detection)
+            # If at least 2 lines start with a number followed by a period, treat as citations
+            if not is_citation_block:
+                citation_pattern = r'^\s*\d+\.\s+'
+                citation_count = sum(1 for line in lines if re.match(citation_pattern, line.strip()))
+                logger.debug(f"[_add_formatted_content] Citation count (PDF-style): {citation_count}")
+                if citation_count >= 2:
+                    is_citation_block = True
+                    logger.debug(f"[_add_formatted_content] Detected citation block (PDF-style detection)")
+            
+            if is_citation_block:
+                logger.debug(f"[_add_formatted_content] Processing citation block with {len(lines)} lines")
+                # Process citations/references - keep original numbers, combine title+URL
+                citation_entries = []
+                
+                for line in lines:
+                    line_stripped = line.strip()
+                    if not line_stripped:
+                        continue
+                    
+                    # Extract complete citation entry (number + title + optional URL all on one line)
+                    # Format examples: "1. Title", "1. Title (URL: https://...)", "1. Title\nhttps://url"
+                    title_match = re.match(r'^(\d+)\.\s+(.*?)(?:\s*\(URL:\s*(https?://[^\)]+)\))?$', line_stripped)
+                    if title_match:
+                        original_number = title_match.group(1)
+                        title_text = title_match.group(2).strip()
+                        url_text = title_match.group(3).strip() if title_match.group(3) else None
+                        logger.debug(f"[_add_formatted_content] Parsed citation: {original_number}. {title_text[:40]}... URL: {url_text[:40] if url_text else 'None'}...")
+                        citation_entries.append({
+                            'number': original_number,
+                            'title': title_text,
+                            'url': url_text
+                        })
+                    # Check if this line is a URL continuation from previous title
+                    elif re.match(r'^\s*(?:URL:\s*)?(https?://[^\s\)]+)', line_stripped):
+                        # This is a URL line - try to attach to the last entry
+                        url_match = re.search(r'(?:URL:\s*)?(https?://[^\s\)]+)', line_stripped)
+                        if url_match and citation_entries:
+                            citation_entries[-1]['url'] = url_match.group(1).strip()
+                            logger.debug(f"[_add_formatted_content] Attached URL to previous citation: {citation_entries[-1]['url'][:40]}...")
+                
+                logger.debug(f"[_add_formatted_content] Found {len(citation_entries)} citation entries")
+                
+                # Add entries as paragraphs with hyperlinks
+                for idx, entry in enumerate(citation_entries):
+                    logger.debug(f"[_add_formatted_content] Adding citation {idx+1}: {entry['number']}. {entry['title'][:30]}...")
+                    
+                    # Remove ** markers from title
+                    title_text = entry['title'].replace('**', '')
+                    
+                    # Add paragraph with preserved original number
+                    para = doc.add_paragraph(style='Body Text')
+                    _add_text_with_formatting(para, f"{entry['number']}. {title_text}")
+                    
+                    # Add URL as hyperlink if it exists
+                    if entry['url']:
+                        para.add_run(" ")
+                        add_hyperlink(para, entry['url'], entry['url'])
+                        logger.debug(f"[_add_formatted_content] Added hyperlink: {entry['url'][:40]}...")
+                    else:
+                        logger.debug(f"[_add_formatted_content] No URL for this citation")
+
+            else:
+                # Regular numbered list - PRESERVE original numbers, don't auto-number
+                for line in lines:
+                    line_stripped = line.strip()
+                    if line_stripped and re.match(r'^\d+\.', line_stripped):
+                        # Extract the original number
+                        number_match = re.match(r'^(\d+)\.\s+(.*)', line_stripped)
+                        if number_match:
+                            original_number = number_match.group(1)
+                            text = number_match.group(2)
+                            # Remove ** markers
+                            text = text.replace('**', '')
+                            # Add paragraph with preserved number, not auto-numbering
+                            para = doc.add_paragraph(style='Body Text')
+                            para.paragraph_format.left_indent = DocxInches(0.25)
+                            _add_text_with_formatting(para, f"{original_number}. {text}")
+        
+        # Check if block contains multiple lines (multi-line paragraph)
+        elif '\n' in block:
+            # Check if it's a list within the block
+            lines = block.split('\n')
+            in_list = False
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Check for bullet points
+                if line.startswith('•') or line.startswith('- ') or line.startswith('* '):
+                    text = re.sub(r'^[•\-\*]\s*', '', line)
+                    para = doc.add_paragraph(style='List Bullet')
+                    _add_text_with_formatting(para, text)
+                    in_list = True
+                # Check for numbered items
+                elif re.match(r'^\d+\.', line):
+                    # Extract the original number
+                    number_match = re.match(r'^(\d+)\.\s+(.*)', line)
+                    if number_match:
+                        original_number = number_match.group(1)
+                        text = number_match.group(2)
+                        # Add paragraph with preserved number, not auto-numbering
+                        para = doc.add_paragraph(style='Body Text')
+                        para.paragraph_format.left_indent = DocxInches(0.25)
+                        _add_text_with_formatting(para, f"{original_number}. {text}")
+                    in_list = True
+                else:
+                    # Regular paragraph continuation
+                    if in_list:
+                        para = doc.add_paragraph(style='List Bullet')
+                        _add_text_with_formatting(para, line)
+                    else:
+                        para = doc.add_paragraph(style='Body Text')
+                        _add_text_with_formatting(para, line)
+        
+        # Regular paragraph
+        else:
+            # Intelligently split long paragraphs into smaller chunks
+            sentence_count = len(re.findall(r'[.!?]', block))
+            
+            if sentence_count > 3:
+                # This is a long paragraph, split it into smaller chunks (2-3 sentences each)
+                split_paragraphs = _split_paragraph_into_sentences(block, target_sentences=3)
+                for split_para in split_paragraphs:
+                    if split_para:
+                        para = doc.add_paragraph(style='Body Text')
+                        _add_text_with_formatting(para, split_para)
+            else:
+                # Keep short paragraphs as is
+                para = doc.add_paragraph(style='Body Text')
+                _add_text_with_formatting(para, block)
+
+    if references:
+        _add_references_section(doc, references)
+
+def _set_paragraph_text_with_breaks(para, text):
+    """
+    Safely set paragraph text with proper line breaks.
+    Clears existing runs and adds new text with line breaks where \n appears.
+    """
+    # Sanitize text first
+    text = sanitize_text_for_word(text)
+    
+    # Clear existing runs
+    for run in para.runs[:]:
+        run._element.getparent().remove(run._element)
+    
+    # Split text by newlines and add with proper breaks
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        sanitized_line = sanitize_text_for_word(line)
+        run = para.add_run(sanitized_line)
+        # Add soft line break after each line except the last
+        if i < len(lines) - 1:
+            run.add_break()
+
+def _ensure_page_break_after_paragraph(para):
+    """Add a page break after the given paragraph if one is not already present."""
+    # If the last run already ends with a page break, do nothing
+    if para.runs:
+        last_run = para.runs[-1]
+        if getattr(last_run, "break_type", None) == WD_BREAK.PAGE:
+            return
+    run = para.add_run()
+    run.add_break(WD_BREAK.PAGE)
+
+def _extract_headings_from_content(content: str) -> List[str]:
+    """
+    Extract all headings from content (both markdown # style and **bold** style).
+    Returns a list of heading texts in order.
+    
+    Note: Includes all bold text items and section headers in the table of contents.
+    """
+    headings = []
+    blocks = content.split('\n\n')
+    
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        
+        # Check for standalone bold text (heading)
+        standalone_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block)
+        if standalone_bold_match:
+            text = standalone_bold_match.group(1).strip()
+            # Remove leading numbers like "1. ", "5.1. ", etc.
+            text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+            headings.append(text)
+            continue
+        
+        # Check for bold text at start of paragraph
+        first_line_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*\n', block)
+        if first_line_bold_match:
+            text = first_line_bold_match.group(1).strip()
+            # Remove leading numbers like "1. ", "5.1. ", etc.
+            text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+            headings.append(text)
+            continue
+        
+        # Check for markdown headings
+        if block.startswith('####'):
+            text = block.replace('####', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '').strip()
+            text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+            headings.append(text)
+        elif block.startswith('###'):
+            text = block.replace('###', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '').strip()
+            text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+            headings.append(text)
+        elif block.startswith('##'):
+            text = block.replace('##', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '').strip()
+            text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+            headings.append(text)
+        elif block.startswith('#'):
+            text = block.replace('#', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '').strip()
+            text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+            headings.append(text)
+    
+    return headings
+
+def _add_table_of_contents(doc: Document, headings: List[str]):
+    """
+    Add a custom table of contents with the provided headings and page numbers.
+    Uses Word bookmarks and page number fields to automatically track page numbers.
+    Includes serial numbers (1, 2, 3, ...) before each heading.
+    """
+    # Add "Contents" heading
+    toc_title = doc.add_paragraph("Contents", style='Heading 1')
+    doc.add_paragraph()  # Blank line
+    
+    # Add each heading as a TOC entry with serial number and page number field
+    for index, heading in enumerate(headings, start=1):
+        # Create a paragraph for the TOC entry
+        toc_entry = doc.add_paragraph()
+        toc_entry.paragraph_format.left_indent = DocxInches(0.5)
+        
+        # Add the serial number and heading text
+        run = toc_entry.add_run(f"{index}. {heading}")
+        run.font.size = DocxPt(11)
+        
+        # Add page number field that will be populated by Word
+        # This uses the PAGEREF field to reference the page where the heading appears
+        page_run = toc_entry.add_run()
+        page_run.font.size = DocxPt(11)
+        
+        # Create a page number field using Word's field syntax
+        fldChar1 = OxmlElement('w:fldChar')
+        fldChar1.set(qn('w:fldCharType'), 'begin')
+        
+        instrText = OxmlElement('w:instrText')
+        instrText.set(qn('xml:space'), 'preserve')
+        instrText.text = f'PAGEREF "{heading.replace(" ", "_")}" \\h'
+        
+        fldChar2 = OxmlElement('w:fldChar')
+        fldChar2.set(qn('w:fldCharType'), 'end')
+        
+        # Add field elements to the run
+        page_run._r.append(fldChar1)
+        page_run._r.append(instrText)
+        page_run._r.append(fldChar2)
+        
+        # Add a space before page number
+        toc_entry.runs[1].text = ' ' + toc_entry.runs[1].text
+
+
+def _add_text_with_formatting(para, text):
+    """
+    Add text to a paragraph with inline markdown formatting (bold, italic, hyperlinks).
+    Supports **bold**, *italic*, [text](url) markdown links, and plain URLs.
+    """
+    if not text:
+        return
+    
+    # Start with markdown links to avoid conflicts with other patterns
+    # Replace markdown links [text](url) with a placeholder first
+    link_placeholders = {}
+    placeholder_counter = 0
+    
+    def replace_link(match):
+        nonlocal placeholder_counter
+        link_text = match.group(1)
+        link_url = match.group(2)
+        placeholder = f"__LINK_PLACEHOLDER_{placeholder_counter}__"
+        link_placeholders[placeholder] = (link_text, link_url)
+        placeholder_counter += 1
+        return placeholder
+    
+    # Replace all markdown links with placeholders
+    text_with_placeholders = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', replace_link, text)
+    
+    # Now process the text with placeholders
+    pos = 0
+    while pos < len(text_with_placeholders):
+        # Check for placeholder (hyperlink)
+        placeholder_match = re.search(r'__LINK_PLACEHOLDER_\d+__', text_with_placeholders[pos:])
+        # Check for bold
+        bold_match = re.search(r'\*\*(.+?)\*\*', text_with_placeholders[pos:])
+        # Check for italic
+        italic_match = re.search(r'(?<!\*)\*([^\*]+?)\*(?!\*)', text_with_placeholders[pos:])
+        # Check for plain URL (that wasn't converted to markdown)
+        # Match https?:// followed by non-whitespace characters, but stop at closing parens or end of string
+        # Note: NOT stopping at dots since dots are normal in URLs
+        url_match = re.search(r'https?://[^\s)]+(?=[)\s]|$)', text_with_placeholders[pos:])
+        
+        # Collect matches with positions
+        matches = []
+        if placeholder_match:
+            matches.append(('placeholder', pos + placeholder_match.start(), placeholder_match))
+        if bold_match:
+            matches.append(('bold', pos + bold_match.start(), bold_match))
+        if italic_match:
+            matches.append(('italic', pos + italic_match.start(), italic_match))
+        if url_match:
+            matches.append(('url', pos + url_match.start(), url_match))
+        
+        if not matches:
+            # No more patterns, add remaining text
+            if pos < len(text_with_placeholders):
+                remaining = text_with_placeholders[pos:]
+                if remaining:
+                    run = para.add_run(sanitize_text_for_word(remaining))
+            break
+        
+        # Process the earliest match
+        matches.sort(key=lambda x: x[1])
+        match_type, match_pos, match = matches[0]
+        
+        # Add text before match
+        if match_pos > pos:
+            before_text = text_with_placeholders[pos:match_pos]
+            if before_text:
+                run = para.add_run(sanitize_text_for_word(before_text))
+        
+        # Process the match
+        if match_type == 'placeholder':
+            placeholder_text = match.group(0)
+            if placeholder_text in link_placeholders:
+                link_text, link_url = link_placeholders[placeholder_text]
+                add_hyperlink(para, link_url, link_text)
+            pos = match_pos + len(placeholder_text)
+        
+        elif match_type == 'bold':
+            bold_text = match.group(1)
+            run = para.add_run(sanitize_text_for_word(bold_text))
+            run.bold = True
+            pos = match_pos + len(match.group(0))
+        
+        elif match_type == 'italic':
+            italic_text = match.group(1)
+            run = para.add_run(sanitize_text_for_word(italic_text))
+            run.italic = True
+            pos = match_pos + len(match.group(0))
+        
+        elif match_type == 'url':
+            url = match.group(0).rstrip('.,;:')
+            add_hyperlink(para, url, url)
+            pos = match_pos + len(url)
+
+
+def export_to_word_with_metadata(content: str, title: str, subtitle: Optional[str] = None, 
+                                   content_type: Optional[str] = None) -> bytes:
+    """
+    Export content to Word DOCX format using PwC template with metadata
+    
+    Args:
+        content: The main content to export
+        title: Document title
+        subtitle: Optional subtitle
+        content_type: Type of content (article, whitepaper, executive-brief, blog)
+    """
+    logger.info(f"[export_to_word_with_metadata] Starting export. Title: {title[:50]}, Content length: {len(content)}")
+    
+    try:
+        # Load PwC template
+        if os.path.exists(PWC_TEMPLATE_PATH):
+            doc = Document(PWC_TEMPLATE_PATH)
+            logger.info(f"Loaded PwC template from: {PWC_TEMPLATE_PATH}")
+        else:
+            logger.warning(f"PwC template not found at {PWC_TEMPLATE_PATH}, using default formatting")
+            doc = Document()
+    except Exception as e:
+        logger.warning(f"Failed to load PwC template: {e}, using default formatting")
+        doc = Document()
+    
+    # Check if template has proper structure (Title, Subtitle, page breaks)
+    has_template_structure = (
+        len(doc.paragraphs) > 2 and 
+        doc.paragraphs[0].style.name == 'Title' and
+        doc.paragraphs[1].style.name == 'Subtitle'
+    )
+    
+    if has_template_structure:
+        # Use template structure: update title and subtitle, remove page break paragraphs
+        # Update title (paragraph 0) - clear runs and set text
+        _set_paragraph_text_with_breaks(doc.paragraphs[0], title)
+        
+        # Increase font size of title for better prominence on cover page
+        for run in doc.paragraphs[0].runs:
+            run.font.size = DocxPt(28)  # Large font for prominent title on cover page
+        
+        # Set paragraph alignment to center or left with word wrap enabled
+        doc.paragraphs[0].alignment = None  # Use default alignment
+        doc.paragraphs[0].paragraph_format.widow_control = True  # Better line breaking
+        
+        # Update subtitle (paragraph 1) with proper line breaks
+        if subtitle and content_type:
+            subtitle_text = f"{subtitle}\n{content_type.replace('-', ' ').title()}"
+        elif subtitle:
+            subtitle_text = subtitle
+        else:
+            # Don't show content_type as subtitle - it's only for metadata/formatting
+            subtitle_text = ''
+        
+        _set_paragraph_text_with_breaks(doc.paragraphs[1], subtitle_text)
+        
+        # Remove ALL template content after title and subtitle (including old TOC and page breaks)
+        paragraphs_to_remove = list(doc.paragraphs[2:])
+        for para in paragraphs_to_remove:
+            p = para._element
+            p.getparent().remove(p)
+
+        # Add page break after subtitle
+        _ensure_page_break_after_paragraph(doc.paragraphs[1])
+        
+        # Extract headings from content before adding it
+        headings = _extract_headings_from_content(content)
+        
+        # Add Table of Contents only for Article and White Paper, skip for Blog and Executive Brief
+        should_add_toc = content_type and content_type.lower() not in ['blog', 'executive_brief', 'executive-brief']
+        
+        if headings and should_add_toc:
+            logger.info(f"[export_to_word_with_metadata] Adding Table of Contents for content_type: {content_type}")
+            _add_table_of_contents(doc, headings)
+            
+            # Add a page break before the generated content so it starts after the TOC page
+            page_break_para = doc.add_paragraph()
+            run = page_break_para.add_run()
+            run.add_break(WD_BREAK.PAGE)
+        else:
+            logger.info(f"[export_to_word_with_metadata] Skipping Table of Contents for content_type: {content_type}")
+        
+        # Add content after the cover/TOC
+        _add_formatted_content(doc, content)
+    else:
+        # No template structure, clear everything and build from scratch
+        for para in doc.paragraphs[:]:
+            p = para._element
+            p.getparent().remove(p)
+        
+        # Add title using Title style with sanitization
+        sanitized_title = sanitize_text_for_word(title)
+        title_para = doc.add_paragraph(sanitized_title, style='Title')
+        
+        # Add subtitle if provided
+        if subtitle:
+            sanitized_subtitle = sanitize_text_for_word(subtitle)
+            subtitle_para = doc.add_paragraph(sanitized_subtitle, style='Subtitle')
+        
+        # Add content type if provided
+        if content_type:
+            sanitized_content_type = sanitize_text_for_word(f"Content Type: {content_type.replace('-', ' ').title()}")
+            type_para = doc.add_paragraph(sanitized_content_type, style='Subtitle')
+        
+        # Add a blank line
+        doc.add_paragraph()
+        
+        # Parse and add content with proper formatting
+        _add_formatted_content(doc, content)
+    
+    buffer = io.BytesIO()
+    try:
+        doc.save(buffer)
+    except UnicodeEncodeError as e:
+        logger.error(f"Encoding error while saving document: {e}")
+        raise Exception(f"Failed to save Word document due to encoding error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error saving Word document: {e}")
+        raise Exception(f"Failed to save Word document: {str(e)}")
+    
+    buffer.seek(0)
+    docx_bytes = buffer.getvalue()
+    
+    logger.info(f"[export_to_word_with_metadata] Document created, size before encoding fix: {len(docx_bytes)} bytes")
+    
+    # Apply encoding fix to ensure all Unicode characters are properly handled
+    try:
+        docx_bytes = _fix_docx_encoding(docx_bytes)
+        logger.info(f"[export_to_word_with_metadata] Encoding fix applied, final size: {len(docx_bytes)} bytes")
+    except Exception as e:
+        logger.error(f"[export_to_word_with_metadata] Error during encoding fix: {e}")
+        # Continue anyway - the document might still be valid
+    
+    logger.info(f"[export_to_word_with_metadata] Export completed successfully")
+    return docx_bytes
+
+def export_to_text(content: str) -> bytes:
+    """Export content to plain text format"""
+    return content.encode('utf-8')
+
+def export_to_pdf_with_pwc_template_with_bullets(
+    content: str,
+    title: str,
+    subtitle: str | None = None,include_toc: bool = True) -> bytes:
+    
+    logger.info("[Export] PDF-PWC-BULLETS endpoint hit")
+    title = re.sub(r'\*+', '', title).strip()
+    logger.info(f"[Export] PDF-PWC-BULLETS title",{"title": title})
+    subtitle = re.sub(r'\*+', '', subtitle).strip() if subtitle else None
+    logger.info("Creating PWC branded PDF with title, subtitle, and content")
+    # Check if template exists
+    if not os.path.exists(PWC_PDF_TEMPLATE_PATH):
+        logger.warning(f"PwC PDF template not found at {PWC_PDF_TEMPLATE_PATH}")
+        return _generate_pdf_with_title_subtitle(content, title, subtitle)
+    
+    # ===== STEP 1: Create branded cover page =====
+    logger.info("Step 1: Creating branded cover page")
+    template_reader = PdfReader(PWC_PDF_TEMPLATE_PATH)
+    template_page = template_reader.pages[0]
+    page_width = float(template_page.mediabox.width)
+    page_height = float(template_page.mediabox.height)
+    logger.info(f"Template page size: {page_width:.1f} x {page_height:.1f} points")
+    # Create overlay with text
+    overlay_buffer = io.BytesIO()
+    c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
+    # Add title
+    title_font_size = 32
+    if len(title) > 80:
+        title_font_size = 20
+    elif len(title) > 60:
+        title_font_size = 22
+    elif len(title) > 40:
+        title_font_size = 26
+    c.setFont("Helvetica-Bold", title_font_size)
+    c.setFillColor('#000000')  # Black color
+    title_y = page_height * 0.72
+    
+    # Handle multi-line titles with better word wrapping
+    # Maximum width for title (leaving margins on left and right)
+    max_title_width = page_width * 0.70  # 70% of page width with margins
+    
+    # Better character width estimation - more conservative to avoid cutoff
+    # Estimate pixels needed per character based on font size
+    # At 20pt Helvetica: ~10 pixels per character average
+    char_width_at_font = (title_font_size / 20.0) * 10
+    max_chars_per_line = int(max_title_width / char_width_at_font)
+    
+    # Ensure reasonable minimum and maximum
+    max_chars_per_line = max(20, min(max_chars_per_line, 50))
+    clean_title = re.sub(r'\*+', '', title).strip()
+    words = clean_title.split()
+    lines = []
+    current_line = []
+    for word in words:
+        test_line = ' '.join(current_line + [word])
+        if len(test_line) > max_chars_per_line:
+            if current_line:
+                lines.append(' '.join(current_line))
+            current_line = [word]
+        else:
+            current_line.append(word)
+    if current_line:
+        lines.append(' '.join(current_line))
+    # Draw multi-line title
+    if len(lines) > 1:
+        line_height = title_font_size + 6
+        # Center vertically: start higher if multiple lines
+        start_y = title_y + (len(lines) - 1) * line_height / 2
+        for i, line in enumerate(lines):
+            c.drawCentredString(page_width / 2, start_y - (i * line_height), line)
+        last_title_y = start_y - (len(lines) * line_height)
+    else:
+        c.drawCentredString(page_width / 2, title_y, clean_title)
+        last_title_y = title_y
+    
+    logger.info(f"Title added to overlay: {clean_title} ({len(lines)} lines)")
+    # Add subtitle if provided
+    if subtitle:
+        # Clean up markdown asterisks from subtitle
+        subtitle_clean = subtitle.replace('**', '')
+        c.setFont("Helvetica-Bold", 14)  # Bold font
+        c.setFillColor('#000000')  # Black color
+        subtitle_y = last_title_y - 70        
+        # Wrap subtitle text to fit within page width
+        # Use a more conservative character limit for subtitle
+        # Page width is typically 612 points (8.5 inches) for letter size
+        # Helvetica 14pt: approximately 7-8 pixels per character
+        max_subtitle_width = page_width * 0.75  # 75% of page width with margins
+        subtitle_char_width = 8  # pixels per character at 14pt
+        max_chars_per_line = int(max_subtitle_width / subtitle_char_width)
+        words = subtitle_clean.split()
+        lines = []
+        current_line = []        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            # Use more conservative line breaking - shorter lines for better visibility
+            if len(test_line) > min(50, max_chars_per_line):
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+            else:
+                current_line.append(word)        
+        if current_line:
+            lines.append(' '.join(current_line))        
+        # Draw multi-line subtitle with proper centering
+        line_height = 22
+        # If multiple lines, center vertically
+        if len(lines) > 1:
+            start_y = subtitle_y + (len(lines) - 1) * line_height / 2
+        else:
+            start_y = subtitle_y        
+        for i, line in enumerate(lines):
+            c.drawCentredString(page_width / 2, start_y - (i * line_height), line)
+        logger.info(f"Subtitle added to overlay: {subtitle_clean} ({len(lines)} lines)")
+    c.save()
+    overlay_buffer.seek(0)    
+    # Merge overlay with template
+    overlay_reader = PdfReader(overlay_buffer)
+    overlay_page = overlay_reader.pages[0]    
+    template_page.merge_page(overlay_page)
+    logger.info("Overlay merged onto template cover page")        
+    logger.info("Step 2: Creating formatted content pages")
+    # First, extract all headings for Table of Contents
+    headings = []
+    if include_toc:
+        blocks = content.split('\n\n')
+        for block in blocks:
+            if not block.strip():
+                continue
+            block = block.strip()
+            if re.match(r'^\s*[-_]{3,}\s*$', block):
+                continue
+            # Check for various heading formats
+            standalone_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block)
+            if standalone_bold_match:
+                heading_text = standalone_bold_match.group(1)
+                heading_text = re.sub(r'\*+', '', heading_text).rstrip(':').strip()
+                if heading_text.lower() == 'references':
+                    headings.append('References')
+                    continue
+                headings.append(heading_text)
+                continue
+            first_line_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*\n', block)
+            if first_line_bold_match:
+                heading_text = re.sub(r'\*+', '', first_line_bold_match.group(1)).rstrip(':').strip()
+                headings.append(heading_text)
+                continue
+            # Markdown headings
+            if block.startswith('#'):
+                text = re.sub(r'^#+\s*', '', block.split('\n')[0]).strip()
+                text = re.sub(r'\*+', '', text).rstrip(':').strip()
+                # headings.append(text.rstrip(':').strip())
+                headings.append(text)
+        logger.info(f"Extracted {len(headings)} headings for Table of Contents")
+    content_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+    content_buffer,
+    pagesize=(page_width, page_height),
+    topMargin=1*inch,
+    bottomMargin=1*inch,
+    leftMargin=1.1*inch,
+    rightMargin=1*inch)
+    styles = getSampleStyleSheet()
+    # Define custom styles
+    body_style = ParagraphStyle(
+        'PWCBody',
+        parent=styles['BodyText'],
+        fontSize=11,
+        leading=15,
+        alignment=TA_JUSTIFY,
+        spaceAfter=12,
+        fontName='Helvetica'
+    )
+    bullet_style = ParagraphStyle(
+        'PWCBullet',
+        parent=body_style,
+        leftIndent=0,
+        spaceAfter=6,
+        alignment=TA_LEFT
+    )
+    reference_style = ParagraphStyle(
+        'PWCReference',
+        parent=styles['BodyText'],
+        fontSize=11,
+        leading=13,
+        alignment=TA_LEFT,
+        spaceAfter=4,  
+        spaceBefore=0,
+        fontName='Helvetica'
+    )
+    heading_style = ParagraphStyle(
+        'PWCHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor='#D04A02',
+        spaceAfter=10,
+        spaceBefore=10,
+        fontName='Helvetica'
+    )   
+    story = []   
+    
+    # Parse and add content with formatting
+    blocks = content.split('\n\n')
+    for block in blocks:
+        if not block.strip():
+            continue        
+        block = block.strip()
+        if re.match(r'^\s*[-_]{3,}\s*$', block):
+            continue
+        # Check for headings (bold text on its own line or markdown style)
+        standalone_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block)
+        if standalone_bold_match:
+            heading_text = standalone_bold_match.group(1)
+            heading_text = re.sub(r'\*+', '', heading_text).rstrip(':').strip()
+            if heading_text.lower().rstrip(':') == 'references':
+                story.append(Paragraph('References', heading_style))
+                continue
+            story.append(Paragraph(heading_text, heading_style))
+            continue
+        # Check for bold text at start of paragraph
+        # ---- NUMBERED SECTION HEADING (e.g. 1. Executive Overview) ----
+        numbered_heading_match = re.match(
+            r'^#*\s*(\d+\.\s+[A-Z][^\n]+)\n+(.*)',
+            block,
+            re.DOTALL
+        )
+        if numbered_heading_match:
+            heading_text = numbered_heading_match.group(1).strip()
+            remaining = numbered_heading_match.group(2).strip()
+
+            story.append(Paragraph(heading_text, heading_style))
+
+            if remaining:
+                story.append(Spacer(1, 8))
+                story.append(Paragraph(
+                    _format_content_for_pdf(_strip_ui_markdown(remaining)),
+                    body_style
+                ))
+            continue
+
+        first_line_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*\n', block)
+        if first_line_bold_match:
+            heading_text = first_line_bold_match.group(1)
+            heading_text = re.sub(r'\*+', '', heading_text).rstrip(':').strip()
+            remaining_content = block[first_line_bold_match.end():].strip()
+            story.append(Paragraph(heading_text, heading_style))
+            if remaining_content:
+                # Check if remaining content is a bullet list
+                if _is_bullet_list_block(remaining_content):
+                    bullet_items = _parse_bullet_items(remaining_content)
+                    bullet_flow = ListFlowable(
+                        [
+                            ListItem(
+                                Paragraph(_format_content_for_pdf(_strip_ui_markdown(_clean_bullet_text(item))), bullet_style),
+                                bulletText='•'
+                            )
+                            for item in bullet_items
+                        ],
+                        bulletType='bullet',
+                        leftIndent=24,
+                        spaceBefore=4,
+                        spaceAfter=8
+                    )
+                    story.append(bullet_flow)
+                else:
+                    para = Paragraph(_format_content_for_pdf( _strip_ui_markdown(remaining_content)), body_style)
+                    story.append(para)
+            continue
+        bullet_heading_match = re.match(
+            r'^###\s*•\s*(.+?)\s*\n+(.+)',
+            block,
+            re.DOTALL
+        )
+
+        if bullet_heading_match:
+            heading_text = bullet_heading_match.group(1).strip()
+            body_text = bullet_heading_match.group(2).strip()
+
+            story.append(Paragraph(f"• {heading_text}", heading_style))
+            story.append(Spacer(1, 6))
+            story.append(Paragraph(
+                _format_content_for_pdf(_strip_ui_markdown(body_text)),
+                body_style
+            ))
+            continue
+        # Check for markdown headings
+        if block.startswith('####'):
+            text = block.replace('####', '').strip()
+            text = re.sub(r'\*+', '', text).rstrip(':').strip()
+            story.append(Paragraph(text, heading_style))
+            continue
+        elif block.startswith('###'):
+            text = block.replace('###', '').strip()
+            text = re.sub(r'\*+', '', text).rstrip(':').strip()
+            story.append(Paragraph(text, heading_style))
+            continue
+        elif block.startswith('##'):
+            text = block.replace('##', '').strip()
+            text = re.sub(r'\*+', '', text).rstrip(':').strip()
+            story.append(Paragraph(text, heading_style))
+            continue
+        elif block.startswith('#'):
+            text = block.replace('#', '').strip()
+            text = re.sub(r'\*+', '', text).rstrip(':').strip()
+            story.append(Paragraph(text, heading_style))
+            continue
+        
+        # Check if block is a bullet list
+        if _is_bullet_list_block(block):
+            bullet_items = _parse_bullet_items(block)
+            bullet_flow = ListFlowable(
+                [
+                    ListItem(
+                        Paragraph(_format_content_for_pdf(_clean_bullet_text(item)), bullet_style),
+                        bulletText='•'
+                    )
+                    for item in bullet_items
+                ],
+                # start='bullet',
+                bulletType='bullet',
+                leftIndent=24
+            )
+            story.append(bullet_flow)
+            continue
+        
+        # Check if block contains multiple lines with citation patterns
+        # Citations typically look like: [1] text or 1. text
+        lines = block.split('\n')
+        if len(lines) > 1:
+            # Check if this looks like a citation/reference block
+            citation_pattern = r'^\s*(\[\d+\]|\d+\.)\s+'
+            citation_count = sum(1 for line in lines if re.match(citation_pattern, line.strip()))
+            
+            # If at least 2 lines match citation pattern, treat as citation block
+            if citation_count >= 2:
+                # Process each line separately with left alignment (no justify)
+                for line in lines:
+                    line_stripped = line.strip()
+                    if line_stripped:
+                        para = Paragraph(_format_content_for_pdf( _strip_ui_markdown(line_stripped)), reference_style)
+                        story.append(para)
+                continue
+        
+        # Regular paragraph - intelligently split long paragraphs into smaller chunks
+        sentence_count = len(re.findall(r'[.!?]', block))
+        if sentence_count > 3:
+            # This is a long paragraph, split it into smaller chunks (2-3 sentences each)
+            split_paragraphs = _split_paragraph_into_sentences(block, target_sentences=3)
+            for split_para in split_paragraphs:
+                if split_para:
+                    para = Paragraph(_format_content_for_pdf(split_para), body_style)
+                    story.append(para)
+        else:
+            # Keep short paragraphs as is
+            para = Paragraph(_format_content_for_pdf(_strip_ui_markdown(_clean_bullet_text(block))), body_style)
+            story.append(para)
+    
+    # Build the content PDF
+    doc.build(story)
+    content_buffer.seek(0)
+    if include_toc:
+        logger.info("Step 2.5: Creating Table of Contents pages (multi-page)")
+        toc_buffer = io.BytesIO()
+        toc_doc = SimpleDocTemplate(toc_buffer, pagesize=(page_width, page_height), topMargin=1*inch, bottomMargin=1*inch)
+        toc_styles = getSampleStyleSheet()
+        toc_title_style = ParagraphStyle(
+            'TOCTitle',
+            parent=toc_styles['Heading1'],
+            fontSize=24,
+            textColor='#000000',
+            spaceAfter=24,
+            alignment=TA_LEFT,
+            fontName='Helvetica-Bold'
+        )
+        toc_heading_style = ParagraphStyle(
+            'TOCHeading',
+            parent=toc_styles['BodyText'],
+            fontSize=11,
+            textColor='#000000',
+            spaceAfter=12,
+            alignment=TA_LEFT,
+            fontName='Helvetica',
+            leading=16,
+            rightIndent=20
+        )
+        toc_story = []
+        if not headings:
+            toc_pages = []
+        toc_story.append(Paragraph("Contents", toc_title_style))
+        toc_story.append(Spacer(1, 0.2 * inch))
+        seen = set()
+        filtered_headings = []
+        for h in headings:
+            if h not in seen:
+                filtered_headings.append(h)
+                seen.add(h)
+        for index, heading in enumerate(filtered_headings, start=1):
+            clean_heading = re.sub(r'^\d+\.\s*', '', heading)
+            toc_story.append(Paragraph(f"{index}. {heading}", toc_heading_style))
+
+        toc_doc.build(toc_story)
+        toc_buffer.seek(0)
+        toc_reader = PdfReader(toc_buffer)
+        toc_pages = [toc_reader.pages[i] for i in range(len(toc_reader.pages))]
+    logger.info("Step 3: Merging cover page, ToC, and content pages")
+    content_reader = PdfReader(content_buffer)
+    writer = PdfWriter()
+    # Add the branded cover page (Page 1)
+    writer.add_page(template_page)
+    logger.info("Added branded cover page with PWC logo, title, and subtitle")
+        # Add the Table of Contents pages (Page 2+)
+    if include_toc:    
+        for toc_page in toc_pages:
+            writer.add_page(toc_page)
+    if not content_reader:
+        raise RuntimeError("content_reader was not initialized")
+
+    # Add all content pages (Page 3+)
+    for page in content_reader.pages:
+        # base_page = copy.deepcopy(template_reader.pages[0])
+        # base_page.merge_page(page)
+        writer.add_page(page)
+
+    # Write final PDF
+    output_buffer = io.BytesIO()
+    writer.write(output_buffer)
+    output_buffer.seek(0)
+    
+    result_bytes = output_buffer.getvalue()
+    logger.info(f"PDF export complete: {len(writer.pages)} pages, {len(result_bytes)} bytes")
+    
+    return result_bytes
+   
+def _clean_bullet_text(text: str) -> str:
+    text = re.sub(r'\*{1,2}', '', text)
+    text = re.sub(r'^\s*(bullet|•|-)\s*', '', text, flags=re.IGNORECASE)
+    return text.strip()
+
+def _strip_ui_markdown(text: str) -> str:
+    """
+    Remove UI markdown artifacts (*, **) that should not
+    be rendered as formatting in PDF.
+    """
+    if not text:
+        return text
+    text = re.sub(r'\*{1,2}', '', text)
+    text = re.sub(r'^\s*[-•]\s*', '', text)
+    return text.strip()
+
+def export_to_word_ui_plain(content: str, title: str) -> bytes:
+    """
+    Standalone UI Word export
+    - No template
+    - No TOC
+    - No headers/footers
+    """
+    doc = Document()
+
+    def tighten_spacing(p):
+        p.paragraph_format.space_before = DocxPt(0)
+        p.paragraph_format.space_after = DocxPt(4)
+        p.paragraph_format.line_spacing = 1
+
+    lines = content.split("\n")
+
+    for line in lines:
+        text = line.rstrip()
+
+        if not text:
+            p = doc.add_paragraph("")
+            tighten_spacing(p)
+            continue
+
+        # Bullet points
+        if re.match(r"^(\-|\•)\s+", text):
+            bullet_text = re.sub(r"^(\-|\•)\s+", "", text)
+            p = doc.add_paragraph(style="List Bullet")
+            tighten_spacing(p)
+
+            # Bold heading before colon
+            if ":" in bullet_text:
+                head, rest = bullet_text.split(":", 1)
+                r1 = p.add_run(head.strip() + ":")
+                r1.bold = True
+                p.add_run(rest)
+            else:
+                p.add_run(bullet_text)
+
+            continue
+
+        # Normal paragraph
+        p = doc.add_paragraph()
+        tighten_spacing(p)
+
+        # Bold hashtags
+        parts = re.split(r"(#\w+)", text)
+        for part in parts:
+            if part.startswith("#"):
+                r = p.add_run(part)
+                r.bold = True
+            else:
+                # Handle **bold**
+                subparts = re.split(r"(\*\*.*?\*\*)", part)
+                for sub in subparts:
+                    if sub.startswith("**") and sub.endswith("**"):
+                        r = p.add_run(sub[2:-2])
+                        r.bold = True
+                    else:
+                        p.add_run(sub)
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def normalize_broken_markdown(text: str) -> str:
+    text = re.sub(r'\*(\w[^*]+)\*\*', r'**\1**', text)
+    text = re.sub(r'\*{3,}', '**', text)
+    return text
+
+def export_to_word_pwc_no_toc(
+    content: str,
+    title: str,
+    subtitle: str | None = None,
+    content_type: str | None = None,
+    references: list[dict] | None = None,client: str | None = None
+) -> bytes:
+    """
+    PwC Word export WITHOUT Table of Contents.
+    Formatting identical to export_to_word_pwc_standalone.
+    """
+    doc = Document(PWC_TEMPLATE_PATH) if os.path.exists(PWC_TEMPLATE_PATH) else Document()
+    logger.info(f"[export_to_word_pwc_no_toc] Loaded content_type: {content_type}, title: {title},clientname: {client}")
+    content_reader = None
+    # ---------- Cover ----------
+    clean_title = re.sub(r'\*+', '', title).strip()
+    _set_paragraph_text_with_breaks(doc.paragraphs[0],sanitize_text_for_word(clean_title))
+    _set_paragraph_text_with_breaks(doc.paragraphs[1], sanitize_text_for_word(subtitle or ""))
+
+    # Remove everything after subtitle
+    while len(doc.paragraphs) > 2:
+        p = doc.paragraphs[-1]
+        p._element.getparent().remove(p._element)
+
+    _ensure_page_break_after_paragraph(doc.paragraphs[1])
+
+    # ---------- Content ----------
+    references_heading_added = False
+    in_section = False
+    first_paragraph_in_section = False
+
+    # for block in content.split("\n\n"):
+    #     block = block.strip()
+    #     if re.match(r'^-{-2,}$', block):
+    #         continue
+
+    #     if not block:
+    #         continue
+    #     block = re.sub(r'^\*{1}(.+?)\*{2}', r'**\1**', block)
+    #     block = re.sub(r'^\*{2}(.+?)\*{1}', r'**\1**', block)
+    #     if block.lower() in {"references", "references:"}:
+    #         doc.add_paragraph("References", style="Heading 2")
+    #         references_heading_added = True
+    #         continue
+
+    #     if block.startswith("##"):
+    #         # p = doc.add_paragraph(style="Heading 2")
+    #         # p.add_run(sanitize_text_for_word(block.replace("##", "").strip())).bold = True
+    #         doc.add_paragraph(
+    #             sanitize_text_for_word(re.sub(r'^#+\s*', '', block).strip()),
+    #             style="Heading 2"
+    #         )
+    #         continue
+
+    #     if block.startswith("#"):
+    #         # p = doc.add_paragraph(style="Heading 1")
+    #         # p.add_run(sanitize_text_for_word(block.replace("#", "").strip())).bold = True
+    #         doc.add_paragraph(
+    #             sanitize_text_for_word(re.sub(r'^#+\s*', '', block).strip()),
+    #             style="Heading 1"
+    #         )
+    #         continue
+
+    #     m = re.match(r'^\*\*(.+?)\*\*$', block)
+    #     if m:
+    #         doc.add_paragraph(
+    #             sanitize_text_for_word(m.group(1)),
+    #             style="Heading 1"
+    #         )
+    #         # p = doc.add_paragraph(style="Heading 1")
+    #         # p.add_run(sanitize_text_for_word(m.group(1))).bold = True
+    #         continue
+    #     # block = re.sub(
+    #     #     r'^\*\*(.+?):\*\*\s*',
+    #     #     r'\1: ',
+    #     #     block
+    #     # )
+    #     # Preserve **Label:** blocks as normal paragraphs (NOT headings)
+    #     label_colon_match = re.match(r'^\*\*(.+?):\*\*\s*(.+)$', block)
+    #     if label_colon_match:
+    #         para = doc.add_paragraph(style="Body Text")
+    #         para.paragraph_format.space_after = DocxPt(10)
+
+    #         # label (not bold)
+    #         run1 = para.add_run(sanitize_text_for_word(label_colon_match.group(1) + ": "))
+    #         run1.bold = False
+
+    #         # body (not bold)
+    #         run2 = para.add_run(sanitize_text_for_word(label_colon_match.group(2)))
+    #         run2.bold = False
+    #         continue
+    #     single_asterisk_label = re.match(r'^\*(.+?)\*$', block)
+    #     if single_asterisk_label:
+    #         label = single_asterisk_label.group(1).strip()
+
+    #         para = doc.add_paragraph(style="Body Text")
+    #         run = para.add_run(sanitize_text_for_word(label))
+    #         run.bold = True
+    #         continue
+    #     block = re.sub(r'\*\*(.*?)\*\*', r'\1', block)
+    #     inline_label_match = re.match(
+    #         r'^([A-Za-z][A-Za-z\s\-]+?):\s+(.+)$',
+    #         block
+    #     )
+
+
+    #     if inline_label_match:
+    #         label = inline_label_match.group(1) + ":"
+    #         body = inline_label_match.group(2)
+
+    #         para = doc.add_paragraph(style="Body Text")
+    #         para.paragraph_format.space_after = DocxPt(10)
+
+    #         run1 = para.add_run(sanitize_text_for_word(label + " "))
+    #         run1.bold = False  # IMPORTANT
+
+    #         run2 = para.add_run(sanitize_text_for_word(body))
+    #         run2.bold = False  # IMPORTANT
+
+    #         continue
+    #     # UI-style subsection label followed by body
+    #     lines = block.split("\n", 1)
+    #     if (
+    #         len(lines) == 2
+    #         and len(lines[0].strip()) < 80
+    #         and ":" not in lines[0]
+    #         and not lines[0].startswith(("#", "-", "•"))
+    #     ):
+    #         # Subsection label (bold)
+    #         para_label = doc.add_paragraph(style="Body Text")
+    #         run_label = para_label.add_run(sanitize_text_for_word(lines[0].strip()))
+    #         run_label.bold = True
+
+    #         # Body paragraph (normal)
+    #         para_body = doc.add_paragraph(style="Body Text")
+    #         para_body.paragraph_format.space_after = DocxPt(10)
+    #         _add_markdown_text_runs(
+    #             para_body,
+    #             sanitize_text_for_word(lines[1].strip()),
+    #             allow_bold=False
+    #         )
+    #         continue
+
+    #     # Standalone subsection labels (UI-style bold, not bullets)
+    #     if (
+    #         len(block) < 80
+    #         and ":" not in block
+    #         and not block.startswith(("#", "-", "*"))
+    #         and not re.match(r'^\d+[\.\)]\s+', block)
+    #     ):
+    #         para = doc.add_paragraph(style="Body Text")
+    #         run = para.add_run(sanitize_text_for_word(block))
+    #         run.bold = True
+    #         continue
+    #     lines = block.split("\n")
+    #     if all(is_bullet_line(l) for l in lines):
+    #         for line in lines:
+    #             clean = re.sub(r'^\s*[-•]\s+', '', line).strip()
+    #             clean = re.sub(r'\*+', '', clean)
+
+    #             if not clean:
+    #                 continue
+
+    #             para = doc.add_paragraph(style="List Bullet")
+    #             run = para.add_run(sanitize_text_for_word(clean))
+
+    #             # BULLET HEADING RULE
+    #             run.bold = (
+    #                 len(clean) <= 60 and
+    #                 clean[0].islower() is False
+    #             )
+    #         continue
+
+
+    #     para = doc.add_paragraph(style="Body Text") #Normal
+    #     para.paragraph_format.space_after = DocxPt(10)
+    #     para.paragraph_format.space_before = DocxPt(4)
+
+    #     clean = re.sub(r'\*\*(.*?)\*\*', r'\1', block)
+    #     clean = re.sub(r'[*_`]', '', clean)
+    #     _add_markdown_text_runs(para, clean, allow_bold=False)
+    #     for run in para.runs:
+    #         run.bold = False
+    for block in content.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+        if block.strip().lower() in {"references", "references:"}:
+            doc.add_paragraph("References", style="Heading 2")
+            references_heading_added = True
+            in_section = False
+            first_paragraph_in_section = False
+            continue
+
+        # ─────────────────────────────────────────────
+        # Section headings (1., 2., etc.)
+        # ─────────────────────────────────────────────
+        if re.match(r'^\s*(#+\s*)?\d+\.\s+', block):
+            doc.add_paragraph(
+                sanitize_text_for_word(block),
+                style="Heading 1"
+            )
+            in_section = True
+            first_paragraph_in_section = True
+            continue
+
+        # ─────────────────────────────────────────────
+        # Headings ##
+        # ─────────────────────────────────────────────
+        if block.startswith("##"):
+            doc.add_paragraph(
+                sanitize_text_for_word(block.lstrip("#").strip()),
+                style="Heading 2"
+            )
+            in_section = True
+            first_paragraph_in_section = True
+            continue
+
+        # ─────────────────────────────────────────────
+        # Bullet blocks
+        # ─────────────────────────────────────────────
+        lines = block.split("\n")
+        if all(is_bullet_line(l) for l in lines):
+            first_paragraph_in_section = False
+            for line in lines:
+                clean = re.sub(r'^[-•]\s+', '', line).strip()
+                if not clean:
+                    continue
+
+                para = doc.add_paragraph(style="List Bullet")
+                run = para.add_run(sanitize_text_for_word(clean))
+
+                # STRUCTURAL bullet-heading rule
+                run.bold = (
+                    len(clean) <= 70 and
+                    not re.search(r'[.!?]$', clean)
+                )
+            continue
+
+        # ─────────────────────────────────────────────
+        # First paragraph after section = executive takeaway
+        # NEVER bold
+        # ─────────────────────────────────────────────
+        if in_section and first_paragraph_in_section:
+            clean = re.sub(r'\*\*(.*?)\*\*', r'\1', block)
+            clean = re.sub(r'[*_`]', '', clean)
+
+            para = doc.add_paragraph(style="Body Text")
+            _add_markdown_text_runs(
+                para,
+                sanitize_text_for_word(clean),
+                allow_bold=True
+            )
+            for run in para.runs:
+                if run.text.strip().endswith(":"):
+                    run.bold = False
+
+
+            first_paragraph_in_section = False
+            continue
+
+        # ─────────────────────────────────────────────
+        # Normal narrative paragraphs
+        # ─────────────────────────────────────────────
+        clean = re.sub(r'\*\*(.*?)\*\*', r'\1', block)
+        clean = re.sub(r'[*_`]', '', clean)
+
+        para = doc.add_paragraph(style="Body Text")
+        _add_markdown_text_runs(
+            para,
+            sanitize_text_for_word(clean),
+            allow_bold=False
+        )
+
+        for run in para.runs:
+            run.bold = False
+
+    # ---------- References ----------
+    if references:
+        doc.add_page_break()
+        if not references_heading_added:
+            doc.add_paragraph("References", style="Heading 2")
+
+        for ref in references:
+            para = _add_numbered_paragraph(
+                doc,
+                sanitize_text_for_word(ref.get("title", ""))
+            )
+            if ref.get("url"):
+                add_hyperlink(para, ref["url"])
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return _fix_docx_encoding(buffer.getvalue())
+
+def export_to_pdf_pwc_no_toc(
+    content: str,
+    title: str,
+    subtitle: str | None = None,
+    content_type: str | None = None,client: str | None = None
+
+) -> bytes:
+    """
+    PwC PDF export WITHOUT Table of Contents.
+    Uses same formatting as pdf-pwc-bullets.
+    """
+    if not os.path.exists(PWC_PDF_TEMPLATE_PATH):
+        return _generate_pdf_with_title_subtitle(content, title, subtitle)
+    logger.info(f"Generating PDF PwC no ToC for module: {title},{content_type},clientname: {client}")
+    
+    # Reuse COVER creation logic from existing function
+    pdf_bytes = export_to_pdf_with_pwc_template_with_bullets(
+        content=content,
+        title=title,
+        subtitle=subtitle,
+        include_toc=False
+    )
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter()
+    writer.add_page(reader.pages[0])
+    for page in reader.pages[1:]: 
+        writer.add_page(page)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def build_cover_title(module: str, client: str | None) -> str:
+    module_clean = re.sub(r'generate\s+', '', module, flags=re.IGNORECASE)
+    module_clean = module_clean.replace("-", " ").title()
+    if not client:
+        return module_clean
+    return f"{module_clean} on {client.title()}".strip()
+    # module_clean = re.sub(r'[*#_`]+', '', module_clean).strip()  
+
+    # if not clientname:
+    #     return module_clean
+
+    # return f"{module_clean} on {clientname}".strip()
+
+def classify_block(block: str) -> str:
+    """
+    Returns one of:
+    executive_takeaway
+    bullet_heading
+    heading_1
+    heading_2
+    bullet_list
+    paragraph
+    """
+    if re.match(r'^\*\*Executive takeaway:\*\*', block, re.I):
+        return "executive_takeaway"
+
+    if re.match(r'^(\*.+\*|- .+)$', block):
+        return "bullet_heading"
+
+    if block.startswith("##"):
+        return "heading_2"
+
+    if block.startswith("#"):
+        return "heading_1"
+
+    if all(is_bullet_line(l) for l in block.split("\n")):
+        return "bullet_list"
+
+    return "paragraph"
+
+def split_blocks(text: str) -> list[str]:
+    """
+    Split content into blocks with consistent normalization.
+    
+    Rules:
+    - Normalize all newline types (\r\n, \r) to \n
+    - Split on 2+ consecutive newlines
+    - Strip each block
+    - Remove empty blocks
+    
+    This prevents index drift from different newline handling across platforms.
+    
+    Args:
+        text: Raw content string with possible mixed newlines
+    
+    Returns:
+        List of non-empty, stripped content blocks
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    
+    # Normalize newlines: \r\n and \r become \n
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    
+    # Split on 2+ newlines
+    blocks = re.split(r"\n{2,}", text)
+    
+    # Strip and filter empty blocks
+    return [b.strip() for b in blocks if b.strip()]
+
+
+def html_to_marked_text(text: str) -> str:
+    """Convert limited HTML to a simple markdown-like text we already support.
+
+    Rules:
+    - Decode HTML entities
+    - Treat <p> as paragraph breaks and <br> as line breaks
+    - Convert <strong>/<b> to **bold** markers (which existing formatters understand)
+    - Convert <h1>-<h6> to markdown headings (#)
+    - Convert <li> items to bullet format (- bullet)
+    - Strip all other tags/attributes (like style="...")
+    
+    EDIT CONTENT ONLY: This function is specifically for converting HTML from
+    formatFinalArticleWithBlockTypes() to plain text before backend processing.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+
+    # Decode entities (&amp;, &nbsp; ...)
+    text = unescape(text)
+
+    # Convert headings to markdown: <h1>Text</h1> -> # Text
+    text = re.sub(r"<h1[^>]*>([^<]+)</h1>", r"# \1", text, flags=re.IGNORECASE)
+    text = re.sub(r"<h2[^>]*>([^<]+)</h2>", r"## \1", text, flags=re.IGNORECASE)
+    text = re.sub(r"<h3[^>]*>([^<]+)</h3>", r"### \1", text, flags=re.IGNORECASE)
+    text = re.sub(r"<h4[^>]*>([^<]+)</h4>", r"#### \1", text, flags=re.IGNORECASE)
+    text = re.sub(r"<h5[^>]*>([^<]+)</h5>", r"##### \1", text, flags=re.IGNORECASE)
+    text = re.sub(r"<h6[^>]*>([^<]+)</h6>", r"###### \1", text, flags=re.IGNORECASE)
+    
+    # Convert <ul> and <ol> lists to plain text
+    # <li>content</li> -> - content (bullet format)
+    text = re.sub(r"<li[^>]*>([^<]+)</li>", r"- \1", text, flags=re.IGNORECASE)
+    text = re.sub(r"</?[ou]l[^>]*>", "", text, flags=re.IGNORECASE)  # Remove ul/ol tags
+
+    # Paragraph and line breaks first so they survive tag stripping
+    text = re.sub(r"</p\s*>", "\n\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+
+    # Convert bold tags to ** ** markers
+    # Handle nested/overlapping conservatively by doing closing then opening
+    text = re.sub(r"<\s*/\s*(strong|b)\s*>", "**", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*(strong|b)[^>]*>", "**", text, flags=re.IGNORECASE)
+    
+    # Convert italic tags to * * markers
+    text = re.sub(r"<\s*/\s*(em|i)\s*>", "*", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*(em|i)[^>]*>", "*", text, flags=re.IGNORECASE)
+
+    # Drop all remaining tags (div, span, p with style, etc.)
+    text = re.sub(r"<[^>]+>", "", text)
+
+    # Clean up excessive whitespace (but preserve intentional structure)
+    # Multiple spaces -> single space (but not newlines)
+    text = re.sub(r"[ \t]+", " ", text)
+    # Multiple newlines (3+) -> double newline (paragraph break)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    
+    return text.strip()
+def parse_bullet(text: str) -> dict:
+    """
+    Parse bullet point structure consistently.
+    
+    Extracts:
+    - number: int or None (e.g., 1, 2, 10 from "1.", "2.", "10)")
+    - icon: str or None (bullet icon like "•", "-", "*")
+    - label: str (bold text before colon, or first sentence)
+    - body: str or None (text after colon, or remainder)
+    
+    This is the single source of truth for bullet semantics.
+    Used by both Word and PDF export.
+    
+    Args:
+        text: Raw bullet text (may include number/icon prefix)
+    
+    Returns:
+        dict with keys: number, icon, label, body
+    """
+    text = text.strip()
+    result = {
+        "number": None,
+        "icon": None,
+        "label": "",
+        "body": None
     }
     
-    // Specific hover enhancements for different highlight types
-    :host ::ng-deep .highlight-yellow.highlight-hover {
-      background: #fde047 !important; // Slightly brighter yellow
-      box-shadow: 0 0 0 2px #facc15;
-    }
+    # Extract bullet icon first (•, -, *)
+    icon_match = re.match(r'^([•\-\*])\s+', text)
+    if icon_match:
+        result["icon"] = icon_match.group(1)
+        text = text[len(icon_match.group(0)):].strip()
     
-    :host ::ng-deep .highlight-green.highlight-hover {
-      background: #4ade80 !important; // Slightly brighter green
-      box-shadow: 0 0 0 2px #22c55e;
-    }
+    # Extract number prefix (1., 2., 10), etc.)
+    number_match = re.match(r'^(\d+)[.)]\s+', text)
+    if number_match:
+        result["number"] = int(number_match.group(1))
+        text = text[len(number_match.group(0)):].strip()
     
-    :host ::ng-deep .strikeout.highlight-hover {
-      box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2);
-    }
-
-    :host ::ng-deep .strikeout {
-      text-decoration: line-through;
-    }
-
-    :host ::ng-deep .highlight-fix {
-      color: #0c9500;
-      font-weight: 700;
-      padding: 2px 4px;
-      border-radius: 3px;
-    }
-
-    :host ::ng-deep .highlight-green {
-      background: #86efac;
-      color: #166534;
-      font-weight: 700;
-      padding: 2px 4px;
-      border-radius: 3px;
-    }
-
-    // Strikeout with yellow background (for approved issues in original)
-    :host ::ng-deep .strikeout.highlight-yellow {
-      background: #fef08a;
-      color: #92400e;
-      text-decoration: line-through;
-      font-weight: 700;
-      padding: 2px 4px;
-      border-radius: 3px;
-    }
-
-    /* Update bulk-actions to support ef-approve-btn and ef-reject-btn */
-    .bulk-actions .ef-approve-btn,
-    .bulk-actions .ef-reject-btn {
-      padding: 6px 16px;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      border: 2px solid transparent;
-      display: inline-block;
-      text-align: center;
-    }
-
-    .bulk-actions .ef-approve-btn {
-      background: #F0FDF4;
-      color: #059669;
-      border-color: #10b981;
-    }
-
-    .bulk-actions .ef-approve-btn:hover:not(:disabled) {
-      background: #D1FAE5;
-      border-color: #059669;
-    }
-
-    .bulk-actions .ef-reject-btn {
-      background: #FEF2F2;
-      color: #DC2626;
-      border-color: #EF4444;
-    }
-
-    .bulk-actions .ef-reject-btn:hover:not(:disabled) {
-      background: #FEE2E2;
-      border-color: #DC2626;
-    }
-
-    .bulk-actions .ef-approve-btn:disabled,
-    .bulk-actions .ef-reject-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    // Sequential Workflow Progress Indicator
-    .sequential-progress {
-      margin: 24px 0;
-      padding: 16px;
-      background: #F9FAFB;
-      border: 1px solid #E5E7EB;
-      border-radius: 8px;
-    }
-
-    .progress-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 12px;
-    }
-
-    .progress-title {
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--text-primary, #1F2937);
-      margin: 0;
-    }
-
-    .progress-badge {
-      padding: 4px 12px;
-      background: #3B82F6;
-      color: white;
-      border-radius: 12px;
-      font-size: 12px;
-      font-weight: 600;
-    }
-
-    .progress-bar-container {
-      width: 100%;
-      height: 8px;
-      background: #E5E7EB;
-      border-radius: 4px;
-      overflow: hidden;
-      margin-bottom: 12px;
-    }
-
-    .progress-bar {
-      height: 100%;
-      background: linear-gradient(90deg, #3B82F6, #60A5FA);
-      border-radius: 4px;
-      transition: width 0.3s ease;
-    }
-
-    .progress-text {
-      font-size: 14px;
-      color: var(--text-secondary, #6B7280);
-      margin: 0;
-      
-      strong {
-        color: var(--text-primary, #1F2937);
-        font-weight: 600;
-      }
-    }
-
-    /* Horizontal Editor Timeline */
-    .editor-timeline.horizontal {
-      display: flex;
-      align-items: flex-start;
-      gap: 0;
-      margin: 16px 0 12px;
-      padding: 12px;
-      background: #F9FAFB;
-      border: 1px solid #E5E7EB;
-      border-radius: 8px;
-      overflow-x: auto;
-      overflow-y: visible;
-    }
-
-    .timeline-item {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      min-width: 120px;
-      max-width: 160px;
-      text-align: center;
-      position: relative;
-      flex-shrink: 0;
-    }
-
-    .timeline-marker {
-      width: 28px;
-      height: 28px;
-      border-radius: 50%;
-      background: #D1D5DB;
-      color: #6B7280;
-      font-weight: 600;
-      font-size: 14px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.3s ease;
-      border: 2px solid transparent;
-    }
-
-    .timeline-item.completed .timeline-marker {
-      background: #10B981;
-      color: #FFFFFF;
-      border-color: #059669;
-    }
-
-    .timeline-item.active .timeline-marker {
-      background: #3B82F6;
-      color: #FFFFFF;
-      border-color: #2563EB;
-      box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
-      animation: pulse-editor 2s infinite;
-    }
-
-    .timeline-item.upcoming .timeline-marker {
-      background: #D1D5DB;
-      color: #6B7280;
-      border-color: #9CA3AF;
-    }
-
-    @keyframes pulse-editor {
-      0%, 100% {
-        box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
-      }
-      50% {
-        box-shadow: 0 0 0 8px rgba(59, 130, 246, 0.1);
-      }
-    }
-
-    .timeline-editor-name {
-      margin-top: 8px;
-      font-weight: 600;
-      font-size: 12px;
-      color: #1F2937;
-      line-height: 1.3;
-      word-wrap: break-word;
-      width: 100%;
-    }
-
-    .timeline-status {
-      margin-top: 4px;
-      font-size: 11px;
-      color: #6B7280;
-      font-weight: 500;
-    }
-
-    .timeline-item.completed .timeline-status {
-      color: #059669;
-    }
-
-    .timeline-item.active .timeline-status {
-      color: #3B82F6;
-      font-weight: 600;
-    }
-
-    .timeline-connector {
-      flex: 1;
-      height: 2px;
-      background: #D1D5DB;
-      margin-top: 15px;
-      min-width: 40px;
-      max-width: 80px;
-      transition: background 0.3s ease;
-      position: relative;
-      align-self: flex-start;
-    }
-
-    .timeline-connector.completed {
-      background: #10B981;
-    }
-
-    .status-summary {
-      margin-top: 16px;
-    }
-
-    .status-summary-title {
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text-primary, #1F2937);
-      margin: 0 0 8px 0;
-    }
-
-    // Status Pills Container
-    .status-pills-container {
-      display: flex;
-      gap: 8px;
-      margin-top: 16px;
-      padding-top: 16px;
-      border-top: 1px solid #E5E7EB;
-      flex-wrap: wrap;
-    }
-
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 12px;
-      border-radius: 16px;
-      font-size: 12px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      border: 1px solid transparent;
-      background: #F3F4F6;
-      color: #6B7280;
-      
-      &:hover:not(:disabled) {
-        transform: translateY(-1px);
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-      }
-      
-      &:active:not(:disabled) {
-        transform: translateY(0);
-      }
-      
-      &:disabled {
-        opacity: 0.4;
-        cursor: not-allowed;
-        pointer-events: none;
-      }
-      
-      .pill-label {
-        font-weight: 500;
-      }
-      
-      .pill-count {
-        background: rgba(255, 255, 255, 0.8);
-        padding: 2px 6px;
-        border-radius: 10px;
-        font-weight: 600;
-        min-width: 20px;
-        text-align: center;
-      }
-    }
-
-    .status-pill-approved {
-      background: #D1FAE5;
-      color: #059669;
-      border-color: #10B981;
-      
-      &:hover:not(:disabled) {
-        background: #A7F3D0;
-        border-color: #059669;
-      }
-      
-      .pill-count {
-        background: #10B981;
-        color: white;
-      }
-    }
-
-    .status-pill-rejected {
-      background: #FEE2E2;
-      color: #DC2626;
-      border-color: #EF4444;
-      
-      &:hover:not(:disabled) {
-        background: #FECACA;
-        border-color: #DC2626;
-      }
-      
-      .pill-count {
-        background: #EF4444;
-        color: white;
-      }
-    }
-
-    .status-pill-pending {
-      background: #FEF3C7;
-      color: #D97706;
-      border-color: #FBBF24;
-      
-      &:hover:not(:disabled) {
-        background: #FDE68A;
-        border-color: #D97706;
-      }
-      
-      .pill-count {
-        background: #F59E0B;
-        color: white;
-      }
-    }
-
-    // Sequential Actions Container (holds both Next Editor and Generate Final Output)
-    .sequential-actions-container {
-      margin: 24px 0;
-      display: flex;
-      flex-direction: row;
-      gap: 16px;
-      align-items: flex-start;
-
-      .final-output-actions,
-      .next-editor-actions {
-        flex: 1;
-        padding: 20px;
-        background: #F0F7FF;
-        border: 1px solid #BFDBFE;
-        border-radius: 8px;
-        text-align: center;
-      }
-    }
-
-    .next-editor-btn {
-      padding: 12px 24px;
-      background: #3B82F6;
-      color: white;
-      border: none;
-      border-radius: 8px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      
-      &:hover:not(:disabled) {
-        background: #2563EB;
-        transform: translateY(-1px);
-        box-shadow: 0 4px 8px rgba(59, 130, 246, 0.3);
-      }
-      
-      &:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-      }
-      
-      .spinner {
-        width: 16px;
-        height: 16px;
-        border: 2px solid rgba(255, 255, 255, 0.3);
-        border-top-color: white;
-        border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-      }
-    }
-
-    .next-editor-hint {
-      margin-top: 12px;
-      font-size: 13px;
-      color: #6B7280;
-      margin-bottom: 0;
-    }
-
-    // Final Output Actions (updated for sequential mode)
-    .final-output-actions {
-      margin: 24px 0;
-      padding: 20px;
-      background: #F0F7FF;
-      border: 1px solid #BFDBFE;
-      border-radius: 8px;
-      text-align: center;
-
-      .sequential-actions-container & {
-        margin: 0;
-      }
-    }
-
-    .final-output-btn {
-      padding: 12px 24px;
-      background: #10B981;
-      color: white;
-      border: none;
-      border-radius: 8px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      
-      &:hover:not(:disabled) {
-        background: #059669;
-        transform: translateY(-1px);
-        box-shadow: 0 4px 8px rgba(16, 185, 129, 0.3);
-      }
-      
-      &:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-      }
-      
-      .spinner {
-        width: 16px;
-        height: 16px;
-        border: 2px solid rgba(255, 255, 255, 0.3);
-        border-top-color: white;
-        border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-      }
-    }
-
-    .final-output-hint {
-      margin-top: 12px;
-      font-size: 13px;
-      color: #6B7280;
-      margin-bottom: 0;
-    }
-
-    // Loading state styles
-    .loading-state {
-      padding: 40px 20px;
-      text-align: center;
-      background: #F9FAFB;
-      border: 2px dashed #E5E7EB;
-      border-radius: 8px;
-    }
-
-    .loading-content {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 16px;
-    }
-
-    .loading-text {
-      font-size: 16px;
-      font-weight: 600;
-      color: #1F2937;
-      margin: 0;
-    }
-
-    .loading-subtext {
-      font-size: 14px;
-      color: #6B7280;
-      margin: 0;
-    }
-
-    .loading-state .spinner {
-      width: 32px;
-      height: 32px;
-      border: 3px solid rgba(59, 130, 246, 0.2);
-      border-top-color: #3B82F6;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-    }
-
-    /* No feedback message styling (same as guided journey) */
-    .paragraph-no-feedback {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 1.2rem;
-      margin-top: 5rem;
-      border-radius: 0.5rem;
-      border: 1px dashed rgba(0, 0, 0, 0.12);
-      background-color: #fd5108;
-      text-align: center;
-      font-size: 0.95rem;
-      color: rgba(0, 0, 0, 0.7);
-    }
-
-    .paragraph-no-feedback p {
-      margin: 0;
-      font-size: 1.12rem;
-    }
+    # Extract label (before colon) and body (after colon)
+    colon_idx = text.find(':')
+    if colon_idx > 0:
+        result["label"] = text[:colon_idx].strip()
+        result["body"] = text[colon_idx + 1:].strip()
+    else:
+        result["label"] = text
     
-  `]
-})
-export class ParagraphEditsConsolidatedComponent implements OnChanges {
-  @Input() paragraphEdits: ParagraphEdit[] = [];
-  @Input() showFinalOutput: boolean = false;
-  @Input() isGeneratingFinal: boolean = false;
-    hasNoParagraphFeedback: boolean = false;
-  // Sequential workflow inputs
-  @Input() threadId?: string | null;
-  @Input() currentEditor?: string | null;
-  @Input() editorOrder: string[] = []; // Normalized editor order from source of truth (ChatEditWorkflowService)
-  @Input() isSequentialMode?: boolean;
-  @Input() isLastEditor?: boolean;
-  @Input() currentEditorIndex?: number;
-  @Input() totalEditors?: number;
-  @Input() isGenerating?: boolean;
-  @Output('paragraphApproved') paragraphApproved = new EventEmitter<number>();
-  @Output('paragraphDeclined') paragraphDeclined = new EventEmitter<number>();
-  @Output('generateFinal') generateFinal = new EventEmitter<void>();
-  @Output('nextEditor') nextEditor = new EventEmitter<void>();
+    return result
 
-  // Hover state tracking
-  private hoveredFeedback: { paragraphIndex: number, editorType: string, feedbackIndex: number } | null = null;
-
-  // Track when next editor is clicked to disable generate final output
-  isNextEditorClicked: boolean = false;
-
-  constructor(private cdr: ChangeDetectorRef) {}
-
-  get allParagraphsDecided(): boolean {
-    // If all feedback is decided, buttons should enable (even if paragraphs aren't explicitly approved)
-    // This allows "Approve All" / "Reject All" to enable buttons when they only affect feedback items
-    const feedbackDecided = this.allParagraphFeedbackDecided;
-    if (feedbackDecided) {
-      return true; // Enable buttons when all feedback is decided
-    }
-    // Otherwise, check both paragraph-level and feedback decisions
-    const paragraphsDecided = allParagraphsDecided(this.paragraphEdits);
-    return paragraphsDecided && feedbackDecided;
-  }
-
-  /** Check if all paragraph feedback items are decided */
-  get allParagraphFeedbackDecided(): boolean {
-    if (!this.paragraphEdits || this.paragraphEdits.length === 0) {
-      return true; // No feedback to decide
-    }
+def _format_content_with_block_types_word(doc: Document, content: str, block_types: list[dict] | None = None):
+    """
+    Format content in Word document using block type information.
+    Applies formatting similar to frontend formatFinalArticleWithBlockTypes.
+    Groups consecutive bullet items into lists, handles bullet icons, removes number prefixes.
     
-    return this.paragraphEdits.every(para => {
-      // Only check if all editorial feedback items are decided (not paragraph approval)
-      // This allows Next Editor to enable when all feedback is approved/rejected
-      if (!para.editorial_feedback) {
-        return true; // No feedback means nothing to decide
-      }
-      
-      const feedbackTypes = Object.keys(para.editorial_feedback);
-      // If there are no feedback types, consider it decided
-      if (feedbackTypes.length === 0) {
-        return true;
-      }
-      
-      for (const editorType of feedbackTypes) {
-        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-        // If there are no feedbacks for this editor type, skip it
-        if (feedbacks.length === 0) {
-          continue;
-        }
-        for (const fb of feedbacks) {
-          // Feedback is decided if approved is true or false (not null/undefined)
-          if (fb.approved === null || fb.approved === undefined) {
-            return false;
-          }
-        }
-      }
-      
-      return true;
-    });
-  }
-
-  get allParagraphsApproved(): boolean {
-    return this.paragraphEdits.length > 0 && 
-           this.paragraphEdits.every(p => p.approved === true);
-  }
-  
-  get allParagraphsDeclined(): boolean {
-    return this.paragraphEdits.length > 0 && 
-           this.paragraphEdits.every(p => p.approved === false);
-  }
-  
-  onApproveAll(): void {
-    if (this.paragraphEdits.length === 0) {
-      return;
-    }
+    Content should be final_article format: plain text with "\n\n" separators.
+    Uses split_blocks() to split content (same as final article processing).
+    block_types should match final article generation structure with sequential indices.
+    """
+    if not block_types:
+        # Fallback to default formatting
+        for block in split_blocks(content):
+            block = block.strip()
+            if not block:
+                continue
+            if block.startswith("##"):
+                p = doc.add_paragraph(style="Heading 2")
+                p.add_run(sanitize_text_for_word(block.replace("##", "").strip())).bold = True
+            elif block.startswith("#"):
+                p = doc.add_paragraph(style="Heading 1")
+                p.add_run(sanitize_text_for_word(block.replace("#", "").strip())).bold = True
+            elif re.match(r'^\*\*(.+?)\*\*$', block):
+                m = re.match(r'^\*\*(.+?)\*\*$', block)
+                if m:
+                    p = doc.add_paragraph(style="Heading 1")
+                    p.add_run(sanitize_text_for_word(m.group(1))).bold = True
+            else:
+                lines = block.split("\n")
+                if all(is_bullet_line(l) for l in lines):
+                    for line in lines:
+                        clean = re.sub(r'^\s*[-•]\s+', '', line).strip()
+                        if clean:
+                            para = doc.add_paragraph(style="List Bullet")
+                            _add_markdown_text_runs(para, clean)
+                else:
+                    para = doc.add_paragraph(style="Body Text")
+                    _add_markdown_text_runs(para, block)
+        return
     
-    // Emit approval event for each paragraph
-    this.paragraphEdits.forEach(paragraph => {
-      if (paragraph.index !== undefined && paragraph.index !== null) {
-        this.paragraphApproved.emit(paragraph.index);
-      }
-    });
-  }
-  
-  onDeclineAll(): void {
-    if (this.paragraphEdits.length === 0) {
-      return;
-    }
+    # Use split_blocks() - same as final article processing
+    # split_blocks() handles "\n\n" splitting (matches final_article format: "\n\n".join(final_paragraphs))
+    paragraphs = split_blocks(content)
     
-    // Emit decline event for each paragraph
-    this.paragraphEdits.forEach(paragraph => {
-      if (paragraph.index !== undefined && paragraph.index !== null) {
-        this.paragraphDeclined.emit(paragraph.index);
-      }
-    });
-  }
-
-
-  // Paragraph-level approve/reject buttons were removed from the UI.
-  // Individual paragraph approval/decline is handled via bulk actions
-  // or via editorial feedback approvals. Keep the outputs for
-  // backward compatibility but they are not emitted from per-paragraph UI here.
-
-  onGenerateFinal() {
-    this.generateFinal.emit();
-  }
-
-  /** Number of paragraphs auto-approved by the service or by identical content */
-  get autoApprovedCount(): number {
-    return this.paragraphEdits.filter(p => p.autoApproved === true).length;
-  }
-
-  /** Paragraphs that require user review (excludes auto-approved) */
-  get paragraphsForReview(): ParagraphEdit[] {
-    return this.paragraphEdits
-      .filter(p => p.autoApproved !== true)
-      .sort((a, b) => a.index - b.index);
-  }
-
-  // Initialize displayOriginal/displayEdited with highlights when input changes
-  // Use a lifecycle hook to prepare initial highlighted views so UI shows yellow highlights by default
-  ngOnChanges(): void {
-    // Reset isNextEditorClicked when new paragraph edits arrive (new editor loaded)
-    if (this.paragraphEdits && this.paragraphEdits.length > 0) {
-      this.isNextEditorClicked = false;
-    }
-    this.initializeHighlights();
-  }
-
-  private initializeHighlights(): void {
-    if (!this.paragraphEdits || this.paragraphEdits.length === 0) return;
-    this.paragraphEdits.forEach((p: any, idx: number) => {
-      // ensure index is set
-      if (p.index === undefined || p.index === null) p.index = idx;
-      // Always clear display properties when new data arrives to ensure default highlighting works
-      // This ensures highlightAllFeedbacks() always generates fresh highlights with yellow for unreviewed
-      // Only preserve display properties if they were set by user hover actions (handled separately)
-      if (!p._hoverActive) {
-        // When not in hover state, clear display properties to show fresh highlights
-        // This ensures default yellow highlighting shows for unreviewed feedback
-        p.displayOriginal = undefined;
-        p.displayEdited = undefined;
-      }
-    });
-  }
-
-  /** Check if any paragraph has editorial feedback */
-  get hasEditorialFeedback(): boolean {
-    return this.paragraphEdits.some(p => 
-      p.editorial_feedback && 
-      Object.values(p.editorial_feedback).some(feedbacks => 
-        Array.isArray(feedbacks) && feedbacks.length > 0
-      )
-    );
-  }
-
-  /** Check if all feedback items are approved */
-  get allFeedbackApproved(): boolean {
-    return this.paragraphEdits.every(p => {
-      if (!p.editorial_feedback) return true;
-      return Object.values(p.editorial_feedback).every(feedbacks => {
-        if (!Array.isArray(feedbacks)) return true;
-        return feedbacks.length === 0 || feedbacks.every((fb: any) => fb.approved === true);
-      });
-    });
-  }
-
-  /** Check if all feedback items are rejected */
-  get allFeedbackRejected(): boolean {
-    return this.paragraphEdits.every(p => {
-      if (!p.editorial_feedback) return true;
-      return Object.values(p.editorial_feedback).every(feedbacks => {
-        if (!Array.isArray(feedbacks)) return true;
-        return feedbacks.length > 0 && feedbacks.every((fb: any) => fb.approved === false);
-      });
-    });
-  }
-
-  // expose Object.keys for template usage
-  objectKeys = Object.keys;
-
-  /** Apply editorial fix (apply highlight/strikeout and mark the feedback approved) */
-  applyEditorialFix(para: any, editorType: string, fb: any): void {
-    if (this.showFinalOutput) return;
+    # Create block type map - use index from block_types or fallback to position
+    # block_types come from final article generation with sequential indices matching paragraphs
+    # IMPORTANT: block_types have sequential indices (0, 1, 2, ...) that match paragraph positions
+    block_type_map = {}
+    for i, bt in enumerate(block_types):
+        # Use the index from block_type if present, otherwise use enumeration index
+        map_key = bt.get("index") if bt.get("index") is not None else i
+        block_type_map[map_key] = bt
     
-    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
-    if (fb.approved === true) {
-      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
-    } else {
-      fb.approved = true; // Approve (green/strikeout)
-    }
+    # First pass: process each paragraph with block type formatting
+    formatted_blocks = []
+    for idx, block in enumerate(paragraphs):
+        block = block.strip()
+        if not block:
+            continue
+        
+        # Get block_info - use index from enumerate to match block_types indices
+        # block_types indices are sequential (0, 1, 2, ...) matching paragraph positions
+        block_info = block_type_map.get(idx)
+        if not block_info:
+            logger.warning(f"[Export Word] No block_type found for index {idx}, defaulting to paragraph")
+            block_info = {"type": "paragraph", "level": 0, "index": idx}
+        
+        block_type = block_info.get("type")
+        if not block_type or block_type == "":
+            logger.warning(f"[Export Word] Empty block_type for index {idx}, defaulting to paragraph")
+            block_type = "paragraph"
+        level = block_info.get("level", 0)
+        
+        # Skip title blocks - title is already on cover page, don't duplicate in content
+        if block_type == "title":
+            continue
+        
+        # Process list items: detect type and preserve original order
+        # Check if this is a list item (bullet, number, or alpha)
+        # Always detect from content, even if block_type says "bullet_item"
+        list_type, detected_level = _detect_list_type(block, level)
+        
+        # Use level from block_types first, fallback to detected level
+        final_level = level if level > 0 else detected_level
+        
+        if list_type != 'none' or block_type == "bullet_item":
+            # This is a list item (detected or from block_type)
+            # If detected as 'none' but block_type is "bullet_item", treat as bullet
+            if list_type == 'none' and block_type == "bullet_item":
+                list_type = 'bullet'
+            
+            parsed = parse_bullet(block)
+            formatted_blocks.append({
+                'type': 'list_item',
+                'list_type': list_type,
+                'content': block,
+                'level': final_level,
+                'raw_content': block,
+                'parsed': parsed
+            })
+        else:
+            formatted_blocks.append({
+                'type': block_type,
+                'content': block,
+                'level': level,
+                'raw_content': block
+            })
     
-    // Clear display properties so highlightAllFeedbacks() handles all highlighting
-    para.displayOriginal = undefined;
-    para.displayEdited = undefined;
+    # Second pass: group consecutive list items and apply formatting
+    current_list = []
+    prev_list_type = None
+    prev_block_type = None
     
-    // Force change detection to update button states (enable/disable Next Editor and Generate Final Output)
-    this.cdr.detectChanges();
-  }
-
-  /** Remove any existing HTML tags from text so we highlight against raw text */
-  private stripHtmlSpans(html: string): string {
-    if (!html) return '';
-    // Remove all HTML tags to get plain text for highlighting
-    return html.replace(/<[^>]*>/g, '');
-  }
-
-  /** Reject editorial feedback (mark feedback rejected and clear any per-feedback highlights) */
-  rejectEditorialFeedback(para: any, editorType: string, fb: any): void {
-    if (this.showFinalOutput) return;
+    for i, block_info in enumerate(formatted_blocks):
+        block_type = block_info['type']
+        content = block_info['content']
+        level = block_info.get('level', 0)
+        next_block = formatted_blocks[i + 1] if i + 1 < len(formatted_blocks) else None
+        
+        if block_type == 'list_item' or block_type == 'bullet_item':
+            list_type = block_info.get('list_type', 'bullet')
+            
+            # Check if we should start a new list (different type or level)
+            if current_list:
+                first_item_level = current_list[0].get('level', 0)
+                if prev_list_type != list_type or first_item_level != level:
+                    # Close current list and start new one
+                    # Order list if needed (for numbered/alphabetical)
+                    ordered_list = _order_list_items(current_list)
+                    _add_list_to_document(doc, ordered_list, prev_list_type)
+                    current_list = []
+            
+            # Add to current list
+            current_list.append(block_info)
+            prev_list_type = list_type
+            prev_block_type = 'list_item'
+        else:
+            # Close any open list before processing non-list block
+            if current_list:
+                # Order list if needed (for numbered/alphabetical)
+                ordered_list = _order_list_items(current_list)
+                _add_list_to_document(doc, ordered_list, prev_list_type)
+                current_list = []
+                prev_list_type = None
+            
+            # Process non-list blocks (title blocks already skipped in first pass)
+            if block_type == "heading":
+                # Remove heading numbers if present
+                clean_content = re.sub(r'^\d+[.)]\s+', '', content).strip()
+                
+                # Heading: Based on level (Heading 1-6), bold, font-weight 600 equivalent
+                heading_level = min(max(level, 1), 6)
+                style_name = f"Heading {heading_level}"
+                p = doc.add_paragraph(style=style_name)
+                
+                # Remove numbering from heading
+                p.paragraph_format.left_indent = DocxInches(0)
+                # Clear any numbering
+                pPr = p._p.get_or_add_pPr()
+                numPr = pPr.find(qn('w:numPr'))
+                if numPr is not None:
+                    pPr.remove(numPr)
+                
+                run = p.add_run(sanitize_text_for_word(clean_content))
+                run.bold = True
+                # Set spacing: margin-top: 0.9em equivalent, margin-bottom: 0.2em equivalent
+                p.paragraph_format.space_before = DocxPt(11)  # ~0.9em
+                p.paragraph_format.space_after = DocxPt(2)     # ~0.2em
+            
+            elif block_type == "paragraph":
+                # Paragraph: proper spacing with Body Text style
+                para = doc.add_paragraph(style="Body Text")
+                _add_markdown_text_runs(para, content)
+                
+                # Apply Body Text style configuration
+                _apply_body_text_style_word(para)
+                
+                # Set spacing: margin-top: 0.15em equivalent, margin-bottom: 0.7em equivalent
+                para.paragraph_format.space_before = DocxPt(2)   # ~0.15em
+                para.paragraph_format.space_after = DocxPt(8)   # ~0.7em
+                # Reduce spacing if followed by list
+                if next_block and (next_block.get('type') == 'list_item' or next_block.get('type') == 'bullet_item'):
+                    para.paragraph_format.space_after = DocxPt(3)  # ~0.25em
+                # Reduce spacing if following heading
+                if prev_block_type == 'heading':
+                    para.paragraph_format.space_before = DocxPt(0)
+            
+            prev_block_type = block_type
     
-    // Toggle: If already rejected, uncheck it (set to null for unreviewed/yellow)
-    if (fb.approved === false) {
-      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
-    } else {
-      fb.approved = false; // Reject (green/strikeout opposite)
-    }
+    # Close any remaining list
+    if current_list:
+        # Order list if needed (for numbered/alphabetical)
+        ordered_list = _order_list_items(current_list)
+        _add_list_to_document(doc, ordered_list, prev_list_type)
+
+def export_to_word_edit_content(
+    content: str,
+    title: str,
+    subtitle: str | None = None,
+    references: list[dict] | None = None,
+    block_types: list[dict] | None = None
+) -> bytes:
+    """
+    PwC Word export specifically for Edit Content workflow.
+    Uses block type information for proper formatting (title, heading, bullet_item, paragraph).
+    Includes Table of Contents with numbered headings.
     
-    // Clear display properties so highlightAllFeedbacks() handles all highlighting
-    para.displayOriginal = undefined;
-    para.displayEdited = undefined;
+    Content should be final_article format: plain text with "\n\n" separators (same as final article generation).
+    block_types should match final article generation structure with sequential indices.
+    """
+    # Content should be plain text final_article (from backend final article generation)
+    # Format: "\n\n".join(final_paragraphs) - same as final article generation
+    # Safety check: convert HTML to plain text if somehow HTML is present
+    if '<' in content and '>' in content:
+        logger.warning("HTML detected in export content - converting to plain text. Content should be final_article (plain text).")
+        content = html_to_marked_text(content)
     
-    // Force change detection to update button states (enable/disable Next Editor and Generate Final Output)
-    this.cdr.detectChanges();
-  }
-
-  highlightAllFeedbacks(para: ParagraphEdit | ParagraphFeedback | null | undefined): { original: string, edited: string } {
-    const originalText = this.stripHtmlSpans((para as any)?.original ?? '');
-    const editedText = this.stripHtmlSpans((para as any)?.edited ?? '');
-
-    let highlightedOriginal = originalText;
-    let highlightedEdited = editedText;
-
-    // Step 1: Collect all feedback items with their approval status and positions
-    // Search in ORIGINAL plain text to get correct positions (avoid HTML corruption)
-    const originalItems: Array<{text: string, approved: boolean | null, start: number, end: number}> = [];
-    const editedItems: Array<{text: string, approved: boolean | null, start: number, end: number}> = [];
-
-    // Use original plain text for searching positions (avoid HTML interference)
-    const plainOriginal = originalText; // Use plain text for searching
-    const plainEdited = editedText; // Use plain text for searching
-
-    const editorial = (para as any)?.editorial_feedback || {};
-
-    // Collect all issues from original text (search in plain text, not HTML)
-    Object.keys(editorial).forEach(editorType => {
-      const feedbacks = (editorial as any)[editorType] || [];
-      feedbacks.forEach((fb: any) => {
-        const issueText = fb.issue?.trim();
-        if (issueText && plainOriginal.includes(issueText)) {
-          // Find all occurrences in plain text
-          const escaped = this.escapeRegex(issueText);
-          const regex = new RegExp(escaped, 'g');
-          let match;
-          // Reset regex lastIndex to ensure we find all matches
-          regex.lastIndex = 0;
-          while ((match = regex.exec(plainOriginal)) !== null) {
-            originalItems.push({
-              text: issueText,
-              approved: fb.approved === true ? true : (fb.approved === false ? false : null),
-              start: match.index,
-              end: match.index + issueText.length
-            });
-          }
-        }
-
-        const fixText = fb.fix?.trim();
-        if (fixText && plainEdited.includes(fixText)) {
-          // Find all occurrences in plain text
-          const escaped = this.escapeRegex(fixText);
-          const regex = new RegExp(escaped, 'g');
-          let match;
-          // Reset regex lastIndex to ensure we find all matches
-          regex.lastIndex = 0;
-          while ((match = regex.exec(plainEdited)) !== null) {
-            editedItems.push({
-              text: fixText,
-              approved: fb.approved === true ? true : (fb.approved === false ? false : null),
-              start: match.index,
-              end: match.index + fixText.length
-            });
-          }
-        }
-      });
-    });
-
-    // Step 2: Process original text - apply highlights from end to start to avoid index shifting
-    originalItems.sort((a, b) => b.start - a.start); // Sort descending by start position
+    # Content and block_types come from backend final article generation - already aligned
+    # split_blocks() handles "\n\n" splitting (same as final article processing)
     
-    originalItems.forEach(item => {
-      const before = highlightedOriginal.substring(0, item.start);
-      let highlighted: string;
-      if (item.approved === true) {
-        // Approved: strikeout + yellow
-        highlighted = `<span class="strikeout highlight-yellow">${item.text}</span>`;
-      } else if (item.approved === false) {
-        // Rejected: green (opposite of approve)
-        highlighted = `<span class="highlight-green">${item.text}</span>`;
-      } else {
-        // Unreviewed: yellow
-        highlighted = `<span class="highlight-yellow">${item.text}</span>`;
-      }
-      const after = highlightedOriginal.substring(item.end);
-      highlightedOriginal = before + highlighted + after;
-    });
+    doc = Document(PWC_TEMPLATE_PATH) if os.path.exists(PWC_TEMPLATE_PATH) else Document()
 
-    // Step 3: Process edited text - apply highlights from end to start to avoid index shifting
-    editedItems.sort((a, b) => b.start - a.start); // Sort descending by start position
+    # ---------- Cover ----------
+    clean_title = re.sub(r'\*+', '', title).strip()
+    title_para = doc.paragraphs[0]
+    _set_paragraph_text_with_breaks(title_para, sanitize_text_for_word(clean_title))
+    # Set title style to "Page 1"
+    try:
+        title_para.style = "Page 1"
+    except:
+        # Fallback if style doesn't exist
+        title_para.style = "Heading 1"
+    _set_paragraph_text_with_breaks(doc.paragraphs[1], sanitize_text_for_word(subtitle or ""))
+
+    # Remove everything after subtitle
+    while len(doc.paragraphs) > 2:
+        p = doc.paragraphs[-1]
+        p._element.getparent().remove(p._element)
+
+    _ensure_page_break_after_paragraph(doc.paragraphs[1])
+
+    # ---------- Extract headings for TOC ----------
+    headings = []
+    if block_types:
+        paragraphs = split_blocks(content)
+        block_type_map = {bt.get("index", i): bt for i, bt in enumerate(block_types)}
+        
+        # STRICT MODE: Check alignment
+        if len(block_types) < len(paragraphs):
+            logger.warning(
+                f"Block type mismatch in TOC extraction: {len(block_types)} block_types, "
+                f"{len(paragraphs)} blocks. Some headings may be missed."
+            )
+        
+        for idx, block in enumerate(paragraphs):
+            block = block.strip()
+            if not block:
+                continue
+            
+            block_info = block_type_map.get(idx)
+            if block_info:
+                block_type = block_info.get("type", "paragraph")
+                if block_type in ["title", "heading"]:
+                    # Remove markdown formatting and number prefixes
+                    heading_text = re.sub(r'^\d+[.)]\s+', '', block).strip()
+                    heading_text = re.sub(r'\*+', '', heading_text).strip()
+                    if heading_text and heading_text.lower() not in ["references", "references:"]:
+                        headings.append(heading_text)
+
+    # ---------- Add Table of Contents ----------
+    if headings:
+        doc.add_paragraph("Contents", style="Heading 1")
+        doc.add_paragraph()  # Blank line
+        
+        for index, heading in enumerate(headings, start=1):
+            toc_entry = doc.add_paragraph()
+            toc_entry.paragraph_format.left_indent = DocxInches(0.5)
+            run = toc_entry.add_run(f"{index}. {sanitize_text_for_word(heading)}")
+            run.font.size = DocxPt(11)
+            toc_entry.paragraph_format.space_after = DocxPt(6)
+        
+        doc.add_page_break()
+
+    # ---------- Content with Block Types ----------
+    references_heading_added = False
     
-    editedItems.forEach(item => {
-      const before = highlightedEdited.substring(0, item.start);
-      let highlighted: string;
-      if (item.approved === true) {
-        // Approved: green
-        highlighted = `<span class="highlight-green">${item.text}</span>`;
-      } else if (item.approved === false) {
-        // Rejected: strikeout + yellow (opposite of approve)
-        highlighted = `<span class="strikeout highlight-yellow">${item.text}</span>`;
-      } else {
-        // Unreviewed: yellow
-        highlighted = `<span class="highlight-yellow">${item.text}</span>`;
-      }
-      const after = highlightedEdited.substring(item.end);
-      highlightedEdited = before + highlighted + after;
-    });
+    # Check for references section
+    if "references" in content.lower() or "references:" in content.lower():
+        # Handle references separately
+        parts = re.split(r'\n\n(?:references|references:)\s*\n\n', content, flags=re.IGNORECASE)
+        main_content = parts[0] if parts else content
+        
+        _format_content_with_block_types_word(doc, main_content, block_types)
+        
+        if len(parts) > 1:
+            doc.add_paragraph("References", style="Heading 2")
+            references_heading_added = True
+            # Format references section
+            _format_content_with_block_types_word(doc, parts[1], None)
+    else:
+        _format_content_with_block_types_word(doc, content, block_types)
 
-    return { original: highlightedOriginal, edited: highlightedEdited };
-  }
+    # ---------- References ----------
+    if references:
+        doc.add_page_break()
+        if not references_heading_added:
+            doc.add_paragraph("References", style="Heading 2")
 
-  // Helper method to escape special regex characters
-  private escapeRegex(str: string): string {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
+        for ref in references:
+            para = _add_numbered_paragraph(
+                doc,
+                sanitize_text_for_word(ref.get("title", ""))
+            )
+            if ref.get("url"):
+                add_hyperlink(para, ref["url"])
 
-  /** Check if text is a single word (no spaces) */
-  private isSingleWord(text: string): boolean {
-    return text.trim().split(/\s+/).length === 1;
-  }
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return _fix_docx_encoding(buffer.getvalue())
 
-  approveAllFeedback(): void {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
-    }
-    // Only approve feedback items, NOT paragraphs (no paragraph text box highlighting)
-    this.paragraphEdits.forEach((para: any) => {
-      // Approve all feedback items
-      Object.keys(para.editorial_feedback || {}).forEach(editorType => {
-        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-        feedbacks.forEach((fb: any) => {
-          // Set all to approved (don't toggle)
-          fb.approved = true;
-        });
-      });
-      // Clear display properties so highlightAllFeedbacks() handles all highlighting
-      para.displayOriginal = undefined;
-      para.displayEdited = undefined;
-    });
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
-
-  rejectAllFeedback(): void {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
-    }
-    // Only reject feedback items, NOT paragraphs (no paragraph text box highlighting)
-    this.paragraphEdits.forEach((para: any) => {
-      // Reject all feedback items
-      Object.keys(para.editorial_feedback || {}).forEach(editorType => {
-        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-        feedbacks.forEach((fb: any) => {
-          // Set all to rejected (don't toggle)
-          fb.approved = false;
-        });
-      });
-      // Clear display properties so highlightAllFeedbacks() handles all highlighting
-      para.displayOriginal = undefined;
-      para.displayEdited = undefined;
-    });
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
-
-  /** Approve All: approve all feedback items only (NOT paragraphs) */
-  approveAll(): void {
-    if (this.showFinalOutput) return;
+def _format_content_with_block_types_pdf(story: list, content: str, block_types: list[dict] | None = None, 
+                                         body_style: ParagraphStyle = None, heading_style: ParagraphStyle = None):
+    """
+    Format content for PDF using block type information.
+    Applies formatting similar to frontend formatFinalArticleWithBlockTypes.
+    Groups consecutive bullet items, handles spacing, font sizes, and colors correctly.
     
-    // Only approve feedback items, NOT paragraphs (matching guided journey behavior)
-    this.approveAllFeedback();
+    Content should be final_article format: plain text with "\n\n" separators.
+    Uses split_blocks() to split content (same as final article processing).
+    block_types should match final article generation structure with sequential indices.
+    """
+    from reportlab.lib.styles import getSampleStyleSheet
+    styles = getSampleStyleSheet()
     
-    // Clear hover state and display properties to force re-highlighting
-    this.hoveredFeedback = null;
-    this.paragraphEdits.forEach((para: any) => {
-      para._hoverActive = false;
-      para.displayOriginal = undefined;
-      para.displayEdited = undefined;
-    });
+    if not body_style:
+        body_style = ParagraphStyle(
+            'PWCBody',
+            parent=styles['BodyText'],
+            fontSize=11,
+            leading=16.5,  # 1.5 line spacing (11 * 1.5 = 16.5)
+            alignment=TA_JUSTIFY,
+            spaceAfter=6,  # Pre-set spacing
+            spaceBefore=2,  # ~0.15em equivalent
+            fontName='Helvetica'
+        )
     
-    // Force change detection to update highlights
-    this.cdr.detectChanges();
-  }
-
-  /** Reject All: reject all feedback items only (NOT paragraphs) */
-  declineAll(): void {
-    if (this.showFinalOutput) return;
+    if not heading_style:
+        heading_style = ParagraphStyle(
+            'PWCHeading',
+            parent=styles['Heading2'],
+            fontSize=14,
+            textColor='black',  # Changed from '#D04A02' (orange) to black
+            spaceAfter=2,   # ~0.2em equivalent
+            spaceBefore=11, # ~0.9em equivalent
+            fontName='Helvetica-Bold'
+        )
     
-    // Only reject feedback items, NOT paragraphs (matching guided journey behavior)
-    this.rejectAllFeedback();
+    # Title style (larger, bold, font-weight 700 equivalent)
+    title_style = ParagraphStyle(
+        'PWCTitle',
+        parent=styles['Heading1'],
+        fontSize=24,  # Larger than headings
+        textColor='#D04A02',  # Orange color
+        spaceAfter=4,   # ~0.35em equivalent
+        spaceBefore=15, # ~1.25em equivalent
+        fontName='Helvetica-Bold'
+    )
     
-    // Clear hover state and display properties to force re-highlighting
-    this.hoveredFeedback = null;
-    this.paragraphEdits.forEach((para: any) => {
-      para._hoverActive = false;
-      para.displayOriginal = undefined;
-      para.displayEdited = undefined;
-    });
+    if not block_types:
+        # Fallback to default formatting
+        blocks = split_blocks(content)
+        for block in blocks:
+            if not block.strip():
+                continue
+            block = block.strip()
+            
+            if block.startswith('####'):
+                text = block.replace('####', '').strip()
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+            elif block.startswith('###'):
+                text = block.replace('###', '').strip()
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+            elif block.startswith('##'):
+                text = block.replace('##', '').strip()
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+            elif block.startswith('#'):
+                text = block.replace('#', '').strip()
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+            elif _is_bullet_list_block(block):
+                bullet_items = _parse_bullet_items(block)
+                list_items = [ListItem(Paragraph(_format_content_for_pdf(item), body_style)) for item in bullet_items]
+                story.append(
+                    ListFlowable(
+                        list_items,
+                        bulletType='bullet',
+                        bulletFontName='Helvetica',
+                        bulletFontSize=11,
+                        leftIndent=12,
+                        bulletIndent=0,
+                    )
+                )
+            else:
+                para = Paragraph(_format_content_for_pdf(block), body_style)
+                story.append(para)
+        return
     
-    // Force change detection to update highlights
-    this.cdr.detectChanges();
-  }
-
-  // derived minimal shape used for bulk operations
-  get paragraphFeedbackData(): ParagraphFeedback[] {
-    return (this.paragraphEdits || []).map((p: any, idx: number) => ({
-      ...p,
-      original: (p.displayOriginal ?? p.original) ?? '',
-      edited: (p.displayEdited ?? p.edited) ?? '',
-      editorial_feedback: p.editorial_feedback || {},
-      displayOriginal: p.displayOriginal,
-      displayEdited: p.displayEdited,
-      approved: p.approved,
-      autoApproved: p.autoApproved,
-      index: p.index ?? idx
-    }));
-  }
-
-  // Approve a feedback item (mark approved; do not toggle paragraph-level approval)
-  approveEditorialFeedback(para: any, editorType: string, fb: any) {
-    if (this.showFinalOutput) return;
+    # Use split_blocks() - same as final article processing
+    # split_blocks() handles "\n\n" splitting (matches final_article format: "\n\n".join(final_paragraphs))
+    paragraphs = split_blocks(content)
     
-    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
-    if (fb.approved === true) {
-      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
-    } else {
-      fb.approved = true; // Approve (green/strikeout)
-    }
+    # Create block type map - use index from block_types or fallback to position
+    # IMPORTANT: block_types have sequential indices (0, 1, 2, ...) that match paragraph positions
+    block_type_map = {}
+    for i, bt in enumerate(block_types):
+        # Use the index from block_type if present, otherwise use enumeration index
+        map_key = bt.get("index") if bt.get("index") is not None else i
+        block_type_map[map_key] = bt
     
-    // Clear display properties so highlightAllFeedbacks() handles all highlighting
-    para.displayOriginal = undefined;
-    para.displayEdited = undefined;
-  }
-
-  /** Get display name for editor */
-  getEditorDisplayName(editorId: string | null | undefined): string {
-    if (!editorId) return '';
+    # First pass: process each paragraph with block type formatting
+    formatted_blocks = []
+    for idx, block in enumerate(paragraphs):
+        block = block.strip()
+        if not block:
+            continue
+        
+        # Get block_info - use index from enumerate to match block_types indices
+        # block_types indices are sequential (0, 1, 2, ...) matching paragraph positions
+        block_info = block_type_map.get(idx)
+        if not block_info:
+            block_info = {"type": "paragraph", "level": 0, "index": idx}
+        
+        # Get block_type - ensure it's not None or empty string
+        block_type = block_info.get("type")
+        if not block_type or block_type == "":
+            block_type = "paragraph"
+        level = block_info.get("level", 0)
+        
+        # Skip title blocks - title is already on cover page, don't duplicate in content
+        if block_type == "title":
+            continue
+        
+        # Process bullet items: preserve number prefixes and bullet icons, extract number for sorting
+        if block_type == "bullet_item":
+            processed_content = block
+            # Check if content has bullet icon (•, -, *)
+            bullet_icon_match = re.match(r'^([•\-\*])\s+', processed_content)
+            existing_bullet_icon = bullet_icon_match.group(1) if bullet_icon_match else None
+            
+            # Extract number prefix for sorting (e.g., "1. ", "2. ", "10. ", "1) ", "2) ")
+            # Try to find number prefix at the start first
+            number_match = re.match(r'^(\d+)[.)]\s+', processed_content)
+            number_prefix = None
+            number_value = None
+            number_prefix_pos = None
+            
+            if number_match:
+                number_prefix = number_match.group(0)  # Keep the full prefix (e.g., "1. ", "2) ")
+                number_value = int(number_match.group(1))  # Extract number for sorting
+                number_prefix_pos = 'start'
+            elif existing_bullet_icon:
+                # If no number at start but has bullet icon, check after bullet icon
+                # e.g., "• 1. text" format
+                after_icon = processed_content[len(bullet_icon_match.group(0)):]
+                number_match_after = re.match(r'^(\d+)[.)]\s+', after_icon)
+                if number_match_after:
+                    number_prefix = number_match_after.group(0)
+                    number_value = int(number_match_after.group(1))
+                    number_prefix_pos = 'after_icon'
+            
+            # Keep the content as-is (preserve number prefix and bullet icon)
+            formatted_blocks.append({
+                'type': 'bullet_item',
+                'content': processed_content,  # Keep original with number and icon
+                'level': level,
+                'has_bullet_icon': existing_bullet_icon is not None,
+                'number_prefix': number_prefix,
+                'number_prefix_pos': number_prefix_pos,  # Track position for proper formatting
+                'number_value': number_value if number_value is not None else idx  # Use index as fallback
+            })
+        else:
+            formatted_blocks.append({
+                'type': block_type,
+                'content': block,
+                'level': level
+            })
     
-    // Map editor IDs to display names
-    const editorMap: { [key: string]: string } = {
-      'development': 'Development Editor',
-      'content': 'Content Editor',
-      'line': 'Line Editor',
-      'copy': 'Copy Editor',
-      'brand-alignment': 'PwC Brand Alignment Editor'
-    };
+    # Second pass: group consecutive bullet items and apply formatting
+    current_bullet_list = []
+    prev_block_type = None
     
-    return editorMap[editorId] || editorId;
-  }
-
-  /** Paragraphs that require review (exclude autoApproved) */
-  private get reviewParagraphs(): ParagraphFeedback[] {
-    return (this.paragraphFeedbackData || [])
-      .filter(p => p.autoApproved !== true)
-      .sort((a, b) => a.index - b.index);
-  }
-
-  /** Steps array for editor timeline (0..totalEditors-1) */
-  get editorSteps(): number[] {
-    const total = this.totalEditors ?? 0;
-    if (total <= 0) return [];
-    return Array.from({ length: total }, (_, i) => i);
-  }
-
-  /** Flatten all editorial feedback items across paragraphs */
-  private getAllFeedbackItems(): Array<{
-    paraIndex: number;
-    editorType: string;
-    fbIndex: number;
-    fb: any;
-  }> {
-    const items: Array<{ paraIndex: number; editorType: string; fbIndex: number; fb: any }> = [];
-
-    for (const para of this.reviewParagraphs) {
-      const types = Object.keys(para.editorial_feedback || {});
-      for (const editorType of types) {
-        const arr = (para.editorial_feedback as any)[editorType] || [];
-        arr.forEach((fb: any, fbIndex: number) => {
-          items.push({ paraIndex: para.index, editorType, fbIndex, fb });
-        });
-      }
-    }
-
-    return items;
-  }
-
-  /** Count of feedback items approved (fb.approved === true) */
-  get approvedFeedbackCount(): number {
-    return this.getAllFeedbackItems().filter(x => x.fb?.approved === true).length;
-  }
-
-  /** Count of feedback items rejected (fb.approved === false) */
-  get rejectedFeedbackCount(): number {
-    return this.getAllFeedbackItems().filter(x => x.fb?.approved === false).length;
-  }
-
-  /** Count of feedback items pending (fb.approved is null/undefined) */
-  get pendingFeedbackCount(): number {
-    return this.getAllFeedbackItems().filter(
-      x => x.fb?.approved === null || x.fb?.approved === undefined
-    ).length;
-  }
-
-  /** Scroll to the first feedback card with the requested status */
-  scrollToFirstFeedbackByStatus(status: 'pending' | 'approved' | 'rejected'): void {
-    const match = this.getAllFeedbackItems().find(x => {
-      if (status === 'approved') return x.fb?.approved === true;
-      if (status === 'rejected') return x.fb?.approved === false;
-      return x.fb?.approved === null || x.fb?.approved === undefined;
-    });
-
-    if (!match) return;
-
-    const el = document.getElementById(`fb-${match.paraIndex}-${match.editorType}-${match.fbIndex}`);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
-    }
-  }
-
-  /** Handle next editor button click */
-  onNextEditor(): void {
-    this.isNextEditorClicked = true;
-    this.nextEditor.emit();
-  }
-
-  /** Handle feedback card hover - highlight corresponding issue/fix in paragraph text */
-  onFeedbackHover(para: any, editorType: string, fb: any, fbIndex: number): void {
-    if (this.showFinalOutput) return;
+    for i, block_info in enumerate(formatted_blocks):
+        block_type = block_info['type']
+        content = block_info['content']
+        level = block_info.get('level', 0)
+        next_block = formatted_blocks[i + 1] if i + 1 < len(formatted_blocks) else None
+        
+        if block_type == 'bullet_item':
+            # Add to current bullet list
+            current_bullet_list.append(block_info)
+            prev_block_type = 'bullet_item'
+        else:
+            # Close any open bullet list before processing non-bullet block
+            if current_bullet_list:
+                # NO SORTING - preserve original sequence
+                # This is CRITICAL: sorting destroys semantic order
+                # Bullets are already in correct sequence from source
+                
+                # Check if any item has bullet icon
+                has_any_bullet_icon = any(item.get('has_bullet_icon', False) for item in current_bullet_list)
+                
+                # Create list items with number prefixes preserved
+                list_items = []
+                for bullet_item in current_bullet_list:
+                    bullet_content = bullet_item['content']
+                    
+                    # Extract number prefix and bullet icon
+                    number_prefix = bullet_item.get('number_prefix', '')
+                    number_prefix_pos = bullet_item.get('number_prefix_pos', 'start')
+                    bullet_icon_text = ''
+                    if bullet_item.get('has_bullet_icon'):
+                        icon_match = re.match(r'^([•\-\*])\s+', bullet_content)
+                        if icon_match:
+                            bullet_icon_text = icon_match.group(1) + ' '
+                    
+                    # Find colon index (but account for number prefix and bullet icon)
+                    search_start = 0
+                    if number_prefix:
+                        search_start = len(number_prefix)
+                    if bullet_icon_text:
+                        search_start = max(search_start, len(bullet_icon_text))
+                    
+                    colon_index = bullet_content.find(':', search_start)
+                    
+                    if colon_index > 0:
+                        before_colon = bullet_content[:colon_index].strip()
+                        after_colon = bullet_content[colon_index + 1:].strip()
+                        
+                        # Extract clean text before colon (without prefix and icon) for bold formatting
+                        before_colon_clean = before_colon
+                        if number_prefix:
+                            before_colon_clean = before_colon_clean.replace(number_prefix, '', 1).strip()
+                        if bullet_icon_text:
+                            before_colon_clean = before_colon_clean.replace(bullet_icon_text, '', 1).strip()
+                        
+                        # Format: bold text before colon
+                        formatted_before = before_colon_clean
+                        if formatted_before:
+                            formatted_before = _format_content_for_pdf(formatted_before)
+                            formatted_before = f"<b>{formatted_before}</b>"
+                        
+                        # Build final text with all parts in correct order
+                        parts = []
+                        if number_prefix_pos == 'after_icon':
+                            # Format: bullet icon + number prefix + bold text + colon + text after
+                            if bullet_icon_text:
+                                parts.append(_format_content_for_pdf(bullet_icon_text))
+                            if number_prefix:
+                                parts.append(_format_content_for_pdf(number_prefix))
+                        else:
+                            # Format: number prefix + bullet icon + bold text + colon + text after
+                            if number_prefix:
+                                parts.append(_format_content_for_pdf(number_prefix))
+                            if bullet_icon_text:
+                                parts.append(_format_content_for_pdf(bullet_icon_text))
+                        
+                        if formatted_before:
+                            parts.append(formatted_before)
+                        parts.append(f": {_format_content_for_pdf(after_colon)}")
+                        
+                        formatted_text = ''.join(parts)
+                        list_items.append(ListItem(Paragraph(formatted_text, body_style)))
+                    else:
+                        # No colon, add as-is with number prefix and bullet icon preserved
+                        formatted_text = _format_content_for_pdf(bullet_content)
+                        list_items.append(ListItem(Paragraph(formatted_text, body_style)))
+                
+                # Determine spacing
+                space_before = 3 if prev_block_type == 'paragraph' else 6  # ~0.25em vs ~0.5em
+                space_after = 3 if next_block and next_block['type'] == 'paragraph' else 6
+                
+                story.append(
+                    ListFlowable(
+                        list_items,
+                        bulletType='bullet',
+                        bulletFontName='Helvetica',
+                        bulletFontSize=11,
+                        leftIndent=18 if has_any_bullet_icon else 24,  # 1.5em vs 2em
+                        bulletIndent=0,
+                        spaceBefore=space_before,
+                        spaceAfter=space_after,
+                    )
+                )
+                current_bullet_list = []
+            
+            # Process non-bullet blocks
+            # Title blocks already skipped in first pass, so they won't reach here
+            if block_type == "heading":
+                # Remove heading numbers if present
+                clean_content = re.sub(r'^\d+[.)]\s+', '', content).strip()
+                
+                # Heading: Based on level, bold, black color, font-weight 600 equivalent
+                text = _format_content_for_pdf(clean_content)
+                # Adjust font size based on level (14pt base, decrease slightly for higher levels)
+                heading_font_size = max(12, 14 - (level - 1))
+                level_heading_style = ParagraphStyle(
+                    f'PWCHeading{level}',
+                    parent=heading_style,
+                    fontSize=heading_font_size,
+                    textColor='black',  # Changed from '#D04A02' (orange) to black
+                    spaceAfter=2,   # ~0.2em
+                    spaceBefore=11, # ~0.9em
+                    fontName='Helvetica-Bold'
+                )
+                story.append(Paragraph(text, level_heading_style))
+            
+            elif block_type == "paragraph":
+                # Paragraph: proper spacing
+                para_style = ParagraphStyle(
+                    'PWCBodyPara',
+                    parent=body_style,
+                    spaceAfter=8,   # ~0.7em
+                    spaceBefore=2,  # ~0.15em
+                )
+                # Reduce spacing if followed by bullet list
+                if next_block and next_block['type'] == 'bullet_item':
+                    para_style.spaceAfter = 3  # ~0.25em
+                # Reduce spacing if following heading
+                if prev_block_type == 'heading':
+                    para_style.spaceBefore = 0
+                
+                para = Paragraph(_format_content_for_pdf(content), para_style)
+                story.append(para)
+            
+            prev_block_type = block_type
     
-    // Mark paragraph as in hover state
-    para._hoverActive = true;
-    this.hoveredFeedback = {
-      paragraphIndex: para.index,
-      editorType: editorType,
-      feedbackIndex: fbIndex
-    };
-    
-    // First generate normal highlights for all feedback items (preserves other feedback highlights)
-    const normalHighlights = this.highlightAllFeedbacks(para);
-    
-    // Then add hover highlight on top for the specific feedback item
-    const highlighted = this.addHoverHighlight(normalHighlights, para, editorType, fb);
-    para.displayOriginal = highlighted.original;
-    para.displayEdited = highlighted.edited;
-    
-    this.cdr.detectChanges();
-  }
+    # Close any remaining bullet list
+    if current_bullet_list:
+        # NO SORTING - preserve original sequence
+        # Bullets are already in correct sequence from source
+        
+        has_any_bullet_icon = any(item.get('has_bullet_icon', False) for item in current_bullet_list)
+        list_items = []
+        for bullet_item in current_bullet_list:
+            bullet_content = bullet_item['content']
+            
+            # Extract number prefix and bullet icon
+            number_prefix = bullet_item.get('number_prefix', '')
+            number_prefix_pos = bullet_item.get('number_prefix_pos', 'start')
+            bullet_icon_text = ''
+            if bullet_item.get('has_bullet_icon'):
+                icon_match = re.match(r'^([•\-\*])\s+', bullet_content)
+                if icon_match:
+                    bullet_icon_text = icon_match.group(1) + ' '
+            
+            # Find colon index (but account for number prefix and bullet icon)
+            search_start = 0
+            if number_prefix:
+                search_start = len(number_prefix)
+            if bullet_icon_text:
+                search_start = max(search_start, len(bullet_icon_text))
+            
+            colon_index = bullet_content.find(':', search_start)
+            
+            if colon_index > 0:
+                before_colon = bullet_content[:colon_index].strip()
+                after_colon = bullet_content[colon_index + 1:].strip()
+                
+                # Extract clean text before colon (without prefix and icon) for bold formatting
+                before_colon_clean = before_colon
+                if number_prefix:
+                    before_colon_clean = before_colon_clean.replace(number_prefix, '', 1).strip()
+                if bullet_icon_text:
+                    before_colon_clean = before_colon_clean.replace(bullet_icon_text, '', 1).strip()
+                
+                # Format: bold text before colon
+                formatted_before = before_colon_clean
+                if formatted_before:
+                    formatted_before = _format_content_for_pdf(formatted_before)
+                    formatted_before = f"<b>{formatted_before}</b>"
+                
+                # Build final text with all parts in correct order
+                parts = []
+                if number_prefix_pos == 'after_icon':
+                    # Format: bullet icon + number prefix + bold text + colon + text after
+                    if bullet_icon_text:
+                        parts.append(_format_content_for_pdf(bullet_icon_text))
+                    if number_prefix:
+                        parts.append(_format_content_for_pdf(number_prefix))
+                else:
+                    # Format: number prefix + bullet icon + bold text + colon + text after
+                    if number_prefix:
+                        parts.append(_format_content_for_pdf(number_prefix))
+                    if bullet_icon_text:
+                        parts.append(_format_content_for_pdf(bullet_icon_text))
+                
+                if formatted_before:
+                    parts.append(formatted_before)
+                parts.append(f": {_format_content_for_pdf(after_colon)}")
+                
+                formatted_text = ''.join(parts)
+                list_items.append(ListItem(Paragraph(formatted_text, body_style)))
+            else:
+                # No colon, add as-is with number prefix and bullet icon preserved
+                formatted_text = _format_content_for_pdf(bullet_content)
+                list_items.append(ListItem(Paragraph(formatted_text, body_style)))
+        
+        space_before = 3 if prev_block_type == 'paragraph' else 6
+        story.append(
+            ListFlowable(
+                list_items,
+                bulletType='bullet',
+                bulletFontName='Helvetica',
+                bulletFontSize=11,
+                leftIndent=18 if has_any_bullet_icon else 24,
+                bulletIndent=0,
+                spaceBefore=space_before,
+                spaceAfter=6,
+            )
+        )
 
-  /** Handle feedback card mouse leave - restore normal highlighting */
-  onFeedbackLeave(para: any): void {
-    if (this.showFinalOutput) return;
+def export_to_pdf_edit_content(
+    content: str,
+    title: str,
+    subtitle: str | None = None,
+    block_types: list[dict] | None = None
+) -> bytes:
+    """
+    PwC PDF export specifically for Edit Content workflow.
+    Uses block type information for proper formatting (title, heading, bullet_item, paragraph).
     
-    // Clear hover state
-    para._hoverActive = false;
-    this.hoveredFeedback = null;
+    Content should be final_article format: plain text with "\n\n" separators (same as final article generation).
+    block_types should match final article generation structure with sequential indices.
+    """
+    # Content should be plain text final_article (from backend final article generation)
+    # Format: "\n\n".join(final_paragraphs) - same as final article generation
+    # Safety check: convert HTML to plain text if somehow HTML is present
+    if '<' in content and '>' in content:
+        logger.warning("HTML detected in export content - converting to plain text. Content should be final_article (plain text).")
+        content = html_to_marked_text(content)
     
-    // Clear display properties to restore default highlighting
-    para.displayOriginal = undefined;
-    para.displayEdited = undefined;
+    # Content and block_types come from backend final article generation - already aligned
+    # split_blocks() handles "\n\n" splitting (same as final article processing)
     
-    this.cdr.detectChanges();
-  }
+    if not os.path.exists(PWC_PDF_TEMPLATE_PATH):
+        return _generate_pdf_with_title_subtitle(content, title, subtitle)
 
-  /** Add hover highlight on top of existing highlights for a specific feedback item */
-  private addHoverHighlight(existingHighlights: { original: string, edited: string }, para: ParagraphEdit | ParagraphFeedback, editorType: string, fb: any): { original: string, edited: string } {
-    let highlightedOriginal = existingHighlights.original;
-    let highlightedEdited = existingHighlights.edited;
-
-    // Add hover highlight for issue text in original
-    const issueText = fb.issue?.trim();
-    if (issueText) {
-      const escaped = this.escapeRegex(issueText);
-      // Find spans that contain this exact text and add hover class
-      // Match spans that contain the issue text (handles nested spans)
-      const spanRegex = new RegExp(`(<span[^>]*class="[^"]*"[^>]*>([^<]*${escaped}[^<]*)</span>)`, 'g');
-      highlightedOriginal = highlightedOriginal.replace(spanRegex, (match) => {
-        // Add highlight-hover class to existing span if not already present
-        if (!match.includes('highlight-hover')) {
-          return match.replace(/class="([^"]*)"/, `class="$1 highlight-hover"`);
-        }
-        return match;
-      });
-    }
-
-    // Add hover highlight for fix text in edited
-    const fixText = fb.fix?.trim();
-    if (fixText) {
-      const escaped = this.escapeRegex(fixText);
-      // Find spans that contain this exact text and add hover class
-      const spanRegex = new RegExp(`(<span[^>]*class="[^"]*"[^>]*>([^<]*${escaped}[^<]*)</span>)`, 'g');
-      highlightedEdited = highlightedEdited.replace(spanRegex, (match) => {
-        // Add highlight-hover class to existing span if not already present
-        if (!match.includes('highlight-hover')) {
-          return match.replace(/class="([^"]*)"/, `class="$1 highlight-hover"`);
-        }
-        return match;
-      });
-    }
-
-    return { original: highlightedOriginal, edited: highlightedEdited };
-  }
-  
-}
+    # ===== STEP 1: Create branded cover page =====
+    from reportlab.pdfgen import canvas
+    
+    template_reader = PdfReader(PWC_PDF_TEMPLATE_PATH)
+    template_page = template_reader.pages[0]
+    
+    page_width = float(template_page.mediabox.width)
+    page_height = float(template_page.mediabox.height)
+    
+    # Create overlay with text
+    overlay_buffer = io.BytesIO()
+    c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
+    
+    # Add title
+    title_font_size = 32
+    if len(title) > 80:
+        title_font_size = 20
+    elif len(title) > 60:
+        title_font_size = 22
+    elif len(title) > 40:
+        title_font_size = 26
+    
+    c.setFont("Helvetica-Bold", title_font_size)
+    c.setFillColor('#000000')
+    title_y = page_height * 0.72
+    
+    max_title_width = page_width * 0.70
+    char_width_at_font = (title_font_size / 20.0) * 10
+    max_chars_per_line = int(max_title_width / char_width_at_font)
+    max_chars_per_line = max(20, min(max_chars_per_line, 50))
+    
+    words = title.split()
+    lines = []
+    current_line = []
+    
+    for word in words:
+        test_line = ' '.join(current_line + [word])
+        if len(test_line) > max_chars_per_line:
+            if current_line:
+                lines.append(' '.join(current_line))
+            current_line = [word]
+        else:
+            current_line.append(word)
+    
+    if current_line:
+        lines.append(' '.join(current_line))
+    
+    if len(lines) > 1:
+        line_height = title_font_size + 6
+        start_y = title_y + (len(lines) - 1) * line_height / 2
+        for i, line in enumerate(lines):
+            c.drawCentredString(page_width / 2, start_y - (i * line_height), line)
+    else:
+        c.drawCentredString(page_width / 2, title_y, title)
+    
+    # Do not add subtitle for edit content PDF export (requirement)
+    
+    c.save()
+    overlay_buffer.seek(0)
+    
+    # Merge overlay with template
+    overlay_reader = PdfReader(overlay_buffer)
+    overlay_page = overlay_reader.pages[0]
+    template_page.merge_page(overlay_page)
+    
+    # ===== STEP 2: Extract headings for TOC =====
+    headings = []
+    if block_types:
+        paragraphs = split_blocks(content)
+        block_type_map = {bt.get("index", i): bt for i, bt in enumerate(block_types)}
+        
+        for idx, block in enumerate(paragraphs):
+            block = block.strip()
+            if not block:
+                continue
+            
+            block_info = block_type_map.get(idx)
+            if block_info:
+                block_type = block_info.get("type", "paragraph")
+                if block_type in ["title", "heading"]:
+                    # Remove markdown formatting and number prefixes
+                    heading_text = re.sub(r'^\d+[.)]\s+', '', block).strip()
+                    heading_text = re.sub(r'\*+', '', heading_text).strip()
+                    if heading_text and heading_text.lower() not in ["references", "references:"]:
+                        headings.append(heading_text)
+    
+    # ===== STEP 3: Create content pages with block types =====
+    content_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        content_buffer,
+        pagesize=(page_width, page_height),
+        topMargin=1*inch,
+        bottomMargin=1*inch,
+        leftMargin=1.1*inch,
+        rightMargin=1*inch
+    )
+    
+    styles = getSampleStyleSheet()
+    
+    body_style = ParagraphStyle(
+        'PWCBody',
+        parent=styles['BodyText'],
+        fontSize=11,
+        leading=16.5,  # 1.5 line spacing (11 * 1.5 = 16.5)
+        alignment=TA_JUSTIFY,
+        spaceAfter=6,  # Pre-set spacing
+        spaceBefore=2,  # ~0.15em equivalent
+        fontName='Helvetica'
+    )
+    
+    heading_style = ParagraphStyle(
+        'PWCHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor='black',  # Changed from '#D04A02' (orange) to black
+        spaceAfter=2,   # ~0.2em equivalent
+        spaceBefore=11, # ~0.9em equivalent
+        fontName='Helvetica-Bold'
+    )
+    
+    story = []
+    _format_content_with_block_types_pdf(story, content, block_types, body_style, heading_style)
+    
+    # Build the content PDF
+    doc.build(story)
+    content_buffer.seek(0)
+    
+    # ===== STEP 4: Create Table of Contents pages (if headings exist) =====
+    toc_pages = []
+    if headings:
+        logger.info(f"Creating Table of Contents with {len(headings)} headings")
+        toc_buffer = io.BytesIO()
+        toc_doc = SimpleDocTemplate(toc_buffer, pagesize=(page_width, page_height), topMargin=1*inch, bottomMargin=1*inch)
+        toc_styles = getSampleStyleSheet()
+        toc_title_style = ParagraphStyle(
+            'TOCTitle',
+            parent=toc_styles['Heading1'],
+            fontSize=24,
+            textColor='#000000',
+            spaceAfter=24,
+            alignment=TA_LEFT,
+            fontName='Helvetica-Bold'
+        )
+        toc_heading_style = ParagraphStyle(
+            'TOCHeading',
+            parent=toc_styles['BodyText'],
+            fontSize=11,
+            textColor='#000000',
+            spaceAfter=12,
+            alignment=TA_LEFT,
+            fontName='Helvetica',
+            leading=16,
+            rightIndent=20
+        )
+        toc_story = []
+        toc_story.append(Paragraph("Contents", toc_title_style))
+        toc_story.append(Spacer(1, 0.2 * inch))
+        for index, heading in enumerate(headings, start=1):
+            # Format and normalize heading text
+            formatted_heading = _format_content_for_pdf(heading)
+            toc_story.append(Paragraph(f"{index}. {formatted_heading}", toc_heading_style))
+        toc_doc.build(toc_story)
+        toc_buffer.seek(0)
+        toc_reader = PdfReader(toc_buffer)
+        toc_pages = [toc_reader.pages[i] for i in range(len(toc_reader.pages))]
+    
+    # ===== STEP 5: Merge cover + ToC + content =====
+    content_reader = PdfReader(content_buffer)
+    writer = PdfWriter()
+    
+    # Add the branded cover page (Page 1)
+    writer.add_page(template_page)
+    logger.info("Added branded cover page")
+    
+    # Add the Table of Contents pages (Page 2+)
+    for idx, toc_page in enumerate(toc_pages):
+        writer.add_page(toc_page)
+        logger.info(f"Added Table of Contents page {idx+1}")
+    
+    # Add all content pages (Page 3+ or Page 2+ if no TOC)
+    for page_num in range(len(content_reader.pages)):
+        logger.info(f"Adding content page {page_num + 1}")
+        writer.add_page(content_reader.pages[page_num])
+    
+    # Write final PDF
+    output_buffer = io.BytesIO()
+    writer.write(output_buffer)
+    output_buffer.seek(0)
+    
+    result_bytes = output_buffer.getvalue()
+    logger.info(f"PDF export complete: {len(writer.pages)} pages, {len(result_bytes)} bytes")
+    
+    return result_bytes
