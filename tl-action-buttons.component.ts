@@ -3465,7 +3465,29 @@ def export_to_word_edit_content(
     doc = Document(PWC_TEMPLATE_PATH) if os.path.exists(PWC_TEMPLATE_PATH) else Document()
 
     # ---------- Cover ----------
-    clean_title = re.sub(r'\*+', '', title).strip()
+    # Extract title from block_types if available (type == "title")
+    page_title = title  # Fallback to parameter title
+    if block_types:
+        paragraphs = split_blocks(content)
+        block_type_map = {bt.get("index", i): bt for i, bt in enumerate(block_types)}
+        
+        for idx, block in enumerate(paragraphs):
+            block = block.strip()
+            if not block:
+                continue
+            
+            block_info = block_type_map.get(idx)
+            if block_info:
+                block_type = block_info.get("type", "paragraph")
+                if block_type == "title":
+                    # Use this as the page 1 title
+                    page_title = block.strip()
+                    # Remove markdown formatting
+                    page_title = re.sub(r'^#+\s+', '', page_title)
+                    page_title = re.sub(r'\*+', '', page_title).strip()
+                    break
+    
+    clean_title = re.sub(r'\*+', '', page_title).strip()
     title_para = doc.paragraphs[0]
     _set_paragraph_text_with_breaks(title_para, sanitize_text_for_word(clean_title))
     # Set title style to "Page 1"
@@ -4002,17 +4024,39 @@ def export_to_pdf_edit_content(
     page_width = float(template_page.mediabox.width)
     page_height = float(template_page.mediabox.height)
     
+    # Extract title from block_types if available (type == "title")
+    page_title = title  # Fallback to parameter title
+    if block_types:
+        paragraphs = split_blocks(content)
+        block_type_map = {bt.get("index", i): bt for i, bt in enumerate(block_types)}
+        
+        for idx, block in enumerate(paragraphs):
+            block = block.strip()
+            if not block:
+                continue
+            
+            block_info = block_type_map.get(idx)
+            if block_info:
+                block_type = block_info.get("type", "paragraph")
+                if block_type == "title":
+                    # Use this as the page 1 title
+                    page_title = block.strip()
+                    # Remove markdown formatting
+                    page_title = re.sub(r'^#+\s+', '', page_title)
+                    page_title = re.sub(r'\*+', '', page_title).strip()
+                    break
+    
     # Create overlay with text
     overlay_buffer = io.BytesIO()
     c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
     
     # Add title
     title_font_size = 32
-    if len(title) > 80:
+    if len(page_title) > 80:
         title_font_size = 20
-    elif len(title) > 60:
+    elif len(page_title) > 60:
         title_font_size = 22
-    elif len(title) > 40:
+    elif len(page_title) > 40:
         title_font_size = 26
     
     c.setFont("Helvetica-Bold", title_font_size)
@@ -4024,7 +4068,7 @@ def export_to_pdf_edit_content(
     max_chars_per_line = int(max_title_width / char_width_at_font)
     max_chars_per_line = max(20, min(max_chars_per_line, 50))
     
-    words = title.split()
+    words = page_title.split()
     lines = []
     current_line = []
     
@@ -4046,7 +4090,7 @@ def export_to_pdf_edit_content(
         for i, line in enumerate(lines):
             c.drawCentredString(page_width / 2, start_y - (i * line_height), line)
     else:
-        c.drawCentredString(page_width / 2, title_y, title)
+        c.drawCentredString(page_width / 2, title_y, page_title)
     
     # Do not add subtitle for edit content PDF export (requirement)
     
