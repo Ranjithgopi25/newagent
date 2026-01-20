@@ -508,29 +508,6 @@ def _order_list_items(items: list[dict], start_from: int = 1) -> list[dict]:
                 new_item['content'] = new_content
                 ordered_items.append(new_item)
             return ordered_items
-                letters.append(ord(letter.upper()) if list_type == 'alpha_upper' else ord(letter.lower()))
-            else:
-                letters.append(0)
-        
-        # Check if already in order
-        is_ordered = all(letters[i] <= letters[i+1] for i in range(len(letters)-1))
-        if not is_ordered:
-            # Re-order by letter
-            sorted_items = sorted(zip(letters, items), key=lambda x: x[0])
-            # Re-letter sequentially
-            ordered_items = []
-            for idx, (_, item) in enumerate(sorted_items):
-                content = item.get('content', '')
-                if list_type == 'alpha_upper':
-                    letter = chr(ord('A') + idx)
-                else:
-                    letter = chr(ord('a') + idx)
-                # Replace letter with sequential letter
-                new_content = re.sub(r'^[A-Za-z]\.\s+', f'{letter}. ', content.strip())
-                new_item = item.copy()
-                new_item['content'] = new_content
-                ordered_items.append(new_item)
-            return ordered_items
     
     # For bullets or already ordered lists, return as-is
     return items
