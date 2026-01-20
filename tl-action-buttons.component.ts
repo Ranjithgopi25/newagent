@@ -1,4 +1,3 @@
-
 import copy
 from csv import writer
 from reportlab.lib.pagesizes import letter
@@ -204,21 +203,9 @@ def _create_new_numbering_instance(doc: Document, list_type: str, level: int = 0
     """
     numbering_part = doc.part.numbering_part
     
-    # Fix: Check if _next_abstract_num_id exists, otherwise calculate it
-    if hasattr(numbering_part, '_next_abstract_num_id'):
-        abstract_num_id = numbering_part._next_abstract_num_id
-        numbering_part._next_abstract_num_id += 1
-    else:
-        # Calculate next abstract num ID by finding max existing ID
-        existing_ids = []
-        for abstract_num in numbering_part._numbering.xpath('.//w:abstractNum', namespaces={'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}):
-            abstract_id = abstract_num.get(qn('w:abstractNumId'))
-            if abstract_id:
-                try:
-                    existing_ids.append(int(abstract_id))
-                except (ValueError, TypeError):
-                    continue
-        abstract_num_id = max(existing_ids) + 1 if existing_ids else 0
+    # Create a new abstract numbering definition
+    abstract_num_id = numbering_part._next_abstract_num_id
+    numbering_part._next_abstract_num_id += 1
     
     abstract_num = OxmlElement("w:abstractNum")
     abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
@@ -256,21 +243,8 @@ def _create_new_numbering_instance(doc: Document, list_type: str, level: int = 0
     numbering_part._numbering.append(abstract_num)
     
     # Create a new numbering instance
-    # Fix: Check if _next_num_id exists, otherwise calculate it
-    if hasattr(numbering_part, '_next_num_id'):
-        num_id = numbering_part._next_num_id
-        numbering_part._next_num_id += 1
-    else:
-        # Calculate next num ID by finding max existing ID
-        existing_num_ids = []
-        for num in numbering_part._numbering.xpath('.//w:num', namespaces={'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}):
-            num_id_attr = num.get(qn('w:numId'))
-            if num_id_attr:
-                try:
-                    existing_num_ids.append(int(num_id_attr))
-                except (ValueError, TypeError):
-                    continue
-        num_id = max(existing_num_ids) + 1 if existing_num_ids else 0
+    num_id = numbering_part._next_num_id
+    numbering_part._next_num_id += 1
     
     num = OxmlElement("w:num")
     num.set(qn("w:numId"), str(num_id))
@@ -287,7 +261,6 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
     """
     Add a list of items to Word document with appropriate style based on type and level.
     If reset_numbering is True, creates a new numbering instance to reset numbering to 1.
-    For bullet lists, uses bullet icons (like PDF) instead of Word numbering.
     """
     if not list_items:
         return
@@ -302,39 +275,13 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
         level = item.get('level', 0)
         parsed = item.get('parsed', parse_bullet(content))
         
-        # For bullet lists, use regular paragraph with manual bullet icon (like PDF)
-        if list_type == 'bullet':
-            # Use Body Text style with manual bullet prefix
-            para = doc.add_paragraph(style="Body Text")
-            # Apply Body Text style configuration
-            _apply_body_text_style_word(para)
-            # Add left indent for bullet (2em equivalent)
-            para.paragraph_format.left_indent = DocxInches(0.5) if level == 0 else DocxInches(1.0)
-            # Set spacing to match PDF
-            para.paragraph_format.space_before = DocxPt(3) if level == 0 else DocxPt(2)
-            para.paragraph_format.space_after = DocxPt(3)
-            
-            # Remove existing bullet prefix and add manual bullet icon
-            clean_content = re.sub(r'^[•\-\*]\s+', '', content.strip())
-            
-            # Add bullet icon manually
-            bullet_run = para.add_run("• ")
-            bullet_run.font.size = DocxPt(11)
-            
-            # Reconstruct with consistent formatting
-            if parsed.get('label') and parsed.get('body'):
-                # Format: "Label: Body" with label bold
-                run = para.add_run(sanitize_text_for_word(parsed['label']))
-                run.bold = True
-                para.add_run(f": {sanitize_text_for_word(parsed['body'])}")
-            else:
-                # No colon, add as-is
-                _add_markdown_text_runs(para, clean_content)
-            continue
-        
-        # For numbered/alphabetical lists, use Word's numbering system
         # Determine style based on list type and level
-        if list_type == 'number':
+        if list_type == 'bullet':
+            if level >= 1:
+                style_name = "List Bullet 2"
+            else:
+                style_name = "List Bullet"
+        elif list_type == 'number':
             if level >= 1:
                 style_name = "List Number 2"
             else:
@@ -350,7 +297,7 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
             else:
                 style_name = "List Alpha"
         else:
-            # Default to List Bullet (shouldn't reach here for bullets)
+            # Default to List Bullet
             style_name = "List Bullet" if level == 0 else "List Bullet 2"
         
         try:
@@ -379,6 +326,8 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
             clean_content = re.sub(r'^\d+\.\s+', '', content.strip())
         elif list_type in ['alpha_upper', 'alpha_lower']:
             clean_content = re.sub(r'^[A-Za-z]\.\s+', '', content.strip())
+        elif list_type == 'bullet':
+            clean_content = re.sub(r'^[•\-\*]\s+', '', content.strip())
         
         # Reconstruct with consistent formatting
         if parsed.get('label') and parsed.get('body'):
@@ -821,7 +770,7 @@ def export_to_pdf_with_pwc_template(content: str, title: str = "Document", subti
         
         # First, extract all headings for Table of Contents
         headings = []
-        blocks = content.split('\n\n')
+        blocks = content.split('\n')
         for block in blocks:
             if not block.strip():
                 continue
@@ -1686,21 +1635,8 @@ def _add_numbered_paragraph(doc: Document, text: str):
     numbering_part = doc.part.numbering_part
 
     # Create a new abstract numbering definition
-    # Fix: Check if _next_abstract_num_id exists, otherwise calculate it
-    if hasattr(numbering_part, '_next_abstract_num_id'):
-        abstract_num_id = numbering_part._next_abstract_num_id
-        numbering_part._next_abstract_num_id += 1
-    else:
-        # Calculate next abstract num ID by finding max existing ID
-        existing_ids = []
-        for abstract_num in numbering_part._numbering.xpath('.//w:abstractNum', namespaces={'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}):
-            abstract_id = abstract_num.get(qn('w:abstractNumId'))
-            if abstract_id:
-                try:
-                    existing_ids.append(int(abstract_id))
-                except (ValueError, TypeError):
-                    continue
-        abstract_num_id = max(existing_ids) + 1 if existing_ids else 0
+    abstract_num_id = numbering_part._next_abstract_num_id
+    numbering_part._next_abstract_num_id += 1
 
     abstract_num = OxmlElement("w:abstractNum")
     abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
@@ -1724,21 +1660,8 @@ def _add_numbered_paragraph(doc: Document, text: str):
     numbering_part._numbering.append(abstract_num)
 
     # Create a new numbering instance
-    # Fix: Check if _next_num_id exists, otherwise calculate it
-    if hasattr(numbering_part, '_next_num_id'):
-        num_id = numbering_part._next_num_id
-        numbering_part._next_num_id += 1
-    else:
-        # Calculate next num ID by finding max existing ID
-        existing_num_ids = []
-        for num in numbering_part._numbering.xpath('.//w:num', namespaces={'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}):
-            num_id_attr = num.get(qn('w:numId'))
-            if num_id_attr:
-                try:
-                    existing_num_ids.append(int(num_id_attr))
-                except (ValueError, TypeError):
-                    continue
-        num_id = max(existing_num_ids) + 1 if existing_num_ids else 0
+    num_id = numbering_part._next_num_id
+    numbering_part._next_num_id += 1
 
     num = OxmlElement("w:num")
     num.set(qn("w:numId"), str(num_id))
@@ -2449,6 +2372,526 @@ def export_to_text(content: str) -> bytes:
     """Export content to plain text format"""
     return content.encode('utf-8')
 
+# def export_to_pdf_with_pwc_template_with_bullets(
+#     content: str,
+#     title: str,
+#     subtitle: str | None = None,include_toc: bool = True) -> bytes:
+    
+#     logger.info("[Export] PDF-PWC-BULLETS endpoint hit")
+#     title = re.sub(r'\*+', '', title).strip()
+#     logger.info(f"[Export] PDF-PWC-BULLETS title",{"title": title})
+#     subtitle = re.sub(r'\*+', '', subtitle).strip() if subtitle else None
+#     logger.info("Creating PWC branded PDF with title, subtitle, and content")
+#     # Check if template exists
+#     if not os.path.exists(PWC_PDF_TEMPLATE_PATH):
+#         logger.warning(f"PwC PDF template not found at {PWC_PDF_TEMPLATE_PATH}")
+#         return _generate_pdf_with_title_subtitle(content, title, subtitle)
+    
+#     # ===== STEP 1: Create branded cover page =====
+#     logger.info("Step 1: Creating branded cover page")
+#     template_reader = PdfReader(PWC_PDF_TEMPLATE_PATH)
+#     template_page = template_reader.pages[0]
+#     page_width = float(template_page.mediabox.width)
+#     page_height = float(template_page.mediabox.height)
+#     logger.info(f"Template page size: {page_width:.1f} x {page_height:.1f} points")
+#     # Create overlay with text
+#     overlay_buffer = io.BytesIO()
+#     c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
+#     # Add title
+#     title_font_size = 32
+#     if len(title) > 80:
+#         title_font_size = 20
+#     elif len(title) > 60:
+#         title_font_size = 22
+#     elif len(title) > 40:
+#         title_font_size = 26
+#     c.setFont("Helvetica-Bold", title_font_size)
+#     c.setFillColor('#000000')  # Black color
+#     title_y = page_height * 0.72
+    
+#     # Handle multi-line titles with better word wrapping
+#     # Maximum width for title (leaving margins on left and right)
+#     max_title_width = page_width * 0.70  # 70% of page width with margins
+    
+#     # Better character width estimation - more conservative to avoid cutoff
+#     # Estimate pixels needed per character based on font size
+#     # At 20pt Helvetica: ~10 pixels per character average
+#     char_width_at_font = (title_font_size / 20.0) * 10
+#     max_chars_per_line = int(max_title_width / char_width_at_font)
+    
+#     # Ensure reasonable minimum and maximum
+#     max_chars_per_line = max(20, min(max_chars_per_line, 50))
+#     clean_title = re.sub(r'\*+', '', title).strip()
+#     words = clean_title.split()
+#     lines = []
+#     current_line = []
+#     for word in words:
+#         test_line = ' '.join(current_line + [word])
+#         if len(test_line) > max_chars_per_line:
+#             if current_line:
+#                 lines.append(' '.join(current_line))
+#             current_line = [word]
+#         else:
+#             current_line.append(word)
+#     if current_line:
+#         lines.append(' '.join(current_line))
+#     # Draw multi-line title
+#     if len(lines) > 1:
+#         line_height = title_font_size + 6
+#         # Center vertically: start higher if multiple lines
+#         start_y = title_y + (len(lines) - 1) * line_height / 2
+#         for i, line in enumerate(lines):
+#             c.drawCentredString(page_width / 2, start_y - (i * line_height), line)
+#         last_title_y = start_y - (len(lines) * line_height)
+#     else:
+#         c.drawCentredString(page_width / 2, title_y, clean_title)
+#         last_title_y = title_y
+    
+#     logger.info(f"Title added to overlay: {clean_title} ({len(lines)} lines)")
+#     # Add subtitle if provided
+#     if subtitle:
+#         # Clean up markdown asterisks from subtitle
+#         subtitle_clean = subtitle.replace('**', '')
+#         c.setFont("Helvetica-Bold", 14)  # Bold font
+#         c.setFillColor('#000000')  # Black color
+#         subtitle_y = last_title_y - 70        
+#         # Wrap subtitle text to fit within page width
+#         # Use a more conservative character limit for subtitle
+#         # Page width is typically 612 points (8.5 inches) for letter size
+#         # Helvetica 14pt: approximately 7-8 pixels per character
+#         max_subtitle_width = page_width * 0.75  # 75% of page width with margins
+#         subtitle_char_width = 8  # pixels per character at 14pt
+#         max_chars_per_line = int(max_subtitle_width / subtitle_char_width)
+#         words = subtitle_clean.split()
+#         lines = []
+#         current_line = []        
+#         for word in words:
+#             test_line = ' '.join(current_line + [word])
+#             # Use more conservative line breaking - shorter lines for better visibility
+#             if len(test_line) > min(50, max_chars_per_line):
+#                 if current_line:
+#                     lines.append(' '.join(current_line))
+#                 current_line = [word]
+#             else:
+#                 current_line.append(word)        
+#         if current_line:
+#             lines.append(' '.join(current_line))        
+#         # Draw multi-line subtitle with proper centering
+#         line_height = 22
+#         # If multiple lines, center vertically
+#         if len(lines) > 1:
+#             start_y = subtitle_y + (len(lines) - 1) * line_height / 2
+#         else:
+#             start_y = subtitle_y        
+#         for i, line in enumerate(lines):
+#             c.drawCentredString(page_width / 2, start_y - (i * line_height), line)
+#         logger.info(f"Subtitle added to overlay: {subtitle_clean} ({len(lines)} lines)")
+#     c.save()
+#     overlay_buffer.seek(0)    
+#     # Merge overlay with template
+#     overlay_reader = PdfReader(overlay_buffer)
+#     overlay_page = overlay_reader.pages[0]    
+#     template_page.merge_page(overlay_page)
+#     logger.info("Overlay merged onto template cover page")        
+#     logger.info("Step 2: Creating formatted content pages")
+#     # First, extract all headings for Table of Contents
+#     headings = []
+#     if include_toc:
+#         blocks = content.split('\n\n')
+#         for block in blocks:
+#             if not block.strip():
+#                 continue
+#             block = block.strip()
+#             if re.match(r'^\s*[-_]{3,}\s*$', block):
+#                 continue
+#             # Check for various heading formats
+#             standalone_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block)
+#             if standalone_bold_match:
+#                 heading_text = standalone_bold_match.group(1)
+#                 heading_text = re.sub(r'\*+', '', heading_text).rstrip(':').strip()
+#                 if heading_text.lower() == 'references':
+#                     headings.append('References')
+#                     continue
+#                 headings.append(heading_text)
+#                 continue
+#             first_line_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*\n', block)
+#             if first_line_bold_match:
+#                 heading_text = re.sub(r'\*+', '', first_line_bold_match.group(1)).rstrip(':').strip()
+#                 headings.append(heading_text)
+#                 continue
+#             # Markdown headings
+#             if block.startswith('#'):
+#                 text = re.sub(r'^#+\s*', '', block.split('\n')[0]).strip()
+#                 text = re.sub(r'\*+', '', text).rstrip(':').strip()
+#                 # headings.append(text.rstrip(':').strip())
+#                 headings.append(text)
+#         logger.info(f"Extracted {len(headings)} headings for Table of Contents")
+#     content_buffer = io.BytesIO()
+#     doc = SimpleDocTemplate(
+#     content_buffer,
+#     pagesize=(page_width, page_height),
+#     topMargin=1*inch,
+#     bottomMargin=1*inch,
+#     leftMargin=1.1*inch,
+#     rightMargin=1*inch)
+#     styles = getSampleStyleSheet()
+#     # Define custom styles
+#     body_style = ParagraphStyle(
+#         'PWCBody',
+#         parent=styles['BodyText'],
+#         fontSize=11,
+#         leading=15,
+#         alignment=TA_JUSTIFY,
+#         spaceAfter=12,
+#         fontName='Helvetica'
+#     )
+#     bullet_style = ParagraphStyle(
+#         'PWCBullet',
+#         parent=body_style,
+#         leftIndent=0,
+#         spaceAfter=6,
+#         alignment=TA_LEFT
+#     )
+#     reference_style = ParagraphStyle(
+#         'PWCReference',
+#         parent=styles['BodyText'],
+#         fontSize=11,
+#         leading=13,
+#         alignment=TA_LEFT,
+#         spaceAfter=4,  
+#         spaceBefore=0,
+#         fontName='Helvetica'
+#     )
+#     heading_style = ParagraphStyle(
+#         'PWCHeading',
+#         parent=styles['Heading2'],
+#         fontSize=14,
+#         textColor='#D04A02',
+#         spaceAfter=10,
+#         spaceBefore=10,
+#         fontName='Helvetica'
+#     )   
+#     story = []   
+    
+#     # Parse and add content with formatting
+#     blocks = content.split('\n\n')
+#     for block in blocks:
+#         if not block.strip():
+#             continue        
+#         block = block.strip()
+#         if re.match(r'^\s*[-_]{3,}\s*$', block):
+#             continue
+#         # Check for headings (bold text on its own line or markdown style)
+#         standalone_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block)
+#         if standalone_bold_match:
+#             heading_text = standalone_bold_match.group(1)
+#             heading_text = re.sub(r'\*+', '', heading_text).rstrip(':').strip()
+#             if heading_text.lower().rstrip(':') == 'references':
+#                 story.append(Paragraph('References', heading_style))
+#                 continue
+#             story.append(Paragraph(heading_text, heading_style))
+#             continue
+#         # Check for bold text at start of paragraph
+#         # ---- NUMBERED SECTION HEADING (e.g. 1. Executive Overview) ----
+#         numbered_heading_match = re.match(
+#             r'^#*\s*(\d+\.\s+[A-Z][^\n]+)\n+(.*)',
+#             block,
+#             re.DOTALL
+#         )
+#         if numbered_heading_match:
+#             heading_text = numbered_heading_match.group(1).strip()
+#             remaining = numbered_heading_match.group(2).strip()
+
+#             story.append(Paragraph(heading_text, heading_style))
+
+#             if remaining:
+#                 story.append(Spacer(1, 8))
+#                 story.append(Paragraph(
+#                     _format_content_for_pdf(_strip_ui_markdown(remaining)),
+#                     body_style
+#                 ))
+#             continue
+
+#         first_line_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*\n', block)
+#         if first_line_bold_match:
+#             heading_text = first_line_bold_match.group(1)
+#             heading_text = re.sub(r'\*+', '', heading_text).rstrip(':').strip()
+#             remaining_content = block[first_line_bold_match.end():].strip()
+#             story.append(Paragraph(heading_text, heading_style))
+#             if remaining_content:
+#                 # Check if remaining content is a bullet list
+#                 if _is_bullet_list_block(remaining_content):
+#                     bullet_items = _parse_bullet_items(remaining_content)
+#                     bullet_flow = ListFlowable(
+#                         [
+#                             ListItem(
+#                                 Paragraph(_format_content_for_pdf(_strip_ui_markdown(_clean_bullet_text(item))), bullet_style),
+#                                 bulletText='•'
+#                             )
+#                             for item in bullet_items
+#                         ],
+#                         bulletType='bullet',
+#                         leftIndent=24,
+#                         spaceBefore=4,
+#                         spaceAfter=8
+#                     )
+#                     story.append(bullet_flow)
+#                 else:
+#                     para = Paragraph(_format_content_for_pdf( _strip_ui_markdown(remaining_content)), body_style)
+#                     story.append(para)
+#             continue
+#         bullet_heading_match = re.match(
+#             r'^###\s*•\s*(.+?)\s*\n+(.+)',
+#             block,
+#             re.DOTALL
+#         )
+
+#         if bullet_heading_match:
+#             heading_text = bullet_heading_match.group(1).strip()
+#             body_text = bullet_heading_match.group(2).strip()
+
+#             story.append(Paragraph(f"• {heading_text}", heading_style))
+#             story.append(Spacer(1, 6))
+#             story.append(Paragraph(
+#                 _format_content_for_pdf(_strip_ui_markdown(body_text)),
+#                 body_style
+#             ))
+#             continue
+#         # Check for markdown headings
+#         if block.startswith('####'):
+#             text = block.replace('####', '').strip()
+#             text = re.sub(r'\*+', '', text).rstrip(':').strip()
+#             story.append(Paragraph(text, heading_style))
+#             continue
+#         elif block.startswith('###'):
+#             text = block.replace('###', '').strip()
+#             text = re.sub(r'\*+', '', text).rstrip(':').strip()
+#             story.append(Paragraph(text, heading_style))
+#             continue
+#         elif block.startswith('##'):
+#             text = block.replace('##', '').strip()
+#             text = re.sub(r'\*+', '', text).rstrip(':').strip()
+#             story.append(Paragraph(text, heading_style))
+#             continue
+#         elif block.startswith('#'):
+#             text = block.replace('#', '').strip()
+#             text = re.sub(r'\*+', '', text).rstrip(':').strip()
+#             story.append(Paragraph(text, heading_style))
+#             continue
+        
+#         # Check if block is a bullet list
+#         if _is_bullet_list_block(block):
+#             bullet_items = _parse_bullet_items(block)
+#             bullet_flow = ListFlowable(
+#                 [
+#                     ListItem(
+#                         Paragraph(_format_content_for_pdf(_clean_bullet_text(item)), bullet_style),
+#                         bulletText='•'
+#                     )
+#                     for item in bullet_items
+#                 ],
+#                 # start='bullet',
+#                 bulletType='bullet',
+#                 leftIndent=24
+#             )
+#             story.append(bullet_flow)
+#             continue
+        
+#         # Check if block contains multiple lines with citation patterns
+#         # Citations typically look like: [1] text or 1. text
+#         lines = block.split('\n')
+#         if len(lines) > 1:
+#             # Check if this looks like a citation/reference block
+#             citation_pattern = r'^\s*(\[\d+\]|\d+\.)\s+'
+#             citation_count = sum(1 for line in lines if re.match(citation_pattern, line.strip()))
+            
+#             # If at least 2 lines match citation pattern, treat as citation block
+#             if citation_count >= 2:
+#                 # Process each line separately with left alignment (no justify)
+#                 for line in lines:
+#                     line_stripped = line.strip()
+#                     if line_stripped:
+#                         para = Paragraph(_format_content_for_pdf( _strip_ui_markdown(line_stripped)), reference_style)
+#                         story.append(para)
+#                 continue
+        
+#         # Regular paragraph - intelligently split long paragraphs into smaller chunks
+#         sentence_count = len(re.findall(r'[.!?]', block))
+#         if sentence_count > 3:
+#             # This is a long paragraph, split it into smaller chunks (2-3 sentences each)
+#             split_paragraphs = _split_paragraph_into_sentences(block, target_sentences=3)
+#             for split_para in split_paragraphs:
+#                 if split_para:
+#                     para = Paragraph(_format_content_for_pdf(split_para), body_style)
+#                     story.append(para)
+#         else:
+#             # Keep short paragraphs as is
+#             para = Paragraph(_format_content_for_pdf(_strip_ui_markdown(_clean_bullet_text(block))), body_style)
+#             story.append(para)
+    
+#     # Build the content PDF
+#     doc.build(story)
+#     content_buffer.seek(0)
+#     if include_toc:
+#         logger.info("Step 2.5: Creating Table of Contents pages (multi-page)")
+#         toc_buffer = io.BytesIO()
+#         toc_doc = SimpleDocTemplate(toc_buffer, pagesize=(page_width, page_height), topMargin=1*inch, bottomMargin=1*inch)
+#         toc_styles = getSampleStyleSheet()
+#         toc_title_style = ParagraphStyle(
+#             'TOCTitle',
+#             parent=toc_styles['Heading1'],
+#             fontSize=24,
+#             textColor='#000000',
+#             spaceAfter=24,
+#             alignment=TA_LEFT,
+#             fontName='Helvetica-Bold'
+#         )
+#         toc_heading_style = ParagraphStyle(
+#             'TOCHeading',
+#             parent=toc_styles['BodyText'],
+#             fontSize=11,
+#             textColor='#000000',
+#             spaceAfter=12,
+#             alignment=TA_LEFT,
+#             fontName='Helvetica',
+#             leading=16,
+#             rightIndent=20
+#         )
+#         toc_story = []
+#         if not headings:
+#             toc_pages = []
+#         toc_story.append(Paragraph("Contents", toc_title_style))
+#         toc_story.append(Spacer(1, 0.2 * inch))
+#         seen = set()
+#         filtered_headings = []
+#         for h in headings:
+#             if h not in seen:
+#                 filtered_headings.append(h)
+#                 seen.add(h)
+#         for index, heading in enumerate(filtered_headings, start=1):
+#             clean_heading = re.sub(r'^\d+\.\s*', '', heading)
+#             toc_story.append(Paragraph(f"{index}. {heading}", toc_heading_style))
+
+#         toc_doc.build(toc_story)
+#         toc_buffer.seek(0)
+#         toc_reader = PdfReader(toc_buffer)
+#         toc_pages = [toc_reader.pages[i] for i in range(len(toc_reader.pages))]
+#     logger.info("Step 3: Merging cover page, ToC, and content pages")
+#     content_reader = PdfReader(content_buffer)
+#     writer = PdfWriter()
+#     # Add the branded cover page (Page 1)
+#     writer.add_page(template_page)
+#     logger.info("Added branded cover page with PWC logo, title, and subtitle")
+#         # Add the Table of Contents pages (Page 2+)
+#     if include_toc:    
+#         for toc_page in toc_pages:
+#             writer.add_page(toc_page)
+#     if not content_reader:
+#         raise RuntimeError("content_reader was not initialized")
+
+#     # Add all content pages (Page 3+)
+#     for page in content_reader.pages:
+#         # base_page = copy.deepcopy(template_reader.pages[0])
+#         # base_page.merge_page(page)
+#         writer.add_page(page)
+
+#     # Write final PDF
+#     output_buffer = io.BytesIO()
+#     writer.write(output_buffer)
+#     output_buffer.seek(0)
+    
+#     result_bytes = output_buffer.getvalue()
+#     logger.info(f"PDF export complete: {len(writer.pages)} pages, {len(result_bytes)} bytes")
+    
+#     return result_bytes
+   
+def _clean_bullet_text(text: str) -> str:
+    text = re.sub(r'\*{1,2}', '', text)
+    text = re.sub(r'^\s*(bullet|•|-)\s*', '', text, flags=re.IGNORECASE)
+    return text.strip()
+
+def _strip_ui_markdown(text: str) -> str:
+    """
+    Remove UI markdown artifacts (*, **) that should not
+    be rendered as formatting in PDF.
+    """
+    if not text:
+        return text
+    text = re.sub(r'\*{1,2}', '', text)
+    text = re.sub(r'^\s*[-•]\s*', '', text)
+    return text.strip()
+
+def export_to_word_ui_plain(content: str, title: str) -> bytes:
+    """
+    Standalone UI Word export
+    - No template
+    - No TOC
+    - No headers/footers
+    """
+    doc = Document()
+
+    def tighten_spacing(p):
+        p.paragraph_format.space_before = DocxPt(0)
+        p.paragraph_format.space_after = DocxPt(4)
+        p.paragraph_format.line_spacing = 1
+
+    lines = content.split("\n")
+
+    for line in lines:
+        text = line.rstrip()
+
+        if not text:
+            p = doc.add_paragraph("")
+            tighten_spacing(p)
+            continue
+
+        # Bullet points
+        if re.match(r"^(\-|\•)\s+", text):
+            bullet_text = re.sub(r"^(\-|\•)\s+", "", text)
+            p = doc.add_paragraph(style="List Bullet")
+            tighten_spacing(p)
+
+            # Bold heading before colon
+            if ":" in bullet_text:
+                head, rest = bullet_text.split(":", 1)
+                r1 = p.add_run(head.strip() + ":")
+                r1.bold = True
+                p.add_run(rest)
+            else:
+                p.add_run(bullet_text)
+
+            continue
+
+        # Normal paragraph
+        p = doc.add_paragraph()
+        tighten_spacing(p)
+
+        # Bold hashtags
+        parts = re.split(r"(#\w+)", text)
+        for part in parts:
+            if part.startswith("#"):
+                r = p.add_run(part)
+                r.bold = True
+            else:
+                # Handle **bold**
+                subparts = re.split(r"(\*\*.*?\*\*)", part)
+                for sub in subparts:
+                    if sub.startswith("**") and sub.endswith("**"):
+                        r = p.add_run(sub[2:-2])
+                        r.bold = True
+                    else:
+                        p.add_run(sub)
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def normalize_broken_markdown(text: str) -> str:
+    text = re.sub(r'\*(\w[^*]+)\*\*', r'**\1**', text)
+    text = re.sub(r'\*{3,}', '**', text)
+    return text
+
 def export_to_pdf_with_pwc_template_with_bullets(
     content: str,
     title: str,
@@ -2574,7 +3017,7 @@ def export_to_pdf_with_pwc_template_with_bullets(
     # First, extract all headings for Table of Contents
     headings = []
     if include_toc:
-        blocks = content.split('\n\n')
+        blocks = content.split('\n')
         for block in blocks:
             if not block.strip():
                 continue
@@ -2651,7 +3094,7 @@ def export_to_pdf_with_pwc_template_with_bullets(
     story = []   
     
     # Parse and add content with formatting
-    blocks = content.split('\n\n')
+    blocks = content.split('\n')
     for block in blocks:
         if not block.strip():
             continue        
@@ -2684,7 +3127,7 @@ def export_to_pdf_with_pwc_template_with_bullets(
             if remaining:
                 story.append(Spacer(1, 8))
                 story.append(Paragraph(
-                    _format_content_for_pdf(_strip_ui_markdown(remaining)),
+                    _format_content_for_pdf_mi(_strip_ui_markdown(remaining)),
                     body_style
                 ))
             continue
@@ -2702,7 +3145,7 @@ def export_to_pdf_with_pwc_template_with_bullets(
                     bullet_flow = ListFlowable(
                         [
                             ListItem(
-                                Paragraph(_format_content_for_pdf(_strip_ui_markdown(_clean_bullet_text(item))), bullet_style),
+                                Paragraph(_format_content_for_pdf_mi(_strip_ui_markdown(_clean_bullet_text(item))), bullet_style),
                                 bulletText='•'
                             )
                             for item in bullet_items
@@ -2714,7 +3157,7 @@ def export_to_pdf_with_pwc_template_with_bullets(
                     )
                     story.append(bullet_flow)
                 else:
-                    para = Paragraph(_format_content_for_pdf( _strip_ui_markdown(remaining_content)), body_style)
+                    para = Paragraph(_format_content_for_pdf_mi( _strip_ui_markdown(remaining_content)), body_style)
                     story.append(para)
             continue
         bullet_heading_match = re.match(
@@ -2730,7 +3173,7 @@ def export_to_pdf_with_pwc_template_with_bullets(
             story.append(Paragraph(f"• {heading_text}", heading_style))
             story.append(Spacer(1, 6))
             story.append(Paragraph(
-                _format_content_for_pdf(_strip_ui_markdown(body_text)),
+                _format_content_for_pdf_mi(_strip_ui_markdown(body_text)),
                 body_style
             ))
             continue
@@ -2762,7 +3205,7 @@ def export_to_pdf_with_pwc_template_with_bullets(
             bullet_flow = ListFlowable(
                 [
                     ListItem(
-                        Paragraph(_format_content_for_pdf(_clean_bullet_text(item)), bullet_style),
+                        Paragraph(_format_content_for_pdf_mi(_clean_bullet_text(item)), bullet_style),
                         bulletText='•'
                     )
                     for item in bullet_items
@@ -2788,22 +3231,23 @@ def export_to_pdf_with_pwc_template_with_bullets(
                 for line in lines:
                     line_stripped = line.strip()
                     if line_stripped:
-                        para = Paragraph(_format_content_for_pdf( _strip_ui_markdown(line_stripped)), reference_style)
+                        para = Paragraph(_format_content_for_pdf_mi( _strip_ui_markdown(line_stripped)), reference_style)
                         story.append(para)
                 continue
         
         # Regular paragraph - intelligently split long paragraphs into smaller chunks
         sentence_count = len(re.findall(r'[.!?]', block))
-        if sentence_count > 3:
+        if sentence_count > 999:
+            
             # This is a long paragraph, split it into smaller chunks (2-3 sentences each)
             split_paragraphs = _split_paragraph_into_sentences(block, target_sentences=3)
             for split_para in split_paragraphs:
                 if split_para:
-                    para = Paragraph(_format_content_for_pdf(split_para), body_style)
+                    para = Paragraph(_format_content_for_pdf_mi(split_para), body_style)
                     story.append(para)
         else:
             # Keep short paragraphs as is
-            para = Paragraph(_format_content_for_pdf(_strip_ui_markdown(_clean_bullet_text(block))), body_style)
+            para = Paragraph(_format_content_for_pdf_mi(_strip_ui_markdown(_clean_bullet_text(block))), body_style)
             story.append(para)
     
     # Build the content PDF
@@ -2881,389 +3325,165 @@ def export_to_pdf_with_pwc_template_with_bullets(
     logger.info(f"PDF export complete: {len(writer.pages)} pages, {len(result_bytes)} bytes")
     
     return result_bytes
-   
-def _clean_bullet_text(text: str) -> str:
-    text = re.sub(r'\*{1,2}', '', text)
-    text = re.sub(r'^\s*(bullet|•|-)\s*', '', text, flags=re.IGNORECASE)
-    return text.strip()
+ 
+# def export_to_word_pwc_no_toc(
+#     content: str,
+#     title: str,
+#     subtitle: str | None = None,
+#     content_type: str | None = None,
+#     references: list[dict] | None = None,client: str | None = None
+# ) -> bytes:
+#     """
+#     PwC Word export WITHOUT Table of Contents.
+#     Formatting identical to export_to_word_pwc_standalone.
+#     """
+#     doc = Document(PWC_TEMPLATE_PATH) if os.path.exists(PWC_TEMPLATE_PATH) else Document()
+#     logger.info(f"[export_to_word_pwc_no_toc] Loaded content_type: {content_type}, title: {title},clientname: {client}")
+#     content_reader = None
+#     content = _preprocess_word_pwc_content_for_headings(content)
+#     # ---------- Cover ----------
+#     clean_title = re.sub(r'\*+', '', title).strip()
+#     _set_paragraph_text_with_breaks(doc.paragraphs[0],sanitize_text_for_word(clean_title))
+#     _set_paragraph_text_with_breaks(doc.paragraphs[1], sanitize_text_for_word(subtitle or ""))
 
-def _strip_ui_markdown(text: str) -> str:
-    """
-    Remove UI markdown artifacts (*, **) that should not
-    be rendered as formatting in PDF.
-    """
-    if not text:
-        return text
-    text = re.sub(r'\*{1,2}', '', text)
-    text = re.sub(r'^\s*[-•]\s*', '', text)
-    return text.strip()
+#     # Remove everything after subtitle
+#     while len(doc.paragraphs) > 2:
+#         p = doc.paragraphs[-1]
+#         p._element.getparent().remove(p._element)
 
-def export_to_word_ui_plain(content: str, title: str) -> bytes:
-    """
-    Standalone UI Word export
-    - No template
-    - No TOC
-    - No headers/footers
-    """
-    doc = Document()
+#     _ensure_page_break_after_paragraph(doc.paragraphs[1])
 
-    def tighten_spacing(p):
-        p.paragraph_format.space_before = DocxPt(0)
-        p.paragraph_format.space_after = DocxPt(4)
-        p.paragraph_format.line_spacing = 1
+#     # ---------- Content ----------
+#     references_heading_added = False
+#     in_section = False
+#     first_paragraph_in_section = False
 
-    lines = content.split("\n")
+#     for block in content.split("\n\n"):
+#         block = block.strip()
+#         if not block:
+#             continue
+#         if block.strip().lower() in {"references", "references:"}:
+#             doc.add_paragraph("References", style="Heading 2")
+#             references_heading_added = True
+#             in_section = False
+#             first_paragraph_in_section = False
+#             continue
+#         if re.match(r'^\s*(#+\s*)?\d+\.\s+[A-Z]', block):
+#             p = doc.add_paragraph(
+#                 sanitize_text_for_word(re.sub(r'^#+\s*', '', block)),
+#                 style="Heading 1"
+#             )
+#             # Ensure heading runs are explicitly bold (template heading styles may not be bold)
+#             for run in p.runs:
+#                 run.bold = True
+#             in_section = True
+#             first_paragraph_in_section = True
+#             continue
+#         # Handle explicit markdown H2 (##) -> Heading 2
+#         # if block.startswith("##"):
+#         #     p = doc.add_paragraph(
+#         #         sanitize_text_for_word(block.lstrip("#").strip()),
+#         #         style="Heading 2"
+#         #     )
+#         #     for run in p.runs:
+#         #         run.bold = True
+#         #     in_section = True
+#         #     first_paragraph_in_section = True
+#         #     continue
+#         if block.startswith("##"):
+#             clean_text = sanitize_text_for_word(block.lstrip("#").strip())
+#             clean_text = re.sub(r'\*\*', '', clean_text)  # Remove **
+#             p = doc.add_paragraph(style="Heading 2")
+#             run = p.add_run(clean_text)
+#             run.bold = True
+#             in_section = True
+#             first_paragraph_in_section = True
+#             continue
+ 
+#         # Handle single-hash markdown (H1) -> Heading 1
+#         if re.match(r'^\s*#\s+.+', block) and not block.startswith("##"):
+#             p = doc.add_paragraph(
+#                 sanitize_text_for_word(re.sub(r'^#+\s*', '', block).strip()),
+#                 style="Heading 1"
+#             )
+#             for run in p.runs:
+#                 run.bold = True
+#             in_section = True
+#             first_paragraph_in_section = True
+#             continue
+#         lines = block.split("\n")
+#         if all(is_bullet_line(l) for l in lines):
+#             first_paragraph_in_section = False
+#             for line in lines:
+#                 clean = re.sub(r'^[-•]\s+', '', line).strip()
+#                 clean = re.sub(r'\*\*(.*?)\*\*', r'\1', clean)
+#                 clean = re.sub(r'[*_`]', '', clean)
 
-    for line in lines:
-        text = line.rstrip()
+#                 if not clean:
+#                     continue
 
-        if not text:
-            p = doc.add_paragraph("")
-            tighten_spacing(p)
-            continue
+#                 para = doc.add_paragraph(style="List Bullet")
+#                 run = para.add_run(sanitize_text_for_word(clean))
 
-        # Bullet points
-        if re.match(r"^(\-|\•)\s+", text):
-            bullet_text = re.sub(r"^(\-|\•)\s+", "", text)
-            p = doc.add_paragraph(style="List Bullet")
-            tighten_spacing(p)
+#                 # STRUCTURAL bullet-heading rule
+#                 run.bold = (
+#                         ":" not in clean and
+#                         not re.search(r'[.!?]$', clean)
+#                     )
 
-            # Bold heading before colon
-            if ":" in bullet_text:
-                head, rest = bullet_text.split(":", 1)
-                r1 = p.add_run(head.strip() + ":")
-                r1.bold = True
-                p.add_run(rest)
-            else:
-                p.add_run(bullet_text)
+#             continue
+#         if in_section and first_paragraph_in_section:
+#             clean = re.sub(r'\*\*(.*?)\*\*', r'\1', block)
+#             clean = re.sub(r'[*_`]', '', clean)
 
-            continue
-
-        # Normal paragraph
-        p = doc.add_paragraph()
-        tighten_spacing(p)
-
-        # Bold hashtags
-        parts = re.split(r"(#\w+)", text)
-        for part in parts:
-            if part.startswith("#"):
-                r = p.add_run(part)
-                r.bold = True
-            else:
-                # Handle **bold**
-                subparts = re.split(r"(\*\*.*?\*\*)", part)
-                for sub in subparts:
-                    if sub.startswith("**") and sub.endswith("**"):
-                        r = p.add_run(sub[2:-2])
-                        r.bold = True
-                    else:
-                        p.add_run(sub)
-
-    buffer = BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-def normalize_broken_markdown(text: str) -> str:
-    text = re.sub(r'\*(\w[^*]+)\*\*', r'**\1**', text)
-    text = re.sub(r'\*{3,}', '**', text)
-    return text
-
-def export_to_word_pwc_no_toc(
-    content: str,
-    title: str,
-    subtitle: str | None = None,
-    content_type: str | None = None,
-    references: list[dict] | None = None,client: str | None = None
-) -> bytes:
-    """
-    PwC Word export WITHOUT Table of Contents.
-    Formatting identical to export_to_word_pwc_standalone.
-    """
-    doc = Document(PWC_TEMPLATE_PATH) if os.path.exists(PWC_TEMPLATE_PATH) else Document()
-    logger.info(f"[export_to_word_pwc_no_toc] Loaded content_type: {content_type}, title: {title},clientname: {client}")
-    content_reader = None
-    # ---------- Cover ----------
-    clean_title = re.sub(r'\*+', '', title).strip()
-    _set_paragraph_text_with_breaks(doc.paragraphs[0],sanitize_text_for_word(clean_title))
-    _set_paragraph_text_with_breaks(doc.paragraphs[1], sanitize_text_for_word(subtitle or ""))
-
-    # Remove everything after subtitle
-    while len(doc.paragraphs) > 2:
-        p = doc.paragraphs[-1]
-        p._element.getparent().remove(p._element)
-
-    _ensure_page_break_after_paragraph(doc.paragraphs[1])
-
-    # ---------- Content ----------
-    references_heading_added = False
-    in_section = False
-    first_paragraph_in_section = False
-
-    # for block in content.split("\n\n"):
-    #     block = block.strip()
-    #     if re.match(r'^-{-2,}$', block):
-    #         continue
-
-    #     if not block:
-    #         continue
-    #     block = re.sub(r'^\*{1}(.+?)\*{2}', r'**\1**', block)
-    #     block = re.sub(r'^\*{2}(.+?)\*{1}', r'**\1**', block)
-    #     if block.lower() in {"references", "references:"}:
-    #         doc.add_paragraph("References", style="Heading 2")
-    #         references_heading_added = True
-    #         continue
-
-    #     if block.startswith("##"):
-    #         # p = doc.add_paragraph(style="Heading 2")
-    #         # p.add_run(sanitize_text_for_word(block.replace("##", "").strip())).bold = True
-    #         doc.add_paragraph(
-    #             sanitize_text_for_word(re.sub(r'^#+\s*', '', block).strip()),
-    #             style="Heading 2"
-    #         )
-    #         continue
-
-    #     if block.startswith("#"):
-    #         # p = doc.add_paragraph(style="Heading 1")
-    #         # p.add_run(sanitize_text_for_word(block.replace("#", "").strip())).bold = True
-    #         doc.add_paragraph(
-    #             sanitize_text_for_word(re.sub(r'^#+\s*', '', block).strip()),
-    #             style="Heading 1"
-    #         )
-    #         continue
-
-    #     m = re.match(r'^\*\*(.+?)\*\*$', block)
-    #     if m:
-    #         doc.add_paragraph(
-    #             sanitize_text_for_word(m.group(1)),
-    #             style="Heading 1"
-    #         )
-    #         # p = doc.add_paragraph(style="Heading 1")
-    #         # p.add_run(sanitize_text_for_word(m.group(1))).bold = True
-    #         continue
-    #     # block = re.sub(
-    #     #     r'^\*\*(.+?):\*\*\s*',
-    #     #     r'\1: ',
-    #     #     block
-    #     # )
-    #     # Preserve **Label:** blocks as normal paragraphs (NOT headings)
-    #     label_colon_match = re.match(r'^\*\*(.+?):\*\*\s*(.+)$', block)
-    #     if label_colon_match:
-    #         para = doc.add_paragraph(style="Body Text")
-    #         para.paragraph_format.space_after = DocxPt(10)
-
-    #         # label (not bold)
-    #         run1 = para.add_run(sanitize_text_for_word(label_colon_match.group(1) + ": "))
-    #         run1.bold = False
-
-    #         # body (not bold)
-    #         run2 = para.add_run(sanitize_text_for_word(label_colon_match.group(2)))
-    #         run2.bold = False
-    #         continue
-    #     single_asterisk_label = re.match(r'^\*(.+?)\*$', block)
-    #     if single_asterisk_label:
-    #         label = single_asterisk_label.group(1).strip()
-
-    #         para = doc.add_paragraph(style="Body Text")
-    #         run = para.add_run(sanitize_text_for_word(label))
-    #         run.bold = True
-    #         continue
-    #     block = re.sub(r'\*\*(.*?)\*\*', r'\1', block)
-    #     inline_label_match = re.match(
-    #         r'^([A-Za-z][A-Za-z\s\-]+?):\s+(.+)$',
-    #         block
-    #     )
+#             para = doc.add_paragraph(style="Body Text")
+#             _add_markdown_text_runs(
+#                 para,
+#                 sanitize_text_for_word(clean),
+#                 allow_bold=False
+#             )
+#             for run in para.runs:
+#                 if run.text.strip().endswith(":"):
+#                     run.bold = False
 
 
-    #     if inline_label_match:
-    #         label = inline_label_match.group(1) + ":"
-    #         body = inline_label_match.group(2)
-
-    #         para = doc.add_paragraph(style="Body Text")
-    #         para.paragraph_format.space_after = DocxPt(10)
-
-    #         run1 = para.add_run(sanitize_text_for_word(label + " "))
-    #         run1.bold = False  # IMPORTANT
-
-    #         run2 = para.add_run(sanitize_text_for_word(body))
-    #         run2.bold = False  # IMPORTANT
-
-    #         continue
-    #     # UI-style subsection label followed by body
-    #     lines = block.split("\n", 1)
-    #     if (
-    #         len(lines) == 2
-    #         and len(lines[0].strip()) < 80
-    #         and ":" not in lines[0]
-    #         and not lines[0].startswith(("#", "-", "•"))
-    #     ):
-    #         # Subsection label (bold)
-    #         para_label = doc.add_paragraph(style="Body Text")
-    #         run_label = para_label.add_run(sanitize_text_for_word(lines[0].strip()))
-    #         run_label.bold = True
-
-    #         # Body paragraph (normal)
-    #         para_body = doc.add_paragraph(style="Body Text")
-    #         para_body.paragraph_format.space_after = DocxPt(10)
-    #         _add_markdown_text_runs(
-    #             para_body,
-    #             sanitize_text_for_word(lines[1].strip()),
-    #             allow_bold=False
-    #         )
-    #         continue
-
-    #     # Standalone subsection labels (UI-style bold, not bullets)
-    #     if (
-    #         len(block) < 80
-    #         and ":" not in block
-    #         and not block.startswith(("#", "-", "*"))
-    #         and not re.match(r'^\d+[\.\)]\s+', block)
-    #     ):
-    #         para = doc.add_paragraph(style="Body Text")
-    #         run = para.add_run(sanitize_text_for_word(block))
-    #         run.bold = True
-    #         continue
-    #     lines = block.split("\n")
-    #     if all(is_bullet_line(l) for l in lines):
-    #         for line in lines:
-    #             clean = re.sub(r'^\s*[-•]\s+', '', line).strip()
-    #             clean = re.sub(r'\*+', '', clean)
-
-    #             if not clean:
-    #                 continue
-
-    #             para = doc.add_paragraph(style="List Bullet")
-    #             run = para.add_run(sanitize_text_for_word(clean))
-
-    #             # BULLET HEADING RULE
-    #             run.bold = (
-    #                 len(clean) <= 60 and
-    #                 clean[0].islower() is False
-    #             )
-    #         continue
-
-
-    #     para = doc.add_paragraph(style="Body Text") #Normal
-    #     para.paragraph_format.space_after = DocxPt(10)
-    #     para.paragraph_format.space_before = DocxPt(4)
-
-    #     clean = re.sub(r'\*\*(.*?)\*\*', r'\1', block)
-    #     clean = re.sub(r'[*_`]', '', clean)
-    #     _add_markdown_text_runs(para, clean, allow_bold=False)
-    #     for run in para.runs:
-    #         run.bold = False
-    for block in content.split("\n\n"):
-        block = block.strip()
-        if not block:
-            continue
-        if block.strip().lower() in {"references", "references:"}:
-            doc.add_paragraph("References", style="Heading 2")
-            references_heading_added = True
-            in_section = False
-            first_paragraph_in_section = False
-            continue
-
-        # ─────────────────────────────────────────────
-        # Section headings (1., 2., etc.)
-        # ─────────────────────────────────────────────
-        if re.match(r'^\s*(#+\s*)?\d+\.\s+', block):
-            doc.add_paragraph(
-                sanitize_text_for_word(block),
-                style="Heading 1"
-            )
-            in_section = True
-            first_paragraph_in_section = True
-            continue
-
-        # ─────────────────────────────────────────────
-        # Headings ##
-        # ─────────────────────────────────────────────
-        if block.startswith("##"):
-            doc.add_paragraph(
-                sanitize_text_for_word(block.lstrip("#").strip()),
-                style="Heading 2"
-            )
-            in_section = True
-            first_paragraph_in_section = True
-            continue
-
-        # ─────────────────────────────────────────────
-        # Bullet blocks
-        # ─────────────────────────────────────────────
-        lines = block.split("\n")
-        if all(is_bullet_line(l) for l in lines):
-            first_paragraph_in_section = False
-            for line in lines:
-                clean = re.sub(r'^[-•]\s+', '', line).strip()
-                if not clean:
-                    continue
-
-                para = doc.add_paragraph(style="List Bullet")
-                run = para.add_run(sanitize_text_for_word(clean))
-
-                # STRUCTURAL bullet-heading rule
-                run.bold = (
-                    len(clean) <= 70 and
-                    not re.search(r'[.!?]$', clean)
-                )
-            continue
-
-        # ─────────────────────────────────────────────
-        # First paragraph after section = executive takeaway
-        # NEVER bold
-        # ─────────────────────────────────────────────
-        if in_section and first_paragraph_in_section:
-            clean = re.sub(r'\*\*(.*?)\*\*', r'\1', block)
-            clean = re.sub(r'[*_`]', '', clean)
-
-            para = doc.add_paragraph(style="Body Text")
-            _add_markdown_text_runs(
-                para,
-                sanitize_text_for_word(clean),
-                allow_bold=True
-            )
-            for run in para.runs:
-                if run.text.strip().endswith(":"):
-                    run.bold = False
-
-
-            first_paragraph_in_section = False
-            continue
+            # first_paragraph_in_section = False
+            # continue
 
         # ─────────────────────────────────────────────
         # Normal narrative paragraphs
         # ─────────────────────────────────────────────
-        clean = re.sub(r'\*\*(.*?)\*\*', r'\1', block)
-        clean = re.sub(r'[*_`]', '', clean)
+    #     clean = re.sub(r'\*\*(.*?)\*\*', r'\1', block)
+    #     clean = re.sub(r'[*_`]', '', clean)
 
-        para = doc.add_paragraph(style="Body Text")
-        _add_markdown_text_runs(
-            para,
-            sanitize_text_for_word(clean),
-            allow_bold=False
-        )
+    #     para = doc.add_paragraph(style="Body Text")
+    #     _add_markdown_text_runs(
+    #         para,
+    #         sanitize_text_for_word(clean),
+    #         allow_bold=False
+    #     )
 
-        for run in para.runs:
-            run.bold = False
+    #     for run in para.runs:
+    #         run.bold = False
 
-    # ---------- References ----------
-    if references:
-        doc.add_page_break()
-        if not references_heading_added:
-            doc.add_paragraph("References", style="Heading 2")
+    # # ---------- References ----------
+    # if references:
+    #     doc.add_page_break()
+    #     if not references_heading_added:
+    #         doc.add_paragraph("References", style="Heading 2")
 
-        for ref in references:
-            para = _add_numbered_paragraph(
-                doc,
-                sanitize_text_for_word(ref.get("title", ""))
-            )
-            if ref.get("url"):
-                add_hyperlink(para, ref["url"])
+    #     for ref in references:
+    #         para = _add_numbered_paragraph(
+    #             doc,
+    #             sanitize_text_for_word(ref.get("title", ""))
+    #         )
+    #         if ref.get("url"):
+    #             add_hyperlink(para, ref["url"])
 
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-    return _fix_docx_encoding(buffer.getvalue())
+    # buffer = io.BytesIO()
+    # doc.save(buffer)
+    # buffer.seek(0)
+    # return _fix_docx_encoding(buffer.getvalue())
 
 def export_to_pdf_pwc_no_toc(
     content: str,
@@ -3695,7 +3915,7 @@ def export_to_word_edit_content(
     """
     PwC Word export specifically for Edit Content workflow.
     Uses block type information for proper formatting (title, heading, bullet_item, paragraph).
-    No Table of Contents (TOC removed for edit content exports).
+    Includes Table of Contents with numbered headings.
     
     Content should be final_article format: plain text with "\n\n" separators (same as final article generation).
     block_types should match final article generation structure with sequential indices.
@@ -3748,6 +3968,48 @@ def export_to_word_edit_content(
         p._element.getparent().remove(p._element)
 
     _ensure_page_break_after_paragraph(doc.paragraphs[1])
+
+    # ---------- Extract headings for TOC ----------
+    headings = []
+    if block_types:
+        paragraphs = split_blocks(content)
+        block_type_map = {bt.get("index", i): bt for i, bt in enumerate(block_types)}
+        
+        # STRICT MODE: Check alignment
+        if len(block_types) < len(paragraphs):
+            logger.warning(
+                f"Block type mismatch in TOC extraction: {len(block_types)} block_types, "
+                f"{len(paragraphs)} blocks. Some headings may be missed."
+            )
+        
+        for idx, block in enumerate(paragraphs):
+            block = block.strip()
+            if not block:
+                continue
+            
+            block_info = block_type_map.get(idx)
+            if block_info:
+                block_type = block_info.get("type", "paragraph")
+                if block_type in ["title", "heading"]:
+                    # Remove markdown formatting and number prefixes
+                    heading_text = re.sub(r'^\d+[.)]\s+', '', block).strip()
+                    heading_text = re.sub(r'\*+', '', heading_text).strip()
+                    if heading_text and heading_text.lower() not in ["references", "references:"]:
+                        headings.append(heading_text)
+
+    # ---------- Add Table of Contents ----------
+    if headings:
+        doc.add_paragraph("Contents", style="Heading 1")
+        doc.add_paragraph()  # Blank line
+        
+        for index, heading in enumerate(headings, start=1):
+            toc_entry = doc.add_paragraph()
+            toc_entry.paragraph_format.left_indent = DocxInches(0.5)
+            run = toc_entry.add_run(f"{index}. {sanitize_text_for_word(heading)}")
+            run.font.size = DocxPt(11)
+            toc_entry.paragraph_format.space_after = DocxPt(6)
+        
+        doc.add_page_break()
 
     # ---------- Content with Block Types ----------
     references_heading_added = False
@@ -4053,7 +4315,6 @@ def export_to_pdf_edit_content(
     """
     PwC PDF export specifically for Edit Content workflow.
     Uses block type information for proper formatting (title, heading, bullet_item, paragraph).
-    No Table of Contents (TOC removed for edit content exports).
     
     Content should be final_article format: plain text with "\n\n" separators (same as final article generation).
     block_types should match final article generation structure with sequential indices.
@@ -4136,7 +4397,28 @@ def export_to_pdf_edit_content(
     overlay_page = overlay_reader.pages[0]
     template_page.merge_page(overlay_page)
     
-    # ===== STEP 2: Create content pages with block types =====
+    # ===== STEP 2: Extract headings for TOC =====
+    headings = []
+    if block_types:
+        paragraphs = split_blocks(content)
+        block_type_map = {bt.get("index", i): bt for i, bt in enumerate(block_types)}
+        
+        for idx, block in enumerate(paragraphs):
+            block = block.strip()
+            if not block:
+                continue
+            
+            block_info = block_type_map.get(idx)
+            if block_info:
+                block_type = block_info.get("type", "paragraph")
+                if block_type in ["title", "heading"]:
+                    # Remove markdown formatting and number prefixes
+                    heading_text = re.sub(r'^\d+[.)]\s+', '', block).strip()
+                    heading_text = re.sub(r'\*+', '', heading_text).strip()
+                    if heading_text and heading_text.lower() not in ["references", "references:"]:
+                        headings.append(heading_text)
+    
+    # ===== STEP 3: Create content pages with block types =====
     content_buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         content_buffer,
@@ -4177,7 +4459,46 @@ def export_to_pdf_edit_content(
     doc.build(story)
     content_buffer.seek(0)
     
-    # ===== STEP 3: Merge cover + content =====
+    # ===== STEP 4: Create Table of Contents pages (if headings exist) =====
+    toc_pages = []
+    if headings:
+        logger.info(f"Creating Table of Contents with {len(headings)} headings")
+        toc_buffer = io.BytesIO()
+        toc_doc = SimpleDocTemplate(toc_buffer, pagesize=(page_width, page_height), topMargin=1*inch, bottomMargin=1*inch)
+        toc_styles = getSampleStyleSheet()
+        toc_title_style = ParagraphStyle(
+            'TOCTitle',
+            parent=toc_styles['Heading1'],
+            fontSize=24,
+            textColor='#000000',
+            spaceAfter=24,
+            alignment=TA_LEFT,
+            fontName='Helvetica-Bold'
+        )
+        toc_heading_style = ParagraphStyle(
+            'TOCHeading',
+            parent=toc_styles['BodyText'],
+            fontSize=11,
+            textColor='#000000',
+            spaceAfter=12,
+            alignment=TA_LEFT,
+            fontName='Helvetica',
+            leading=16,
+            rightIndent=20
+        )
+        toc_story = []
+        toc_story.append(Paragraph("Contents", toc_title_style))
+        toc_story.append(Spacer(1, 0.2 * inch))
+        for index, heading in enumerate(headings, start=1):
+            # Format and normalize heading text
+            formatted_heading = _format_content_for_pdf(heading)
+            toc_story.append(Paragraph(f"{index}. {formatted_heading}", toc_heading_style))
+        toc_doc.build(toc_story)
+        toc_buffer.seek(0)
+        toc_reader = PdfReader(toc_buffer)
+        toc_pages = [toc_reader.pages[i] for i in range(len(toc_reader.pages))]
+    
+    # ===== STEP 5: Merge cover + ToC + content =====
     content_reader = PdfReader(content_buffer)
     writer = PdfWriter()
     
@@ -4185,7 +4506,12 @@ def export_to_pdf_edit_content(
     writer.add_page(template_page)
     logger.info("Added branded cover page")
     
-    # Add all content pages (Page 2+)
+    # Add the Table of Contents pages (Page 2+)
+    for idx, toc_page in enumerate(toc_pages):
+        writer.add_page(toc_page)
+        logger.info(f"Added Table of Contents page {idx+1}")
+    
+    # Add all content pages (Page 3+ or Page 2+ if no TOC)
     for page_num in range(len(content_reader.pages)):
         logger.info(f"Adding content page {page_num + 1}")
         writer.add_page(content_reader.pages[page_num])
@@ -4199,3 +4525,262 @@ def export_to_pdf_edit_content(
     logger.info(f"PDF export complete: {len(writer.pages)} pages, {len(result_bytes)} bytes")
     
     return result_bytes
+
+# ======================================
+
+def _format_content_for_pdf_mi(text: str) -> str:
+    """
+    Format content for PDF by converting markdown-style formatting to HTML-like tags.
+    Reportlab supports a subset of HTML/XML tags for styling.
+    
+    Converts:
+    - **bold** to <b>bold</b>
+    - *italic* to <i>italic</i>
+    - [text](url) to <a href="url" color="blue">text</a>
+    - https?://... to <a href="url" color="blue">url</a>
+    - Normalizes all Unicode dash variants to standard hyphen for reliable PDF rendering
+    """
+    # First, handle special quotation marks and other problematic characters BEFORE processing HTML
+    # This ensures they are replaced before being wrapped in HTML tags
+    text = text.replace('\u201C', '"')  # Left double quotation mark
+    text = text.replace('\u201D', '"')  # Right double quotation mark
+    text = text.replace('\u2018', "'")  # Left single quotation mark
+    text = text.replace('\u2019', "'")  # Right single quotation mark
+    text = text.replace('\u2026', '...')  # Ellipsis
+    
+    # Normalize all Unicode dash/hyphen variants to standard ASCII hyphen-minus (-)
+    # This prevents ReportLab rendering issues with special Unicode characters
+    # Must be done BEFORE HTML processing to avoid encoding issues
+    dash_variants = [
+        '\u2010',  # Hyphen
+        '\u2011',  # Non-breaking hyphen
+        '\u2012',  # Figure dash
+        '\u2013',  # En dash (–)
+        '\u2014',  # Em dash (—)
+        '\u2015',  # Horizontal bar
+        '\u2212',  # Minus sign
+        '\u058A',  # Armenian hyphen
+        '\u05BE',  # Hebrew maqaf
+        '\u1400',  # Canadian syllabics hyphen
+        '\u1806',  # Mongolian todo soft hyphen
+        '\u2E17',  # Double oblique hyphen
+        '\u30A0',  # Katakana-hiragana double hyphen
+        '\uFE58',  # Small em dash
+        '\uFE63',  # Small hyphen-minus
+        '\uFF0D',  # Fullwidth hyphen-minus
+    ]
+    
+    for dash in dash_variants:
+        text = text.replace(dash, '-')
+    
+    # Convert markdown links [text](url) to <a href="url" color="blue">text</a>
+    text = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', r'<a href="\2" color="blue">\1</a>', text)
+    
+    # Convert plain URLs to clickable links (but not those already inside HTML tags)
+    # Match URLs that are not inside href= attributes or already converted
+    # text = re.sub(r'(?<![="])(?<![a-zA-Z])(?<!href)(https?://[^\s)>\]]+)', r'<a href="\1" color="blue">\1</a>', text)
+    if '<a ' not in text:
+        text = re.sub(
+            r'(https?://[^\s)>\]]+)',
+            r'<a href="\1" color="blue">\1</a>',
+            text
+        )
+    # Convert **bold** to <b>bold</b>
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    
+    # Convert *italic* to <i>italic</i> (but not if it's part of **bold** or at line start for bullets)
+    # Use negative lookbehind/lookahead to avoid double-processing
+    text = re.sub(r'(?<!\*)\*([^\*]+?)\*(?!\*)', r'<i>\1</i>', text)
+    
+    return text
+
+
+
+def export_to_word_pwc_no_toc(
+    content: str,
+    title: str,
+    subtitle: str | None = None
+) -> bytes:
+    # 1. Load PwC template
+    doc = Document(PWC_TEMPLATE_PATH) if os.path.exists(PWC_TEMPLATE_PATH) else Document()
+    _set_paragraph_text_with_breaks(doc.paragraphs[1], sanitize_text_for_word(subtitle or ""))
+
+
+    # _ensure_page_break_after_paragraph(doc.paragraphs[1])
+
+    # 2. Cover page (CLEAN)
+    clean_title = re.sub(r"\*+", "", title).strip()
+    if doc.paragraphs:
+        doc.paragraphs[0].text = clean_title
+
+    # REMOVE subtitle placeholder completely
+    if len(doc.paragraphs) > 1:
+        doc.paragraphs[1].text = ""
+    
+    while len(doc.paragraphs) > 2:
+        p = doc.paragraphs[-1]
+        p._element.getparent().remove(p._element)
+
+    # Single page break after cover
+    doc.add_page_break()
+
+    # 3. Render generated content properly
+    for raw_line in content.split("\n"):
+        raw_line = re.sub(r"\*\*", "", raw_line)   # REMOVE **
+        raw_line = raw_line.replace("*", "")       # REMOVE *
+        # raw_line = re.sub(r"^#+\s*", "", raw_line) # REMOVE ###
+
+        line = raw_line.strip()
+        logger.info(f"Processing line for Word export: {line}")
+        # Skip template style explanation text completely
+        # REMOVE PwC style explanation content completely
+        # REMOVE ALL PwC template / style description junk (pages 2–4 root cause)
+        if (
+            "style:" in line.lower()
+            or line.lower().endswith("style")
+            or line.lower() in {
+                "heading 1 style",
+                "heading 2 style",
+                "heading 3 style",
+                "heading 4 style",
+                "chart header",
+                "table header",
+                "table text",
+                "caption",
+                "quote",
+                "hyperlink followed hyperlink",
+                "“",
+                "”",
+            }
+            or line.startswith(("•", "–", "1.", "A.", "a."))
+        ):
+            continue
+
+        if not line:
+            continue  # avoid empty paragraphs → extra pages
+        line = re.sub(r"^#+\s*", "", line)
+        # ---------- Headings ----------
+        # if line.startswith("### "):
+        #     p = doc.add_heading(line[4:].strip(), level=3)
+
+        # elif line.startswith("## "):
+        #     p = doc.add_heading(line[3:].strip(), level=2)
+
+        # elif line.startswith("# "):
+        #     p = doc.add_heading(line[2:].strip(), level=1)
+        if raw_line.lstrip().startswith("###"):
+            p = doc.add_heading(line, level=3)
+            for run in p.runs:
+                run.bold = True
+
+        elif raw_line.lstrip().startswith("##"):
+            p = doc.add_heading(line, level=2)
+            for run in p.runs:
+                run.bold = True
+
+        elif raw_line.lstrip().startswith("#"):
+            p = doc.add_heading(line, level=1)
+            for run in p.runs:
+                run.bold = True
+
+        # ---------- Bullets ----------
+        # elif line.startswith("- ") or line.startswith("* "):
+        #     text = line[2:].strip()
+        #     p = doc.add_paragraph(style="List Bullet")
+
+        #     # Bold bullet heading if present
+        #     if "**" in text:
+        #         parts = re.split(r"\*\*(.*?)\*\*", text)
+        #         for i, part in enumerate(parts):
+        #             run = p.add_run(part)
+        #             if i % 2 == 1:
+        #                 run.bold = True
+        #     else:
+        #         p.add_run(text)
+        # elif raw_line.strip().startswith(("- ", "* ")):
+        #     text = raw_line.strip()[2:].strip()
+        #     p = doc.add_paragraph(style="List Bullet")
+
+        #     parts = re.split(r"\*\*(.*?)\*\*", text)
+        #     for i, part in enumerate(parts):
+        #         run = p.add_run(part)
+        #         if i % 2 == 1:
+        #             run.bold = True
+
+        elif raw_line.lstrip().startswith(("-", "*")):
+            text = raw_line.lstrip()[1:].strip()
+            p = doc.add_paragraph(style="List Bullet")
+
+            if ":" in text:
+                head, rest = text.split(":", 1)
+                r1 = p.add_run(head.strip() + ": ")
+                r1.bold = True
+                p.add_run(rest.strip())
+            else:
+                r1 = p.add_run(text)
+                r1.bold = True
+
+
+        # ---------- Bold paragraphs ----------
+        # elif line.startswith("**") and line.endswith("**"):
+        #     p = doc.add_paragraph()
+        #     run = p.add_run(line.strip("*"))
+        #     run.bold = True
+        #     p.style = "Body Text"
+
+        # ---------- Normal body text ----------
+        else:
+            clean = re.sub(r"\*\*(.*?)\*\*", r"\1", line)
+            p = doc.add_paragraph(clean)
+            p.style = "Body Text"
+
+    # 4. Save exactly like before
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    return _fix_docx_encoding(buffer.getvalue())
+
+# def export_to_word_pwc_no_toc(
+#     content: str,
+#     title: str,
+#     subtitle: str | None = None
+# ) -> bytes:
+#     # 1. Load template
+#     doc = Document(PWC_TEMPLATE_PATH) if os.path.exists(PWC_TEMPLATE_PATH) else Document()
+
+#     # 2. Cover page
+#     clean_title = re.sub(r"\*+", "", title).strip()
+#     if doc.paragraphs:
+#         doc.paragraphs[0].text = clean_title
+#     if subtitle and len(doc.paragraphs) > 1:
+#         doc.paragraphs[1].text = subtitle
+
+#     doc.add_page_break()
+
+#     # 3. Add generated response directly
+#     for line in content.split("\n"):
+#         line = line.strip()
+#         if not line:
+#             doc.add_paragraph()
+#             continue
+
+#         # Headings
+#         if line.startswith("### "):
+#             doc.add_heading(line[4:], level=3)
+#         elif line.startswith("## "):
+#             doc.add_heading(line[3:], level=2)
+#         elif line.startswith("# "):
+#             doc.add_heading(line[2:], level=1)
+#         # Bullets
+#         elif line.startswith("- ") or line.startswith("* "):
+#             doc.add_paragraph(line[2:], style="List Bullet")
+#         else:
+#             doc.add_paragraph(line)
+
+#     # 4. Save to memory (same as old behavior)
+#     buffer = io.BytesIO()
+#     doc.save(buffer)
+#     buffer.seek(0)
+
+#     return _fix_docx_encoding(buffer.getvalue())
