@@ -196,6 +196,30 @@ def _detect_list_type(line: str, level: int = 0) -> tuple[str, int]:
     
     return 'none', 0
 
+def _get_next_abstract_num_id(numbering_part):
+    """Get the next available abstract numbering ID by finding the maximum existing ID."""
+    max_id = 0
+    for abstract_num in numbering_part._numbering.findall(qn('w:abstractNum')):
+        abstract_num_id_attr = abstract_num.get(qn('w:abstractNumId'))
+        if abstract_num_id_attr:
+            try:
+                max_id = max(max_id, int(abstract_num_id_attr))
+            except (ValueError, TypeError):
+                pass
+    return max_id + 1
+
+def _get_next_num_id(numbering_part):
+    """Get the next available numbering ID by finding the maximum existing ID."""
+    max_id = 0
+    for num in numbering_part._numbering.findall(qn('w:num')):
+        num_id_attr = num.get(qn('w:numId'))
+        if num_id_attr:
+            try:
+                max_id = max(max_id, int(num_id_attr))
+            except (ValueError, TypeError):
+                pass
+    return max_id + 1
+
 def _create_new_numbering_instance(doc: Document, list_type: str, level: int = 0):
     """
     Create a new numbering instance for Word lists to reset numbering.
@@ -204,8 +228,7 @@ def _create_new_numbering_instance(doc: Document, list_type: str, level: int = 0
     numbering_part = doc.part.numbering_part
     
     # Create a new abstract numbering definition
-    abstract_num_id = numbering_part._next_abstract_num_id
-    numbering_part._next_abstract_num_id += 1
+    abstract_num_id = _get_next_abstract_num_id(numbering_part)
     
     abstract_num = OxmlElement("w:abstractNum")
     abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
@@ -243,8 +266,7 @@ def _create_new_numbering_instance(doc: Document, list_type: str, level: int = 0
     numbering_part._numbering.append(abstract_num)
     
     # Create a new numbering instance
-    num_id = numbering_part._next_num_id
-    numbering_part._next_num_id += 1
+    num_id = _get_next_num_id(numbering_part)
     
     num = OxmlElement("w:num")
     num.set(qn("w:numId"), str(num_id))
@@ -257,13 +279,18 @@ def _create_new_numbering_instance(doc: Document, list_type: str, level: int = 0
     
     return num_id
 
-def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str, reset_numbering: bool = False):
+def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str, reset_numbering: bool = False, force_bullet_style: bool = False):
     """
     Add a list of items to Word document with appropriate style based on type and level.
     If reset_numbering is True, creates a new numbering instance to reset numbering to 1.
+    If force_bullet_style is True, all lists use bullet icons regardless of list_type (for edit content export).
     """
     if not list_items:
         return
+    
+    # If forcing bullet style, treat all lists as bullets (for edit content export)
+    if force_bullet_style:
+        list_type = 'bullet'
     
     # Create new numbering instance if reset is needed (for numbered/alphabetical lists only, not bullets)
     num_id = None
@@ -320,9 +347,15 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
         # Apply Body Text style configuration
         _apply_body_text_style_word(para)
         
-        # Remove number/letter prefix if present (Word will auto-number)
+        # Remove number/letter/bullet prefix if present
+        # If force_bullet_style is True, remove all prefixes (numbered/alphabetical/bullet) to show only bullet icons
         clean_content = content
-        if list_type == 'number':
+        if force_bullet_style:
+            # Remove any number, letter, or bullet prefix when forcing bullet style
+            clean_content = re.sub(r'^\d+\.\s+', '', content.strip())
+            clean_content = re.sub(r'^[A-Za-z]\.\s+', '', clean_content.strip())
+            clean_content = re.sub(r'^[•\-\*]\s+', '', clean_content.strip())
+        elif list_type == 'number':
             clean_content = re.sub(r'^\d+\.\s+', '', content.strip())
         elif list_type in ['alpha_upper', 'alpha_lower']:
             clean_content = re.sub(r'^[A-Za-z]\.\s+', '', content.strip())
@@ -1635,8 +1668,7 @@ def _add_numbered_paragraph(doc: Document, text: str):
     numbering_part = doc.part.numbering_part
 
     # Create a new abstract numbering definition
-    abstract_num_id = numbering_part._next_abstract_num_id
-    numbering_part._next_abstract_num_id += 1
+    abstract_num_id = _get_next_abstract_num_id(numbering_part)
 
     abstract_num = OxmlElement("w:abstractNum")
     abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
@@ -1660,8 +1692,7 @@ def _add_numbered_paragraph(doc: Document, text: str):
     numbering_part._numbering.append(abstract_num)
 
     # Create a new numbering instance
-    num_id = numbering_part._next_num_id
-    numbering_part._next_num_id += 1
+    num_id = _get_next_num_id(numbering_part)
 
     num = OxmlElement("w:num")
     num.set(qn("w:numId"), str(num_id))
@@ -3694,7 +3725,7 @@ def parse_bullet(text: str) -> dict:
     
     return result
 
-def _format_content_with_block_types_word(doc: Document, content: str, block_types: list[dict] | None = None):
+def _format_content_with_block_types_word(doc: Document, content: str, block_types: list[dict] | None = None, use_bullet_icons_only: bool = False):
     """
     Format content in Word document using block type information.
     Applies formatting similar to frontend formatFinalArticleWithBlockTypes.
@@ -3703,6 +3734,8 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
     Content should be final_article format: plain text with "\n\n" separators.
     Uses split_blocks() to split content (same as final article processing).
     block_types should match final article generation structure with sequential indices.
+    
+    If use_bullet_icons_only is True, all lists (numbered, alphabetical, or bullet) use bullet icons (for edit content export).
     """
     if not block_types:
         # Fallback to default formatting
@@ -3903,7 +3936,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
         ordered_list = _order_list_items(current_list)
         # Check if this list should reset numbering (marked when started after heading)
         should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
-        _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=should_reset)
+        _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=should_reset, force_bullet_style=use_bullet_icons_only)
 
 def export_to_word_edit_content(
     content: str,
@@ -3915,7 +3948,8 @@ def export_to_word_edit_content(
     """
     PwC Word export specifically for Edit Content workflow.
     Uses block type information for proper formatting (title, heading, bullet_item, paragraph).
-    Includes Table of Contents with numbered headings.
+    All lists (numbered, alphabetical, or bullet) are rendered with bullet icons (same as PDF).
+    No Table of Contents is generated for edit content export.
     
     Content should be final_article format: plain text with "\n\n" separators (same as final article generation).
     block_types should match final article generation structure with sequential indices.
@@ -3969,48 +4003,6 @@ def export_to_word_edit_content(
 
     _ensure_page_break_after_paragraph(doc.paragraphs[1])
 
-    # ---------- Extract headings for TOC ----------
-    headings = []
-    if block_types:
-        paragraphs = split_blocks(content)
-        block_type_map = {bt.get("index", i): bt for i, bt in enumerate(block_types)}
-        
-        # STRICT MODE: Check alignment
-        if len(block_types) < len(paragraphs):
-            logger.warning(
-                f"Block type mismatch in TOC extraction: {len(block_types)} block_types, "
-                f"{len(paragraphs)} blocks. Some headings may be missed."
-            )
-        
-        for idx, block in enumerate(paragraphs):
-            block = block.strip()
-            if not block:
-                continue
-            
-            block_info = block_type_map.get(idx)
-            if block_info:
-                block_type = block_info.get("type", "paragraph")
-                if block_type in ["title", "heading"]:
-                    # Remove markdown formatting and number prefixes
-                    heading_text = re.sub(r'^\d+[.)]\s+', '', block).strip()
-                    heading_text = re.sub(r'\*+', '', heading_text).strip()
-                    if heading_text and heading_text.lower() not in ["references", "references:"]:
-                        headings.append(heading_text)
-
-    # ---------- Add Table of Contents ----------
-    if headings:
-        doc.add_paragraph("Contents", style="Heading 1")
-        doc.add_paragraph()  # Blank line
-        
-        for index, heading in enumerate(headings, start=1):
-            toc_entry = doc.add_paragraph()
-            toc_entry.paragraph_format.left_indent = DocxInches(0.5)
-            run = toc_entry.add_run(f"{index}. {sanitize_text_for_word(heading)}")
-            run.font.size = DocxPt(11)
-            toc_entry.paragraph_format.space_after = DocxPt(6)
-        
-        doc.add_page_break()
-
     # ---------- Content with Block Types ----------
     references_heading_added = False
     
@@ -4020,15 +4012,15 @@ def export_to_word_edit_content(
         parts = re.split(r'\n\n(?:references|references:)\s*\n\n', content, flags=re.IGNORECASE)
         main_content = parts[0] if parts else content
         
-        _format_content_with_block_types_word(doc, main_content, block_types)
+        _format_content_with_block_types_word(doc, main_content, block_types, use_bullet_icons_only=True)
         
         if len(parts) > 1:
             doc.add_paragraph("References", style="Heading 2")
             references_heading_added = True
             # Format references section
-            _format_content_with_block_types_word(doc, parts[1], None)
+            _format_content_with_block_types_word(doc, parts[1], None, use_bullet_icons_only=True)
     else:
-        _format_content_with_block_types_word(doc, content, block_types)
+        _format_content_with_block_types_word(doc, content, block_types, use_bullet_icons_only=True)
 
     # ---------- References ----------
     if references:
@@ -4315,6 +4307,8 @@ def export_to_pdf_edit_content(
     """
     PwC PDF export specifically for Edit Content workflow.
     Uses block type information for proper formatting (title, heading, bullet_item, paragraph).
+    All lists (numbered, alphabetical, or bullet) are rendered with bullet icons.
+    No Table of Contents is generated for edit content export.
     
     Content should be final_article format: plain text with "\n\n" separators (same as final article generation).
     block_types should match final article generation structure with sequential indices.
@@ -4397,28 +4391,7 @@ def export_to_pdf_edit_content(
     overlay_page = overlay_reader.pages[0]
     template_page.merge_page(overlay_page)
     
-    # ===== STEP 2: Extract headings for TOC =====
-    headings = []
-    if block_types:
-        paragraphs = split_blocks(content)
-        block_type_map = {bt.get("index", i): bt for i, bt in enumerate(block_types)}
-        
-        for idx, block in enumerate(paragraphs):
-            block = block.strip()
-            if not block:
-                continue
-            
-            block_info = block_type_map.get(idx)
-            if block_info:
-                block_type = block_info.get("type", "paragraph")
-                if block_type in ["title", "heading"]:
-                    # Remove markdown formatting and number prefixes
-                    heading_text = re.sub(r'^\d+[.)]\s+', '', block).strip()
-                    heading_text = re.sub(r'\*+', '', heading_text).strip()
-                    if heading_text and heading_text.lower() not in ["references", "references:"]:
-                        headings.append(heading_text)
-    
-    # ===== STEP 3: Create content pages with block types =====
+    # ===== STEP 2: Create content pages with block types =====
     content_buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         content_buffer,
@@ -4459,46 +4432,7 @@ def export_to_pdf_edit_content(
     doc.build(story)
     content_buffer.seek(0)
     
-    # ===== STEP 4: Create Table of Contents pages (if headings exist) =====
-    toc_pages = []
-    if headings:
-        logger.info(f"Creating Table of Contents with {len(headings)} headings")
-        toc_buffer = io.BytesIO()
-        toc_doc = SimpleDocTemplate(toc_buffer, pagesize=(page_width, page_height), topMargin=1*inch, bottomMargin=1*inch)
-        toc_styles = getSampleStyleSheet()
-        toc_title_style = ParagraphStyle(
-            'TOCTitle',
-            parent=toc_styles['Heading1'],
-            fontSize=24,
-            textColor='#000000',
-            spaceAfter=24,
-            alignment=TA_LEFT,
-            fontName='Helvetica-Bold'
-        )
-        toc_heading_style = ParagraphStyle(
-            'TOCHeading',
-            parent=toc_styles['BodyText'],
-            fontSize=11,
-            textColor='#000000',
-            spaceAfter=12,
-            alignment=TA_LEFT,
-            fontName='Helvetica',
-            leading=16,
-            rightIndent=20
-        )
-        toc_story = []
-        toc_story.append(Paragraph("Contents", toc_title_style))
-        toc_story.append(Spacer(1, 0.2 * inch))
-        for index, heading in enumerate(headings, start=1):
-            # Format and normalize heading text
-            formatted_heading = _format_content_for_pdf(heading)
-            toc_story.append(Paragraph(f"{index}. {formatted_heading}", toc_heading_style))
-        toc_doc.build(toc_story)
-        toc_buffer.seek(0)
-        toc_reader = PdfReader(toc_buffer)
-        toc_pages = [toc_reader.pages[i] for i in range(len(toc_reader.pages))]
-    
-    # ===== STEP 5: Merge cover + ToC + content =====
+    # ===== STEP 3: Merge cover + content =====
     content_reader = PdfReader(content_buffer)
     writer = PdfWriter()
     
@@ -4506,12 +4440,7 @@ def export_to_pdf_edit_content(
     writer.add_page(template_page)
     logger.info("Added branded cover page")
     
-    # Add the Table of Contents pages (Page 2+)
-    for idx, toc_page in enumerate(toc_pages):
-        writer.add_page(toc_page)
-        logger.info(f"Added Table of Contents page {idx+1}")
-    
-    # Add all content pages (Page 3+ or Page 2+ if no TOC)
+    # Add all content pages (Page 2+)
     for page_num in range(len(content_reader.pages)):
         logger.info(f"Adding content page {page_num + 1}")
         writer.add_page(content_reader.pages[page_num])
