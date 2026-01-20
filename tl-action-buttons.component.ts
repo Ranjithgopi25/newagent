@@ -1635,10 +1635,21 @@ export class ChatEditWorkflowService {
     this.isGeneratingNextEditorSubject.next(true);
 
     try {
-      const decisions = currentParagraphEdits.map(para => ({
-        index: para.index,
-        approved: para.approved === true
-      }));
+      // Collect decisions - check for approved editorial feedback (same logic as generateFinalArticle)
+      // IMPORTANT: If paragraph has approved editorial feedback, set approved=true even if paragraph-level approved is null
+      // This ensures backend uses edited content when moving to next editor
+      const decisions = currentParagraphEdits.map(para => {
+        // Check if paragraph has any approved editorial feedback
+        const hasApprovedFeedback = this.hasApprovedEditorialFeedback(para);
+        // Paragraph is approved if: explicitly approved OR has approved feedback items
+        // This matches generateFinalArticle() logic and ensures backend uses edited content
+        const isApproved = para.approved === true || (para.approved !== false && hasApprovedFeedback);
+        
+        return {
+          index: para.index,
+          approved: isApproved
+        };
+      });
 
       const paragraph_edits_data = currentParagraphEdits.map(para => ({
         index: para.index,
