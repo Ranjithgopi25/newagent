@@ -38,7 +38,7 @@ type ParagraphFeedback = ParagraphEdit & {
       }
     
       <!-- Single Approve All / Reject All buttons (applies to feedback and paragraphs) -->
-      @if (paragraphsForReview && paragraphsForReview.length > 0 && !showFinalOutput && !hasNoParagraphFeedback) {
+      @if (paragraphsForReview && paragraphsForReview.length > 0 && !showFinalOutput && !hasNoParagraphFeedback && !hasNoParagraphs) {
         <div class="bulk-actions">
           <button
             type="button"
@@ -61,16 +61,30 @@ type ParagraphFeedback = ParagraphEdit & {
       
     
       <div class="paragraph-edits-container">
-        @if (hasNoParagraphFeedback && !showFinalOutput) {
+        @if (hasNoParagraphs && !showFinalOutput) {
+          <div class="paragraph-no-feedback">
+            <p>
+              There are no paragraphs to review from
+              <strong>{{ getEditorDisplayName(currentEditor) }}</strong>.
+            </p>
+          </div>
+        } @else if (hasNoParagraphFeedback && !showFinalOutput) {
           <div class="paragraph-no-feedback">
             <p>
               There are no feedback changes from
               <strong>{{ getEditorDisplayName(currentEditor) }}</strong>.
             </p>
           </div>
+        } @else if (allParagraphsAutoApproved && !showFinalOutput) {
+          <div class="paragraph-no-feedback">
+            <p>
+              All paragraphs were auto-approved and no manual review is required from
+              <strong>{{ getEditorDisplayName(currentEditor) }}</strong>.
+            </p>
+          </div>
         }
         <!-- Show paragraph edits (previous editor stays visible while loading next editor) -->
-        @if (paragraphsForReview.length > 0 && !hasNoParagraphFeedback) {
+        @if (paragraphsForReview.length > 0 && !hasNoParagraphFeedback && !hasNoParagraphs) {
           @for (paragraph of paragraphsForReview; track paragraph) {
             <div class="paragraph-edit-item"
               [ngClass]="{ 'approved': paragraph.approved === true, 'declined': paragraph.approved === false }">
@@ -176,7 +190,7 @@ type ParagraphFeedback = ParagraphEdit & {
               }
             </div>
           }
-        } @else {
+        } @else if (!hasNoParagraphs && !hasNoParagraphFeedback && allParagraphsAutoApproved) {
           <div class="paragraph-edit-item auto-approved-note">
             <p class="paragraph-instructions">All paragraphs were auto-approved and no manual review is required.</p>
           </div>
@@ -247,20 +261,20 @@ type ParagraphFeedback = ParagraphEdit & {
                     'upcoming': i > (currentEditorIndex ?? 0)
                   }"
                 >
-                  <div class="timeline-marker" [ngClass]="{ 'blink-marker': i === (currentEditorIndex ?? 0) && isEditorLoading }">
+                  <div class="timeline-marker" [ngClass]="{ 'blink-marker': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating) }">
                     @if (i < (currentEditorIndex ?? 0)) {
                       ✓
                     } @else {
-                      <span [ngClass]="{ 'blink-number': i === (currentEditorIndex ?? 0) && isEditorLoading }">{{ i + 1 }}</span>
+                      <span [ngClass]="{ 'blink-number': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating) }">{{ i + 1 }}</span>
                     }
                   </div>
                   <div class="timeline-editor-name">
                     {{ getEditorDisplayName(editorId) }}
                   </div>
-                  <div class="timeline-status" [ngClass]="{ 'loading-status': i === (currentEditorIndex ?? 0) && isEditorLoading }">
+                  <div class="timeline-status" [ngClass]="{ 'loading-status': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating) }">
                     @if (i < (currentEditorIndex ?? 0)) { Completed }
                     @if (i === (currentEditorIndex ?? 0)) {
-                      @if (isEditorLoading) {
+                      @if (isEditorLoading || isGenerating) {
                         <span class="blink-animation">In Progress</span>
                       } @else {
                         Review Pending
@@ -1187,6 +1201,12 @@ type ParagraphFeedback = ParagraphEdit & {
     .timeline-marker.blink-marker {
       animation: blink-marker 1.2s ease-in-out infinite !important;
       box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.4) !important;
+      background: #1976d2 !important;
+    }
+
+    .timeline-item.active .timeline-marker.blink-marker {
+      animation: blink-marker 1.2s ease-in-out infinite !important;
+      box-shadow: 0 0 0 5px rgba(25, 118, 210, 0.6) !important;
     }
 
     .blink-number {
@@ -1586,7 +1606,7 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
   @Input() paragraphEdits: ParagraphEdit[] = [];
   @Input() showFinalOutput: boolean = false;
   @Input() isGeneratingFinal: boolean = false;
-    hasNoParagraphFeedback: boolean = false;
+  @Input() hasNoParagraphFeedback: boolean = false;
   // Sequential workflow inputs
   @Input() threadId?: string | null;
   @Input() currentEditor?: string | null;
@@ -1713,6 +1733,17 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
     return this.paragraphEdits
       .filter(p => p.autoApproved !== true)
       .sort((a, b) => a.index - b.index);
+  }
+
+  /** Check if there are no paragraphs at all (empty array) */
+  get hasNoParagraphs(): boolean {
+    return !this.paragraphEdits || this.paragraphEdits.length === 0;
+  }
+
+  /** Check if all paragraphs are auto-approved (no review needed) */
+  get allParagraphsAutoApproved(): boolean {
+    return this.paragraphEdits.length > 0 && 
+           this.paragraphEdits.every(p => p.autoApproved === true);
   }
 
   // Initialize displayOriginal/displayEdited with highlights when input changes
