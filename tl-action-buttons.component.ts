@@ -1,3 +1,4 @@
+
 import copy
 from csv import writer
 from reportlab.lib.pagesizes import letter
@@ -203,28 +204,9 @@ def _create_new_numbering_instance(doc: Document, list_type: str, level: int = 0
     """
     numbering_part = doc.part.numbering_part
     
-    # Calculate next abstract_num_id from existing numbering definitions
-    # Find the maximum existing abstractNumId and add 1
-    abstract_num_id = 0
-    if hasattr(numbering_part, '_next_abstract_num_id'):
-        abstract_num_id = numbering_part._next_abstract_num_id
-        numbering_part._next_abstract_num_id += 1
-    else:
-        # Calculate from existing numbering
-        # Use XPath to find all abstractNum elements
-        existing_abstract_nums = numbering_part._numbering.xpath('.//w:abstractNum')
-        if existing_abstract_nums:
-            max_id = 0
-            for abstract_num in existing_abstract_nums:
-                num_id_attr = abstract_num.get(qn('w:abstractNumId'))
-                if num_id_attr:
-                    try:
-                        max_id = max(max_id, int(num_id_attr))
-                    except (ValueError, TypeError):
-                        pass
-            abstract_num_id = max_id + 1
-        else:
-            abstract_num_id = 0
+    # Create a new abstract numbering definition
+    abstract_num_id = numbering_part._next_abstract_num_id
+    numbering_part._next_abstract_num_id += 1
     
     abstract_num = OxmlElement("w:abstractNum")
     abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
@@ -261,27 +243,9 @@ def _create_new_numbering_instance(doc: Document, list_type: str, level: int = 0
     abstract_num.append(lvl)
     numbering_part._numbering.append(abstract_num)
     
-    # Calculate next num_id from existing numbering instances
-    # Find the maximum existing numId and add 1
-    if hasattr(numbering_part, '_next_num_id'):
-        num_id = numbering_part._next_num_id
-        numbering_part._next_num_id += 1
-    else:
-        # Calculate from existing numbering
-        # Use XPath to find all num elements
-        existing_nums = numbering_part._numbering.xpath('.//w:num')
-        if existing_nums:
-            max_id = 0
-            for num in existing_nums:
-                num_id_attr = num.get(qn('w:numId'))
-                if num_id_attr:
-                    try:
-                        max_id = max(max_id, int(num_id_attr))
-                    except (ValueError, TypeError):
-                        pass
-            num_id = max_id + 1
-        else:
-            num_id = 1
+    # Create a new numbering instance
+    num_id = numbering_part._next_num_id
+    numbering_part._next_num_id += 1
     
     num = OxmlElement("w:num")
     num.set(qn("w:numId"), str(num_id))
@@ -298,19 +262,13 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
     """
     Add a list of items to Word document with appropriate style based on type and level.
     If reset_numbering is True, creates a new numbering instance to reset numbering to 1.
-    For numbered/alphabetical lists, ALWAYS creates a new numbering instance to ensure proper reset.
     """
     if not list_items:
         return
     
-    # Create new numbering instance if reset is needed OR if it's a numbered/alphabetical list
-    # This ensures each list after a heading gets its own numbering instance
+    # Create new numbering instance if reset is needed (for numbered/alphabetical lists)
     num_id = None
     if reset_numbering and list_type in ['number', 'alpha_upper', 'alpha_lower']:
-        num_id = _create_new_numbering_instance(doc, list_type, 0)
-    elif list_type in ['number', 'alpha_upper', 'alpha_lower']:
-        # For numbered/alphabetical lists, always create a new numbering instance
-        # This prevents continuation from previous lists
         num_id = _create_new_numbering_instance(doc, list_type, 0)
     
     for item in list_items:
@@ -396,8 +354,9 @@ def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_s
     
     # Create list items with manual numbering/lettering for numbered and alphabetical lists
     pdf_list_items = []
+    counter = start_from
     
-    for idx, item in enumerate(list_items):
+    for item in list_items:
         content = item.get('content', '')
         level = item.get('level', 0)
         parsed = item.get('parsed', parse_bullet(content))
@@ -420,21 +379,20 @@ def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_s
             formatted_text = _format_content_for_pdf(clean_content)
         
         # Manually add number/letter prefix for numbered and alphabetical lists
-        # Use sequential numbering starting from start_from
         if list_type == 'number':
-            # Prepend number: "1. ", "2. ", etc. (sequential from start_from)
-            current_num = start_from + idx
-            formatted_text = f"{current_num}. {formatted_text}"
+            # Prepend number: "1. ", "2. ", etc.
+            formatted_text = f"{counter}. {formatted_text}"
+            counter += 1
         elif list_type == 'alpha_upper':
-            # Prepend uppercase letter: "A. ", "B. ", etc. (sequential from start_from)
-            letter_index = (start_from + idx - 1) % 26
-            letter = chr(ord('A') + letter_index)
+            # Prepend uppercase letter: "A. ", "B. ", etc.
+            letter = chr(ord('A') + (counter - 1) % 26)
             formatted_text = f"{letter}. {formatted_text}"
+            counter += 1
         elif list_type == 'alpha_lower':
-            # Prepend lowercase letter: "a. ", "b. ", etc. (sequential from start_from)
-            letter_index = (start_from + idx - 1) % 26
-            letter = chr(ord('a') + letter_index)
+            # Prepend lowercase letter: "a. ", "b. ", etc.
+            letter = chr(ord('a') + (counter - 1) % 26)
             formatted_text = f"{letter}. {formatted_text}"
+            counter += 1
         
         pdf_list_items.append(ListItem(Paragraph(formatted_text, body_style)))
     
@@ -1696,26 +1654,9 @@ def _add_numbered_paragraph(doc: Document, text: str):
     """
     numbering_part = doc.part.numbering_part
 
-    # Calculate next abstract_num_id from existing numbering definitions
-    abstract_num_id = 0
-    if hasattr(numbering_part, '_next_abstract_num_id'):
-        abstract_num_id = numbering_part._next_abstract_num_id
-        numbering_part._next_abstract_num_id += 1
-    else:
-        # Calculate from existing numbering
-        existing_abstract_nums = numbering_part._numbering.xpath('.//w:abstractNum')
-        if existing_abstract_nums:
-            max_id = 0
-            for abstract_num in existing_abstract_nums:
-                num_id_attr = abstract_num.get(qn('w:abstractNumId'))
-                if num_id_attr:
-                    try:
-                        max_id = max(max_id, int(num_id_attr))
-                    except (ValueError, TypeError):
-                        pass
-            abstract_num_id = max_id + 1
-        else:
-            abstract_num_id = 0
+    # Create a new abstract numbering definition
+    abstract_num_id = numbering_part._next_abstract_num_id
+    numbering_part._next_abstract_num_id += 1
 
     abstract_num = OxmlElement("w:abstractNum")
     abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
@@ -1738,25 +1679,9 @@ def _add_numbered_paragraph(doc: Document, text: str):
     abstract_num.append(lvl)
     numbering_part._numbering.append(abstract_num)
 
-    # Calculate next num_id from existing numbering instances
-    if hasattr(numbering_part, '_next_num_id'):
-        num_id = numbering_part._next_num_id
-        numbering_part._next_num_id += 1
-    else:
-        # Calculate from existing numbering
-        existing_nums = numbering_part._numbering.xpath('.//w:num')
-        if existing_nums:
-            max_id = 0
-            for num in existing_nums:
-                num_id_attr = num.get(qn('w:numId'))
-                if num_id_attr:
-                    try:
-                        max_id = max(max_id, int(num_id_attr))
-                    except (ValueError, TypeError):
-                        pass
-            num_id = max_id + 1
-        else:
-            num_id = 1
+    # Create a new numbering instance
+    num_id = numbering_part._next_num_id
+    numbering_part._next_num_id += 1
 
     num = OxmlElement("w:num")
     num.set(qn("w:numId"), str(num_id))
@@ -3571,12 +3496,8 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
         
         # Process list items: detect type and preserve original order
         # Check if this is a list item (bullet, number, or alpha)
+        # Always detect from content, even if block_type says "bullet_item"
         list_type, detected_level = _detect_list_type(block, level)
-        
-        # If block_type is "bullet_item", ALWAYS treat as bullet (use bullet icons)
-        # This ensures bullet items with numbers use bullet icons instead of numbers
-        if block_type == "bullet_item":
-            list_type = 'bullet'  # Force bullet type for bullet_item block_type
         
         # Use level from block_types first, fallback to detected level
         final_level = level if level > 0 else detected_level
@@ -3699,7 +3620,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
     # Close any remaining list
     if current_list:
         # Order list if needed (for numbered/alphabetical)
-        ordered_list = _order_list_items(current_list, start_from=1)
+        ordered_list = _order_list_items(current_list)
         # Check if this list should reset numbering (marked when started after heading)
         should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
         _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=should_reset)
@@ -3974,12 +3895,8 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
             continue
         
         # Process list items: detect type and preserve original order (same as Word)
+        # Always detect from content, even if block_type says "bullet_item"
         list_type, detected_level = _detect_list_type(block, level)
-        
-        # If block_type is "bullet_item", ALWAYS treat as bullet (use bullet icons)
-        # This ensures bullet items with numbers use bullet icons instead of numbers
-        if block_type == "bullet_item":
-            list_type = 'bullet'  # Force bullet type for bullet_item block_type
         
         # Use level from block_types first, fallback to detected level
         final_level = level if level > 0 else detected_level
@@ -4023,13 +3940,8 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
             list_type = block_info.get('list_type', 'bullet')
             
             # Reset numbering if previous block was a heading
-            reset_numbering = (prev_block_type == 'heading')
-            
-            # If previous block was heading, close current list (if any) and start new one with reset
-            if reset_numbering and current_list:
-                ordered_list = _order_list_items(current_list, start_from=1)
-                _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=1)
-                current_list = []
+            if prev_block_type == 'heading':
+                list_counter[list_type] = 0
             
             # Check if we should start a new list (different type or level)
             if current_list:
@@ -4037,28 +3949,24 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                 if prev_list_type != list_type or first_item_level != level:
                     # Close current list and start new one
                     # Order list if needed (for numbered/alphabetical)
-                    ordered_list = _order_list_items(current_list, start_from=1)
-                    _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=1)
+                    ordered_list = _order_list_items(current_list)
+                    _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block)
                     current_list = []
+                    list_counter[prev_list_type] = 0  # Reset counter for new list
             
             # Add to current list
             current_list.append(block_info)
-            # Mark if this list should reset numbering (after heading)
-            if reset_numbering and len(current_list) == 1:
-                current_list[0]['_reset_numbering'] = True
             prev_list_type = list_type
             prev_block_type = 'list_item'
         else:
             # Close any open list before processing non-list block
             if current_list:
                 # Order list if needed (for numbered/alphabetical)
-                # Check if this list should reset numbering (marked when started after heading)
-                should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
-                start_from_val = 1 if should_reset or prev_block_type == 'heading' else 1
-                ordered_list = _order_list_items(current_list, start_from=start_from_val)
-                _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=start_from_val)
+                ordered_list = _order_list_items(current_list)
+                _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block)
                 current_list = []
                 prev_list_type = None
+                list_counter = {}  # Reset all counters
             
             # Process non-bullet blocks
             # Title blocks already skipped in first pass, so they won't reach here
