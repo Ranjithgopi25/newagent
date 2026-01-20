@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { ParagraphEdit } from '../../../../core/models/message.model';
 import { allParagraphsDecided } from '../../../../core/utils/paragraph-edit.utils';
 import { EditorialFeedbackItem } from '../../../../core/utils/edit-content.utils';
+import { EditorProgressItem } from '../../editor-progress/editor-progress.component';
 
 type ParagraphFeedback = ParagraphEdit & {
   original: string;
@@ -200,42 +201,49 @@ type ParagraphFeedback = ParagraphEdit & {
           @if ((totalEditors ?? 0) > 0) {
             <div class="editor-timeline horizontal">
               @for (step of editorSteps; track step; let i = $index; let last = $last) {
-                <div
-                  class="timeline-item"
-                  [ngClass]="{
-                    'completed': i < (currentEditorIndex ?? 0),
-                    'active': i === (currentEditorIndex ?? 0),
-                    'upcoming': i > (currentEditorIndex ?? 0)
-                  }"
-                >
-                  <div class="timeline-marker">
-                    @if (i < (currentEditorIndex ?? 0)) {
-                      ✓
-                    } @else {
-                      {{ i + 1 }}
-                    }
+                @if (editorProgressList[i]) {
+                  <div
+                    class="timeline-item"
+                    [ngClass]="{
+                      'completed': editorProgressList[i].status === 'completed',
+                      'active': editorProgressList[i].status === 'processing' || editorProgressList[i].status === 'review-pending',
+                      'upcoming': editorProgressList[i].status === 'pending'
+                    }"
+                  >
+                    <div class="timeline-marker" [ngClass]="{ 'blink-marker': editorProgressList[i].status === 'processing' }">
+                      @if (editorProgressList[i].status === 'completed') {
+                        ✓
+                      } @else {
+                        <span [ngClass]="{ 'blink-number': editorProgressList[i].status === 'processing' }">{{ i + 1 }}</span>
+                      }
+                    </div>
+                    <div class="timeline-editor-name" [ngClass]="{ 'blink-name': editorProgressList[i].status === 'processing' }">
+                      @if (editorOrder && editorOrder.length > 0 && editorOrder[i]) {
+                        {{ getEditorDisplayName(editorOrder[i]) }}
+                      } @else if (i === (currentEditorIndex ?? 0)) {
+                        {{ getEditorDisplayName(currentEditor) || ('Editor ' + (i + 1)) }}
+                      } @else {
+                        Editor {{ i + 1 }}
+                      }
+                    </div>
+                    <div class="timeline-status" [ngClass]="{ 'loading-status': editorProgressList[i].status === 'processing' }">
+                      @if (editorProgressList[i].status === 'completed') { Completed }
+                      @if (editorProgressList[i].status === 'processing') {
+                        <span class="blink-animation">In Progress</span>
+                      }
+                      @if (editorProgressList[i].status === 'review-pending') {
+                        Review Pending
+                      }
+                      @if (editorProgressList[i].status === 'pending') { Not Started }
+                    </div>
                   </div>
-                  <div class="timeline-editor-name">
-                    @if (editorOrder && editorOrder.length > 0 && editorOrder[i]) {
-                      {{ getEditorDisplayName(editorOrder[i]) }}
-                    } @else if (i === (currentEditorIndex ?? 0)) {
-                      {{ getEditorDisplayName(currentEditor) || ('Editor ' + (i + 1)) }}
-                    } @else {
-                      Editor {{ i + 1 }}
-                    }
-                  </div>
-                  <div class="timeline-status">
-                    @if (i < (currentEditorIndex ?? 0)) { Completed }
-                    @if (i === (currentEditorIndex ?? 0)) { In Progress }
-                    @if (i > (currentEditorIndex ?? 0)) { Not Started }
-                  </div>
-                </div>
-                <!-- Connector line between steps -->
-                @if (!last) {
-                  <div 
-                    class="timeline-connector"
-                    [ngClass]="{ 'completed': i < (currentEditorIndex ?? 0) }">
-                  </div>
+                  <!-- Connector line between steps -->
+                  @if (!last) {
+                    <div 
+                      class="timeline-connector"
+                      [ngClass]="{ 'completed': editorProgressList[i].status === 'completed' }">
+                    </div>
+                  }
                 }
               }
             </div>
@@ -1121,43 +1129,96 @@ type ParagraphFeedback = ParagraphEdit & {
       width: 28px;
       height: 28px;
       border-radius: 50%;
-      background: #D1D5DB;
-      color: #6B7280;
+      background: #d0d0d0;
+      color: #333;
       font-weight: 600;
-      font-size: 14px;
+      font-size: 13px;
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: all 0.3s ease;
+      transition: all 0.2s ease;
       border: 2px solid transparent;
     }
 
     .timeline-item.completed .timeline-marker {
-      background: #10B981;
+      background: #2e7d32;
       color: #FFFFFF;
-      border-color: #059669;
+      border-color: #2e7d32;
     }
 
     .timeline-item.active .timeline-marker {
-      background: #3B82F6;
+      background: #1976d2;
       color: #FFFFFF;
-      border-color: #2563EB;
-      box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
-      animation: pulse-editor 2s infinite;
+      border-color: #1976d2;
+      box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.2);
     }
 
     .timeline-item.upcoming .timeline-marker {
-      background: #D1D5DB;
-      color: #6B7280;
-      border-color: #9CA3AF;
+      background: #d0d0d0;
+      color: #666;
+      border-color: #d0d0d0;
     }
 
-    @keyframes pulse-editor {
+    /* Blinking animation for "In Progress" status */
+    .blink-animation {
+      animation: blink 1.5s ease-in-out infinite;
+    }
+
+    @keyframes blink {
       0%, 100% {
-        box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+        opacity: 1;
       }
       50% {
-        box-shadow: 0 0 0 8px rgba(59, 130, 246, 0.1);
+        opacity: 0.4;
+      }
+    }
+
+    /* Blinking animation for timeline marker */
+    .blink-marker {
+      animation: blink-marker 1.2s ease-in-out infinite !important;
+    }
+
+    /* Blinking animation for timeline marker numbers */
+    .blink-number {
+      animation: blink-number 1.2s ease-in-out infinite !important;
+      display: inline-block;
+    }
+
+    /* Blinking animation for editor name */
+    .blink-name {
+      animation: blink-name 1.2s ease-in-out infinite !important;
+    }
+
+    @keyframes blink-marker {
+      0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+        box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.4);
+      }
+      50% {
+        opacity: 0.6;
+        transform: scale(1.15);
+        box-shadow: 0 0 0 5px rgba(25, 118, 210, 0.6);
+      }
+    }
+
+    @keyframes blink-number {
+      0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+      50% {
+        opacity: 0.3;
+        transform: scale(1.2);
+      }
+    }
+
+    @keyframes blink-name {
+      0%, 100% {
+        opacity: 1;
+      }
+      50% {
+        opacity: 0.5;
       }
     }
 
@@ -1179,18 +1240,22 @@ type ParagraphFeedback = ParagraphEdit & {
     }
 
     .timeline-item.completed .timeline-status {
-      color: #059669;
+      color: #2e7d32;
     }
 
     .timeline-item.active .timeline-status {
-      color: #3B82F6;
+      color: #1976d2;
       font-weight: 600;
+    }
+
+    .timeline-item.active .timeline-status.loading-status {
+      color: #1976d2;
     }
 
     .timeline-connector {
       flex: 1;
       height: 2px;
-      background: #D1D5DB;
+      background: #d0d0d0;
       margin-top: 15px;
       min-width: 40px;
       max-width: 80px;
@@ -1200,7 +1265,7 @@ type ParagraphFeedback = ParagraphEdit & {
     }
 
     .timeline-connector.completed {
-      background: #10B981;
+      background: #2e7d32;
     }
 
     .status-summary {
@@ -1517,6 +1582,9 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
   // Track when next editor is clicked to disable generate final output
   isNextEditorClicked: boolean = false;
 
+  // Editor progress list for status-based timeline (matching guided journey)
+  editorProgressList: EditorProgressItem[] = [];
+
   constructor(private cdr: ChangeDetectorRef) {}
 
   get allParagraphsDecided(): boolean {
@@ -1630,6 +1698,8 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
   // Use a lifecycle hook to prepare initial highlighted views so UI shows yellow highlights by default
   ngOnChanges(): void {
     this.initializeHighlights();
+    this.initializeEditorProgressList();
+    this.updateEditorStatus();
   }
 
   private initializeHighlights(): void {
@@ -1987,6 +2057,58 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
     return Array.from({ length: total }, (_, i) => i);
   }
 
+  /** Initialize editor progress list from editorOrder (matching guided journey) */
+  private initializeEditorProgressList(): void {
+    if (!this.isSequentialMode || !this.totalEditors || this.totalEditors === 0) {
+      this.editorProgressList = [];
+      return;
+    }
+
+    const editorsToUse = this.editorOrder && this.editorOrder.length > 0 
+      ? this.editorOrder 
+      : Array.from({ length: this.totalEditors }, (_, i) => `editor-${i + 1}`);
+
+    this.editorProgressList = editorsToUse.slice(0, this.totalEditors).map((editorId, index) => {
+      const editorName = this.getEditorDisplayName(editorId);
+      return {
+        editorId: editorId,
+        editorName: editorName,
+        status: 'pending' as const,
+        current: index + 1,
+        total: this.totalEditors
+      };
+    });
+
+    // Update statuses based on current state
+    this.updateEditorStatus();
+  }
+
+  /** Update editor status based on isGenerating and currentEditorIndex (matching guided journey) */
+  private updateEditorStatus(): void {
+    if (!this.editorProgressList || this.editorProgressList.length === 0) {
+      return;
+    }
+
+    const currentIndex = this.currentEditorIndex ?? 0;
+
+    this.editorProgressList.forEach((editor, index) => {
+      if (index < currentIndex) {
+        editor.status = 'completed';
+      } else if (index === currentIndex) {
+        // Current editor: processing when loading, review-pending when not loading
+        if (this.isGenerating === true) {
+          editor.status = 'processing';
+        } else {
+          editor.status = 'review-pending';
+        }
+      } else {
+        editor.status = 'pending';
+      }
+    });
+
+    this.cdr.detectChanges();
+  }
+
   /** Flatten all editorial feedback items across paragraphs */
   private getAllFeedbackItems(): Array<{
     paraIndex: number;
@@ -2045,6 +2167,24 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
   /** Handle next editor button click */
   onNextEditor(): void {
     this.isNextEditorClicked = true;
+
+    // Mark current editor as completed when moving to next (matching guided journey)
+    const currentIndex = this.currentEditorIndex ?? 0;
+    const currentEditorItem = this.editorProgressList[currentIndex];
+    if (currentEditorItem && currentEditorItem.status === 'review-pending') {
+      currentEditorItem.status = 'completed';
+    }
+
+    // Immediately update next editor to 'processing' status for visual feedback
+    const nextEditorIndex = currentIndex + 1;
+    if (nextEditorIndex < this.editorProgressList.length) {
+      const nextEditorItem = this.editorProgressList[nextEditorIndex];
+      if (nextEditorItem && (nextEditorItem.status === 'pending' || nextEditorItem.status === 'review-pending')) {
+        nextEditorItem.status = 'processing';
+        this.cdr.detectChanges();
+      }
+    }
+
     this.nextEditor.emit();
   }
 
