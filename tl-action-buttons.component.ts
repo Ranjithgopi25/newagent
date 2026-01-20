@@ -196,12 +196,79 @@ def _detect_list_type(line: str, level: int = 0) -> tuple[str, int]:
     
     return 'none', 0
 
-def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str):
+def _create_new_numbering_instance(doc: Document, list_type: str, level: int = 0):
+    """
+    Create a new numbering instance for Word lists to reset numbering.
+    Returns the num_id to use for the list.
+    """
+    numbering_part = doc.part.numbering_part
+    
+    # Create a new abstract numbering definition
+    abstract_num_id = numbering_part._next_abstract_num_id
+    numbering_part._next_abstract_num_id += 1
+    
+    abstract_num = OxmlElement("w:abstractNum")
+    abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
+    
+    lvl = OxmlElement("w:lvl")
+    lvl.set(qn("w:ilvl"), str(level))
+    
+    start = OxmlElement("w:start")
+    start.set(qn("w:val"), "1")  # Always start from 1
+    
+    lvl_restart = OxmlElement("w:lvlRestart")
+    lvl_restart.set(qn("w:val"), "1")
+    
+    num_fmt = OxmlElement("w:numFmt")
+    if list_type == 'number':
+        num_fmt.set(qn("w:val"), "decimal")
+        lvl_text = OxmlElement("w:lvlText")
+        lvl_text.set(qn("w:val"), "%1.")
+    elif list_type == 'alpha_upper':
+        num_fmt.set(qn("w:val"), "upperLetter")
+        lvl_text = OxmlElement("w:lvlText")
+        lvl_text.set(qn("w:val"), "%1.")
+    elif list_type == 'alpha_lower':
+        num_fmt.set(qn("w:val"), "lowerLetter")
+        lvl_text = OxmlElement("w:lvlText")
+        lvl_text.set(qn("w:val"), "%1.")
+    else:
+        # Bullet list
+        num_fmt.set(qn("w:val"), "bullet")
+        lvl_text = OxmlElement("w:lvlText")
+        lvl_text.set(qn("w:val"), "•")
+    
+    lvl.extend([start, lvl_restart, num_fmt, lvl_text])
+    abstract_num.append(lvl)
+    numbering_part._numbering.append(abstract_num)
+    
+    # Create a new numbering instance
+    num_id = numbering_part._next_num_id
+    numbering_part._next_num_id += 1
+    
+    num = OxmlElement("w:num")
+    num.set(qn("w:numId"), str(num_id))
+    
+    abstract_ref = OxmlElement("w:abstractNumId")
+    abstract_ref.set(qn("w:val"), str(abstract_num_id))
+    
+    num.append(abstract_ref)
+    numbering_part._numbering.append(num)
+    
+    return num_id
+
+def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str, reset_numbering: bool = False):
     """
     Add a list of items to Word document with appropriate style based on type and level.
+    If reset_numbering is True, creates a new numbering instance to reset numbering to 1.
     """
     if not list_items:
         return
+    
+    # Create new numbering instance if reset is needed (for numbered/alphabetical lists)
+    num_id = None
+    if reset_numbering and list_type in ['number', 'alpha_upper', 'alpha_lower']:
+        num_id = _create_new_numbering_instance(doc, list_type, 0)
     
     for item in list_items:
         content = item.get('content', '')
@@ -239,6 +306,17 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str)
             # Fallback if style doesn't exist
             para = doc.add_paragraph(style="List Bullet")
         
+        # Apply custom numbering if reset_numbering is True
+        if num_id is not None:
+            pPr = para._p.get_or_add_pPr()
+            numPr = OxmlElement("w:numPr")
+            ilvl = OxmlElement("w:ilvl")
+            ilvl.set(qn("w:val"), str(level))
+            numId_elem = OxmlElement("w:numId")
+            numId_elem.set(qn("w:val"), str(num_id))
+            numPr.extend([ilvl, numId_elem])
+            pPr.append(numPr)
+        
         # Apply Body Text style configuration
         _apply_body_text_style_word(para)
         
@@ -262,24 +340,27 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str)
             _add_markdown_text_runs(para, clean_content)
 
 def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_style: ParagraphStyle, 
-                     prev_block_type: str = None, next_block: dict = None):
+                     prev_block_type: str = None, next_block: dict = None, start_from: int = 1):
     """
     Add a list of items to PDF story with appropriate formatting based on type and level.
     Uses same logic as Word _add_list_to_document for consistency.
+    For numbered/alphabetical lists, manually adds numbers/letters to content for reliable rendering.
     """
     if not list_items:
         return
     
     from reportlab.platypus import ListFlowable, ListItem
     
-    # Create list items
+    # Create list items with manual numbering/lettering for numbered and alphabetical lists
     pdf_list_items = []
+    counter = start_from
+    
     for item in list_items:
         content = item.get('content', '')
         level = item.get('level', 0)
         parsed = item.get('parsed', parse_bullet(content))
         
-        # Remove number/letter prefix if present (for numbered/alphabetical lists)
+        # Remove existing number/letter prefix (will be re-added manually)
         clean_content = content
         if list_type == 'number':
             clean_content = re.sub(r'^\d+\.\s+', '', content.strip())
@@ -296,30 +377,36 @@ def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_s
             # No colon, add as-is
             formatted_text = _format_content_for_pdf(clean_content)
         
+        # Manually add number/letter prefix for numbered and alphabetical lists
+        if list_type == 'number':
+            # Prepend number: "1. ", "2. ", etc.
+            formatted_text = f"{counter}. {formatted_text}"
+            counter += 1
+        elif list_type == 'alpha_upper':
+            # Prepend uppercase letter: "A. ", "B. ", etc.
+            letter = chr(ord('A') + (counter - 1) % 26)
+            formatted_text = f"{letter}. {formatted_text}"
+            counter += 1
+        elif list_type == 'alpha_lower':
+            # Prepend lowercase letter: "a. ", "b. ", etc.
+            letter = chr(ord('a') + (counter - 1) % 26)
+            formatted_text = f"{letter}. {formatted_text}"
+            counter += 1
+        
         pdf_list_items.append(ListItem(Paragraph(formatted_text, body_style)))
     
     # Determine spacing (same as PDF current logic)
     space_before = 3 if prev_block_type == 'paragraph' else 6
     space_after = 3 if next_block and next_block.get('type') == 'paragraph' else 6
     
-    # Determine bullet type and indentation based on list type
-    if list_type == 'bullet':
-        bullet_type = 'bullet'
-        left_indent = 24  # 2em equivalent
-    elif list_type == 'number':
-        bullet_type = '1'  # Numbered list
-        left_indent = 24
-    elif list_type in ['alpha_upper', 'alpha_lower']:
-        bullet_type = 'A' if list_type == 'alpha_upper' else 'a'  # Alphabetical list
-        left_indent = 24
-    else:
-        bullet_type = 'bullet'
-        left_indent = 24
+    # Always use 'bullet' type since we're manually adding numbers/letters
+    # This ensures consistent rendering across PDF viewers
+    left_indent = 24  # 2em equivalent
     
     story.append(
         ListFlowable(
             pdf_list_items,
-            bulletType=bullet_type,
+            bulletType='bullet',  # Always use bullet, numbers/letters are in content
             bulletFontName='Helvetica',
             bulletFontSize=11,
             leftIndent=left_indent,
@@ -329,11 +416,11 @@ def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_s
         )
     )
 
-def _order_list_items(items: list[dict]) -> list[dict]:
+def _order_list_items(items: list[dict], start_from: int = 1) -> list[dict]:
     """
     Order list items correctly if they are numbered or alphabetical.
-    For numbered lists: ensure 1, 2, 3... sequence
-    For alphabetical lists: ensure A, B, C... or a, b, c... sequence
+    For numbered lists: ensure 1, 2, 3... sequence starting from start_from
+    For alphabetical lists: ensure A, B, C... or a, b, c... sequence starting from start_from
     For bullets: preserve original order (no sorting)
     Returns ordered list of items.
     """
@@ -355,14 +442,20 @@ def _order_list_items(items: list[dict]) -> list[dict]:
             else:
                 numbers.append(0)
         
-        # Check if already in order
+        # Check if already in order and starting from correct number
         is_ordered = all(numbers[i] <= numbers[i+1] for i in range(len(numbers)-1))
-        if not is_ordered:
-            # Re-order by number
-            sorted_items = sorted(zip(numbers, items), key=lambda x: x[0])
-            # Re-number sequentially
+        starts_correctly = numbers[0] == start_from if numbers else True
+        
+        if not is_ordered or not starts_correctly:
+            # Re-order by number if needed
+            if not is_ordered:
+                sorted_items = sorted(zip(numbers, items), key=lambda x: x[0])
+            else:
+                sorted_items = list(zip(numbers, items))
+            
+            # Re-number sequentially starting from start_from
             ordered_items = []
-            for idx, (_, item) in enumerate(sorted_items, start=1):
+            for idx, (_, item) in enumerate(sorted_items, start=start_from):
                 content = item.get('content', '')
                 # Replace number with sequential number
                 new_content = re.sub(r'^\d+\.\s+', f'{idx}. ', content.strip())
@@ -379,6 +472,42 @@ def _order_list_items(items: list[dict]) -> list[dict]:
             alpha_match = re.match(r'^([A-Za-z])\.\s+', content.strip())
             if alpha_match:
                 letter = alpha_match.group(1)
+                # Convert letter to number for comparison
+                if list_type == 'alpha_upper':
+                    letter_num = ord(letter.upper()) - ord('A') + 1
+                else:
+                    letter_num = ord(letter.lower()) - ord('a') + 1
+                letters.append(letter_num)
+            else:
+                letters.append(0)
+        
+        # Check if already in order and starting from correct letter
+        is_ordered = all(letters[i] <= letters[i+1] for i in range(len(letters)-1))
+        expected_start_letter_num = start_from
+        starts_correctly = letters[0] == expected_start_letter_num if letters else True
+        
+        if not is_ordered or not starts_correctly:
+            # Re-order by letter if needed
+            if not is_ordered:
+                sorted_items = sorted(zip(letters, items), key=lambda x: x[0])
+            else:
+                sorted_items = list(zip(letters, items))
+            
+            # Re-letter sequentially starting from start_from
+            ordered_items = []
+            for idx, (_, item) in enumerate(sorted_items, start=start_from):
+                content = item.get('content', '')
+                # Calculate letter based on index
+                if list_type == 'alpha_upper':
+                    letter = chr(ord('A') + (idx - 1) % 26)
+                else:
+                    letter = chr(ord('a') + (idx - 1) % 26)
+                # Replace letter with sequential letter
+                new_content = re.sub(r'^[A-Za-z]\.\s+', f'{letter}. ', content.strip())
+                new_item = item.copy()
+                new_item['content'] = new_content
+                ordered_items.append(new_item)
+            return ordered_items
                 letters.append(ord(letter.upper()) if list_type == 'alpha_upper' else ord(letter.lower()))
             else:
                 letters.append(0)
@@ -3433,12 +3562,13 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
             list_type = block_info.get('list_type', 'bullet')
             
             # Reset numbering if previous block was a heading
-            if prev_block_type == 'heading':
-                # Start new list after heading (numbering will reset)
-                if current_list:
-                    ordered_list = _order_list_items(current_list)
-                    _add_list_to_document(doc, ordered_list, prev_list_type)
-                    current_list = []
+            reset_numbering = (prev_block_type == 'heading')
+            
+            # If previous block was heading, close current list and start new one with reset
+            if reset_numbering and current_list:
+                ordered_list = _order_list_items(current_list)
+                _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=False)
+                current_list = []
             
             # Check if we should start a new list (different type or level)
             if current_list:
@@ -3447,7 +3577,9 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
                     # Close current list and start new one
                     # Order list if needed (for numbered/alphabetical)
                     ordered_list = _order_list_items(current_list)
-                    _add_list_to_document(doc, ordered_list, prev_list_type)
+                    # Check if this list should reset numbering
+                    should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
+                    _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=should_reset)
                     current_list = []
             
             # Add to current list
@@ -3459,7 +3591,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
             if current_list:
                 # Order list if needed (for numbered/alphabetical)
                 ordered_list = _order_list_items(current_list)
-                _add_list_to_document(doc, ordered_list, prev_list_type)
+                _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=False)
                 current_list = []
                 prev_list_type = None
             
@@ -3511,7 +3643,9 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
     if current_list:
         # Order list if needed (for numbered/alphabetical)
         ordered_list = _order_list_items(current_list)
-        _add_list_to_document(doc, ordered_list, prev_list_type)
+        # Check if this list should reset numbering (marked when started after heading)
+        should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
+        _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=should_reset)
 
 def export_to_word_edit_content(
     content: str,
@@ -3544,6 +3678,24 @@ def export_to_word_edit_content(
     clean_title = re.sub(r'\*+', '', title).strip()
     title_para = doc.paragraphs[0]
     _set_paragraph_text_with_breaks(title_para, sanitize_text_for_word(clean_title))
+    
+    # Apply PDF's dynamic font sizing logic (matches PDF exactly)
+    title_font_size = 32  # Default
+    if len(clean_title) > 80:
+        title_font_size = 20
+    elif len(clean_title) > 60:
+        title_font_size = 22
+    elif len(clean_title) > 40:
+        title_font_size = 26
+    
+    # Set font size for all runs in the title paragraph
+    for run in title_para.runs:
+        run.font.size = DocxPt(title_font_size)
+        run.bold = True
+    
+    # Set center alignment (matches PDF)
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
     # Set title style to "Page 1"
     try:
         title_para.style = "Page 1"
@@ -3882,8 +4034,8 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
     # Close any remaining list
     if current_list:
         # Order list if needed (for numbered/alphabetical)
-        ordered_list = _order_list_items(current_list)
-        _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, None)
+        ordered_list = _order_list_items(current_list, start_from=1)
+        _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, None, start_from=1)
 
 def export_to_pdf_edit_content(
     content: str,
