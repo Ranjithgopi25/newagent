@@ -343,25 +343,23 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
 def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_style: ParagraphStyle, 
                      prev_block_type: str = None, next_block: dict = None, start_from: int = 1):
     """
-    Add a list of items to PDF story with appropriate formatting based on type and level.
-    Uses same logic as Word _add_list_to_document for consistency.
-    For numbered/alphabetical lists, manually adds numbers/letters to content for reliable rendering.
+    Add a list of items to PDF story with bullet icons only (no numbering).
+    All lists (numbered, alphabetical, or bullet) are rendered with bullet icons.
     """
     if not list_items:
         return
     
     from reportlab.platypus import ListFlowable, ListItem
     
-    # Create list items with manual numbering/lettering for numbered and alphabetical lists
+    # Create list items - all use bullet icons, remove any number/letter prefixes
     pdf_list_items = []
-    counter = start_from
     
     for item in list_items:
         content = item.get('content', '')
         level = item.get('level', 0)
         parsed = item.get('parsed', parse_bullet(content))
         
-        # Remove existing number/letter prefix (will be re-added manually)
+        # Remove any existing number/letter/bullet prefix (all lists use bullet icons)
         clean_content = content
         if list_type == 'number':
             clean_content = re.sub(r'^\d+\.\s+', '', content.strip())
@@ -378,36 +376,19 @@ def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_s
             # No colon, add as-is
             formatted_text = _format_content_for_pdf(clean_content)
         
-        # Manually add number/letter prefix for numbered and alphabetical lists
-        if list_type == 'number':
-            # Prepend number: "1. ", "2. ", etc.
-            formatted_text = f"{counter}. {formatted_text}"
-            counter += 1
-        elif list_type == 'alpha_upper':
-            # Prepend uppercase letter: "A. ", "B. ", etc.
-            letter = chr(ord('A') + (counter - 1) % 26)
-            formatted_text = f"{letter}. {formatted_text}"
-            counter += 1
-        elif list_type == 'alpha_lower':
-            # Prepend lowercase letter: "a. ", "b. ", etc.
-            letter = chr(ord('a') + (counter - 1) % 26)
-            formatted_text = f"{letter}. {formatted_text}"
-            counter += 1
-        
         pdf_list_items.append(ListItem(Paragraph(formatted_text, body_style)))
     
     # Determine spacing (same as PDF current logic)
     space_before = 3 if prev_block_type == 'paragraph' else 6
     space_after = 3 if next_block and next_block.get('type') == 'paragraph' else 6
     
-    # Always use 'bullet' type since we're manually adding numbers/letters
-    # This ensures consistent rendering across PDF viewers
+    # Always use 'bullet' type - all lists show bullet icons
     left_indent = 24  # 2em equivalent
     
     story.append(
         ListFlowable(
             pdf_list_items,
-            bulletType='bullet',  # Always use bullet, numbers/letters are in content
+            bulletType='bullet',  # Always use bullet icons for all list types
             bulletFontName='Helvetica',
             bulletFontSize=11,
             leftIndent=left_indent,
