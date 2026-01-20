@@ -259,48 +259,41 @@ type ParagraphFeedback = ParagraphEdit & {
             -->
             <div class="editor-timeline horizontal">
               @for (editorId of editorOrder; track editorId; let i = $index; let last = $last) {
-                @{
-                  const isCurrentEditor = i === (currentEditorIndex ?? 0);
-                  const isPreviousEditor = i < (currentEditorIndex ?? 0);
-                  const isFutureEditor = i > (currentEditorIndex ?? 0);
-                  const isProcessing = isCurrentEditor && (isEditorLoading || isGenerating);
-                  const isReviewPending = isCurrentEditor && !isEditorLoading && !isGenerating;
-                }
                 <div
                   class="timeline-item"
                   [ngClass]="{
-                    'completed': isPreviousEditor,
-                    'active': isCurrentEditor,
-                    'upcoming': isFutureEditor
+                    'completed': i < (currentEditorIndex ?? 0),
+                    'active': i === (currentEditorIndex ?? 0),
+                    'upcoming': i > (currentEditorIndex ?? 0)
                   }"
                 >
-                  <div class="timeline-marker" [ngClass]="{ 'blink-marker': isProcessing }">
-                    @if (isPreviousEditor) {
+                  <div class="timeline-marker" [ngClass]="{ 'blink-marker': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating) }">
+                    @if (i < (currentEditorIndex ?? 0)) {
                       ✓
                     } @else {
-                      <span [ngClass]="{ 'blink-number': isProcessing }">{{ i + 1 }}</span>
+                      <span [ngClass]="{ 'blink-number': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating) }">{{ i + 1 }}</span>
                     }
                   </div>
                   <div class="timeline-editor-name">
                     {{ getEditorDisplayName(editorId) }}
                   </div>
-                  <div class="timeline-status" [ngClass]="{ 'loading-status': isProcessing }">
-                    @if (isPreviousEditor) { Completed }
-                    @if (isCurrentEditor) {
-                      @if (isProcessing) {
+                  <div class="timeline-status" [ngClass]="{ 'loading-status': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating) }">
+                    @if (i < (currentEditorIndex ?? 0)) { Completed }
+                    @if (i === (currentEditorIndex ?? 0)) {
+                      @if (isEditorLoading || isGenerating) {
                         <span class="blink-animation">In Progress</span>
                       } @else {
                         Review Pending
                       }
                     }
-                    @if (isFutureEditor) { Not Started }
+                    @if (i > (currentEditorIndex ?? 0)) { Not Started }
                   </div>
                 </div>
                 <!-- Connector line between steps -->
                 @if (!last) {
                   <div 
                     class="timeline-connector"
-                    [ngClass]="{ 'completed': isPreviousEditor }">
+                    [ngClass]="{ 'completed': i < (currentEditorIndex ?? 0) }">
                   </div>
                 }
               }
