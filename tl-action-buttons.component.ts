@@ -38,7 +38,7 @@ type ParagraphFeedback = ParagraphEdit & {
       }
     
       <!-- Single Approve All / Reject All buttons (applies to feedback and paragraphs) -->
-      @if (paragraphFeedbackData &&paragraphFeedbackData.length > 0 &&!showFinalOutput &&!hasNoParagraphFeedback) {
+      @if (paragraphFeedbackData &&paragraphFeedbackData.length > 0 &&paragraphsForReview.length > 0 &&!showFinalOutput &&!hasNoParagraphFeedback) {
         <div class="bulk-actions">
           <button
             type="button"
@@ -287,7 +287,7 @@ type ParagraphFeedback = ParagraphEdit & {
               type="button"
               class="final-output-btn"
               (click)="onGenerateFinal(); $event.stopPropagation()"
-              [disabled]="!allParagraphsDecided || isGeneratingFinal || isNextEditorClicked">
+              [disabled]="!allParagraphsDecided || isGeneratingFinal || isGenerating">
               @if (isGeneratingFinal) {
                 <span class="spinner"></span>
               }
@@ -330,7 +330,7 @@ type ParagraphFeedback = ParagraphEdit & {
             type="button"
             class="final-output-btn"
             (click)="onGenerateFinal(); $event.stopPropagation()"
-            [disabled]="!allParagraphsDecided || isGeneratingFinal || isNextEditorClicked">
+            [disabled]="!allParagraphsDecided || isGeneratingFinal || isGenerating">
             @if (isGeneratingFinal) {
               <span class="spinner"></span>
             }
@@ -1520,44 +1520,29 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
   constructor(private cdr: ChangeDetectorRef) {}
 
   get allParagraphsDecided(): boolean {
-    // If all feedback is decided, buttons should enable (even if paragraphs aren't explicitly approved)
-    // This allows "Approve All" / "Reject All" to enable buttons when they only affect feedback items
+    // Check both paragraphEdits and paragraphFeedbackData (matching guided journey logic)
+    const editsDecided = this.paragraphEdits.length === 0 || allParagraphsDecided(this.paragraphEdits);
     const feedbackDecided = this.allParagraphFeedbackDecided;
-    if (feedbackDecided) {
-      return true; // Enable buttons when all feedback is decided
-    }
-    // Otherwise, check both paragraph-level and feedback decisions
-    const paragraphsDecided = allParagraphsDecided(this.paragraphEdits);
-    return paragraphsDecided && feedbackDecided;
+    return editsDecided && feedbackDecided;
   }
 
   /** Check if all paragraph feedback items are decided */
   get allParagraphFeedbackDecided(): boolean {
-    if (!this.paragraphEdits || this.paragraphEdits.length === 0) {
+    if (!this.paragraphFeedbackData || this.paragraphFeedbackData.length === 0) {
       return true; // No feedback to decide
     }
     
-    return this.paragraphEdits.every(para => {
-      // Only check if all editorial feedback items are decided (not paragraph approval)
-      // This allows Next Editor to enable when all feedback is approved/rejected
-      if (!para.editorial_feedback) {
-        return true; // No feedback means nothing to decide
+    return this.paragraphFeedbackData.every(para => {
+      // Check if paragraph itself is decided (matching guided journey logic)
+      if (para.approved === null || para.approved === undefined) {
+        return false;
       }
       
-      const feedbackTypes = Object.keys(para.editorial_feedback);
-      // If there are no feedback types, consider it decided
-      if (feedbackTypes.length === 0) {
-        return true;
-      }
-      
+      // Check if all editorial feedback items are decided
+      const feedbackTypes = Object.keys(para.editorial_feedback || {});
       for (const editorType of feedbackTypes) {
         const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-        // If there are no feedbacks for this editor type, skip it
-        if (feedbacks.length === 0) {
-          continue;
-        }
         for (const fb of feedbacks) {
-          // Feedback is decided if approved is true or false (not null/undefined)
           if (fb.approved === null || fb.approved === undefined) {
             return false;
           }
