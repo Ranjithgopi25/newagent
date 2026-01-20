@@ -152,11 +152,19 @@ def _apply_body_text_style_word(para):
     """
     Apply PwC Body Text style to a Word paragraph.
     Font size: 11pt, Line spacing: 1.5 lines, Space After pre-set.
+    Matches PDF formatting exactly.
     """
-    para.paragraph_format.space_after = DocxPt(6)  # Pre-set spacing
-    if para.runs:
-        para.runs[0].font.size = DocxPt(11)
+    # Set font size to 11pt for all runs
+    for run in para.runs:
+        run.font.size = DocxPt(11)
+    
+    # Set line spacing to 1.5 (matches PDF leading=16.5 which is 11 * 1.5)
     para.paragraph_format.line_spacing = 1.5
+    
+    # Set alignment to Justify (matches PDF TA_JUSTIFY)
+    para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    
+    # Space After will be set per paragraph based on context (matches PDF)
 
 def _detect_list_type(line: str, level: int = 0) -> tuple[str, int]:
     """
@@ -239,8 +247,11 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str)
             # Fallback if style doesn't exist
             para = doc.add_paragraph(style="List Bullet")
         
-        # Apply Body Text style configuration
+        # Apply Body Text style configuration (font size, line spacing, alignment - matches PDF)
         _apply_body_text_style_word(para)
+        
+        # Set spacing to match PDF (Space After pre-set for lists)
+        para.paragraph_format.space_after = DocxPt(6)  # Pre-set spacing for list items
         
         # Remove number/letter prefix if present (Word will auto-number)
         clean_content = content
@@ -3407,30 +3418,36 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
                 
                 run = p.add_run(sanitize_text_for_word(clean_content))
                 run.bold = True
-                # Set spacing: margin-top: 0.9em equivalent, margin-bottom: 0.2em equivalent
-                p.paragraph_format.space_before = DocxPt(11)  # ~0.9em
-                p.paragraph_format.space_after = DocxPt(6)     # Increased from 2pt to add spacing before following paragraph
+                # Set font size to match PDF (14pt base, adjusted by level)
+                heading_font_size = max(12, 14 - (level - 1))
+                run.font.size = DocxPt(heading_font_size)
+                
+                # Set spacing to match PDF exactly
+                p.paragraph_format.space_before = DocxPt(11)  # Matches PDF spaceBefore=11
+                p.paragraph_format.space_after = DocxPt(6)    # Matches PDF spaceAfter=6
             
             elif block_type == "paragraph":
-                # Paragraph: proper spacing with Body Text style
+                # Paragraph: proper spacing with Body Text style (matches PDF exactly)
                 para = doc.add_paragraph(style="Body Text")
                 _add_markdown_text_runs(para, content)
                 
-                # Apply Body Text style configuration
+                # Apply Body Text style configuration (font size, line spacing, alignment)
                 _apply_body_text_style_word(para)
                 
-                # Set spacing: margin-top: 0.15em equivalent, margin-bottom: 0.7em equivalent
-                para.paragraph_format.space_before = DocxPt(2)   # ~0.15em
-                para.paragraph_format.space_after = DocxPt(8)   # ~0.7em
-                # Add spacing if followed by heading
+                # Set spacing to match PDF exactly
+                # Base spacing: spaceBefore=2pt, spaceAfter=8pt (matches PDF para_style)
+                para.paragraph_format.space_before = DocxPt(2)   # Matches PDF spaceBefore=2
+                para.paragraph_format.space_after = DocxPt(8)    # Matches PDF spaceAfter=8
+                
+                # Add spacing if followed by heading (matches PDF)
                 if next_block and next_block.get('type') == 'heading':
-                    para.paragraph_format.space_after = DocxPt(12)  # Add extra spacing before heading
-                # Reduce spacing if followed by list
+                    para.paragraph_format.space_after = DocxPt(12)  # Matches PDF spaceAfter=12
+                # Reduce spacing if followed by list (matches PDF)
                 elif next_block and (next_block.get('type') == 'list_item' or next_block.get('type') == 'bullet_item'):
-                    para.paragraph_format.space_after = DocxPt(3)  # ~0.25em
-                # Reduce spacing if following heading
+                    para.paragraph_format.space_after = DocxPt(3)  # Matches PDF spaceAfter=3
+                # Reduce spacing if following heading (matches PDF)
                 if prev_block_type == 'heading':
-                    para.paragraph_format.space_before = DocxPt(0)
+                    para.paragraph_format.space_before = DocxPt(0)  # Matches PDF spaceBefore=0
             
             prev_block_type = block_type
     
