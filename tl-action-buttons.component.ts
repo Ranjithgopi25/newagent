@@ -38,8 +38,7 @@ type ParagraphFeedback = ParagraphEdit & {
       }
     
       <!-- Single Approve All / Reject All buttons (applies to feedback and paragraphs) -->
-      <!-- Hide buttons if no paragraphs at all, or no feedback, or no paragraphs to review -->
-      @if (paragraphEdits.length > 0 && paragraphFeedbackData && paragraphFeedbackData.length > 0 && !showFinalOutput && !hasNoParagraphFeedback && paragraphsForReview.length > 0) {
+      @if (paragraphFeedbackData &&paragraphFeedbackData.length > 0 &&!showFinalOutput &&!hasNoParagraphFeedback) {
         <div class="bulk-actions">
           <button
             type="button"
@@ -62,21 +61,16 @@ type ParagraphFeedback = ParagraphEdit & {
       
     
       <div class="paragraph-edits-container">
-        <!-- Show message when there are no paragraphs or no feedback -->
         @if (hasNoParagraphFeedback && !showFinalOutput) {
           <div class="paragraph-no-feedback">
             <p>
               There are no feedback changes from
-              @if (currentEditor) {
-                <strong>{{ getEditorDisplayName(currentEditor) }}</strong>
-              } @else {
-                <strong>the current editor</strong>
-              }.
+              <strong>{{ getEditorDisplayName(currentEditor) }}</strong>.
             </p>
           </div>
         }
         <!-- Show paragraph edits (previous editor stays visible while loading next editor) -->
-        @if (paragraphEdits.length > 0 && paragraphsForReview.length > 0 && !hasNoParagraphFeedback && !showFinalOutput) {
+        @if (paragraphsForReview.length > 0 && !hasNoParagraphFeedback) {
           @for (paragraph of paragraphsForReview; track paragraph) {
             <div class="paragraph-edit-item"
               [ngClass]="{ 'approved': paragraph.approved === true, 'declined': paragraph.approved === false }">
@@ -182,10 +176,12 @@ type ParagraphFeedback = ParagraphEdit & {
               }
             </div>
           }
-        } @else if (paragraphEdits.length > 0 && paragraphsForReview.length === 0 && !hasNoParagraphFeedback && !showFinalOutput) {
-          <!-- All paragraphs were auto-approved -->
-          <div class="paragraph-edit-item auto-approved-note">
-            <p class="paragraph-instructions">All paragraphs were auto-approved and no manual review is required.</p>
+        } @else {
+          <div class="paragraph-no-feedback">
+            <p>
+              There are no paragraphs to review from
+              <strong>{{ getEditorDisplayName(currentEditor) }}</strong>.
+            </p>
           </div>
         }
     
@@ -212,11 +208,11 @@ type ParagraphFeedback = ParagraphEdit & {
                     'upcoming': i > (currentEditorIndex ?? 0)
                   }"
                 >
-                  <div class="timeline-marker" [ngClass]="{ 'blink-marker': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating || (i === 0 && isSequentialMode && paragraphEdits.length === 0)) }">
+                  <div class="timeline-marker">
                     @if (i < (currentEditorIndex ?? 0)) {
                       ✓
                     } @else {
-                      <span [ngClass]="{ 'blink-number': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating || (i === 0 && isSequentialMode && paragraphEdits.length === 0)) }">{{ i + 1 }}</span>
+                      {{ i + 1 }}
                     }
                   </div>
                   <div class="timeline-editor-name">
@@ -228,15 +224,9 @@ type ParagraphFeedback = ParagraphEdit & {
                       Editor {{ i + 1 }}
                     }
                   </div>
-                  <div class="timeline-status" [ngClass]="{ 'loading-status': i === (currentEditorIndex ?? 0) && (isEditorLoading || isGenerating || (i === 0 && isSequentialMode && paragraphEdits.length === 0)) }">
+                  <div class="timeline-status">
                     @if (i < (currentEditorIndex ?? 0)) { Completed }
-                    @if (i === (currentEditorIndex ?? 0)) {
-                      @if (isEditorLoading || isGenerating || (i === 0 && isSequentialMode && paragraphEdits.length === 0)) {
-                        <span class="blink-animation">In Progress</span>
-                      } @else {
-                        Review Pending
-                      }
-                    }
+                    @if (i === (currentEditorIndex ?? 0)) { In Progress }
                     @if (i > (currentEditorIndex ?? 0)) { Not Started }
                   </div>
                 </div>
@@ -290,21 +280,20 @@ type ParagraphFeedback = ParagraphEdit & {
       }
 
       <!-- Sequential Workflow: Show both Next Editor and Generate Final Output options -->
-      <!-- Show buttons even when no paragraphs (enabled when nothing to decide) -->
-      @if (isSequentialMode && !showFinalOutput) {
+      @if (isSequentialMode && paragraphEdits.length > 0 && !showFinalOutput) {
         <div class="sequential-actions-container">
           <div class="final-output-actions">
             <button 
               type="button"
               class="final-output-btn"
               (click)="onGenerateFinal(); $event.stopPropagation()"
-              [disabled]="!allParagraphsDecided || isGeneratingFinal || isGenerating">
+              [disabled]="!allParagraphsDecided || isGeneratingFinal">
               @if (isGeneratingFinal) {
                 <span class="spinner"></span>
               }
               {{ isGeneratingFinal ? 'Generating Final Output...' : 'Generate Final Output' }}
             </button>
-            @if (!allParagraphsDecided && paragraphEdits.length > 0) {
+            @if (!allParagraphsDecided) {
               <p class="final-output-hint">
                 Please approve or reject all paragraph edits and feedback to generate the final article.
               </p>
@@ -324,7 +313,7 @@ type ParagraphFeedback = ParagraphEdit & {
                 }
                 {{ isGenerating ? 'Loading Next Editor...' : 'Next Editor →' }}
               </button>
-              @if (!allParagraphsDecided && paragraphEdits.length > 0) {
+              @if (!allParagraphsDecided) {
                 <p class="next-editor-hint">
                   Please approve or reject all paragraph edits before proceeding to the next editor.
                 </p>
@@ -335,20 +324,19 @@ type ParagraphFeedback = ParagraphEdit & {
       }
 
       <!-- Non-sequential mode: Show only Generate Final Output -->
-      <!-- Show button even when no paragraphs (enabled when nothing to decide) -->
-      @if (!isSequentialMode && !showFinalOutput) {
+      @if (!isSequentialMode && !showFinalOutput && paragraphEdits.length > 0) {
         <div class="final-output-actions">
           <button
             type="button"
             class="final-output-btn"
             (click)="onGenerateFinal(); $event.stopPropagation()"
-            [disabled]="!allParagraphsDecided || isGeneratingFinal || isGenerating">
+            [disabled]="!allParagraphsDecided || isGeneratingFinal">
             @if (isGeneratingFinal) {
               <span class="spinner"></span>
             }
             {{ isGeneratingFinal ? 'Generating Final Output...' : 'Generate Final Output' }}
           </button>
-          @if (!allParagraphsDecided && paragraphEdits.length > 0) {
+          @if (!allParagraphsDecided) {
             <p class="final-output-hint">
               Please approve or reject all paragraph edits and feedback to generate the final article.
             </p>
@@ -1154,22 +1142,8 @@ type ParagraphFeedback = ParagraphEdit & {
       background: #3B82F6;
       color: #FFFFFF;
       border-color: #2563EB;
-    }
-
-    .timeline-marker.blink-marker {
-      animation: blink-marker 1.2s ease-in-out infinite !important;
-      box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.4) !important;
-      background: #1976d2 !important;
-    }
-
-    .timeline-item.active .timeline-marker.blink-marker {
-      animation: blink-marker 1.2s ease-in-out infinite !important;
-      box-shadow: 0 0 0 5px rgba(25, 118, 210, 0.6) !important;
-    }
-
-    .blink-number {
-      animation: blink-number 1.2s ease-in-out infinite !important;
-      display: inline-block;
+      box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+      animation: pulse-editor 2s infinite;
     }
 
     .timeline-item.upcoming .timeline-marker {
@@ -1178,27 +1152,12 @@ type ParagraphFeedback = ParagraphEdit & {
       border-color: #9CA3AF;
     }
 
-    @keyframes blink-marker {
+    @keyframes pulse-editor {
       0%, 100% {
-        opacity: 1;
-        transform: scale(1);
-        box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.4);
+        box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
       }
       50% {
-        opacity: 0.6;
-        transform: scale(1.15);
-        box-shadow: 0 0 0 5px rgba(25, 118, 210, 0.6);
-      }
-    }
-
-    @keyframes blink-number {
-      0%, 100% {
-        opacity: 1;
-        transform: scale(1);
-      }
-      50% {
-        opacity: 0.3;
-        transform: scale(1.2);
+        box-shadow: 0 0 0 8px rgba(59, 130, 246, 0.1);
       }
     }
 
@@ -1226,24 +1185,6 @@ type ParagraphFeedback = ParagraphEdit & {
     .timeline-item.active .timeline-status {
       color: #3B82F6;
       font-weight: 600;
-      
-      &.loading-status {
-        color: #3B82F6;
-      }
-    }
-
-    // Blinking animation for "In Progress" status
-    .blink-animation {
-      animation: blink 1.5s ease-in-out infinite;
-    }
-
-    @keyframes blink {
-      0%, 100% {
-        opacity: 1;
-      }
-      50% {
-        opacity: 0.4;
-      }
     }
 
     .timeline-connector {
@@ -1528,26 +1469,6 @@ type ParagraphFeedback = ParagraphEdit & {
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
     }
-
-    /* Inline message when there is no paragraph-level feedback */
-    .paragraph-no-feedback {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 1.2rem;
-      margin-top: 5rem;
-      border-radius: 0.5rem;
-      border: 1px dashed rgba(0, 0, 0, 0.12);
-      background-color: #fd5108;
-      text-align: center;
-      font-size: 0.95rem;
-      color: rgba(0, 0, 0, 0.7);
-    }
-
-    .paragraph-no-feedback p {
-      margin: 0;
-      font-size: 1.12rem;
-    }
     
   `]
 })
@@ -1555,6 +1476,7 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
   @Input() paragraphEdits: ParagraphEdit[] = [];
   @Input() showFinalOutput: boolean = false;
   @Input() isGeneratingFinal: boolean = false;
+    hasNoParagraphFeedback: boolean = false;
   // Sequential workflow inputs
   @Input() threadId?: string | null;
   @Input() currentEditor?: string | null;
@@ -1564,7 +1486,6 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
   @Input() currentEditorIndex?: number;
   @Input() totalEditors?: number;
   @Input() isGenerating?: boolean;
-  @Input() isEditorLoading?: boolean; // Track if current editor is loading
   @Output('paragraphApproved') paragraphApproved = new EventEmitter<number>();
   @Output('paragraphDeclined') paragraphDeclined = new EventEmitter<number>();
   @Output('generateFinal') generateFinal = new EventEmitter<void>();
@@ -1575,29 +1496,7 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
 
   constructor(private cdr: ChangeDetectorRef) {}
 
-  /** Check if there are no paragraphs or no feedback - consolidated logic */
-  get hasNoParagraphFeedback(): boolean {
-    // If there are no paragraphs at all, return true
-    if (!this.paragraphEdits || this.paragraphEdits.length === 0) {
-      return true;
-    }
-    
-    // If there are paragraphs but no feedback items across all paragraphs, return true
-    return this.paragraphFeedbackData.every(para => {
-      const types = Object.keys(para.editorial_feedback || {});
-      return types.every(t => {
-        const arr = (para.editorial_feedback as any)[t] || [];
-        return !arr || arr.length === 0;
-      });
-    });
-  }
-
   get allParagraphsDecided(): boolean {
-    // If there are no paragraphs at all, buttons should be enabled (nothing to decide)
-    if (!this.paragraphEdits || this.paragraphEdits.length === 0) {
-      return true;
-    }
-    
     // If all feedback is decided, buttons should enable (even if paragraphs aren't explicitly approved)
     // This allows "Approve All" / "Reject All" to enable buttons when they only affect feedback items
     const feedbackDecided = this.allParagraphFeedbackDecided;
