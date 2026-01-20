@@ -312,7 +312,7 @@ private exportWordNewLogic(): void {
         const titleBlock = blockTypes.find(bt => bt.type === 'title');
         if (titleBlock) {
           // Find the corresponding content block
-          const paragraphs = finalArticle.split('\n\n').filter(p => p.trim());
+          const paragraphs = finalArticle.split('\n\n').filter((p: string) => p.trim());
           const titleIndex = blockTypes.findIndex(bt => bt.type === 'title');
           if (titleIndex >= 0 && titleIndex < paragraphs.length) {
             let titleText = paragraphs[titleIndex].trim();
@@ -508,7 +508,7 @@ private exportWordNewLogic(): void {
         const titleBlock = blockTypes.find(bt => bt.type === 'title');
         if (titleBlock) {
           // Find the corresponding content block
-          const paragraphs = finalArticle.split('\n\n').filter(p => p.trim());
+          const paragraphs = finalArticle.split('\n\n').filter((p: string) => p.trim());
           const titleIndex = blockTypes.findIndex(bt => bt.type === 'title');
           if (titleIndex >= 0 && titleIndex < paragraphs.length) {
             let titleText = paragraphs[titleIndex].trim();
