@@ -1,680 +1,1106 @@
-/**
- * Shared utility functions for Edit Content workflow
- * Ensures deterministic results across Quick Start and Guided Journey flows
- * 
- * NOTE: EDITOR_ORDER and EDITOR_NAME_MAP must match backend constants in
- * edit_content_service.py for consistent behavior between frontend and backend
- */
-import { environment } from "../../../environments/environment";
-// Editor processing order (must match backend EDITOR_ORDER in edit_content_service.py)
-export const EDITOR_ORDER = ['development', 'content', 'line', 'copy', 'brand-alignment'] as const;
 
-export type EditorType = 'development' | 'content' | 'line' | 'copy' | 'brand-alignment';
+import { Component, Input, ViewChild, ElementRef, HostListener, Output, EventEmitter, OnInit } from '@angular/core';
 
-/**
- * Normalize editor IDs to ensure consistent ordering for deterministic results.
- * Ensures brand-alignment is always included and editors are in the correct order.
- * 
- * @param editorIds - Array of editor IDs to normalize
- * @returns Normalized array of editor IDs in EDITOR_ORDER sequence
- */
-export function normalizeEditorOrder(editorIds: string[]): string[] {
-  // Create a copy to avoid mutating the input
-  let normalized = [...editorIds];
+import { HttpClient } from '@angular/common/http';
+import { ThoughtLeadershipMetadata, Message } from '../../../../../core/models';
+import { CanvasStateService } from '../../../../../core/services/canvas-state.service';
+import { TlChatBridgeService } from '../../../../../core/services/tl-chat-bridge.service';
+import { ChatService } from '../../../../../core/services/chat.service';
+import { ToastService } from '../../../../../core/services/toast.service';
+import { ChatEditWorkflowService } from '../../../../../core/services/chat-edit-workflow.service';
+import { environment } from '../../../../../../environments/environment';
+import { TlRequestFormComponent } from '../../../../phoenix/TL/request-form';
+import { AuthFetchService } from '../../../../../core/services/auth-fetch.service';
+import { extractDocumentTitle, extractTitleFromBlockTypes } from '../../../../../core/utils/edit-content.utils';
+import { formatFinalArticleWithBlockTypes} from '../../../../../core/utils/edit-content.utils';
+import { BlockTypeInfo } from '../../../../../core/utils/edit-content.utils';
+
+@Component({
+    selector: 'app-tl-action-buttons',
+    imports: [TlRequestFormComponent],
+    templateUrl: './tl-action-buttons.component.html',
+    styleUrls: ['./tl-action-buttons.component.scss']
+})
+export class TlActionButtonsComponent implements OnInit {
+  @Input() metadata!: ThoughtLeadershipMetadata;
+  @Input() messageId?: string;
+  @Input() message?: Message;  // Optional: Full message for accessing paragraph_edits
+  @Input() selectedFlow?: 'ppt' | 'thought-leadership' | 'market-intelligence';
+  @ViewChild('exportButton') exportButton?: ElementRef<HTMLButtonElement>;
   
-  // Ensure brand-alignment is always included
-  if (!normalized.includes('brand-alignment')) {
-    normalized.push('brand-alignment');
-  }
-  
-  // Filter and order according to EDITOR_ORDER for deterministic results
-  return EDITOR_ORDER.filter(editor => normalized.includes(editor));
-}
+  isConvertingToPodcast = false;
+  showExportDropdown = false;
+  isCopied = false;
+  isExporting = false;
+  isExported = false;
+  exportFormat = '';
+  showRequestForm = false;
+  translatedContent = '';
 
-/**
- * Normalize content text to ensure consistent processing.
- * Trims whitespace and normalizes line endings.
- * 
- * @param content - Content text to normalize
- * @returns Normalized content text
- */
-export function normalizeContent(content: string): string {
-  if (!content) {
-    return '';
-  }
-  
-  // Trim leading/trailing whitespace
-  let normalized = content.trim();
-  
-  // Normalize line endings to \n (Unix-style)
-  normalized = normalized.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  
-  // Remove trailing whitespace from each line (but preserve structure)
-  // This ensures consistent processing without changing content meaning
-  normalized = normalized.split('\n')
-    .map(line => line.trimEnd())
-    .join('\n');
-  
-  return normalized;
-}
+  @Output() raisePhoenix = new EventEmitter<void>();
 
-/**
- * Compute a simple hash of content for verification purposes.
- * Used to verify identical inputs are being processed.
- * 
- * @param content - Content to hash
- * @returns Hash string
- */
-export function hashContent(content: string): string {
-  if (!content) {
-    return 'empty';
-  }
-  
-  // Simple hash function for verification
-  let hash = 0;
-  for (let i = 0; i < content.length; i++) {
-    const char = content.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32-bit integer
-  }
-  
-  return Math.abs(hash).toString(36);
-}
-
-/**
- * Extract document title from content.
- * Checks for H1 heading first, then first line if it looks like a title,
- * otherwise falls back to filename.
- * 
- * @param content - Document content text
- * @param filename - Optional filename to use as fallback
- * @returns Extracted title
- */
-export function extractDocumentTitle(content: string, filename?: string): string {
-  if (!content || !content.trim()) {
-    // Fallback to filename if no content
-    if (filename) {
-      return filename.replace(/\.[^/.]+$/, '').trim();
-    }
-    return 'Revised Article';
-  }
-
-  const normalizedContent = normalizeContent(content);
-  const lines = normalizedContent.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-
-  if (lines.length === 0) {
-    // Fallback to filename if no content lines
-    if (filename) {
-      return filename.replace(/\.[^/.]+$/, '').trim();
-    }
-    return 'Revised Article';
-  }
-
-  // Check for H1 heading at the start (# Title)
-  const firstLine = lines[0];
-  const h1Match = firstLine.match(/^#\s+(.+)$/);
-  if (h1Match && h1Match[1]) {
-    return h1Match[1].trim();
-  }
-
-  // Check if first line looks like a title
-  // Criteria: short (less than 100 chars), starts with capital, no ending punctuation (except ? or !)
-  if (firstLine.length > 0 && firstLine.length < 100) {
-    const firstChar = firstLine[0];
-    const lastChar = firstLine[firstLine.length - 1];
-    
-    // Check if starts with capital letter or number
-    const startsWithCapital = /^[A-Z0-9]/.test(firstChar);
-    
-    // Check if doesn't end with period, comma, or semicolon (but allow ? or !)
-    const endsWithPunctuation = /[.,;]$/.test(lastChar);
-    
-    // Check if it's not a list item or code block
-    const isListItem = /^[-*+\d.]\s/.test(firstLine);
-    const isCodeBlock = firstLine.startsWith('```') || firstLine.startsWith('`');
-    
-    if (startsWithCapital && !endsWithPunctuation && !isListItem && !isCodeBlock) {
-      return firstLine;
+  @HostListener('document:click', ['$event'])
+  onDocumentClick(event: MouseEvent): void {
+    const target = event.target as HTMLElement;
+    const exportDropdown = target.closest('.export-dropdown');
+    if (!exportDropdown && this.showExportDropdown) {
+      this.showExportDropdown = false;
     }
   }
 
-  // Fallback to filename
-  if (filename) {
-    return filename.replace(/\.[^/.]+$/, '').trim();
-  }
-
-  return 'Revised Article';
-}
-
-/** Editor name mapping (must match backend EDITOR_NAMES in edit_content_service.py) */
-const EDITOR_NAME_MAP: { [key: string]: string } = {
-  'development': 'Development Editor',
-  'content': 'Content Editor',
-  'line': 'Line Editor',
-  'copy': 'Copy Editor',
-  'brand-alignment': 'PwC Brand Alignment Editor'
-};
-
-/** Get editor display name by ID */
-export function getEditorDisplayName(editorId: string): string {
-  return EDITOR_NAME_MAP[editorId] || editorId;
-}
-
-/** Format markdown text to HTML for basic formatting (bold, italic, line breaks) */
-export function formatMarkdown(text: string): string {
-  let formatted = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  formatted = formatted.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  formatted = formatted.replace(/\n/g, '<br>');
-  return formatted;
-}
-
-/** Convert markdown text to HTML with proper formatting for headings, lists, paragraphs, etc. */
-export function convertMarkdownToHtml(markdown: string): string {
-  if (!markdown || !markdown.trim()) {
-    return '';
-  }
-
-  let html = markdown;
-
-  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
-  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
-  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
-  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
-
-  html = html.replace(/^---$/gm, '<hr>');
-  html = html.replace(/^\*\*\*$/gm, '<hr>');
-
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
-
-  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
-
-  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-
-  const lines = html.split('\n');
-  const processedLines: string[] = [];
-  let inUnorderedList = false;
-  let inOrderedList = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmedLine = line.trim();
-
-    const unorderedMatch = trimmedLine.match(/^[-*]\s+(.+)$/);
-    const orderedMatch = trimmedLine.match(/^\d+\.\s+(.+)$/);
-
-    if (unorderedMatch) {
-      if (!inUnorderedList) {
-        if (inOrderedList) {
-          processedLines.push('</ol>');
-          inOrderedList = false;
-        }
-        processedLines.push('<ul>');
-        inUnorderedList = true;
-      }
-      processedLines.push(`<li>${unorderedMatch[1]}</li>`);
-    } else if (orderedMatch) {
-      if (!inOrderedList) {
-        if (inUnorderedList) {
-          processedLines.push('</ul>');
-          inUnorderedList = false;
-        }
-        processedLines.push('<ol>');
-        inOrderedList = true;
-      }
-      processedLines.push(`<li>${orderedMatch[1]}</li>`);
-    } else {
-      if (inUnorderedList) {
-        processedLines.push('</ul>');
-        inUnorderedList = false;
-      }
-      if (inOrderedList) {
-        processedLines.push('</ol>');
-        inOrderedList = false;
-      }
-
-      if (trimmedLine) {
-        if (trimmedLine.startsWith('<')) {
-          processedLines.push(line);
-        } else {
-          processedLines.push(`<p>${trimmedLine}</p>`);
-        }
-      } else {
-        processedLines.push('');
-      }
-    }
-  }
-
-  if (inUnorderedList) {
-    processedLines.push('</ul>');
-  }
-  if (inOrderedList) {
-    processedLines.push('</ol>');
-  }
-
-  html = processedLines.join('\n');
-  html = html.replace(/(<p><\/p>\n?)+/g, '<p></p>');
-  html = html.replace(/<p>\s*<\/p>/g, '');
-
-  return html;
-}
-
-/** 
- * Extract text from uploaded file
- * Note: This uses fetch() without auth headers. For authenticated requests,
- * callers should use their injected HttpClient or AuthFetchService instead.
- * This function is kept for backward compatibility but may not work if
- * backend requires authentication.
- * 
- * @deprecated Use HttpClient or AuthFetchService in components/services instead
- */
-export async function extractFileText(file: File): Promise<string> {
-  const formData = new FormData();
-  formData.append('file', file);
+  constructor(
+    private canvasStateService: CanvasStateService,
+    private http: HttpClient,
+    private tlChatBridge: TlChatBridgeService,
+    private authFetchService: AuthFetchService,
+    private chatService: ChatService,
+    private toastService: ToastService,
+    private editWorkflowService: ChatEditWorkflowService
+  ) {}
   
-  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-  
-  // Get auth token if available (for non-Angular contexts)
-  const headers: HeadersInit = {};
-  
-  // Try to get token from sessionStorage (MSAL stores it there)
-  // This is a workaround since we can't inject AuthService in a utility function
-  try {
-    // Check if we're in a browser environment
-    if (typeof window !== 'undefined' && window.sessionStorage) {
-      // Look for MSAL tokens in sessionStorage
-      // MSAL stores tokens with keys like: "<clientId>.<tenantId>.<idtoken/accesstoken>"
-      const keys = Object.keys(sessionStorage);
-      const idTokenKey = keys.find(key => 
-        key.includes('idtoken') && 
-        key.includes(environment.clientId || '')
-      );
-      
-      if (idTokenKey) {
-        const tokenData = sessionStorage.getItem(idTokenKey);
-        if (tokenData) {
-          try {
-            const parsed = JSON.parse(tokenData);
-            const secret = parsed.secret;
-            if (secret) {
-              headers['Authorization'] = `Bearer ${secret}`;
-              console.log('[extractFileText] Added auth token from sessionStorage');
-            }
-          } catch (e) {
-            console.warn('[extractFileText] Failed to parse token from sessionStorage:', e);
-          }
-        }
-      }
-    }
-  } catch (e) {
-    console.warn('[extractFileText] Failed to get auth token:', e);
-  }
-  
-  const response = await fetch(`${apiUrl}/api/v1/export/extract-text`, {
-    method: 'POST',
-    headers: headers,
-    body: formData
-  });
-  
-  if (!response.ok) {
-    throw new Error('Failed to extract text from file');
-  }
-  
-  const data = await response.json();
-  return data.text || '';
-}
 
-export interface EditorialFeedbackItem {
-  issue: string;
-  rule?: string;
-  impact?: string;
-  fix?: string;
-  priority?: string;
-}
-
-/**
- * Parse editorial feedback text into structured items.
- * Handles lines that start with "- Issue:", "- Rule:", "- Impact:", "- Fix:", "- Priority:".
- */
-export function parseEditorialFeedback(text: string): EditorialFeedbackItem[] {
-  if (!text) return [];
-
-  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const lines = normalized.split('\n');
-
-  const items: EditorialFeedbackItem[] = [];
-  let current: EditorialFeedbackItem | null = null;
-
-  const stripQuotes = (s: string) => s.trim().replace(/^["“]+|["”]+$/g, '').trim();
-
-  for (let raw of lines) {
-    const line = raw.trim();
-    if (!line) continue;
-
-    const issueMatch = line.match(/^-+\s*\*{0,2}Issue\*{0,2}:\s*(.*)/i);
-    const ruleMatch = line.match(/^-+\s*\*{0,2}Rule\*{0,2}:\s*(.*)/i);
-    const impactMatch = line.match(/^-+\s*\*{0,2}Impact\*{0,2}:\s*(.*)/i);
-    const fixMatch = line.match(/^-+\s*\*{0,2}Fix\*{0,2}:\s*(.*)/i);
-    const priorityMatch = line.match(/^-+\s*\*{0,2}Priority\*{0,2}:\s*(.*)/i);
-
-    if (issueMatch) {
-      // push previous
-      if (current) items.push(current);
-      current = { issue: stripQuotes(issueMatch[1] || '') };
-      continue;
-    }
-
-    if (!current) {
-      // ignore lines outside an issue block
-      continue;
-    }
-
-    if (ruleMatch) {
-      current.rule = ruleMatch[1].trim();
-      continue;
-    }
-    if (impactMatch) {
-      current.impact = impactMatch[1].trim();
-      continue;
-    }
-    if (fixMatch) {
-      current.fix = fixMatch[1].trim();
-      continue;
-    }
-    if (priorityMatch) {
-      current.priority = priorityMatch[1].trim();
-      continue;
-    }
-
-    // If line starts with '-' but no recognized label, try to append to last field (fix or impact)
-    const dashContent = line.replace(/^-+\s*/, '');
-    if (dashContent) {
-      // prefer appending to fix > impact > rule
-      if (current.fix) current.fix += ' ' + dashContent;
-      else if (current.impact) current.impact += ' ' + dashContent;
-      else if (current.rule) current.rule += ' ' + dashContent;
-    }
-  }
-
-  if (current) items.push(current);
-  return items;
-}
-
-/**
- * Render editorial feedback items into a simple HTML string (escaped).
- * Use ngFor in templates if possible instead of innerHTML.
- */
-export function renderEditorialFeedbackHtml(items: EditorialFeedbackItem[]): string {
-  if (!items || items.length === 0) return '';
-
-  const esc = (s?: string) =>
-    (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-  const cards = items.map(it => {
-    const badge = it.priority ? `<span class="ef-priority">${esc(it.priority)}</span>` : '';
-    return `
-      <div class="ef-card">
-        <div class="ef-header">
-          <div class="ef-issue">${esc(it.issue)}</div>
-          ${badge}
-        </div>
-        <div class="ef-body">
-          ${it.rule ? `<div class="ef-row"><strong>Rule:</strong> ${esc(it.rule)}</div>` : ''}
-          ${it.impact ? `<div class="ef-row"><strong>Impact:</strong> ${esc(it.impact)}</div>` : ''}
-          ${it.fix ? `<div class="ef-row"><strong>Fix:</strong> ${esc(it.fix)}</div>` : ''}
-        </div>
-      </div>
-    `;
-  }).join('\n');
-
-  return `<div class="ef-container">${cards}</div>`;
-}
-
-
-/**
- * Block type information for formatting
- */
-export interface BlockTypeInfo {
-  index: number;
-  type: string;
-  level?: number;
-}
-
-
-/**
- * Format final article with block type information to produce semantic HTML.
- * Groups consecutive bullet_item blocks into proper <ul> or <ol> lists.
- * 
- * @param article - The article content (markdown or plain text)
- * @param blockTypes - Array of block type information with index, type, and optional level
- * @returns Formatted HTML with proper semantic structure
- */
-export function formatFinalArticleWithBlockTypes(
-  article: string, 
-  blockTypes: BlockTypeInfo[]
-): string {
-  if (!blockTypes || blockTypes.length === 0) {
-    // If no block types, just convert markdown to HTML
-    return convertMarkdownToHtml(article);
-  }
-
-  // Split article into paragraphs (assuming double newline separation)
-  const paragraphs = article.split(/\n\n+/);
-  
-  // Create a map of index to block type
-  const blockTypeMap = new Map<number, {type: string, level?: number}>();
-  blockTypes.forEach(bt => {
-    blockTypeMap.set(bt.index, {type: bt.type, level: bt.level});
-  });
-
-  // First pass: format individual paragraphs
-  interface ParagraphBlock {
-    type: string;
-    content: string;
-    level: number;
-    rawContent?: string;
-    hasBulletIcon?: boolean; // Track if bullet icon exists in content
-  }
-
-  const formattedParagraphs = paragraphs
-    .map((para, idx): ParagraphBlock | null => {
-      const trimmedPara = para.trim();
-      if (!trimmedPara) return null; // Filter out empty paragraphs
-
-      const blockInfo = blockTypeMap.get(idx);
-      if (!blockInfo) {
-        // Default to paragraph if no block type info
-        const formatted = convertMarkdownToHtml(trimmedPara);
-        const content = formatted.startsWith('<') ? formatted : `<p>${formatted}</p>`;
-        return {
-          type: 'paragraph',
-          content: content,
-          level: 0
-        };
-      }
-
-      // Convert markdown in the paragraph first
-      let formatted = convertMarkdownToHtml(trimmedPara);
-      
-      // Remove wrapping <p> tags if they exist at the start/end (we'll add our own based on block type)
-      // Only remove if the entire content is wrapped in a single <p> tag
-      formatted = formatted.replace(/^<p>(.*)<\/p>$/s, '$1');
-
-      // Apply block type formatting (matches backend export formatting)
-      switch (blockInfo.type) {
-        case 'title':
-          // Title: 24pt font (matches PDF), bold, center aligned, spacing matches backend
-          // Note: Title is typically on cover page in export, but for UI display we show it
-          return {
-            type: 'title',
-            content: `<h1 style="font-size: 24pt; font-weight: 700; font-family: 'Helvetica', 'Arial', sans-serif; display: block; margin-top: 1.25em; margin-bottom: 0.35em; text-align: center; color: #D04A02;">${formatted}</h1>`,
-            level: 0
-          };
-        
-        case 'heading':
-          // Heading: 14pt font, bold (Helvetica-Bold), black, spacing matches backend (0.9em top, 0.2em bottom)
-          const headingLevel = blockInfo.level || 1;
-          const headingTag = `h${Math.min(Math.max(headingLevel, 1), 6)}`;
-          return {
-            type: 'heading',
-            content: `<${headingTag} style="font-size: 14pt; font-weight: 700; font-family: 'Helvetica-Bold', 'Arial Bold', sans-serif; display: block; margin-top: 0.9em; margin-bottom: 0.2em; color: #000000;">${formatted}</${headingTag}>`,
-            level: headingLevel
-          };
-        
-        case 'bullet_item':
-          // Process bullet item: all lists use bullet icons (matches backend export)
-          // Remove ALL number/letter prefixes, always use bullet icon, format before/after colon
-          let processedContent = trimmedPara;
-          
-          // Remove ALL prefixes - loop until no more prefixes found to handle nested cases
-          let previousContent = '';
-          while (previousContent !== processedContent) {
-            previousContent = processedContent;
-            
-            // Remove number prefixes (e.g., "1.", "2.", "10.", "1)", "2)", "10)", "1. ", "2) ", etc.)
-            processedContent = processedContent.replace(/^\d+[.)]\s*/g, '');
-            
-            // Remove letter prefixes (e.g., "A.", "a.", "B)", "b)", "A. ", "a) ", etc.)
-            processedContent = processedContent.replace(/^[A-Za-z][.)]\s*/g, '');
-            
-            // Remove roman numerals (e.g., "i.", "ii.", "I.", "II.", "iv.", "IV.", etc.)
-            processedContent = processedContent.replace(/^[ivxlcdmIVXLCDM]+[.)]\s*/gi, '');
-            
-            // Remove existing bullet icons (•, -, *) if present
-            processedContent = processedContent.replace(/^[•\-\*]\s*/g, '');
-            
-            // Remove any whitespace at the start
-            processedContent = processedContent.replace(/^\s+/, '');
-          }
-          
-          // Final trim
-          processedContent = processedContent.trim();
-          
-          // Format text before ":" as bold, after ":" as normal
-          const colonIndex = processedContent.indexOf(':');
-          if (colonIndex > 0) {
-            const beforeColon = processedContent.substring(0, colonIndex).trim();
-            const afterColon = processedContent.substring(colonIndex + 1).trim();
-            
-            // Convert markdown in both parts
-            let beforeFormatted = convertMarkdownToHtml(beforeColon);
-            let afterFormatted = convertMarkdownToHtml(afterColon);
-            
-            // Remove any existing <p> tags
-            beforeFormatted = beforeFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
-            afterFormatted = afterFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
-            
-            // Apply bold to before part, normal to after part
-            // Always use bullet icon (•) - all lists use bullets (matches backend)
-            processedContent = `• <strong>${beforeFormatted}</strong>: ${afterFormatted}`;
-          } else {
-            // No colon found, just convert markdown and remove <p> tags
-            processedContent = convertMarkdownToHtml(processedContent);
-            processedContent = processedContent.replace(/^<p>(.*)<\/p>$/s, '$1');
-            // Always use bullet icon (•) - all lists use bullets (matches backend)
-            processedContent = `• ${processedContent}`;
-          }
-          
-          return {
-            type: 'bullet_item',
-            content: processedContent,
-            level: blockInfo.level || 0,
-            rawContent: trimmedPara, // Store raw content for tracking
-            hasBulletIcon: true // Always has bullet icon (matches backend - all lists use bullets)
-          };
-        
-        case 'paragraph':
-        default:
-          // Paragraph: 11pt font, line-height 1.5 (matches backend), justify alignment, spacing matches backend
-          // margin-top: 0.15em (2pt), margin-bottom: 0.7em (8pt)
-          return {
-            type: 'paragraph',
-            content: `<p style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; display: block; text-align: justify; margin-top: 0.15em; margin-bottom: 0.7em; line-height: 1.5;">${formatted}</p>`,
-            level: 0
-          };
-      }
-    })
-    .filter((para): para is ParagraphBlock => para !== null);
-
-  // Second pass: group consecutive bullet_item blocks into lists (use list-style-type: none if bullet icons exist)
-  const finalOutput: string[] = [];
-  let currentList: Array<{content: string, level: number, rawContent: string, hasBulletIcon?: boolean}> = [];
-  let prevBlockType: string | null = null;
-  let prevBlockIndex: number = -1;
-
-  for (let i = 0; i < formattedParagraphs.length; i++) {
-    const para = formattedParagraphs[i];
-    const nextPara = i < formattedParagraphs.length - 1 ? formattedParagraphs[i + 1] : null;
-    
-    if (para.type === 'bullet_item') {
-      // Add to current list
-      currentList.push({
-        content: para.content,
-        level: para.level,
-        rawContent: para.rawContent || '',
-        hasBulletIcon: para.hasBulletIcon
-      });
-      prevBlockType = 'bullet_item';
-      prevBlockIndex = i;
-    } else {
-      // Close any open list before processing non-list item
-      if (currentList.length > 0) {
-        // Determine spacing: matches backend export (0.25em/3pt if following paragraph, 0.5em/6pt otherwise)
-        const listMarginTop = prevBlockType === 'paragraph' ? '0.25em' : '0.5em';
-        const listMarginBottom = nextPara && nextPara.type === 'paragraph' ? '0.25em' : '0.5em';
-        
-        // All lists use bullet icons (matches backend export - all lists rendered as bullets)
-        // Since we always add bullet icons to content, use list-style-type: none
-        const listStyleType = 'none';
-        // Font size: 11pt (matches paragraph font size), left indent: 12pt (0.5em), bullet indent: 0
-        finalOutput.push(`<ul style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; list-style-type: ${listStyleType}; padding-left: 1.5em; margin-top: ${listMarginTop}; margin-bottom: ${listMarginBottom}; line-height: 1.5;">`);
-        currentList.forEach(item => {
-          finalOutput.push(`<li style="display: list-item; margin: 0.375em 0;">${item.content}</li>`);
-        });
-        finalOutput.push('</ul>');
-        currentList = [];
-      }
-
-      // Adjust paragraph margins based on context (matches backend export)
-      if (para.type === 'paragraph') {
-        // Reduce bottom margin if followed by bullet list (0.25em/3pt matches backend)
-        if (nextPara && nextPara.type === 'bullet_item') {
-          para.content = para.content.replace(/margin-bottom:\s*[^;]+;?/g, 'margin-bottom: 0.25em;');
-        }
-        // Reduce top margin if following heading - decrease line spacing between heading and paragraph
-        if (prevBlockType === 'heading') {
-          para.content = para.content.replace(/margin-top:\s*[^;]+;?/g, 'margin-top: 0.05em;');
-        }
-      }
-
-      // Add non-list paragraph
-      finalOutput.push(para.content);
-      prevBlockType = para.type;
-      prevBlockIndex = i;
-    }
-  }
-
-  // Close any remaining open list
-  if (currentList.length > 0) {
-    // Determine spacing: matches backend export
-    const listMarginTop = prevBlockType === 'paragraph' ? '0.25em' : '0.5em';
-    
-    // All lists use bullet icons (matches backend export - all lists rendered as bullets)
-    // Since we always add bullet icons to content, use list-style-type: none
-    const listStyleType = 'none';
-    // Font size: 11pt (matches paragraph font size), left indent: 12pt (0.5em), bullet indent: 0
-    finalOutput.push(`<ul style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; list-style-type: ${listStyleType}; padding-left: 1.5em; margin-top: ${listMarginTop}; margin-bottom: 0.5em; line-height: 1.5;">`);
-    currentList.forEach(item => {
-      finalOutput.push(`<li style="display: list-item; margin: 0.375em 0;">${item.content}</li>`);
+  ngOnInit(): void {
+    console.log('[TL Action Buttons] Component initialized with metadata:', {
+      contentType: this.metadata?.contentType,
+      hasPodcastUrl: !!this.metadata?.podcastAudioUrl,
+      podcastUrl: this.metadata?.podcastAudioUrl?.substring(0, 80),
+      showActions: this.metadata?.showActions,
+      isPodcast: this.isPodcast
     });
-    finalOutput.push('</ul>');
+  }
+private exportWordNewLogic(): void {
+  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+    this.toastService.error('Content is not available yet.');
+    return;
   }
 
-  return finalOutput.join('\n');
+  // Prepare content according to new logic
+  const plainText = this.metadata.fullContent
+    .replace(/<br>/g, '\n')
+    .replace(/<[^>]+>/g, ''); // strip HTML
+
+  const title = this.metadata.topic?.trim() || 'Generated Document';
+
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  const endpoint = `${apiUrl}/api/v1/export/word-standalone`; 
+
+  this.authFetchService.authenticatedFetch(endpoint, {
+    method: 'POST',
+    body: JSON.stringify({
+      content: plainText,
+      title,
+      content_type: this.metadata.contentType
+    })
+  })
+    .then(response => {
+      if (!response.ok) throw new Error('Failed to generate Word document');
+      return response.blob();
+    })
+    .then(blob => {
+      // Use existing download mechanism
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${this.sanitizeFilename(title)}.docx`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+      this.resetExportState();
+    })
+    .catch(err => {
+      console.error('New Word export error:', err);
+      this.toastService.error('Failed to generate Word document. Please try again.');
+      this.isExporting = false;
+    });
+}
+
+  // private isEditContent(): boolean {
+  //   // Check if this is edit content workflow
+  //   // Edit content may have contentType 'edit-content' 
+  //   return this.metadata?.contentType === 'edit-content';
+  // }
+
+
+
+  downloadWord(): void {
+    // this.exportDocument('/api/v1/export/word', 'docx', 'docx');
+    const isSocialModule = this.metadata?.contentType === 'socialMedia';
+    const isEditContent = this.metadata?.contentType === 'article';
+    const isMarketModule = this.metadata?.contentType === 'conduct-research' || this.selectedFlow === 'market-intelligence';
+    const isindustryModule = this.metadata?.contentType === 'industry-insights';
+    const isproposalModule = this.metadata?.contentType === 'proposal-inputs';
+    const isprepMeetModule = this.metadata?.contentType === 'prep-meet';
+    const isPovModule = this.metadata?.contentType === 'pov';
+    
+    console.log('[TL Action Buttons] downloadWord() called:', {
+      contentType: this.metadata?.contentType,
+      selectedFlow: this.selectedFlow,
+      isSocialModule,
+      isMarketModule,
+      timestamp: new Date().toISOString()
+    });
+    
+    if (isEditContent) {
+      this.exportEditContentWord();
+    } else if (isSocialModule) {
+      this.exportUIWord();  
+    }
+    else if (isindustryModule || isPovModule || isprepMeetModule || isproposalModule){
+       this.exportDocument('/api/v1/export/word-pwc-mi-module', 'docx', 'docx'); 
+    }
+    
+    else if (isMarketModule) {
+      this.exportDocument('/api/v1/export/word-pwc-no-toc', 'docx', 'docx'); 
+    }
+    else {
+      console.log("Export word 2")
+      this.exportDocument('/api/v1/export/word', 'docx', 'docx'); 
+    }
+  }
+
+  /**
+   * Get block types using the same logic as final article generation
+   * This ensures consistency between display and export
+   * Uses exact same logic as ChatEditWorkflowService.generateFinalArticle()
+   */
+  private getBlockTypesForExport(): { content: string; blockTypes: BlockTypeInfo[] } {
+    // Use exact backend final_article (metadata.fullContent) - no processing needed
+    // Backend returns: final_article = "\n\n".join(final_paragraphs)
+    const content = this.metadata.fullContent || '';
+    
+    // Use exact same block_types normalization logic as generateFinalArticle()
+    // Backend provides block_types with sequential indices matching final_paragraphs
+    let blockTypes: BlockTypeInfo[] = [];
+    const metadataBlockTypes = (this.metadata as any).block_types;
+    
+    if (metadataBlockTypes && Array.isArray(metadataBlockTypes) && metadataBlockTypes.length > 0) {
+      // Backend provides correctly aligned block_types with indices matching final_article split
+      // Use same normalization as generateFinalArticle() (lines 1977-1983)
+      // IMPORTANT: Only default to 'paragraph' if type is truly missing (undefined/null), preserve actual values
+      blockTypes = metadataBlockTypes.map((bt: any) => ({
+        index: bt.index !== undefined && bt.index !== null ? bt.index : 0,
+        type: (bt.type !== undefined && bt.type !== null && bt.type !== '') ? bt.type : 'paragraph',
+        level: bt.level !== undefined && bt.level !== null ? bt.level : 0
+      }));
+      
+      // Debug: Log block_types to verify they're not all 'paragraph'
+      const typeCounts = blockTypes.reduce((acc, bt) => {
+        acc[bt.type] = (acc[bt.type] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+      console.log('[TL Action Buttons] Export block_types distribution:', typeCounts);
+      console.log('[TL Action Buttons] Total block_types:', blockTypes.length, 'Sample:', blockTypes.slice(0, 5));
+    } else {
+      // Fallback: generate from paragraphEdits if available (same as generateFinalArticle fallback)
+      // This shouldn't happen if backend is working correctly, but provides safety
+      console.warn('[TL Action Buttons] Backend did not provide block_types, using default paragraph');
+      // Split content into paragraphs and create default block_types
+      const paragraphs = content.split(/\n\n+/).filter(p => p.trim());
+      blockTypes = paragraphs.map((_, idx) => ({
+        index: idx,
+        type: 'paragraph',
+        level: 0
+      }));
+    }
+    
+    return { content, blockTypes };
+  }
+
+  private async exportEditContentWord(): Promise<void> {
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      alert('Content is not available yet.');
+      return;
+    }
+
+    this.isExporting = true;
+    
+    try {
+      // REUSE generateFinalArticle: Call /final endpoint to get properly formatted content and block_types
+      // Sync paragraphEdits from message to service state if needed
+      if (this.message?.editWorkflow?.paragraphEdits && this.message.editWorkflow.paragraphEdits.length > 0) {
+        this.editWorkflowService.syncParagraphEditsFromMessage(this.message.editWorkflow.paragraphEdits);
+      }
+      
+      const paragraphEdits = this.editWorkflowService.currentState.paragraphEdits;
+      
+      // Get originalContent - use service state if available, otherwise reconstruct
+      let originalContent = this.editWorkflowService.currentState.originalContent;
+      if (!originalContent || !originalContent.trim()) {
+        if (paragraphEdits && paragraphEdits.length > 0) {
+          originalContent = this.editWorkflowService.reconstructOriginalContent(paragraphEdits);
+        }
+      }
+      
+      if (!paragraphEdits || paragraphEdits.length === 0 || !originalContent) {
+        // Fallback: Use metadata content and block_types if paragraph_edits not available
+        const { content: normalizedContent, blockTypes } = this.getBlockTypesForExport();
+        // Use extractTitleFromBlockTypes to match guided journey behavior (block type "title" as page 1)
+        const exportTitle = extractTitleFromBlockTypes(normalizedContent, blockTypes, this.metadata.topic);
+        const finalTitle = exportTitle;
+        
+        this.chatService.exportEditContentToWord({
+          content: normalizedContent,
+          title: exportTitle,
+          block_types: blockTypes
+        }).subscribe({
+          next: (blob: Blob) => {
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${this.sanitizeFilename(finalTitle)}.docx`;
+            link.click();
+            window.URL.revokeObjectURL(url);
+            this.resetExportState();
+          },
+          error: (error) => {
+            console.error('Edit Content Word export error:', error);
+            alert('Failed to generate Word document. Please try again.');
+            this.isExporting = false;
+          }
+        });
+        return;
+      }
+      
+      // Collect decisions with feedback decisions (same as generateFinalArticle)
+      const decisions = paragraphEdits.map(p => ({
+        index: p.index,
+        approved: p.approved === true,
+        editorial_feedback_decisions: this.editWorkflowService.collectFeedbackDecisions(p)
+      }));
+      
+      // Call /final endpoint to get formatted content and block_types
+      const authHeaders = await this.editWorkflowService.getAuthHeaders();
+      const apiUrl = (window as any)._env?.apiUrl || '';
+      
+      const response = await fetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          original_content: originalContent,
+          paragraph_edits: paragraphEdits.map(p => ({
+            index: p.index,
+            original: p.original,
+            edited: p.edited,
+            tags: p.tags,
+            block_type: p.block_type || 'paragraph',
+            level: p.level || 0,
+            editorial_feedback: p.editorial_feedback || {}
+          })),
+          decisions: decisions,
+          accept_all: false,
+          reject_all: false
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to generate final article: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      const finalArticle = data.final_article || '';
+      const blockTypes: BlockTypeInfo[] = (data.block_types || []).map((bt: any) => ({
+        index: bt.index !== undefined && bt.index !== null ? bt.index : 0,
+        type: (bt.type !== undefined && bt.type !== null && bt.type !== '') ? bt.type : 'paragraph',
+        level: bt.level !== undefined && bt.level !== null ? bt.level : 0
+      }));
+      
+      if (!finalArticle) {
+        throw new Error('No final article returned from server');
+      }
+      
+      // Extract title from block_types (no fallback - must use block_types title)
+      let exportTitle = '';
+      if (blockTypes && blockTypes.length > 0) {
+        const titleBlock = blockTypes.find(bt => bt.type === 'title');
+        if (titleBlock) {
+          // Find the corresponding content block
+          const paragraphs = finalArticle.split('\n\n').filter((p: string) => p.trim());
+          const titleIndex = blockTypes.findIndex(bt => bt.type === 'title');
+          if (titleIndex >= 0 && titleIndex < paragraphs.length) {
+            let titleText = paragraphs[titleIndex].trim();
+            // Remove markdown formatting
+            titleText = titleText.replace(/^#+\s+/, '').replace(/\*\*/g, '').trim();
+            if (titleText) {
+              exportTitle = titleText;
+            }
+          }
+        }
+      }
+      
+      if (!exportTitle) {
+        throw new Error('Title not found in block_types');
+      }
+      
+      const finalTitle = exportTitle;
+      
+      // Send formatted content and block_types directly to export endpoint
+      this.chatService.exportEditContentToWord({
+        content: finalArticle,
+        title: exportTitle,
+        block_types: blockTypes
+      }).subscribe({
+        next: (blob: Blob) => {
+          const url = window.URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${this.sanitizeFilename(finalTitle)}.docx`;
+          link.click();
+          window.URL.revokeObjectURL(url);
+          this.resetExportState();
+        },
+        error: (error) => {
+          console.error('Edit Content Word export error:', error);
+          alert('Failed to generate Word document. Please try again.');
+          this.isExporting = false;
+        }
+      });
+    } catch (error) {
+      console.error('Error generating final article for export:', error);
+      alert('Failed to generate final article. Please try again.');
+      this.isExporting = false;
+    }
+  }
+
+  downloadPDF(): void {
+    // Consider message as 'market module' when contentType is conduct-research or selectedFlow is market-intelligence
+    const contentType = String(this.metadata?.contentType || '');
+    const isEditContent = this.metadata?.contentType === 'article';
+    const isMarketModule = contentType === 'conduct-research' || this.selectedFlow === 'market-intelligence';
+    const isIndustryModule = contentType === 'industry-insights';
+    const isproposalModule = contentType === 'proposal-inputs';
+    const isprepMeetModule = contentType === 'prep-meet';
+    const isPovModule = contentType === 'pov';
+    
+    console.log('[TL Action Buttons] downloadPDF() called:', {
+      contentType,
+      selectedFlow: this.selectedFlow,
+      isMarketModule,
+      isIndustryModule,
+      isPovModule,
+      isprepMeetModule,
+      isproposalModule,
+      timestamp: new Date().toISOString()
+    });
+      if (isEditContent) {
+        this.exportEditContentPDF();
+        return;
+    }
+      else if (isIndustryModule || isPovModule || isprepMeetModule || isproposalModule){
+          this.exportDocument('/api/v1/export/pdf-pwc-mi-module', 'pdf', 'pdf'); 
+          return;
+
+      }
+      else if (isMarketModule) {
+        this.exportDocument('/api/v1/export/pdf-pwc-no-toc', 'pdf', 'pdf');
+        return;
+      }
+      this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
+    // const endpoint = isMarketModule
+    //   ? '/api/v1/export/pdf-pwc-no-toc'
+    //   : '/api/v1/export/pdf-pwc';
+    
+    // console.log('[TL Action Buttons] Using endpoint:', endpoint);
+    // this.exportDocument(endpoint, 'pdf', 'pdf');
+  }
+
+  private async exportEditContentPDF(): Promise<void> {
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      alert('Content is not available yet.');
+      return;
+    }
+
+    this.isExporting = true;
+    
+    try {
+      // REUSE generateFinalArticle: Call /final endpoint to get properly formatted content and block_types
+      // Sync paragraphEdits from message to service state if needed
+      if (this.message?.editWorkflow?.paragraphEdits && this.message.editWorkflow.paragraphEdits.length > 0) {
+        this.editWorkflowService.syncParagraphEditsFromMessage(this.message.editWorkflow.paragraphEdits);
+      }
+      
+      const paragraphEdits = this.editWorkflowService.currentState.paragraphEdits;
+      
+      // Get originalContent - use service state if available, otherwise reconstruct
+      let originalContent = this.editWorkflowService.currentState.originalContent;
+      if (!originalContent || !originalContent.trim()) {
+        if (paragraphEdits && paragraphEdits.length > 0) {
+          originalContent = this.editWorkflowService.reconstructOriginalContent(paragraphEdits);
+        }
+      }
+      
+      if (!paragraphEdits || paragraphEdits.length === 0 || !originalContent) {
+        // Fallback: Use metadata content and block_types if paragraph_edits not available
+        const { content: normalizedContent, blockTypes } = this.getBlockTypesForExport();
+        // Use extractTitleFromBlockTypes to match guided journey behavior (block type "title" as page 1)
+        const exportTitle = extractTitleFromBlockTypes(normalizedContent, blockTypes, this.metadata.topic);
+        const finalTitle = exportTitle;
+        
+        this.chatService.exportEditContentToPDF({
+          content: normalizedContent,
+          title: exportTitle,
+          block_types: blockTypes
+        }).subscribe({
+          next: (blob: Blob) => {
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${this.sanitizeFilename(finalTitle)}.pdf`;
+            link.click();
+            window.URL.revokeObjectURL(url);
+            this.resetExportState();
+          },
+          error: (error) => {
+            console.error('Edit Content PDF export error:', error);
+            alert('Failed to generate PDF document. Please try again.');
+            this.isExporting = false;
+          }
+        });
+        return;
+      }
+      
+      // Collect decisions with feedback decisions (same as generateFinalArticle)
+      const decisions = paragraphEdits.map(p => ({
+        index: p.index,
+        approved: p.approved === true,
+        editorial_feedback_decisions: this.editWorkflowService.collectFeedbackDecisions(p)
+      }));
+      
+      // Call /final endpoint to get formatted content and block_types
+      const authHeaders = await this.editWorkflowService.getAuthHeaders();
+      const apiUrl = (window as any)._env?.apiUrl || '';
+      
+      const response = await fetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          original_content: originalContent,
+          paragraph_edits: paragraphEdits.map(p => ({
+            index: p.index,
+            original: p.original,
+            edited: p.edited,
+            tags: p.tags,
+            block_type: p.block_type || 'paragraph',
+            level: p.level || 0,
+            editorial_feedback: p.editorial_feedback || {}
+          })),
+          decisions: decisions,
+          accept_all: false,
+          reject_all: false
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to generate final article: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      const finalArticle = data.final_article || '';
+      const blockTypes: BlockTypeInfo[] = (data.block_types || []).map((bt: any) => ({
+        index: bt.index !== undefined && bt.index !== null ? bt.index : 0,
+        type: (bt.type !== undefined && bt.type !== null && bt.type !== '') ? bt.type : 'paragraph',
+        level: bt.level !== undefined && bt.level !== null ? bt.level : 0
+      }));
+      
+      if (!finalArticle) {
+        throw new Error('No final article returned from server');
+      }
+      
+      // Extract title from block_types (no fallback - must use block_types title)
+      let exportTitle = '';
+      if (blockTypes && blockTypes.length > 0) {
+        const titleBlock = blockTypes.find(bt => bt.type === 'title');
+        if (titleBlock) {
+          // Find the corresponding content block
+          const paragraphs = finalArticle.split('\n\n').filter((p: string) => p.trim());
+          const titleIndex = blockTypes.findIndex(bt => bt.type === 'title');
+          if (titleIndex >= 0 && titleIndex < paragraphs.length) {
+            let titleText = paragraphs[titleIndex].trim();
+            // Remove markdown formatting
+            titleText = titleText.replace(/^#+\s+/, '').replace(/\*\*/g, '').trim();
+            if (titleText) {
+              exportTitle = titleText;
+            }
+          }
+        }
+      }
+      
+      if (!exportTitle) {
+        throw new Error('Title not found in block_types');
+      }
+      
+      const finalTitle = exportTitle;
+      
+      // Send formatted content and block_types directly to export endpoint
+      this.chatService.exportEditContentToPDF({
+        content: finalArticle,
+        title: exportTitle,
+        block_types: blockTypes
+      }).subscribe({
+        next: (blob: Blob) => {
+          const url = window.URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${this.sanitizeFilename(finalTitle)}.pdf`;
+          link.click();
+          window.URL.revokeObjectURL(url);
+          this.resetExportState();
+        },
+        error: (error) => {
+          console.error('Edit Content PDF export error:', error);
+          alert('Failed to generate PDF document. Please try again.');
+          this.isExporting = false;
+        }
+      });
+    } catch (error) {
+      console.error('Error generating final article for export:', error);
+      alert('Failed to generate final article. Please try again.');
+      this.isExporting = false;
+    }
+  }
+  
+  downloadPPT(): void {
+    this.exportPPT('/api/v1/export/ppt');
+  }
+
+  downloadPodcast(): void {
+    if (this.metadata.podcastAudioUrl && this.metadata.podcastFilename) {
+      const link = document.createElement('a');
+      link.href = this.metadata.podcastAudioUrl;
+      link.download = this.metadata.podcastFilename;
+      link.click();
+    }
+  }
+
+  cleanedDocumentText!: string;
+  documentTitle!: string;
+  onRaisePhoenix(): void {
+
+    this.cleanedDocumentText = this.metadata.fullContent
+    .replace(/<br>/g, '\n')
+    .replace(/<[^>]+>/g, '');
+
+    const lines = this.cleanedDocumentText
+    .split('\n')
+    .filter(line => line.trim());
+
+    this.documentTitle = lines.length > 0
+    ? lines[0].substring(0, 150)
+    : 'Generated Document';
+
+    this.showRequestForm = true;
+    this.raisePhoenix.emit();
+  }
+  
+  phoenixRdpLink = '';
+  ticketNumber = '';
+
+  onTicketCreated(event: {
+  requestNumber: string;
+  phoenixRdpLink: string;
+  }): void {
+ this.phoenixRdpLink = event.phoenixRdpLink;
+ this.ticketNumber = event.requestNumber;
+  console.log('Ticket created:', event.requestNumber);
+  this.translatedContent = `✅ Request created successfully! Your request number is: <a href="${event.phoenixRdpLink}" target="_blank" rel="noopener noreferrer">${event.requestNumber}</a>`.trim();
+  this.showRequestForm = false; 
+  this.sendToChat();
+}
+
+sendToChat(): void {
+
+  const topic = `Phoenix Request - ${this.ticketNumber}`;
+  let contentType: string;
+
+   
+    // Create metadata for the message
+    const metadata: ThoughtLeadershipMetadata = {
+      contentType: 'Phoenix_Request',
+      topic: topic,
+      fullContent: this.translatedContent,
+      showActions: false
+    };
+  const chatMessage = this.translatedContent;
+   
+    // Send to chat via bridge
+    console.log('[FormatTranslatorFlow] Sending to chat with metadata:', metadata);
+    this.tlChatBridge.sendToChat(chatMessage, metadata);
+    //this.onClose();
+}
+
+  copyToClipboard(): void {
+    // Convert markdown to plain text for better readability when pasted
+    const plainText = this.convertMarkdownToPlainText(this.metadata.fullContent);
+    
+    navigator.clipboard.writeText(plainText).then(() => {
+      this.isCopied = true;
+      // Reset the "copied" feedback after 2 seconds
+      setTimeout(() => {
+        this.isCopied = false;
+      }, 2000);
+    }).catch(err => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }
+
+  private convertMarkdownToPlainText(markdown: string): string {
+    let text = markdown;
+    
+    // Remove markdown links [text](url) -> text
+    text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
+    
+    // Remove markdown images ![alt](url) -> alt
+    text = text.replace(/!\[([^\]]*)\]\([^\)]+\)/g, '$1');
+    
+    // Convert bold **text** -> text
+    text = text.replace(/\*\*([^\*]+)\*\*/g, '$1');
+    
+    // Convert italic *text* -> text
+    text = text.replace(/\*([^\*]+)\*/g, '$1');
+    
+    // Convert italic _text_ -> text
+    text = text.replace(/_([^_]+)_/g, '$1');
+    
+    // Convert strikethrough ~~text~~ -> text
+    text = text.replace(/~~([^~]+)~~/g, '$1');
+    
+    // Convert headers # text -> text
+    text = text.replace(/^#+\s+/gm, '');
+    
+    // Convert horizontal rules
+    text = text.replace(/^[-*_]{3,}$/gm, '');
+    
+    // Convert code blocks ``` -> remove backticks
+    text = text.replace(/```[\s\S]*?```/g, (match) => {
+      return match.replace(/```/g, '').trim();
+    });
+    
+    // Convert inline code `text` -> text
+    text = text.replace(/`([^`]+)`/g, '$1');
+    
+    // Convert blockquotes > text -> text
+    text = text.replace(/^>\s+/gm, '');
+    
+    // Convert unordered lists - * text -> text
+    text = text.replace(/^[\s]*[-*+]\s+/gm, '');
+    
+    // Convert ordered lists 1. text -> text
+    text = text.replace(/^[\s]*\d+\.\s+/gm, '');
+    
+    // Remove extra blank lines (more than 2 consecutive)
+    text = text.replace(/\n\n\n+/g, '\n\n');
+    
+    // Trim leading and trailing whitespace
+    text = text.trim();
+    
+    return text;
+  }
+
+  openInCanvas(): void {
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      this.toastService.error('Content is not available yet.');
+      return;
+    }
+    // Only allow supported types for canvas
+    const allowedTypes = ['article', 'blog', 'white_paper', 'executive_brief', 'socialMedia','conduct-research'];
+    if (!allowedTypes.includes(this.metadata.contentType)) {
+      this.toastService.warning('Canvas is only available for articles, blogs, white papers, executive briefs, social media posts, and conduct research.');
+      return;
+    }
+    // Map socialMedia and conduct-research to an accepted canvas type (they function like articles)
+    let canvasContentType: 'article' | 'blog' | 'white_paper' | 'executive_brief';
+    switch (this.metadata.contentType) {
+      case 'article':
+      case 'blog':
+      case 'white_paper':
+      case 'executive_brief':
+        canvasContentType = this.metadata.contentType;
+        break;
+      case 'socialMedia':
+      case 'conduct-research':
+      default:
+        canvasContentType = 'article';
+        break;
+    }
+    this.canvasStateService.loadFromContent(
+      this.metadata.fullContent,
+      this.metadata.topic || 'Untitled',
+      canvasContentType,
+      this.messageId
+    );
+  }
+
+  toggleExportDropdown(): void {
+    this.showExportDropdown = !this.showExportDropdown;
+  }
+  // downloadProcessedFile(): void {
+  //   if (!this.downloadUrl) {
+  //     console.warn('[SlideCreationFlow] No download URL available');
+  //     return;
+  //   }
+
+  //   const link = document.createElement('a');
+  //   link.href = this.downloadUrl;
+  //   link.target = '_blank';
+  //   link.download = 'Slide.pptx'; // default filename
+  //   link.click();
+  // }
+  exportSelected(format: 'word' | 'pdf' | 'ppt'): void {
+    this.showExportDropdown = false;
+    this.isExporting = true;
+    this.isExported = false;
+    this.exportFormat = format.toUpperCase();
+    
+    if (format === 'word') {
+    //  if (this.metadata?.contentType === 'conduct-research') {
+    //     this.exportWordNewLogic();   
+    //   } else {
+        this.downloadWord();       
+      // }
+    } else if(format === 'pdf') {
+      this.downloadPDF();
+    } else if (format === 'ppt') {
+      this.downloadPPT();
+    }
+       
+  }
+
+  private resetExportState(): void {
+    setTimeout(() => {
+      this.isExporting = false;
+    }, 500);
+    
+    this.isExported = true;
+    // Reset success indicator after 3 seconds
+    setTimeout(() => {
+      this.isExported = false;
+    }, 3000);
+  }
+
+  private exportDocument(endpoint: string, extension: string, format: string): void {
+    // Reuse the same approach as EditContentFlowComponent.downloadRevised()
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      this.toastService.error('Content is not available yet.');
+      return;
+    }
+
+    // Clean content the same way as the working implementation
+    const plainText = this.metadata.fullContent.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    
+    // Extract first line as subtitle (title for download)
+    const lines = plainText.split('\n').filter(line => line.trim());
+    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : 'Generated Document'; // First line as title, max 150 chars
+    const title = subtitle; // Use subtitle as the main title, not the topic
+    
+    // console.log(`>>>>>>>>>>>>>`,plainText);
+
+    // Get API URL from environment (supports runtime config via window._env)
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const fullEndpoint = `${apiUrl}${endpoint}`;
+
+    // Use fetch API like the working implementation (same as EditContentFlowComponent.downloadRevised)
+    this.authFetchService.authenticatedFetch(fullEndpoint, {
+      method: 'POST',
+      body: JSON.stringify({
+        content: plainText,
+        title,
+        subtitle: '',  // Don't pass subtitle separately since title is already set to it
+        content_type: this.metadata.contentType,  // Use snake_case to match backend
+
+      })
+    })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
+      }
+      return response.blob();
+    })
+    .then(blob => {
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${this.sanitizeFilename(title)}.${extension}`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+      this.resetExportState();
+    })
+    .catch(error => {
+      console.error(`Error generating ${extension.toUpperCase()}:`, error);
+      this.toastService.error(`Failed to generate ${extension.toUpperCase()} file. Please try again.`);
+      this.isExporting = false;
+    });
+  }
+  private exportUIWord(): void {
+  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+    this.toastService.error('Content is not available yet.');
+    return;
+  }
+
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  const endpoint = `${apiUrl}/api/v1/export/word-ui`;
+
+  // IMPORTANT: send content AS-IS (no stripping)
+  const content = this.metadata.fullContent;
+
+  // Title logic can stay simple
+  const title = 'Generated Document';
+
+  this.authFetchService.authenticatedFetch(endpoint, {
+    method: 'POST',
+    body: JSON.stringify({
+      content,
+      title
+    })
+  })
+  .then(response => {
+    if (!response.ok) {
+      throw new Error('Failed to generate Word document');
+    }
+    return response.blob();
+  })
+  .then(blob => {
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${this.sanitizeFilename(title)}.docx`;
+    link.click();
+    window.URL.revokeObjectURL(url);
+  })
+  .catch(error => {
+    console.error('UI Word export failed:', error);
+    this.toastService.error('Failed to generate Word file.');
+  });
+}
+
+  private exportPPT(endpoint: string): void {
+  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+    this.toastService.error('Content is not available yet.');
+    return;
+  }
+
+  const plainText = this.metadata.fullContent
+    .replace(/<br>/g, '\n')
+    .replace(/<[^>]+>/g, '');
+
+  const title = this.metadata.topic?.trim() || 'Generated Presentation';
+
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  const fullEndpoint = `${apiUrl}${endpoint}`;
+
+  this.authFetchService.authenticatedFetch(fullEndpoint, {
+    method: 'POST',
+    body: JSON.stringify({
+      content: plainText,
+      title
+    })
+  })
+  .then(response => {
+    if (!response.ok) throw new Error("Failed to start PPT generation");
+    return response.json(); 
+  })
+  .then(data => {
+    console.log("PPT download URL:", data.download_url);
+
+    const downloadUrl = data.download_url;
+    if (!downloadUrl) throw new Error("No download URL returned");
+
+    return fetch(downloadUrl, {
+      method: "GET",
+      headers: {
+        "Accept": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+      }
+    });
+  })
+  .then(response => {
+    if (!response.ok) throw new Error("Failed to retrieve PPT file");
+    return response.blob();
+  })
+  .then(blob => {
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${this.sanitizeFilename(title)}.pptx`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+    this.resetExportState();
+  })
+  .catch(err => {
+    console.error(err);
+    this.toastService.error("Failed to generate PPT file.");
+    this.isExporting = false;
+  });
+}
+
+
+  private downloadFile(extension: string, mimeType: string): void {
+    const blob = new Blob([this.metadata.fullContent], { type: mimeType });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${this.sanitizeFilename(this.metadata.topic)}.${extension}`;
+    link.click();
+    window.URL.revokeObjectURL(url);
+  }
+
+  private sanitizeFilename(filename: string): string {
+    return filename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  }
+
+  get isPodcast(): boolean {
+    const result = this.metadata.contentType === 'podcast' && !!this.metadata.podcastAudioUrl;
+    // console.log('[TL Action Buttons] isPodcast check:', {
+    //   contentType: this.metadata.contentType,
+    //   hasPodcastUrl: !!this.metadata.podcastAudioUrl,
+    //   podcastUrl: this.metadata.podcastAudioUrl?.substring(0, 50),
+    //   result: result
+    // });
+    return result;
+  }
+  
+  convertToPodcast(): void {
+    if (this.isConvertingToPodcast) return;
+    
+    this.isConvertingToPodcast = true;
+    
+    // Prepare the podcast generation request with correct backend schema
+    const formData = new FormData();
+    formData.append('topic', this.metadata.topic); // Required field
+    formData.append('style', 'dialogue'); // dialogue or monologue
+    formData.append('duration', 'medium'); // short, medium, or long
+    formData.append('context', this.metadata.fullContent); // The content to convert
+    
+    let scriptContent = '';
+    let audioBase64 = '';
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    
+    // Get API URL from environment (supports runtime config via window._env)
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    
+    // Use fetch for SSE streaming
+    this.authFetchService.authenticatedFetchFormData(`${apiUrl}/api/v1/tl/generate-podcast`, {
+      method: 'POST',
+      body: formData
+    })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      
+      const readStream = (): any => {
+        return reader?.read().then(({ done, value }) => {
+          if (done) {
+            this.isConvertingToPodcast = false;
+            
+            console.log('[Podcast Debug] Stream complete');
+            console.log('[Podcast Debug] audioBase64 length:', audioBase64?.length || 0);
+            console.log('[Podcast Debug] scriptContent length:', scriptContent?.length || 0);
+            
+            // Send podcast to chat with metadata
+            if (audioBase64 && scriptContent) {
+              console.log('[Podcast Debug] Converting base64 to blob...');
+              const audioBlob = this.base64ToBlob(audioBase64, 'audio/mpeg');
+              console.log('[Podcast Debug] Blob size:', audioBlob.size, 'bytes');
+              
+              const audioUrl = URL.createObjectURL(audioBlob);
+              console.log('[Podcast Debug] Audio URL created:', audioUrl);
+              
+              // Create metadata for the podcast message
+              const podcastMetadata: ThoughtLeadershipMetadata = {
+                contentType: 'podcast',
+                topic: `${this.metadata.topic} (Podcast)`,
+                fullContent: scriptContent,
+                showActions: true,
+                podcastAudioUrl: audioUrl,
+                podcastFilename: `${this.sanitizeFilename(this.metadata.topic)}_podcast.mp3`
+              };
+              
+              console.log('[Podcast Debug] Metadata:', podcastMetadata);
+              
+              // Send to chat via bridge
+              const podcastMessage = `📻 **Podcast Generated Successfully!**\n\n**Script:**\n\n${scriptContent}\n\n🎧 **Audio Ready!** Listen below or download the MP3 file.`;
+              this.tlChatBridge.sendToChat(podcastMessage, podcastMetadata);
+              
+              console.log('[Podcast Debug] Sent to chat via bridge');
+              this.toastService.success('Podcast generated and added to chat!');
+            } else {
+              console.error('[Podcast Debug] Missing data - audioBase64:', !!audioBase64, 'scriptContent:', !!scriptContent);
+            }
+            return;
+          }
+          
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          
+          lines.forEach(line => {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6).trim();
+              if (data) {
+                try {
+                  const parsed = JSON.parse(data);
+                  console.log('[Podcast Debug] SSE event type:', parsed.type);
+                  
+                  if (parsed.type === 'script') {
+                    scriptContent = parsed.content;
+                    console.log('[Podcast Debug] Script received, length:', scriptContent.length);
+                  } else if (parsed.type === 'complete') {
+                    audioBase64 = parsed.audio;
+                    console.log('[Podcast Debug] Audio received, base64 length:', audioBase64?.length || 0);
+                  } else if (parsed.type === 'error') {
+                    console.error('Podcast generation error:', parsed.message);
+                    this.toastService.error(`Error generating podcast: ${parsed.message}`);
+                    
+                    // Abort the reader and reset state immediately
+                    reader?.cancel();
+                    this.isConvertingToPodcast = false;
+                    throw new Error(parsed.message);
+                  } else if (parsed.type === 'progress') {
+                    console.log('[Podcast Debug] Progress:', parsed.message);
+                  }
+                } catch (e) {
+                  console.error('Error parsing SSE data:', e);
+                }
+              }
+            }
+          });
+          
+          return readStream();
+        }).catch((error) => {
+          // Handle stream reading errors
+          this.isConvertingToPodcast = false;
+          reader?.cancel();
+          throw error;
+        });
+      };
+      
+      return readStream();
+    })
+    .catch(error => {
+      console.error('Error converting to podcast:', error);
+      this.toastService.error(`Failed to convert content to podcast: ${error.message || 'Unknown error'}`);
+      this.isConvertingToPodcast = false;
+      reader?.cancel();
+    });
+  }
+  
+  private base64ToBlob(base64: string, contentType: string): Blob {
+    const byteCharacters = atob(base64);
+    const byteArrays = [];
+    
+    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+      const slice = byteCharacters.slice(offset, offset + 512);
+      const byteNumbers = new Array(slice.length);
+      for (let i = 0; i < slice.length; i++) {
+        byteNumbers[i] = slice.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      byteArrays.push(byteArray);
+    }
+    
+    return new Blob(byteArrays, { type: contentType });
+  }
+
+ 
 }
