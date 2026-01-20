@@ -3542,7 +3542,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
             # Reset numbering if previous block was a heading
             reset_numbering = (prev_block_type == 'heading')
             
-            # If previous block was heading, close current list and start new one with reset
+            # If previous block was heading, close current list (if any) and start new one with reset
             if reset_numbering and current_list:
                 ordered_list = _order_list_items(current_list)
                 _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=False)
@@ -3562,6 +3562,9 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
             
             # Add to current list
             current_list.append(block_info)
+            # Mark if this list should reset numbering (after heading)
+            if reset_numbering and len(current_list) == 1:
+                current_list[0]['_reset_numbering'] = True
             prev_list_type = list_type
             prev_block_type = 'list_item'
         else:
@@ -3928,7 +3931,6 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
     current_list = []
     prev_list_type = None
     prev_block_type = None
-    list_counter = {}  # Track numbering for each list type to reset after headings
     
     for i, block_info in enumerate(formatted_blocks):
         block_type = block_info['type']
@@ -3939,9 +3941,14 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
         if block_type == 'list_item' or block_type == 'bullet_item':
             list_type = block_info.get('list_type', 'bullet')
             
-            # Reset numbering if previous block was a heading
-            if prev_block_type == 'heading':
-                list_counter[list_type] = 0
+            # Reset numbering if previous block was a heading (same as Word)
+            reset_numbering = (prev_block_type == 'heading')
+            
+            # If previous block was heading, close current list (if any) and start new one with reset
+            if reset_numbering and current_list:
+                ordered_list = _order_list_items(current_list, start_from=1)
+                _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=1)
+                current_list = []
             
             # Check if we should start a new list (different type or level)
             if current_list:
@@ -3949,24 +3956,31 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                 if prev_list_type != list_type or first_item_level != level:
                     # Close current list and start new one
                     # Order list if needed (for numbered/alphabetical)
-                    ordered_list = _order_list_items(current_list)
-                    _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block)
+                    # Check if this list should reset numbering
+                    should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
+                    start_from_val = 1 if should_reset else 1
+                    ordered_list = _order_list_items(current_list, start_from=start_from_val)
+                    _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=start_from_val)
                     current_list = []
-                    list_counter[prev_list_type] = 0  # Reset counter for new list
             
             # Add to current list
             current_list.append(block_info)
+            # Mark if this list should reset numbering (after heading) - same as Word
+            if reset_numbering and len(current_list) == 1:
+                current_list[0]['_reset_numbering'] = True
             prev_list_type = list_type
             prev_block_type = 'list_item'
         else:
             # Close any open list before processing non-list block
             if current_list:
                 # Order list if needed (for numbered/alphabetical)
-                ordered_list = _order_list_items(current_list)
-                _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block)
+                # Check if this list should reset numbering (marked when started after heading)
+                should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
+                start_from_val = 1 if should_reset or prev_block_type == 'heading' else 1
+                ordered_list = _order_list_items(current_list, start_from=start_from_val)
+                _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=start_from_val)
                 current_list = []
                 prev_list_type = None
-                list_counter = {}  # Reset all counters
             
             # Process non-bullet blocks
             # Title blocks already skipped in first pass, so they won't reach here
