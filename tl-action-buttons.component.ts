@@ -233,8 +233,30 @@ private exportWordNewLogic(): void {
       if (!paragraphEdits || paragraphEdits.length === 0 || !originalContent) {
         // Fallback: Use metadata content and block_types if paragraph_edits not available
         const { content: normalizedContent, blockTypes } = this.getBlockTypesForExport();
-        // Use extractTitleFromBlockTypes to match guided journey behavior (block type "title" as page 1)
-        const exportTitle = extractTitleFromBlockTypes(normalizedContent, blockTypes, this.metadata.topic);
+        
+        // Extract title from block_types (no fallback - must use block_types title)
+        let exportTitle = '';
+        if (blockTypes && blockTypes.length > 0) {
+          const titleBlock = blockTypes.find(bt => bt.type === 'title');
+          if (titleBlock) {
+            // Find the corresponding content block
+            const paragraphs = normalizedContent.split('\n\n').filter((p: string) => p.trim());
+            const titleIndex = blockTypes.findIndex(bt => bt.type === 'title');
+            if (titleIndex >= 0 && titleIndex < paragraphs.length) {
+              let titleText = paragraphs[titleIndex].trim();
+              // Remove markdown formatting
+              titleText = titleText.replace(/^#+\s+/, '').replace(/\*\*/g, '').trim();
+              if (titleText) {
+                exportTitle = titleText;
+              }
+            }
+          }
+        }
+        
+        if (!exportTitle) {
+          throw new Error('Title not found in block_types');
+        }
+        
         const finalTitle = exportTitle;
         
         this.chatService.exportEditContentToWord({
@@ -430,8 +452,30 @@ private exportWordNewLogic(): void {
       if (!paragraphEdits || paragraphEdits.length === 0 || !originalContent) {
         // Fallback: Use metadata content and block_types if paragraph_edits not available
         const { content: normalizedContent, blockTypes } = this.getBlockTypesForExport();
-        // Use extractTitleFromBlockTypes to match guided journey behavior (block type "title" as page 1)
-        const exportTitle = extractTitleFromBlockTypes(normalizedContent, blockTypes, this.metadata.topic);
+        
+        // Extract title from block_types (no fallback - must use block_types title)
+        let exportTitle = '';
+        if (blockTypes && blockTypes.length > 0) {
+          const titleBlock = blockTypes.find(bt => bt.type === 'title');
+          if (titleBlock) {
+            // Find the corresponding content block
+            const paragraphs = normalizedContent.split('\n\n').filter((p: string) => p.trim());
+            const titleIndex = blockTypes.findIndex(bt => bt.type === 'title');
+            if (titleIndex >= 0 && titleIndex < paragraphs.length) {
+              let titleText = paragraphs[titleIndex].trim();
+              // Remove markdown formatting
+              titleText = titleText.replace(/^#+\s+/, '').replace(/\*\*/g, '').trim();
+              if (titleText) {
+                exportTitle = titleText;
+              }
+            }
+          }
+        }
+        
+        if (!exportTitle) {
+          throw new Error('Title not found in block_types');
+        }
+        
         const finalTitle = exportTitle;
         
         this.chatService.exportEditContentToPDF({
