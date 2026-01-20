@@ -62,19 +62,16 @@ type ParagraphFeedback = ParagraphEdit & {
       
     
       <div class="paragraph-edits-container">
-        <!-- Show message when there are no paragraphs at all -->
-        @if (paragraphEdits.length === 0 && !showFinalOutput) {
-          <div class="paragraph-no-feedback">
-            <p>
-              There are no paragraphs to review from
-              <strong>{{ getEditorDisplayName(currentEditor) }}</strong>.
-            </p>
-          </div>
-        } @else if (hasNoParagraphFeedback && !showFinalOutput) {
+        <!-- Show message when there are no paragraphs or no feedback -->
+        @if (hasNoParagraphFeedback && !showFinalOutput) {
           <div class="paragraph-no-feedback">
             <p>
               There are no feedback changes from
-              <strong>{{ getEditorDisplayName(currentEditor) }}</strong>.
+              @if (currentEditor) {
+                <strong>{{ getEditorDisplayName(currentEditor) }}</strong>
+              } @else {
+                <strong>the current editor</strong>
+              }.
             </p>
           </div>
         }
@@ -301,13 +298,13 @@ type ParagraphFeedback = ParagraphEdit & {
               type="button"
               class="final-output-btn"
               (click)="onGenerateFinal(); $event.stopPropagation()"
-              [disabled]="!allParagraphsDecided || isGeneratingFinal">
+              [disabled]="!allParagraphsDecided || isGeneratingFinal || isGenerating">
               @if (isGeneratingFinal) {
                 <span class="spinner"></span>
               }
               {{ isGeneratingFinal ? 'Generating Final Output...' : 'Generate Final Output' }}
             </button>
-            @if (!allParagraphsDecided) {
+            @if (!allParagraphsDecided && paragraphEdits.length > 0) {
               <p class="final-output-hint">
                 Please approve or reject all paragraph edits and feedback to generate the final article.
               </p>
@@ -327,7 +324,7 @@ type ParagraphFeedback = ParagraphEdit & {
                 }
                 {{ isGenerating ? 'Loading Next Editor...' : 'Next Editor →' }}
               </button>
-              @if (!allParagraphsDecided) {
+              @if (!allParagraphsDecided && paragraphEdits.length > 0) {
                 <p class="next-editor-hint">
                   Please approve or reject all paragraph edits before proceeding to the next editor.
                 </p>
@@ -345,13 +342,13 @@ type ParagraphFeedback = ParagraphEdit & {
             type="button"
             class="final-output-btn"
             (click)="onGenerateFinal(); $event.stopPropagation()"
-            [disabled]="!allParagraphsDecided || isGeneratingFinal">
+            [disabled]="!allParagraphsDecided || isGeneratingFinal || isGenerating">
             @if (isGeneratingFinal) {
               <span class="spinner"></span>
             }
             {{ isGeneratingFinal ? 'Generating Final Output...' : 'Generate Final Output' }}
           </button>
-          @if (!allParagraphsDecided) {
+          @if (!allParagraphsDecided && paragraphEdits.length > 0) {
             <p class="final-output-hint">
               Please approve or reject all paragraph edits and feedback to generate the final article.
             </p>
@@ -1558,7 +1555,6 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
   @Input() paragraphEdits: ParagraphEdit[] = [];
   @Input() showFinalOutput: boolean = false;
   @Input() isGeneratingFinal: boolean = false;
-    hasNoParagraphFeedback: boolean = false;
   // Sequential workflow inputs
   @Input() threadId?: string | null;
   @Input() currentEditor?: string | null;
@@ -1578,6 +1574,23 @@ export class ParagraphEditsConsolidatedComponent implements OnChanges {
   private hoveredFeedback: { paragraphIndex: number, editorType: string, feedbackIndex: number } | null = null;
 
   constructor(private cdr: ChangeDetectorRef) {}
+
+  /** Check if there are no paragraphs or no feedback - consolidated logic */
+  get hasNoParagraphFeedback(): boolean {
+    // If there are no paragraphs at all, return true
+    if (!this.paragraphEdits || this.paragraphEdits.length === 0) {
+      return true;
+    }
+    
+    // If there are paragraphs but no feedback items across all paragraphs, return true
+    return this.paragraphFeedbackData.every(para => {
+      const types = Object.keys(para.editorial_feedback || {});
+      return types.every(t => {
+        const arr = (para.editorial_feedback as any)[t] || [];
+        return !arr || arr.length === 0;
+      });
+    });
+  }
 
   get allParagraphsDecided(): boolean {
     // If there are no paragraphs at all, buttons should be enabled (nothing to decide)
