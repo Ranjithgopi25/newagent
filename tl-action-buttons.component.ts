@@ -1,1150 +1,272 @@
+from typing import List
+import os
+import re
 
-import { Component, Input, ViewChild, ElementRef, HostListener, Output, EventEmitter, OnInit } from '@angular/core';
+from dotenv import load_dotenv
+from docx import Document
 
-import { HttpClient } from '@angular/common/http';
-import { ThoughtLeadershipMetadata, Message } from '../../../../../core/models';
-import { CanvasStateService } from '../../../../../core/services/canvas-state.service';
-import { TlChatBridgeService } from '../../../../../core/services/tl-chat-bridge.service';
-import { ChatService } from '../../../../../core/services/chat.service';
-import { ToastService } from '../../../../../core/services/toast.service';
-import { ChatEditWorkflowService } from '../../../../../core/services/chat-edit-workflow.service';
-import { environment } from '../../../../../../environments/environment';
-import { TlRequestFormComponent } from '../../../../phoenix/TL/request-form';
-import { AuthFetchService } from '../../../../../core/services/auth-fetch.service';
-import { extractDocumentTitle, extractTitleFromBlockTypes } from '../../../../../core/utils/edit-content.utils';
-import { formatFinalArticleWithBlockTypes} from '../../../../../core/utils/edit-content.utils';
-import { BlockTypeInfo } from '../../../../../core/utils/edit-content.utils';
+from langchain.agents import create_agent
+from langchain_openai import ChatOpenAI
+from langchain.agents.structured_output import ToolStrategy
+from langgraph.checkpoint.memory import InMemorySaver
+from langchain_core.messages import HumanMessage
+from app.core.deps import get_llm_client_agent
 
-@Component({
-    selector: 'app-tl-action-buttons',
-    imports: [TlRequestFormComponent],
-    templateUrl: './tl-action-buttons.component.html',
-    styleUrls: ['./tl-action-buttons.component.scss']
-})
-export class TlActionButtonsComponent implements OnInit {
-  @Input() metadata!: ThoughtLeadershipMetadata;
-  @Input() messageId?: string;
-  @Input() message?: Message;  // Optional: Full message for accessing paragraph_edits
-  @Input() selectedFlow?: 'ppt' | 'thought-leadership' | 'market-intelligence';
-  @ViewChild('exportButton') exportButton?: ElementRef<HTMLButtonElement>;
-  
-  isConvertingToPodcast = false;
-  showExportDropdown = false;
-  isCopied = false;
-  isExporting = false;
-  isExported = false;
-  exportFormat = '';
-  showRequestForm = false;
-  translatedContent = '';
-
-  @Output() raisePhoenix = new EventEmitter<void>();
-
-  @HostListener('document:click', ['$event'])
-  onDocumentClick(event: MouseEvent): void {
-    const target = event.target as HTMLElement;
-    const exportDropdown = target.closest('.export-dropdown');
-    if (!exportDropdown && this.showExportDropdown) {
-      this.showExportDropdown = false;
-    }
-  }
-
-  constructor(
-    private canvasStateService: CanvasStateService,
-    private http: HttpClient,
-    private tlChatBridge: TlChatBridgeService,
-    private authFetchService: AuthFetchService,
-    private chatService: ChatService,
-    private toastService: ToastService,
-    private editWorkflowService: ChatEditWorkflowService
-  ) {}
-  
-
-  ngOnInit(): void {
-    console.log('[TL Action Buttons] Component initialized with metadata:', {
-      contentType: this.metadata?.contentType,
-      hasPodcastUrl: !!this.metadata?.podcastAudioUrl,
-      podcastUrl: this.metadata?.podcastAudioUrl?.substring(0, 80),
-      showActions: this.metadata?.showActions,
-      isPodcast: this.isPodcast
-    });
-  }
-private exportWordNewLogic(): void {
-  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-    this.toastService.error('Content is not available yet.');
-    return;
-  }
-
-  // Prepare content according to new logic
-  const plainText = this.metadata.fullContent
-    .replace(/<br>/g, '\n')
-    .replace(/<[^>]+>/g, ''); // strip HTML
-
-  const title = this.metadata.topic?.trim() || 'Generated Document';
-
-  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-  const endpoint = `${apiUrl}/api/v1/export/word-standalone`; 
-
-  this.authFetchService.authenticatedFetch(endpoint, {
-    method: 'POST',
-    body: JSON.stringify({
-      content: plainText,
-      title,
-      content_type: this.metadata.contentType
-    })
-  })
-    .then(response => {
-      if (!response.ok) throw new Error('Failed to generate Word document');
-      return response.blob();
-    })
-    .then(blob => {
-      // Use existing download mechanism
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${this.sanitizeFilename(title)}.docx`;
-      link.click();
-      window.URL.revokeObjectURL(url);
-      this.resetExportState();
-    })
-    .catch(err => {
-      console.error('New Word export error:', err);
-      this.toastService.error('Failed to generate Word document. Please try again.');
-      this.isExporting = false;
-    });
-}
-
-  // private isEditContent(): boolean {
-  //   // Check if this is edit content workflow
-  //   // Edit content may have contentType 'edit-content' 
-  //   return this.metadata?.contentType === 'edit-content';
-  // }
+from .schema import DocumentStructure, DocumentBlock, BlockType, EditorResult
 
 
 
-  downloadWord(): void {
-    // this.exportDocument('/api/v1/export/word', 'docx', 'docx');
-    const isSocialModule = this.metadata?.contentType === 'socialMedia';
-    const isEditContent = this.metadata?.contentType === 'article';
-    const isMarketModule = this.metadata?.contentType === 'conduct-research' || this.selectedFlow === 'market-intelligence';
-    const isindustryModule = this.metadata?.contentType === 'industry-insights';
-    const isproposalModule = this.metadata?.contentType === 'proposal-inputs';
-    const isprepMeetModule = this.metadata?.contentType === 'prep-meet';
-    const isPovModule = this.metadata?.contentType === 'pov';
+llm = get_llm_client_agent()
+
+
+SYSTEM_PROMPT = """
+You are a document structure analyzer.
+
+Objective:
+Break down the provided document into an ordered list of structured blocks:
+- Title
+- Section headings
+- Paragraphs
+- Bullet items
+
+You MUST output valid JSON matching the DocumentStructure schema provided below.
+
+-----------------------------------------
+Schema Requirements (MANDATORY)
+-----------------------------------------
+
+DocumentStructure:
+- blocks: Array<DocumentBlock>
+
+DocumentBlock:
+- id: string (b1, b2, b3, ...)
+- type: one of ["title", "heading", "paragraph", "bullet_item"]
+- level:
+    * 0 for title
+    * 1–3 for headings (1=main, 2=sub, 3=sub-sub)
+    * 0 for paragraphs and bullet items
+- text: string (exact original text; do NOT modify wording)
+
+-----------------------------------------
+Parsing Rules (MANDATORY)
+-----------------------------------------
+
+- Process the document strictly top-to-bottom. Never reorder or move content.
+- Preserve all original text exactly.
+- Merge multi-line paragraphs.
+- A heading must appear alone on a line and look like a heading.
+- Extract bullet items one-by-one.
+- Assign IDs sequentially based on appearance.
+
+-----------------------------------------
+Output:
+Return ONLY the JSON for DocumentStructure. No explanation, no commentary.
+"""
+
+
+class Context:
+    user_id: str = "1"
+
+
+checkpointer = InMemorySaver()
+
+
+agent = create_agent(
+    model=llm,
+    system_prompt=SYSTEM_PROMPT,
+    tools=[],
+    context_schema=Context,
+    response_format=ToolStrategy(DocumentStructure),
+    checkpointer=checkpointer,
+)
+
+
+def generate_title_from_content(document_text: str) -> str:
+    """
+    Generate a title based on the entire document content using LLM.
+    Used when no title is found in the segmented document.
+    """
+    title_prompt = f"""Based on the following document content, generate a concise and descriptive title (maximum 100 characters).
+
+Document Content:
+\"\"\"{document_text}\"\"\"
+
+Generate only the title text, nothing else. The title should:
+- Be clear and descriptive
+- Capture the main topic or theme
+- Be professional and appropriate
+- Not exceed 100 characters
+
+Title:"""
     
-    console.log('[TL Action Buttons] downloadWord() called:', {
-      contentType: this.metadata?.contentType,
-      selectedFlow: this.selectedFlow,
-      isSocialModule,
-      isMarketModule,
-      timestamp: new Date().toISOString()
-    });
-    
-    if (isEditContent) {
-      this.exportEditContentWord();
-    } else if (isSocialModule) {
-      this.exportUIWord();  
-    }
-    else if (isindustryModule || isPovModule || isprepMeetModule || isproposalModule){
-       this.exportDocument('/api/v1/export/word-pwc-mi-module', 'docx', 'docx'); 
-    }
-    
-    else if (isMarketModule) {
-      this.exportDocument('/api/v1/export/word-pwc-no-toc', 'docx', 'docx'); 
-    }
-    else {
-      console.log("Export word 2")
-      this.exportDocument('/api/v1/export/word', 'docx', 'docx'); 
-    }
-  }
-
-  /**
-   * Get block types using the same logic as final article generation
-   * This ensures consistency between display and export
-   * Uses exact same logic as ChatEditWorkflowService.generateFinalArticle()
-   */
-  private getBlockTypesForExport(): { content: string; blockTypes: BlockTypeInfo[] } {
-    // Use exact backend final_article (metadata.fullContent) - no processing needed
-    // Backend returns: final_article = "\n\n".join(final_paragraphs)
-    const content = this.metadata.fullContent || '';
-    
-    // Use exact same block_types normalization logic as generateFinalArticle()
-    // Backend provides block_types with sequential indices matching final_paragraphs
-    let blockTypes: BlockTypeInfo[] = [];
-    const metadataBlockTypes = (this.metadata as any).block_types;
-    
-    if (metadataBlockTypes && Array.isArray(metadataBlockTypes) && metadataBlockTypes.length > 0) {
-      // Backend provides correctly aligned block_types with indices matching final_article split
-      // Use same normalization as generateFinalArticle() (lines 1977-1983)
-      // IMPORTANT: Only default to 'paragraph' if type is truly missing (undefined/null), preserve actual values
-      blockTypes = metadataBlockTypes.map((bt: any) => ({
-        index: bt.index !== undefined && bt.index !== null ? bt.index : 0,
-        type: (bt.type !== undefined && bt.type !== null && bt.type !== '') ? bt.type : 'paragraph',
-        level: bt.level !== undefined && bt.level !== null ? bt.level : 0
-      }));
-      
-      // Debug: Log block_types to verify they're not all 'paragraph'
-      const typeCounts = blockTypes.reduce((acc, bt) => {
-        acc[bt.type] = (acc[bt.type] || 0) + 1;
-        return acc;
-      }, {} as Record<string, number>);
-      console.log('[TL Action Buttons] Export block_types distribution:', typeCounts);
-      console.log('[TL Action Buttons] Total block_types:', blockTypes.length, 'Sample:', blockTypes.slice(0, 5));
-    } else {
-      // Fallback: generate from paragraphEdits if available (same as generateFinalArticle fallback)
-      // This shouldn't happen if backend is working correctly, but provides safety
-      console.warn('[TL Action Buttons] Backend did not provide block_types, using default paragraph');
-      // Split content into paragraphs and create default block_types
-      const paragraphs = content.split(/\n\n+/).filter(p => p.trim());
-      blockTypes = paragraphs.map((_, idx) => ({
-        index: idx,
-        type: 'paragraph',
-        level: 0
-      }));
-    }
-    
-    return { content, blockTypes };
-  }
-
-  private async exportEditContentWord(): Promise<void> {
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      alert('Content is not available yet.');
-      return;
-    }
-
-    this.isExporting = true;
-    
-    try {
-      // REUSE generateFinalArticle: Call /final endpoint to get properly formatted content and block_types
-      // Sync paragraphEdits from message to service state if needed
-      if (this.message?.editWorkflow?.paragraphEdits && this.message.editWorkflow.paragraphEdits.length > 0) {
-        this.editWorkflowService.syncParagraphEditsFromMessage(this.message.editWorkflow.paragraphEdits);
-      }
-      
-      const paragraphEdits = this.editWorkflowService.currentState.paragraphEdits;
-      
-      // Get originalContent - use service state if available, otherwise reconstruct
-      let originalContent = this.editWorkflowService.currentState.originalContent;
-      if (!originalContent || !originalContent.trim()) {
-        if (paragraphEdits && paragraphEdits.length > 0) {
-          originalContent = this.editWorkflowService.reconstructOriginalContent(paragraphEdits);
-        }
-      }
-      
-      if (!paragraphEdits || paragraphEdits.length === 0 || !originalContent) {
-        // Fallback: Use metadata content and block_types if paragraph_edits not available
-        const { content: normalizedContent, blockTypes } = this.getBlockTypesForExport();
-        
-        // Extract title from block_types (no fallback - must use block_types title)
-        let exportTitle = '';
-        if (blockTypes && blockTypes.length > 0) {
-          const titleBlock = blockTypes.find(bt => bt.type === 'title');
-          if (titleBlock) {
-            // Find the corresponding content block
-            const paragraphs = normalizedContent.split('\n\n').filter((p: string) => p.trim());
-            const titleIndex = blockTypes.findIndex(bt => bt.type === 'title');
-            if (titleIndex >= 0 && titleIndex < paragraphs.length) {
-              let titleText = paragraphs[titleIndex].trim();
-              // Remove markdown formatting
-              titleText = titleText.replace(/^#+\s+/, '').replace(/\*\*/g, '').trim();
-              if (titleText) {
-                exportTitle = titleText;
-              }
-            }
-          }
-        }
-        
-        if (!exportTitle) {
-          throw new Error('Title not found in block_types');
-        }
-        
-        const finalTitle = exportTitle;
-        
-        this.chatService.exportEditContentToWord({
-          content: normalizedContent,
-          title: exportTitle,
-          block_types: blockTypes
-        }).subscribe({
-          next: (blob: Blob) => {
-            const url = window.URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `${this.sanitizeFilename(finalTitle)}.docx`;
-            link.click();
-            window.URL.revokeObjectURL(url);
-            this.resetExportState();
-          },
-          error: (error) => {
-            console.error('Edit Content Word export error:', error);
-            alert('Failed to generate Word document. Please try again.');
-            this.isExporting = false;
-          }
-        });
-        return;
-      }
-      
-      // Collect decisions with feedback decisions (same as generateFinalArticle)
-      const decisions = paragraphEdits.map(p => ({
-        index: p.index,
-        approved: p.approved === true,
-        editorial_feedback_decisions: this.editWorkflowService.collectFeedbackDecisions(p)
-      }));
-      
-      // Call /final endpoint to get formatted content and block_types
-      const authHeaders = await this.editWorkflowService.getAuthHeaders();
-      const apiUrl = (window as any)._env?.apiUrl || '';
-      
-      const response = await fetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({
-          original_content: originalContent,
-          paragraph_edits: paragraphEdits.map(p => ({
-            index: p.index,
-            original: p.original,
-            edited: p.edited,
-            tags: p.tags,
-            block_type: p.block_type || 'paragraph',
-            level: p.level || 0,
-            editorial_feedback: p.editorial_feedback || {}
-          })),
-          decisions: decisions,
-          accept_all: false,
-          reject_all: false
-        })
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to generate final article: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      const finalArticle = data.final_article || '';
-      const blockTypes: BlockTypeInfo[] = (data.block_types || []).map((bt: any) => ({
-        index: bt.index !== undefined && bt.index !== null ? bt.index : 0,
-        type: (bt.type !== undefined && bt.type !== null && bt.type !== '') ? bt.type : 'paragraph',
-        level: bt.level !== undefined && bt.level !== null ? bt.level : 0
-      }));
-      
-      if (!finalArticle) {
-        throw new Error('No final article returned from server');
-      }
-      
-      // Extract title from block_types (no fallback - must use block_types title)
-      let exportTitle = '';
-      if (blockTypes && blockTypes.length > 0) {
-        const titleBlock = blockTypes.find(bt => bt.type === 'title');
-        if (titleBlock) {
-          // Find the corresponding content block
-          const paragraphs = finalArticle.split('\n\n').filter((p: string) => p.trim());
-          const titleIndex = blockTypes.findIndex(bt => bt.type === 'title');
-          if (titleIndex >= 0 && titleIndex < paragraphs.length) {
-            let titleText = paragraphs[titleIndex].trim();
-            // Remove markdown formatting
-            titleText = titleText.replace(/^#+\s+/, '').replace(/\*\*/g, '').trim();
-            if (titleText) {
-              exportTitle = titleText;
-            }
-          }
-        }
-      }
-      
-      if (!exportTitle) {
-        throw new Error('Title not found in block_types');
-      }
-      
-      const finalTitle = exportTitle;
-      
-      // Send formatted content and block_types directly to export endpoint
-      this.chatService.exportEditContentToWord({
-        content: finalArticle,
-        title: exportTitle,
-        block_types: blockTypes
-      }).subscribe({
-        next: (blob: Blob) => {
-          const url = window.URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = `${this.sanitizeFilename(finalTitle)}.docx`;
-          link.click();
-          window.URL.revokeObjectURL(url);
-          this.resetExportState();
-        },
-        error: (error) => {
-          console.error('Edit Content Word export error:', error);
-          alert('Failed to generate Word document. Please try again.');
-          this.isExporting = false;
-        }
-      });
-    } catch (error) {
-      console.error('Error generating final article for export:', error);
-      alert('Failed to generate final article. Please try again.');
-      this.isExporting = false;
-    }
-  }
-
-  downloadPDF(): void {
-    // Consider message as 'market module' when contentType is conduct-research or selectedFlow is market-intelligence
-    const contentType = String(this.metadata?.contentType || '');
-    const isEditContent = this.metadata?.contentType === 'article';
-    const isMarketModule = contentType === 'conduct-research' || this.selectedFlow === 'market-intelligence';
-    const isIndustryModule = contentType === 'industry-insights';
-    const isproposalModule = contentType === 'proposal-inputs';
-    const isprepMeetModule = contentType === 'prep-meet';
-    const isPovModule = contentType === 'pov';
-    
-    console.log('[TL Action Buttons] downloadPDF() called:', {
-      contentType,
-      selectedFlow: this.selectedFlow,
-      isMarketModule,
-      isIndustryModule,
-      isPovModule,
-      isprepMeetModule,
-      isproposalModule,
-      timestamp: new Date().toISOString()
-    });
-      if (isEditContent) {
-        this.exportEditContentPDF();
-        return;
-    }
-      else if (isIndustryModule || isPovModule || isprepMeetModule || isproposalModule){
-          this.exportDocument('/api/v1/export/pdf-pwc-mi-module', 'pdf', 'pdf'); 
-          return;
-
-      }
-      else if (isMarketModule) {
-        this.exportDocument('/api/v1/export/pdf-pwc-no-toc', 'pdf', 'pdf');
-        return;
-      }
-      this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
-    // const endpoint = isMarketModule
-    //   ? '/api/v1/export/pdf-pwc-no-toc'
-    //   : '/api/v1/export/pdf-pwc';
-    
-    // console.log('[TL Action Buttons] Using endpoint:', endpoint);
-    // this.exportDocument(endpoint, 'pdf', 'pdf');
-  }
-
-  private async exportEditContentPDF(): Promise<void> {
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      alert('Content is not available yet.');
-      return;
-    }
-
-    this.isExporting = true;
-    
-    try {
-      // REUSE generateFinalArticle: Call /final endpoint to get properly formatted content and block_types
-      // Sync paragraphEdits from message to service state if needed
-      if (this.message?.editWorkflow?.paragraphEdits && this.message.editWorkflow.paragraphEdits.length > 0) {
-        this.editWorkflowService.syncParagraphEditsFromMessage(this.message.editWorkflow.paragraphEdits);
-      }
-      
-      const paragraphEdits = this.editWorkflowService.currentState.paragraphEdits;
-      
-      // Get originalContent - use service state if available, otherwise reconstruct
-      let originalContent = this.editWorkflowService.currentState.originalContent;
-      if (!originalContent || !originalContent.trim()) {
-        if (paragraphEdits && paragraphEdits.length > 0) {
-          originalContent = this.editWorkflowService.reconstructOriginalContent(paragraphEdits);
-        }
-      }
-      
-      if (!paragraphEdits || paragraphEdits.length === 0 || !originalContent) {
-        // Fallback: Use metadata content and block_types if paragraph_edits not available
-        const { content: normalizedContent, blockTypes } = this.getBlockTypesForExport();
-        
-        // Extract title from block_types (no fallback - must use block_types title)
-        let exportTitle = '';
-        if (blockTypes && blockTypes.length > 0) {
-          const titleBlock = blockTypes.find(bt => bt.type === 'title');
-          if (titleBlock) {
-            // Find the corresponding content block
-            const paragraphs = normalizedContent.split('\n\n').filter((p: string) => p.trim());
-            const titleIndex = blockTypes.findIndex(bt => bt.type === 'title');
-            if (titleIndex >= 0 && titleIndex < paragraphs.length) {
-              let titleText = paragraphs[titleIndex].trim();
-              // Remove markdown formatting
-              titleText = titleText.replace(/^#+\s+/, '').replace(/\*\*/g, '').trim();
-              if (titleText) {
-                exportTitle = titleText;
-              }
-            }
-          }
-        }
-        
-        if (!exportTitle) {
-          throw new Error('Title not found in block_types');
-        }
-        
-        const finalTitle = exportTitle;
-        
-        this.chatService.exportEditContentToPDF({
-          content: normalizedContent,
-          title: exportTitle,
-          block_types: blockTypes
-        }).subscribe({
-          next: (blob: Blob) => {
-            const url = window.URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `${this.sanitizeFilename(finalTitle)}.pdf`;
-            link.click();
-            window.URL.revokeObjectURL(url);
-            this.resetExportState();
-          },
-          error: (error) => {
-            console.error('Edit Content PDF export error:', error);
-            alert('Failed to generate PDF document. Please try again.');
-            this.isExporting = false;
-          }
-        });
-        return;
-      }
-      
-      // Collect decisions with feedback decisions (same as generateFinalArticle)
-      const decisions = paragraphEdits.map(p => ({
-        index: p.index,
-        approved: p.approved === true,
-        editorial_feedback_decisions: this.editWorkflowService.collectFeedbackDecisions(p)
-      }));
-      
-      // Call /final endpoint to get formatted content and block_types
-      const authHeaders = await this.editWorkflowService.getAuthHeaders();
-      const apiUrl = (window as any)._env?.apiUrl || '';
-      
-      const response = await fetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({
-          original_content: originalContent,
-          paragraph_edits: paragraphEdits.map(p => ({
-            index: p.index,
-            original: p.original,
-            edited: p.edited,
-            tags: p.tags,
-            block_type: p.block_type || 'paragraph',
-            level: p.level || 0,
-            editorial_feedback: p.editorial_feedback || {}
-          })),
-          decisions: decisions,
-          accept_all: false,
-          reject_all: false
-        })
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to generate final article: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      const finalArticle = data.final_article || '';
-      const blockTypes: BlockTypeInfo[] = (data.block_types || []).map((bt: any) => ({
-        index: bt.index !== undefined && bt.index !== null ? bt.index : 0,
-        type: (bt.type !== undefined && bt.type !== null && bt.type !== '') ? bt.type : 'paragraph',
-        level: bt.level !== undefined && bt.level !== null ? bt.level : 0
-      }));
-      
-      if (!finalArticle) {
-        throw new Error('No final article returned from server');
-      }
-      
-      // Extract title from block_types (no fallback - must use block_types title)
-      let exportTitle = '';
-      if (blockTypes && blockTypes.length > 0) {
-        const titleBlock = blockTypes.find(bt => bt.type === 'title');
-        if (titleBlock) {
-          // Find the corresponding content block
-          const paragraphs = finalArticle.split('\n\n').filter((p: string) => p.trim());
-          const titleIndex = blockTypes.findIndex(bt => bt.type === 'title');
-          if (titleIndex >= 0 && titleIndex < paragraphs.length) {
-            let titleText = paragraphs[titleIndex].trim();
-            // Remove markdown formatting
-            titleText = titleText.replace(/^#+\s+/, '').replace(/\*\*/g, '').trim();
-            if (titleText) {
-              exportTitle = titleText;
-            }
-          }
-        }
-      }
-      
-      if (!exportTitle) {
-        throw new Error('Title not found in block_types');
-      }
-      
-      const finalTitle = exportTitle;
-      
-      // Send formatted content and block_types directly to export endpoint
-      this.chatService.exportEditContentToPDF({
-        content: finalArticle,
-        title: exportTitle,
-        block_types: blockTypes
-      }).subscribe({
-        next: (blob: Blob) => {
-          const url = window.URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = `${this.sanitizeFilename(finalTitle)}.pdf`;
-          link.click();
-          window.URL.revokeObjectURL(url);
-          this.resetExportState();
-        },
-        error: (error) => {
-          console.error('Edit Content PDF export error:', error);
-          alert('Failed to generate PDF document. Please try again.');
-          this.isExporting = false;
-        }
-      });
-    } catch (error) {
-      console.error('Error generating final article for export:', error);
-      alert('Failed to generate final article. Please try again.');
-      this.isExporting = false;
-    }
-  }
-  
-  downloadPPT(): void {
-    this.exportPPT('/api/v1/export/ppt');
-  }
-
-  downloadPodcast(): void {
-    if (this.metadata.podcastAudioUrl && this.metadata.podcastFilename) {
-      const link = document.createElement('a');
-      link.href = this.metadata.podcastAudioUrl;
-      link.download = this.metadata.podcastFilename;
-      link.click();
-    }
-  }
-
-  cleanedDocumentText!: string;
-  documentTitle!: string;
-  onRaisePhoenix(): void {
-
-    this.cleanedDocumentText = this.metadata.fullContent
-    .replace(/<br>/g, '\n')
-    .replace(/<[^>]+>/g, '');
-
-    const lines = this.cleanedDocumentText
-    .split('\n')
-    .filter(line => line.trim());
-
-    this.documentTitle = lines.length > 0
-    ? lines[0].substring(0, 150)
-    : 'Generated Document';
-
-    this.showRequestForm = true;
-    this.raisePhoenix.emit();
-  }
-  
-  phoenixRdpLink = '';
-  ticketNumber = '';
-
-  onTicketCreated(event: {
-  requestNumber: string;
-  phoenixRdpLink: string;
-  }): void {
- this.phoenixRdpLink = event.phoenixRdpLink;
- this.ticketNumber = event.requestNumber;
-  console.log('Ticket created:', event.requestNumber);
-  this.translatedContent = `✅ Request created successfully! Your request number is: <a href="${event.phoenixRdpLink}" target="_blank" rel="noopener noreferrer">${event.requestNumber}</a>`.trim();
-  this.showRequestForm = false; 
-  this.sendToChat();
-}
-
-sendToChat(): void {
-
-  const topic = `Phoenix Request - ${this.ticketNumber}`;
-  let contentType: string;
-
-   
-    // Create metadata for the message
-    const metadata: ThoughtLeadershipMetadata = {
-      contentType: 'Phoenix_Request',
-      topic: topic,
-      fullContent: this.translatedContent,
-      showActions: false
-    };
-  const chatMessage = this.translatedContent;
-   
-    // Send to chat via bridge
-    console.log('[FormatTranslatorFlow] Sending to chat with metadata:', metadata);
-    this.tlChatBridge.sendToChat(chatMessage, metadata);
-    //this.onClose();
-}
-
-  copyToClipboard(): void {
-    // Convert markdown to plain text for better readability when pasted
-    const plainText = this.convertMarkdownToPlainText(this.metadata.fullContent);
-    
-    navigator.clipboard.writeText(plainText).then(() => {
-      this.isCopied = true;
-      // Reset the "copied" feedback after 2 seconds
-      setTimeout(() => {
-        this.isCopied = false;
-      }, 2000);
-    }).catch(err => {
-      console.error('Failed to copy to clipboard:', err);
-    });
-  }
-
-  private convertMarkdownToPlainText(markdown: string): string {
-    let text = markdown;
-    
-    // Remove markdown links [text](url) -> text
-    text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
-    
-    // Remove markdown images ![alt](url) -> alt
-    text = text.replace(/!\[([^\]]*)\]\([^\)]+\)/g, '$1');
-    
-    // Convert bold **text** -> text
-    text = text.replace(/\*\*([^\*]+)\*\*/g, '$1');
-    
-    // Convert italic *text* -> text
-    text = text.replace(/\*([^\*]+)\*/g, '$1');
-    
-    // Convert italic _text_ -> text
-    text = text.replace(/_([^_]+)_/g, '$1');
-    
-    // Convert strikethrough ~~text~~ -> text
-    text = text.replace(/~~([^~]+)~~/g, '$1');
-    
-    // Convert headers # text -> text
-    text = text.replace(/^#+\s+/gm, '');
-    
-    // Convert horizontal rules
-    text = text.replace(/^[-*_]{3,}$/gm, '');
-    
-    // Convert code blocks ``` -> remove backticks
-    text = text.replace(/```[\s\S]*?```/g, (match) => {
-      return match.replace(/```/g, '').trim();
-    });
-    
-    // Convert inline code `text` -> text
-    text = text.replace(/`([^`]+)`/g, '$1');
-    
-    // Convert blockquotes > text -> text
-    text = text.replace(/^>\s+/gm, '');
-    
-    // Convert unordered lists - * text -> text
-    text = text.replace(/^[\s]*[-*+]\s+/gm, '');
-    
-    // Convert ordered lists 1. text -> text
-    text = text.replace(/^[\s]*\d+\.\s+/gm, '');
-    
-    // Remove extra blank lines (more than 2 consecutive)
-    text = text.replace(/\n\n\n+/g, '\n\n');
-    
-    // Trim leading and trailing whitespace
-    text = text.trim();
-    
-    return text;
-  }
-
-  openInCanvas(): void {
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      this.toastService.error('Content is not available yet.');
-      return;
-    }
-    // Only allow supported types for canvas
-    const allowedTypes = ['article', 'blog', 'white_paper', 'executive_brief', 'socialMedia','conduct-research'];
-    if (!allowedTypes.includes(this.metadata.contentType)) {
-      this.toastService.warning('Canvas is only available for articles, blogs, white papers, executive briefs, social media posts, and conduct research.');
-      return;
-    }
-    // Map socialMedia and conduct-research to an accepted canvas type (they function like articles)
-    let canvasContentType: 'article' | 'blog' | 'white_paper' | 'executive_brief';
-    switch (this.metadata.contentType) {
-      case 'article':
-      case 'blog':
-      case 'white_paper':
-      case 'executive_brief':
-        canvasContentType = this.metadata.contentType;
-        break;
-      case 'socialMedia':
-      case 'conduct-research':
-      default:
-        canvasContentType = 'article';
-        break;
-    }
-    this.canvasStateService.loadFromContent(
-      this.metadata.fullContent,
-      this.metadata.topic || 'Untitled',
-      canvasContentType,
-      this.messageId
-    );
-  }
-
-  toggleExportDropdown(): void {
-    this.showExportDropdown = !this.showExportDropdown;
-  }
-  // downloadProcessedFile(): void {
-  //   if (!this.downloadUrl) {
-  //     console.warn('[SlideCreationFlow] No download URL available');
-  //     return;
-  //   }
-
-  //   const link = document.createElement('a');
-  //   link.href = this.downloadUrl;
-  //   link.target = '_blank';
-  //   link.download = 'Slide.pptx'; // default filename
-  //   link.click();
-  // }
-  exportSelected(format: 'word' | 'pdf' | 'ppt'): void {
-    this.showExportDropdown = false;
-    this.isExporting = true;
-    this.isExported = false;
-    this.exportFormat = format.toUpperCase();
-    
-    if (format === 'word') {
-    //  if (this.metadata?.contentType === 'conduct-research') {
-    //     this.exportWordNewLogic();   
-    //   } else {
-        this.downloadWord();       
-      // }
-    } else if(format === 'pdf') {
-      this.downloadPDF();
-    } else if (format === 'ppt') {
-      this.downloadPPT();
-    }
-       
-  }
-
-  private resetExportState(): void {
-    setTimeout(() => {
-      this.isExporting = false;
-    }, 500);
-    
-    this.isExported = true;
-    // Reset success indicator after 3 seconds
-    setTimeout(() => {
-      this.isExported = false;
-    }, 3000);
-  }
-
-  private exportDocument(endpoint: string, extension: string, format: string): void {
-    // Reuse the same approach as EditContentFlowComponent.downloadRevised()
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      this.toastService.error('Content is not available yet.');
-      return;
-    }
-
-    // Clean content the same way as the working implementation
-    const plainText = this.metadata.fullContent.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
-    
-    // Extract first line as subtitle (title for download)
-    const lines = plainText.split('\n').filter(line => line.trim());
-    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : 'Generated Document'; // First line as title, max 150 chars
-    const title = subtitle; // Use subtitle as the main title, not the topic
-    
-    // console.log(`>>>>>>>>>>>>>`,plainText);
-
-    // Get API URL from environment (supports runtime config via window._env)
-    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-    const fullEndpoint = `${apiUrl}${endpoint}`;
-
-    // Use fetch API like the working implementation (same as EditContentFlowComponent.downloadRevised)
-    this.authFetchService.authenticatedFetch(fullEndpoint, {
-      method: 'POST',
-      body: JSON.stringify({
-        content: plainText,
-        title,
-        subtitle: '',  // Don't pass subtitle separately since title is already set to it
-        content_type: this.metadata.contentType,  // Use snake_case to match backend
-
-      })
-    })
-    .then(response => {
-      if (!response.ok) {
-        throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
-      }
-      return response.blob();
-    })
-    .then(blob => {
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${this.sanitizeFilename(title)}.${extension}`;
-      link.click();
-      window.URL.revokeObjectURL(url);
-      this.resetExportState();
-    })
-    .catch(error => {
-      console.error(`Error generating ${extension.toUpperCase()}:`, error);
-      this.toastService.error(`Failed to generate ${extension.toUpperCase()} file. Please try again.`);
-      this.isExporting = false;
-    });
-  }
-  private exportUIWord(): void {
-  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-    this.toastService.error('Content is not available yet.');
-    return;
-  }
-
-  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-  const endpoint = `${apiUrl}/api/v1/export/word-ui`;
-
-  // IMPORTANT: send content AS-IS (no stripping)
-  const content = this.metadata.fullContent;
-
-  // Title logic can stay simple
-  const title = 'Generated Document';
-
-  this.authFetchService.authenticatedFetch(endpoint, {
-    method: 'POST',
-    body: JSON.stringify({
-      content,
-      title
-    })
-  })
-  .then(response => {
-    if (!response.ok) {
-      throw new Error('Failed to generate Word document');
-    }
-    return response.blob();
-  })
-  .then(blob => {
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${this.sanitizeFilename(title)}.docx`;
-    link.click();
-    window.URL.revokeObjectURL(url);
-  })
-  .catch(error => {
-    console.error('UI Word export failed:', error);
-    this.toastService.error('Failed to generate Word file.');
-  });
-}
-
-  private exportPPT(endpoint: string): void {
-  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-    this.toastService.error('Content is not available yet.');
-    return;
-  }
-
-  const plainText = this.metadata.fullContent
-    .replace(/<br>/g, '\n')
-    .replace(/<[^>]+>/g, '');
-
-  const title = this.metadata.topic?.trim() || 'Generated Presentation';
-
-  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-  const fullEndpoint = `${apiUrl}${endpoint}`;
-
-  this.authFetchService.authenticatedFetch(fullEndpoint, {
-    method: 'POST',
-    body: JSON.stringify({
-      content: plainText,
-      title
-    })
-  })
-  .then(response => {
-    if (!response.ok) throw new Error("Failed to start PPT generation");
-    return response.json(); 
-  })
-  .then(data => {
-    console.log("PPT download URL:", data.download_url);
-
-    const downloadUrl = data.download_url;
-    if (!downloadUrl) throw new Error("No download URL returned");
-
-    return fetch(downloadUrl, {
-      method: "GET",
-      headers: {
-        "Accept": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-      }
-    });
-  })
-  .then(response => {
-    if (!response.ok) throw new Error("Failed to retrieve PPT file");
-    return response.blob();
-  })
-  .then(blob => {
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${this.sanitizeFilename(title)}.pptx`;
-    a.click();
-    window.URL.revokeObjectURL(url);
-    this.resetExportState();
-  })
-  .catch(err => {
-    console.error(err);
-    this.toastService.error("Failed to generate PPT file.");
-    this.isExporting = false;
-  });
-}
+    try:
+        response = llm.invoke([HumanMessage(content=title_prompt)])
+        title = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+        # Remove quotes if LLM added them
+        title = re.sub(r'^["\']|["\']$', '', title)
+        # Limit to 100 characters
+        title = title[:100].strip()
+        return title if title else "Document"
+    except Exception as e:
+        # Fallback: use first sentence or first 50 chars
+        first_sentence = document_text.split('.')[0].strip()[:100]
+        return first_sentence if first_sentence else "Document"
 
 
-  private downloadFile(extension: string, mimeType: string): void {
-    const blob = new Blob([this.metadata.fullContent], { type: mimeType });
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${this.sanitizeFilename(this.metadata.topic)}.${extension}`;
-    link.click();
-    window.URL.revokeObjectURL(url);
-  }
-
-  private sanitizeFilename(filename: string): string {
-    return filename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-  }
-
-  get isPodcast(): boolean {
-    const result = this.metadata.contentType === 'podcast' && !!this.metadata.podcastAudioUrl;
-    // console.log('[TL Action Buttons] isPodcast check:', {
-    //   contentType: this.metadata.contentType,
-    //   hasPodcastUrl: !!this.metadata.podcastAudioUrl,
-    //   podcastUrl: this.metadata.podcastAudioUrl?.substring(0, 50),
-    //   result: result
-    // });
-    return result;
-  }
-  
-  convertToPodcast(): void {
-    if (this.isConvertingToPodcast) return;
-    
-    this.isConvertingToPodcast = true;
-    
-    // Prepare the podcast generation request with correct backend schema
-    const formData = new FormData();
-    formData.append('topic', this.metadata.topic); // Required field
-    formData.append('style', 'dialogue'); // dialogue or monologue
-    formData.append('duration', 'medium'); // short, medium, or long
-    formData.append('context', this.metadata.fullContent); // The content to convert
-    
-    let scriptContent = '';
-    let audioBase64 = '';
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    
-    // Get API URL from environment (supports runtime config via window._env)
-    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-    
-    // Use fetch for SSE streaming
-    this.authFetchService.authenticatedFetchFormData(`${apiUrl}/api/v1/tl/generate-podcast`, {
-      method: 'POST',
-      body: formData
-    })
-    .then(response => {
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      
-      reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      
-      const readStream = (): any => {
-        return reader?.read().then(({ done, value }) => {
-          if (done) {
-            this.isConvertingToPodcast = false;
-            
-            console.log('[Podcast Debug] Stream complete');
-            console.log('[Podcast Debug] audioBase64 length:', audioBase64?.length || 0);
-            console.log('[Podcast Debug] scriptContent length:', scriptContent?.length || 0);
-            
-            // Send podcast to chat with metadata
-            if (audioBase64 && scriptContent) {
-              console.log('[Podcast Debug] Converting base64 to blob...');
-              const audioBlob = this.base64ToBlob(audioBase64, 'audio/mpeg');
-              console.log('[Podcast Debug] Blob size:', audioBlob.size, 'bytes');
-              
-              const audioUrl = URL.createObjectURL(audioBlob);
-              console.log('[Podcast Debug] Audio URL created:', audioUrl);
-              
-              // Create metadata for the podcast message
-              const podcastMetadata: ThoughtLeadershipMetadata = {
-                contentType: 'podcast',
-                topic: `${this.metadata.topic} (Podcast)`,
-                fullContent: scriptContent,
-                showActions: true,
-                podcastAudioUrl: audioUrl,
-                podcastFilename: `${this.sanitizeFilename(this.metadata.topic)}_podcast.mp3`
-              };
-              
-              console.log('[Podcast Debug] Metadata:', podcastMetadata);
-              
-              // Send to chat via bridge
-              const podcastMessage = `📻 **Podcast Generated Successfully!**\n\n**Script:**\n\n${scriptContent}\n\n🎧 **Audio Ready!** Listen below or download the MP3 file.`;
-              this.tlChatBridge.sendToChat(podcastMessage, podcastMetadata);
-              
-              console.log('[Podcast Debug] Sent to chat via bridge');
-              this.toastService.success('Podcast generated and added to chat!');
-            } else {
-              console.error('[Podcast Debug] Missing data - audioBase64:', !!audioBase64, 'scriptContent:', !!scriptContent);
-            }
-            return;
-          }
-          
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          
-          lines.forEach(line => {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6).trim();
-              if (data) {
-                try {
-                  const parsed = JSON.parse(data);
-                  console.log('[Podcast Debug] SSE event type:', parsed.type);
-                  
-                  if (parsed.type === 'script') {
-                    scriptContent = parsed.content;
-                    console.log('[Podcast Debug] Script received, length:', scriptContent.length);
-                  } else if (parsed.type === 'complete') {
-                    audioBase64 = parsed.audio;
-                    console.log('[Podcast Debug] Audio received, base64 length:', audioBase64?.length || 0);
-                  } else if (parsed.type === 'error') {
-                    console.error('Podcast generation error:', parsed.message);
-                    this.toastService.error(`Error generating podcast: ${parsed.message}`);
-                    
-                    // Abort the reader and reset state immediately
-                    reader?.cancel();
-                    this.isConvertingToPodcast = false;
-                    throw new Error(parsed.message);
-                  } else if (parsed.type === 'progress') {
-                    console.log('[Podcast Debug] Progress:', parsed.message);
-                  }
-                } catch (e) {
-                  console.error('Error parsing SSE data:', e);
+def segment_document_with_llm(document_text: str, thread_id: str = "doc-1") -> DocumentStructure:
+    response = agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"DOCUMENT:\n\"\"\"{document_text}\"\"\"",
                 }
-              }
-            }
-          });
-          
-          return readStream();
-        }).catch((error) => {
-          // Handle stream reading errors
-          this.isConvertingToPodcast = false;
-          reader?.cancel();
-          throw error;
-        });
-      };
-      
-      return readStream();
-    })
-    .catch(error => {
-      console.error('Error converting to podcast:', error);
-      this.toastService.error(`Failed to convert content to podcast: ${error.message || 'Unknown error'}`);
-      this.isConvertingToPodcast = false;
-      reader?.cancel();
-    });
-  }
-  
-  private base64ToBlob(base64: string, contentType: string): Blob {
-    const byteCharacters = atob(base64);
-    const byteArrays = [];
+            ]
+        },
+        config={"configurable": {"thread_id": thread_id}},
+        context=Context(),
+    )
+
+    doc_struct: DocumentStructure = response["structured_response"]
     
-    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
-      const slice = byteCharacters.slice(offset, offset + 512);
-      const byteNumbers = new Array(slice.length);
-      for (let i = 0; i < slice.length; i++) {
-        byteNumbers[i] = slice.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      byteArrays.push(byteArray);
+    # Check if there's a title block
+    has_title = any(block.type == "title" for block in doc_struct.blocks)
+    
+    if not has_title:
+        # Generate title from all paragraph content
+        # Collect all text from paragraphs and headings
+        all_content = []
+        for block in doc_struct.blocks:
+            if block.type in ["paragraph", "heading"]:
+                all_content.append(block.text)
+        
+        # If no paragraphs/headings, use the original document text
+        content_for_title = "\n\n".join(all_content) if all_content else document_text
+        
+        # Generate title
+        generated_title = generate_title_from_content(content_for_title)
+        
+        # Create title block as first block
+        title_block = DocumentBlock(
+            id="b1",
+            type="title",
+            level=0,
+            text=generated_title
+        )
+        
+        # Renumber all existing blocks (b1 -> b2, b2 -> b3, etc.)
+        renumbered_blocks = [title_block]
+        for block in doc_struct.blocks:
+            # Extract number from existing id (e.g., "b1" -> 1)
+            match = re.match(r'b(\d+)', block.id)
+            if match:
+                old_num = int(match.group(1))
+                new_num = old_num + 1
+                new_id = f"b{new_num}"
+            else:
+                # Fallback: if id doesn't match pattern, use index + 2 (since title is b1)
+                new_id = f"b{len(renumbered_blocks) + 1}"
+            
+            renumbered_blocks.append(
+                DocumentBlock(
+                    id=new_id,
+                    type=block.type,
+                    level=block.level,
+                    text=block.text
+                )
+            )
+        
+        doc_struct = DocumentStructure(blocks=renumbered_blocks)
+    
+    return doc_struct
+
+
+def read_docx_text(path: str) -> str:
+    doc = Document(path)
+    return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+
+def apply_decisions_to_document(
+    original_doc: DocumentStructure,
+    editor_result: EditorResult,
+    paragraph_edits: List[dict],
+    decisions: List[dict],
+    accept_all: bool = False,
+    reject_all: bool = False
+) -> DocumentStructure:
+    """
+    Apply user decisions (approve/reject) to update the document.
+    The updated document becomes the base for the next editor.
+    
+    Args:
+        original_doc: The original document structure
+        editor_result: The current editor's result
+        paragraph_edits: List of paragraph edit objects from frontend
+        decisions: List of decision objects with index and approved status
+        accept_all: Global flag to accept all edits
+        reject_all: Global flag to reject all edits
+    
+    Returns:
+        Updated DocumentStructure with approved/rejected changes applied
+    """
+    # Build decision map for quick lookup
+    decision_map = {
+        d["index"]: d.get("approved")
+        for d in decisions
     }
     
-    return new Blob(byteArrays, { type: contentType });
-  }
-
- 
-}
+    # Create a map of block_id to updated text from editor_result
+    # Ensure we have BlockEditResult objects with proper attributes
+    editor_block_map = {}
+    for block in editor_result.blocks:
+        # Handle both BlockEditResult objects and dicts (for safety)
+        if hasattr(block, 'id'):
+            block_id = block.id
+            suggested = getattr(block, 'suggested_text', None) or getattr(block, 'original_text', None)
+        elif isinstance(block, dict):
+            block_id = block.get('id')
+            suggested = block.get('suggested_text') or block.get('original_text')
+        else:
+            continue
+        
+        if block_id:
+            editor_block_map[block_id] = suggested
+    
+    # Update blocks based on decisions
+    updated_blocks = []
+    for i, block in enumerate(original_doc.blocks):
+        # Get decision for this block (by index)
+        approved = decision_map.get(i)
+        auto_approved = paragraph_edits[i].get("autoApproved", False) if i < len(paragraph_edits) else False
+        
+        # Determine final text based on user decisions
+        if reject_all:
+            # Reject all: use original
+            final_text = block.text
+        elif accept_all:
+            # Accept all: use edited version (fallback to original if not found)
+            final_text = editor_block_map.get(block.id, block.text)
+        elif approved is True:
+            # Explicitly approved: use edited (fallback to original if not found)
+            final_text = editor_block_map.get(block.id, block.text)
+        elif approved is False:
+            # Explicitly rejected: use original
+            final_text = block.text
+        elif approved is None and auto_approved:
+            # Auto-approved (unchanged): use edited (which should be same as original)
+            final_text = editor_block_map.get(block.id, block.text)
+        else:
+            # Default: use original
+            final_text = block.text
+        
+        # Create updated block with new text
+        updated_blocks.append(
+            DocumentBlock(
+                id=block.id,
+                type=block.type,
+                level=block.level,
+                text=final_text
+            )
+        )
+    
+    return DocumentStructure(blocks=updated_blocks)
