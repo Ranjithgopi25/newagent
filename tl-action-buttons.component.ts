@@ -489,30 +489,93 @@ RULES:
 # EDIT
 # ------------------------------------------------------------
 
-def build_edit_prompt(content: str, editors: List[str]) -> List[Dict[str, str]]:
+def get_individual_editor_prompts() -> Dict[str, str]:
     """
-    Build edit prompt combining only the selected editors' prompts.
+    Returns a dictionary of individual editor prompt constants.
     """
+    return {
+        "Development Editor": DEVELOPMENT_EDITOR_PROMPT,
+        "Content Editor": CONTENT_EDITOR_PROMPT,
+        "Line Editor": LINE_EDITOR_PROMPT,
+        "Copy Editor": COPY_EDITOR_PROMPT,
+        "PwC Brand Alignment Editor": BRAND_EDITOR_PROMPT,
+    }
 
-    # Handle None or empty editors list - use all editors as fallback
+
+def get_editor_prompts_dict() -> Dict[str, str]:
+    """
+    Returns the editor prompt dictionary mapping editor names to their prompts.
+    """
+    return get_individual_editor_prompts()
+
+
+def select_editors(editors: Optional[List[str]] = None) -> List[str]:
+    """
+    Selects and validates editors from the provided list.
+    If no editors provided or empty list, returns all available editors.
+    
+    Args:
+        editors: Optional list of editor names to select
+        
+    Returns:
+        List of valid editor names
+    """
+    editor_prompts = get_editor_prompts_dict()
+    
     if not editors:
-        selected_editors = list(EDITOR_PROMPT.keys())
+        selected_editors = list(editor_prompts.keys())
         logger.debug("No editors provided. Falling back to all editors.")
     else:
-        selected_editors = [e for e in editors if e in EDITOR_PROMPT]
+        selected_editors = [e for e in editors if e in editor_prompts]
+        if len(selected_editors) != len(editors):
+            invalid = [e for e in editors if e not in editor_prompts]
+            logger.warning(f"Invalid editor names filtered out: {invalid}")
+    
+    logger.info(f"Selected editors: {selected_editors}")
+    return selected_editors
 
-    logger.info("Selected editors:", selected_editors)
 
-    editor_prompts = []
+def combine_editor_prompts(selected_editors: List[str]) -> str:
+    """
+    Combines selected editor prompts into a single formatted string.
+    
+    Args:
+        selected_editors: List of editor names to combine
+        
+    Returns:
+        Combined prompt string with editor names as headers
+    """
+    editor_prompts = get_editor_prompts_dict()
+    editor_prompt_strings = []
+    
     for editor_name in selected_editors:
-        logger.debug("Applying editor prompt:", editor_name)
+        logger.debug(f"Applying editor prompt: {editor_name}")
+        prompt = editor_prompts[editor_name]
+        editor_prompt_strings.append(f"{editor_name.upper()}\n{prompt}")
+    
+    combined_prompt = "\n\n".join(editor_prompt_strings)
+    logger.debug(f"Combined editor prompt:\n{combined_prompt}")
+    
+    return combined_prompt
 
-        prompt = EDITOR_PROMPT[editor_name]
-        editor_prompts.append(f"{editor_name.upper()}\n{prompt}")
 
-    combined_prompt = "\n\n".join(editor_prompts)
-    logger.debug("Combined editor prompt:\n", combined_prompt)
-
+def build_edit_prompt(content: str, editors: Optional[List[str]] = None) -> List[Dict[str, str]]:
+    """
+    Build edit prompt combining only the selected editors' prompts.
+    
+    Args:
+        content: The content to be edited
+        editors: Optional list of editor names. If None or empty, all editors are used.
+        
+    Returns:
+        List of message dictionaries for the edit prompt
+    """
+    # Select editors using the unified function
+    selected_editors = select_editors(editors)
+    
+    # Combine editor prompts using the unified function
+    combined_prompt = combine_editor_prompts(selected_editors)
+    
     system_content = f"""
         You are a PwC editorial reviewer applying multiple editors to improve the content.
 
@@ -1288,13 +1351,8 @@ If NO bibliography exists:
 # EDITOR NAME TO PROMPT MAPPING
 # ------------------------------------------------------------
 
-EDITOR_PROMPT = {
-    "Development Editor": DEVELOPMENT_EDITOR_PROMPT,
-    "Content Editor": CONTENT_EDITOR_PROMPT,
-    "Line Editor": LINE_EDITOR_PROMPT,
-    "Copy Editor": COPY_EDITOR_PROMPT,
-    "PwC Brand Alignment Editor": BRAND_EDITOR_PROMPT,
-}
+# Maintain backward compatibility - use function to get the dictionary
+EDITOR_PROMPT = get_editor_prompts_dict()
 
 # ------------------------------------------------------------
 # MULTI-SERVICE GUARDRAIL
