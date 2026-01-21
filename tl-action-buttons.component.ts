@@ -4,6 +4,10 @@
 # ============================================================
 
 from typing import Optional, List, Dict
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 # ------------------------------------------------------------
@@ -485,89 +489,55 @@ RULES:
 # EDIT
 # ------------------------------------------------------------
 
-def build_edit_prompt(content: str, editors: List) -> List[Dict[str, str]]:
+def build_edit_prompt(content: str, editors: List[str]) -> List[Dict[str, str]]:
     """
     Build edit prompt combining only the selected editors' prompts.
-    
-    Args:
-        content: The content to edit
-        editors: List of editor display names (e.g., ["Development Editor", "Content Editor"])
-    
-    Returns:
-        List of message dicts with system and user prompts
     """
+
     # Handle None or empty editors list - use all editors as fallback
     if not editors:
-        selected_editors = list(EDITOR_NAME_TO_PROMPT.keys())
+        selected_editors = list(EDITOR_PROMPT.keys())
+        logger.debug("No editors provided. Falling back to all editors.")
     else:
-        # Filter to only include valid editor names
-        selected_editors = [e for e in editors if e in EDITOR_NAME_TO_PROMPT]
-        # If no valid editors found, use all as fallback
-        if not selected_editors:
-            selected_editors = list(EDITOR_NAME_TO_PROMPT.keys())
-    
-    # Combine selected editor prompts
+        selected_editors = [e for e in editors if e in EDITOR_PROMPT]
+
+    logger.info("Selected editors:", selected_editors)
+
     editor_prompts = []
     for editor_name in selected_editors:
-        prompt = EDITOR_NAME_TO_PROMPT[editor_name]
-        editor_prompts.append(f"============================================================\n{editor_name.upper()}\n============================================================\n{prompt}")
-    
-    # Combine all selected editor prompts
+        logger.debug("Applying editor prompt:", editor_name)
+
+        prompt = EDITOR_PROMPT[editor_name]
+        editor_prompts.append(f"{editor_name.upper()}\n{prompt}")
+
     combined_prompt = "\n\n".join(editor_prompts)
-    
-    # Add instructions for applying all editors simultaneously
+    logger.debug("Combined editor prompt:\n", combined_prompt)
+
     system_content = f"""
-You are a PwC editorial reviewer applying multiple editors to improve the content.
+        You are a PwC editorial reviewer applying multiple editors to improve the content.
 
-CRITICAL INSTRUCTIONS:
-- You must apply ALL of the following editors SIMULTANEOUSLY: {', '.join(selected_editors)}
-- Do NOT apply editors sequentially - combine their requirements
-- Each editor's rules must be checked and applied together
-- Word count (if requested) is the highest priority
-- Do NOT add content unless explicitly required by an editor
-- Do NOT remove content unless explicitly required by an editor
-- Do NOT change meaning
+        CRITICAL INSTRUCTIONS:
+        - You must apply ALL of the following editors SIMULTANEOUSLY: {', '.join(selected_editors)}
+        - Do NOT apply editors sequentially
+        - Do NOT add or remove content unless explicitly required
+        - Do NOT change meaning
+        - Word count (if requested) has highest priority
 
-============================================================
-EDITOR INSTRUCTIONS
-============================================================
+        EDITOR INSTRUCTIONS
 
-{combined_prompt}
+        {combined_prompt}
 
-============================================================
-FINAL REQUIREMENTS
-============================================================
+        FINAL REQUIREMENTS
+        - Apply all selected editors' rules simultaneously
+        - Maintain consistency across all editorial changes
+        """
 
-- Apply all selected editors' rules simultaneously
-- Ensure the final output meets all editors' requirements
-- Maintain consistency across all editorial changes
-"""
-    
     return [
-        {
-            "role": "system",
-            "content": system_content.strip(),
-        },
-        {
-            "role": "user",
-            "content": content,
-        },
+        {"role": "system", "content": system_content.strip()},
+        {"role": "user", "content": content},
     ]
 
 
-# ------------------------------------------------------------
-# MULTI-SERVICE GUARDRAIL
-# ------------------------------------------------------------
-
-def build_multi_service_guardrail(active_services: List[str]) -> str:
-    return f"""
-CRITICAL:
-You must apply ALL of the following services SIMULTANEOUSLY:
-{', '.join(active_services)}
-
-Do NOT apply services sequentially.
-Word count (if requested) is the highest priority.
-"""
 
 DEVELOPMENT_EDITOR_PROMPT = """
 
@@ -1318,7 +1288,7 @@ If NO bibliography exists:
 # EDITOR NAME TO PROMPT MAPPING
 # ------------------------------------------------------------
 
-EDITOR_NAME_TO_PROMPT = {
+EDITOR_PROMPT = {
     "Development Editor": DEVELOPMENT_EDITOR_PROMPT,
     "Content Editor": CONTENT_EDITOR_PROMPT,
     "Line Editor": LINE_EDITOR_PROMPT,
@@ -1326,4 +1296,16 @@ EDITOR_NAME_TO_PROMPT = {
     "PwC Brand Alignment Editor": BRAND_EDITOR_PROMPT,
 }
 
+# ------------------------------------------------------------
+# MULTI-SERVICE GUARDRAIL
+# ------------------------------------------------------------
 
+def build_multi_service_guardrail(active_services: List[str]) -> str:
+    return f"""
+CRITICAL:
+You must apply ALL of the following services SIMULTANEOUSLY:
+{', '.join(active_services)}
+
+Do NOT apply services sequentially.
+Word count (if requested) is the highest priority.
+"""
