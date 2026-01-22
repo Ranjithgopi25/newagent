@@ -279,7 +279,6 @@ def build_expansion_prompt(
     current_word_count: Optional[int],
     supporting_doc: Optional[str] = None,
     supporting_doc_instructions: Optional[str] = None,
-    max_allowed_word_count: Optional[int] = None,
 ) -> List[Dict[str, str]]:
 
     user_prompt = f"""
@@ -299,18 +298,6 @@ SUPPORTING DOCUMENT INSTRUCTIONS:
 
     safe_target_word_count = target_word_count if target_word_count is not None else 0
     safe_current_word_count = current_word_count if current_word_count is not None else 0
-    
-    # Build max word count constraint message
-    max_constraint = ""
-    if max_allowed_word_count is not None:
-        max_constraint = f"""
-CRITICAL: MAXIMUM WORD COUNT LIMIT (HARD CONSTRAINT - NON-NEGOTIABLE):
-- The FINAL word count MUST NOT exceed {max_allowed_word_count} words under ANY circumstances.
-- This is an ABSOLUTE maximum - your output MUST be at or below {max_allowed_word_count} words.
-- If you must choose between reaching the target ({safe_target_word_count} words) and staying under the max ({max_allowed_word_count} words), ALWAYS prioritize staying under the max.
-- Count your words carefully before finalizing - exceeding {max_allowed_word_count} words is a CRITICAL FAILURE.
-"""
-    
     return [
         {
             "role": "system",
@@ -325,7 +312,7 @@ EXPANSION RULES:
   - Inline URLs
   - Parenthetical citations
   - Footnotes or numbered references
-{max_constraint}
+
 SUPPORTING DOCUMENT USAGE:
 - When expanding, 80% of ALL newly added words (including citation text) must come directly from the supporting document.
 - Example:
@@ -343,7 +330,6 @@ CRITICAL: CITATION PRESERVATION (MANDATORY)
 WORD COUNT CONTROL:
 - Anticipate citation-related word inflation.
 - Adjust narrative length so the FINAL output (including citations) stays within ±3% of the target word count.
-- {f"CRITICAL: Ensure the final count does NOT exceed {max_allowed_word_count} words - this is a hard limit." if max_allowed_word_count is not None else ""}
 
 {get_legacy_expansion_instructions(
     target_word_count=safe_target_word_count,
