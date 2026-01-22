@@ -275,8 +275,8 @@ OUTPUT FORMAT:
 
 def build_expansion_prompt(
     content: str,
-    target_word_count: int,
-    current_word_count: int,
+    target_word_count: Optional[int],
+    current_word_count: Optional[int],
     supporting_doc: Optional[str] = None,
     supporting_doc_instructions: Optional[str] = None,
 ) -> List[Dict[str, str]]:
@@ -296,11 +296,8 @@ SUPPORTING DOCUMENT INSTRUCTIONS:
 {supporting_doc_instructions}
 """
 
-    # Calculate acceptable range for word count validation
-    acceptable_range = min(int(target_word_count * 0.02), 50)
-    min_acceptable = target_word_count - acceptable_range
-    max_acceptable = target_word_count + acceptable_range
-    
+    safe_target_word_count = target_word_count if target_word_count is not None else 0
+    safe_current_word_count = current_word_count if current_word_count is not None else 0
     return [
         {
             "role": "system",
@@ -313,29 +310,14 @@ CRITICAL: CITATION PRESERVATION (MANDATORY)
 - DO NOT remove, modify, or delete any citations from the original content
 - Citations may appear as numbered references [1], [2], markdown links [text](URL), inline URLs, parenthetical citations, or narrative attributions
 - PRESERVE ALL citations exactly as they appear in the original content
-- ALL citations MUST appear in your final output - they are part of the content and must be included
 - When adding new content with sources, include citations in the same format
 - Citations are essential for credibility and must be maintained throughout expansion
-- If the original content has citations like [1] or [text](URL), they MUST remain visible in the expanded output
-- Citations count toward word count - they are part of the content
-
 {get_legacy_expansion_instructions(
-    target_word_count=target_word_count,
-    current_word_count=current_word_count
+    target_word_count=safe_target_word_count,
+    current_word_count=safe_current_word_count
 )}
 
 {get_legacy_expansion_guidelines()}
-
-WORD COUNT VALIDATION (CRITICAL - FINAL CHECK):
-- You MUST count the words in your final output before submitting
-- Target: {target_word_count} words
-- Acceptable range: {min_acceptable} to {max_acceptable} words
-- Current input: {current_word_count} words
-- Expansion needed: {target_word_count - current_word_count} words
-- If your output exceeds {max_acceptable} words, you have FAILED the task
-- Count ALL words including citations, URLs, and any text in your output
-- Word count is NON-NEGOTIABLE - overshooting will trigger aggressive trimming
-- Validate your word count matches the target before finalizing your response
 """
         },
         {
@@ -378,13 +360,10 @@ CORE REQUIREMENTS:
   * Parenthetical citations: (Source, 2024)
   * Narrative attributions: "According to Source..."
 - DO NOT remove, modify, or reformat existing citations
-- ALL citations from the original content MUST appear in your final expanded output
-- Citations are part of the content - they must be included in the output, not removed
 - When adding new content that references sources, include citations in the same format as existing ones
 - If the original content has numbered citations [1], [2], continue the numbering sequence for new citations
 - Preserve all hyperlinks and URLs exactly as they appear
 - Citations are critical for credibility and must be maintained throughout expansion
-- Example: If original text says "Market growth is 15% [1]", your output must include "[1]" - do not remove it
 
 4. SENTENCE & CONTENT EXPANSION STRATEGY:
 - Do NOT arbitrarily increase existing sentence length
@@ -459,34 +438,21 @@ def get_legacy_expansion_instructions(
     target_word_count: int,
     current_word_count: int,
 ) -> str:
-    expansion_needed = target_word_count - current_word_count
-    # Calculate acceptable range: target ±2% or ±50 words, whichever is smaller
-    acceptable_range = min(int(target_word_count * 0.02), 50)
-    min_acceptable = target_word_count - acceptable_range
-    max_acceptable = target_word_count + acceptable_range
-    
-    return f"""1. WORD COUNT (HIGHEST PRIORITY - NON-NEGOTIABLE):
-- Current Word Count: {current_word_count} words
-- Target: EXACTLY {target_word_count} words
+        safe_target = target_word_count if target_word_count is not None else 0
+        safe_current = current_word_count if current_word_count is not None else 0
+        expansion_needed = safe_target - safe_current
+        return f"""1. WORD COUNT (HIGHEST PRIORITY):
+- Current Word Count: {safe_current} words
+- Target: EXACTLY {safe_target} words
 - Expansion Needed: {expansion_needed} words
-- Acceptable Range: {min_acceptable} to {max_acceptable} words (±{acceptable_range} words)
 - Method: Expand WITHIN each paragraph by:
-  • Adding relevant details and examples
-  • Developing key concepts more thoroughly
-  • Providing deeper analysis and context
-  • Using supporting documents if available
+    • Adding relevant details and examples
+    • Developing key concepts more thoroughly
+    • Providing deeper analysis and context
+    • Using supporting documents if available
 - Preserve: ALL original content, paragraphs, and structure
 - DO NOT: Remove any original paragraphs or content
 - DO NOT: Invent facts or contradict existing content
-
-WORD COUNT VALIDATION (MANDATORY):
-- You MUST count words in your output BEFORE finalizing
-- Target is {target_word_count} words - this is CRITICAL and NOT OPTIONAL
-- Acceptable range: {min_acceptable} to {max_acceptable} words
-- If your output exceeds {max_acceptable} words, you MUST reduce content to stay within range
-- Count your words carefully - citations, URLs, and all text count toward word count
-- Overshooting the target will trigger aggressive trimming - avoid this by staying within {max_acceptable} words
-- Word count is the HIGHEST PRIORITY after preserving meaning and structure
 """
 
 
@@ -758,7 +724,7 @@ RULES:
 - Use market insights only to support existing points
 - Do NOT add sections
 - Do NOT invent facts
-
+"""
         },
         {
             "role": "user",
