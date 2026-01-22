@@ -129,6 +129,10 @@ def planner_node(state: RefineGraphState):
     max_wc = None
     hard_target = None
     ideal_wc = None
+    if min_wc is not None and max_wc is not None:
+        ideal_wc = int((min_wc + max_wc) / 2)
+    elif hard_target is not None:
+        ideal_wc = hard_target
 
     if raw_target:
         target_wc = int(raw_target)
@@ -144,12 +148,6 @@ def planner_node(state: RefineGraphState):
             max_wc = input_wc - (delta - tolerance)
 
         hard_target = target_wc
-        
-        # Calculate ideal_wc after min_wc and max_wc are set
-        if min_wc is not None and max_wc is not None:
-            ideal_wc = int((min_wc + max_wc) / 2)
-        elif hard_target is not None:
-            ideal_wc = hard_target
 
     # ------------------------------------
     # Suggestions-only (exclusive)
@@ -354,14 +352,15 @@ async def expand_grow_node(state: RefineGraphState, config: RunnableConfig):
         target_word_count=state.hard_target_word_count,
         current_word_count=state.current_word_count,
         supporting_doc=state.expand_supporting_doc,
-        supporting_doc_instructions=state.supporting_doc_instructions
+        supporting_doc_instructions=state.supporting_doc_instructions,
+        max_allowed_word_count=state.max_allowed_word_count,
     )
 
     grown = await llm.chat_completion(messages)
     wc = word_count(grown)
 
-    if state.is_expand and wc > state.max_allowed_word_count:
-        logger.warning("[EXPAND_GROW] Overshoot → TRIM")
+    if state.is_expand and state.max_allowed_word_count is not None and wc > state.max_allowed_word_count:
+        logger.warning("[EXPAND_GROW] Overshoot → TRIM (wc=%s > max=%s)", wc, state.max_allowed_word_count)
         return {"grown_content": grown, "current_word_count": wc, "next_step": "EXPAND_TRIM"}
 
     return {"grown_content": grown, "current_word_count": wc, "next_step": "TONE_ADJUST"}
@@ -421,20 +420,11 @@ async def compress_enforce_node(state: RefineGraphState, config: RunnableConfig)
 
     llm = config["configurable"]["llm_service"]
 
+    target_wc = state.ideal_word_count or state.hard_target_word_count
+    
     # Get the content to compress and calculate its current word count
     content_to_compress = _latest_text(state)
     current_wc = word_count(content_to_compress)
-    
-    # Calculate target, but ensure it doesn't exceed max_allowed_word_count
-    base_target = state.ideal_word_count or state.hard_target_word_count
-    max_wc = state.max_allowed_word_count
-    
-    # If content exceeds max, target max to ensure we stay within limit
-    if max_wc is not None and current_wc > max_wc:
-        target_wc = max_wc
-        logger.info("[COMPRESS] Content exceeds max (%s > %s), targeting max", current_wc, max_wc)
-    else:
-        target_wc = base_target
     
     # Get previous word count for retry context
     # If this is a retry, state.current_word_count contains the result from previous attempt
@@ -461,21 +451,32 @@ async def compress_enforce_node(state: RefineGraphState, config: RunnableConfig)
 # ============================================================
 
 async def expand_trim_node(state: RefineGraphState, config: RunnableConfig):
-    logger.info("[EXPAND_TRIM]")
+    logger.info("[EXPAND_TRIM] retry=%s", state.retry_count)
 
     latest_wc = state.current_word_count
     max_wc = state.max_allowed_word_count
 
-    # When content exceeds max, always target max_allowed_word_count to stay within limit
-    if max_wc is not None and latest_wc is not None and latest_wc > max_wc:
-        target_wc = max_wc
-        logger.info("[EXPAND_TRIM] Content exceeds max (%s > %s), targeting max", latest_wc, max_wc)
+    # Use max_allowed_word_count as the target (or slightly below to ensure we stay under)
+    # This ensures we never exceed the maximum
+    if max_wc is not None:
+        # If retries are exhausted and we've already trimmed, target exactly max_wc (or 99% to be safe)
+        # This is the final aggressive trim to ensure we never exceed
+        if state.retry_count >= state.max_retries and state.trim_applied:
+            target_wc = int(max_wc * 0.99)  # 99% of max for final aggressive trim
+            logger.info("[EXPAND_TRIM] Final aggressive trim - targeting: %s (99%% of max=%s)", target_wc, max_wc)
+        # If we're close to max retries, be more aggressive (target 95% of max)
+        elif state.retry_count >= state.max_retries - 1:
+            target_wc = int(max_wc * 0.95)
+            logger.info("[EXPAND_TRIM] Final attempt - using aggressive target: %s (95%% of max=%s)", target_wc, max_wc)
+        else:
+            target_wc = int(max_wc * 0.98)
+            logger.info("[EXPAND_TRIM] Using max_allowed_word_count as target: %s (98%% of max=%s)", target_wc, max_wc)
     else:
-        # Fallback logic for edge cases
+        # Fallback to original logic if max_wc is not set
         large_overshoot = (
-            max_wc is not None
-            and latest_wc is not None
-            and latest_wc > int(max_wc * 1.1)  # >10% above band
+            latest_wc is not None
+            and state.min_allowed_word_count is not None
+            and latest_wc > int(state.min_allowed_word_count * 1.1)  # >10% above min
         )
 
         target_wc = (
@@ -485,16 +486,21 @@ async def expand_trim_node(state: RefineGraphState, config: RunnableConfig):
             if state.ideal_word_count is not None
             else state.hard_target_word_count
         )
+        logger.info("[EXPAND_TRIM] Using fallback target: %s", target_wc)
 
     content_to_trim = _latest_text(state)
     current_wc = word_count(content_to_trim)
+    
+    # Use retry_count to make compression more aggressive on subsequent attempts
+    # This helps when we're still over max after previous trims
+    effective_retry_count = min(state.retry_count, 2)  # Cap at 2 for trim node
     
     prompt = build_compression_prompt(
         content=content_to_trim,
         target_word_count=target_wc,
         current_word_count=current_wc,
-        retry_count=0,  # Trim is not part of compression retry loop
-        previous_word_count=None,
+        retry_count=effective_retry_count,
+        previous_word_count=latest_wc,
     )
 
     llm = config["configurable"]["llm_service"]
@@ -557,13 +563,49 @@ def validate_node(state: RefineGraphState):
         }
 
     # --------------------------------------------------------
-    # Above maximum → TRIM / COMPRESS
+    # Above maximum → TRIM / COMPRESS (with aggressive retry)
     # --------------------------------------------------------
     if wc > max_wc and state.retry_count < state.max_retries:
+        logger.warning(
+            "[VALIDATE] Word count %s exceeds max %s, retrying (attempt %s/%s)",
+            wc,
+            max_wc,
+            state.retry_count + 1,
+            state.max_retries,
+        )
         return {
             "retry_count": state.retry_count + 1,
             "next_step": "EXPAND_TRIM" if state.is_expand else "COMPRESS_ENFORCE",
         }
+
+    # --------------------------------------------------------
+    # Still above maximum after retries → Force final aggressive trim
+    # --------------------------------------------------------
+    if wc > max_wc:
+        # Check if we've already done a trim (to avoid infinite loop)
+        if state.trim_applied and state.retry_count >= state.max_retries:
+            # Last resort: do one final aggressive trim targeting exactly max_wc
+            logger.warning(
+                "[VALIDATE] Word count %s still exceeds max %s after all retries and trims. "
+                "Performing final aggressive trim to max.",
+                wc,
+                max_wc,
+            )
+            return {
+                "retry_count": state.max_retries,  # Set to max to prevent further retries
+                "next_step": "EXPAND_TRIM" if state.is_expand else "COMPRESS_ENFORCE",
+            }
+        else:
+            # First attempt to trim after retries exhausted
+            logger.warning(
+                "[VALIDATE] Word count %s exceeds max %s after retries. Forcing trim to max.",
+                wc,
+                max_wc,
+            )
+            return {
+                "retry_count": state.retry_count,  # Don't increment, this is a final attempt
+                "next_step": "EXPAND_TRIM" if state.is_expand else "COMPRESS_ENFORCE",
+            }
 
     # --------------------------------------------------------
     # Retries exhausted → move forward, do NOT loop forever
