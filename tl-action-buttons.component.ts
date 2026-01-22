@@ -438,29 +438,172 @@ def build_compression_prompt(
     content: str,
     target_word_count: int,
     current_word_count: int,
+    retry_count: int = 0,
+    previous_word_count: Optional[int] = None,
 ) -> List[Dict[str, str]]:
+    reduction_needed = current_word_count - target_word_count
+    reduction_percentage = (reduction_needed / current_word_count * 100) if current_word_count > 0 else 0
+    
+    # Determine compression intensity based on reduction percentage
+    is_large_reduction = reduction_percentage > 30
+    is_very_large_reduction = reduction_percentage > 45
+    
+    # Build retry context message
+    retry_context = ""
+    if retry_count > 0:
+        if previous_word_count:
+            additional_reduction = previous_word_count - target_word_count
+            retry_context = f"""
+RETRY ATTEMPT #{retry_count}:
+- Previous attempt resulted in {previous_word_count} words (still {additional_reduction} words above target)
+- You MUST compress more aggressively than the previous attempt
+- The previous compression was insufficient - apply more intensive techniques
+"""
+        else:
+            retry_context = f"""
+RETRY ATTEMPT #{retry_count}:
+- Previous compression attempt did not meet the target
+- You MUST apply more aggressive compression techniques
+- Focus on maximum compression while preserving core meaning
+"""
+    
+    # Build compression intensity instructions
+    intensity_instructions = ""
+    if retry_count == 0:
+        if is_very_large_reduction:
+            intensity_instructions = """
+COMPRESSION INTENSITY: VERY LARGE REDUCTION (>{:.1f}%)
+- This requires maximum compression effort
+- Apply ALL compression techniques aggressively
+- Prioritize core arguments over supporting details
+- Combine multiple sentences where possible
+- Remove all non-essential qualifiers and modifiers
+""".format(reduction_percentage)
+        elif is_large_reduction:
+            intensity_instructions = """
+COMPRESSION INTENSITY: LARGE REDUCTION (>{:.1f}%)
+- This requires significant compression effort
+- Apply multiple compression techniques simultaneously
+- Be more aggressive with sentence combining
+- Remove redundant examples and supporting details
+""".format(reduction_percentage)
+        else:
+            intensity_instructions = """
+COMPRESSION INTENSITY: MODERATE REDUCTION ({:.1f}%)
+- Apply standard compression techniques
+- Focus on removing redundancy and tightening language
+""".format(reduction_percentage)
+    elif retry_count == 1:
+        intensity_instructions = """
+COMPRESSION INTENSITY: RETRY #1 - INCREASED AGGRESSION
+- Previous attempt was insufficient
+- Apply MORE aggressive techniques:
+  * Combine adjacent sentences more aggressively
+  * Remove supporting examples and non-critical details
+  * Tighten every phrase and eliminate all filler
+  * Compress lists and bullet points
+  * Remove transitional phrases that don't add value
+"""
+    else:  # retry_count >= 2
+        intensity_instructions = """
+COMPRESSION INTENSITY: RETRY #{} - MAXIMUM COMPRESSION
+- Previous attempts were insufficient
+- Apply MAXIMUM compression techniques:
+  * Combine multiple sentences into single, dense sentences
+  * Remove ALL supporting examples, case studies, and non-essential details
+  * Keep ONLY core arguments and essential facts
+  * Eliminate all transitional phrases, qualifiers, and hedging language
+  * Compress lists to their most essential points
+  * Remove redundant explanations and restatements
+  * Use the most concise phrasing possible for every concept
+""".format(retry_count)
+    
     return [
         {
             "role": "system",
             "content": f"""
-You are a senior PwC editorial consultant.
+You are a senior PwC editorial consultant specializing in content compression.
 
 PRIMARY OBJECTIVES (IN ORDER):
 1. Preserve meaning and factual accuracy
 2. Preserve structure and paragraph order
-3. Achieve EXACTLY {target_word_count} words
+3. Achieve EXACTLY {target_word_count} words (NON-NEGOTIABLE)
 
 DOCUMENT CONTEXT:
 - Current words: {current_word_count}
 - Target words: {target_word_count}
-- Reduction needed: {current_word_count - target_word_count}
+- Reduction needed: {reduction_needed} words
+- Reduction percentage: {reduction_percentage:.1f}%
+{retry_context}
+{intensity_instructions}
 
-RULES:
-- Compress WITHIN paragraphs
-- Remove redundancy and filler
-- Do NOT delete sections
-- Do NOT add content
-- Word count is NON-NEGOTIABLE
+COMPRESSION TECHNIQUES (APPLY AS NEEDED):
+
+1. SENTENCE COMBINING & RESTRUCTURING:
+   - Combine two or more related sentences into one
+   - Merge parallel ideas using semicolons, colons, or conjunctions
+   - Convert compound sentences to simple sentences where meaning is preserved
+   - Eliminate sentence fragments that repeat information
+
+2. PHRASE TIGHTENING:
+   - Replace wordy phrases with concise alternatives:
+     * "in order to" → "to"
+     * "due to the fact that" → "because"
+     * "at this point in time" → "now"
+     * "in the event that" → "if"
+     * "with regard to" → "regarding" or "about"
+   - Remove unnecessary qualifiers: "very", "quite", "rather", "somewhat", "fairly"
+   - Eliminate redundant adjectives and adverbs
+   - Use active voice instead of passive voice (saves words)
+
+3. ELIMINATE REDUNDANCY:
+   - Remove repeated concepts expressed in different words
+   - Eliminate restatements of the same idea
+   - Remove redundant explanations that don't add new information
+   - Cut duplicate examples or similar case studies
+
+4. REMOVE FILLER & TRANSITIONAL PHRASES:
+   - Eliminate unnecessary transitions: "furthermore", "moreover", "in addition" (if redundant)
+   - Remove hedging language where certainty is appropriate: "may", "might", "could" (when facts are certain)
+   - Cut introductory phrases that don't add value: "It is important to note that", "It should be mentioned that"
+
+5. COMPRESS LISTS & ENUMERATIONS:
+   - Combine list items where possible
+   - Use parallel structure to reduce word count
+   - Remove less critical items from lists if needed
+   - Convert long lists to concise summaries
+
+6. SUPPORTING DETAIL COMPRESSION:
+   - Compress examples to their essential points
+   - Remove non-critical background information
+   - Tighten case study descriptions to key facts only
+   - Eliminate extended explanations of obvious points
+
+7. PARAGRAPH-LEVEL COMPRESSION:
+   - Compress WITHIN each paragraph (do NOT delete entire paragraphs)
+   - Remove the least essential sentences in each paragraph
+   - Combine related paragraphs if structure allows
+   - Tighten topic sentences and concluding sentences
+
+PRIORITY GUIDELINES:
+- PRESERVE: Core arguments, key facts, main conclusions, essential data points
+- COMPRESS AGGRESSIVELY: Supporting examples, background context, transitional phrases, redundant explanations
+- REMOVE: Filler words, unnecessary qualifiers, repeated concepts, non-essential details
+
+STRUCTURAL REQUIREMENTS:
+- Keep ALL paragraphs in their original order
+- Do NOT delete entire sections or paragraphs
+- Do NOT add new content
+- Maintain logical flow and coherence
+- Preserve paragraph structure (but compress content within)
+
+WORD COUNT VALIDATION:
+- You MUST count words in your output
+- Target is EXACTLY {target_word_count} words
+- Acceptable range: {target_word_count - 5} to {target_word_count + 5} words
+- If you cannot achieve the target, you MUST compress more aggressively
+
+CRITICAL: Word count is the HIGHEST PRIORITY after preserving meaning. If you are not meeting the target, you must apply more aggressive compression techniques.
 """
         },
         {
