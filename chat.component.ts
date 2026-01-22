@@ -447,8 +447,7 @@ def build_compression_prompt(
     # Determine compression intensity based on reduction percentage
     is_large_reduction = reduction_percentage > 30
     is_very_large_reduction = reduction_percentage > 45
-    is_extreme_reduction = reduction_percentage > 55  # For >55%, require maximum sentence-level compression
-    # Note: Paragraph deletion is NOT allowed - only word and sentence-level compression within paragraphs
+    # Note: Paragraph deletion is NOT allowed - only word-level compression
     
     # Build retry context message
     retry_context = ""
@@ -472,27 +471,13 @@ RETRY ATTEMPT #{retry_count}:
     # Build compression intensity instructions
     intensity_instructions = ""
     if retry_count == 0:
-        if is_extreme_reduction:
-            intensity_instructions = """
-COMPRESSION INTENSITY: EXTREME REDUCTION (>{:.1f}%) - CRITICAL
-- This is an EXTREME compression requiring maximum sentence-level reduction
-- You MUST remove 50-70% of sentences from each paragraph, keeping only the most essential
-- Combine remaining sentences aggressively into single dense sentences
-- DELETE entire sentences that are examples, case studies, or supporting details
-- DELETE sentences that repeat or restate main points
-- Keep ONLY 1-2 core sentences per paragraph that contain essential arguments
-- Remove ALL transitional sentences, introductory sentences, and concluding sentences
-- Compress every remaining sentence to absolute minimum words
-- This level of reduction REQUIRES removing most sentences, not just compressing them
-""".format(reduction_percentage)
-        elif is_very_large_reduction:
+        if is_very_large_reduction:
             intensity_instructions = """
 COMPRESSION INTENSITY: VERY LARGE REDUCTION (>{:.1f}%)
-- This requires maximum compression effort with significant sentence removal
-- Remove 30-50% of less essential sentences from each paragraph
-- Apply ALL compression techniques aggressively to remaining sentences
-- Prioritize core arguments - delete supporting sentence examples
-- Combine multiple sentences into single dense sentences
+- This requires maximum compression effort
+- Apply ALL compression techniques aggressively
+- Prioritize core arguments over supporting details
+- Combine multiple sentences where possible
 - Remove all non-essential qualifiers and modifiers
 - Compress WITHIN paragraphs - do NOT delete entire paragraphs
 """.format(reduction_percentage)
@@ -511,40 +496,33 @@ COMPRESSION INTENSITY: MODERATE REDUCTION ({:.1f}%)
 - Focus on removing redundancy and tightening language
 """.format(reduction_percentage)
     elif retry_count == 1:
-        words_still_over = previous_word_count - target_word_count if previous_word_count else reduction_needed
-        intensity_instructions = f"""
+        intensity_instructions = """
 COMPRESSION INTENSITY: RETRY #1 - INCREASED AGGRESSION
-- Previous attempt resulted in {previous_word_count} words - still {words_still_over} words above target
-- You MUST remove MORE sentences and compress MORE aggressively:
-  * DELETE 40-60% of sentences from each paragraph (not just compress them)
-  * Combine remaining sentences more aggressively into single dense sentences
-  * Remove ALL supporting examples, case studies, and non-critical details (entire sentences)
+- Previous attempt was insufficient
+- Apply MORE aggressive techniques:
+  * Combine adjacent sentences more aggressively
+  * Remove supporting examples and non-critical details
   * Tighten every phrase and eliminate all filler
-  * Compress lists and bullet points to minimum
-  * Remove ALL transitional sentences that don't add value
-  * Target: You need to reduce by {words_still_over} more words - this requires removing many sentences
+  * Compress lists and bullet points
+  * Remove transitional phrases that don't add value
 """
     else:  # retry_count >= 2
-        words_still_over = previous_word_count - target_word_count if previous_word_count else reduction_needed
-        intensity_instructions = f"""
-COMPRESSION INTENSITY: RETRY #{retry_count} - MAXIMUM COMPRESSION - CRITICAL FAILURE
-- Previous attempts were insufficient - you MUST be DRAMATICALLY more aggressive
-- Current result: {previous_word_count} words, Target: {target_word_count} words
-- You need to remove {words_still_over} MORE words - this is CRITICAL
-- Apply MAXIMUM sentence deletion and compression (WITHIN paragraphs only):
-  * DELETE 60-80% of sentences from each paragraph - keep only 1-2 core sentences per paragraph
-  * DELETE ALL example sentences, case study sentences, supporting detail sentences
-  * DELETE ALL transitional sentences, introductory sentences, concluding sentences
-  * DELETE ALL sentences that repeat or restate main points
-  * Combine remaining 1-2 sentences per paragraph into single ultra-dense sentences
-  * Compress every remaining word to absolute minimum
-  * Remove ALL qualifiers, modifiers, adjectives, adverbs that aren't essential
-  * Compress lists to 1-2 items maximum or remove entirely
-  * Use telegraphic style - maximum information density per word
-- Do NOT delete entire paragraphs - but DELETE most sentences within them
-- Each paragraph should have 1-2 sentences maximum after compression
-- Word count target is MANDATORY - you MUST achieve {target_word_count} words
-""".format(retry_count=retry_count)
+        intensity_instructions = """
+COMPRESSION INTENSITY: RETRY #{} - MAXIMUM COMPRESSION - CRITICAL
+- Previous attempts were insufficient - you MUST be more aggressive
+- Apply MAXIMUM compression techniques (WITHIN paragraphs only):
+  * Combine multiple sentences into single, dense sentences
+  * Remove ALL supporting examples, case studies, and non-essential details
+  * Keep ONLY core arguments and essential facts
+  * Eliminate all transitional phrases, qualifiers, and hedging language
+  * Compress lists to their most essential points
+  * Remove redundant explanations and restatements
+  * Use the most concise phrasing possible for every concept
+  * Compress every sentence to its absolute minimum
+  * Remove the least essential sentences from each paragraph
+- Do NOT delete entire paragraphs - compress WITHIN paragraphs only
+- Word-level compression must be maximized - every word counts
+""".format(retry_count)
     
     # Build structural requirements - paragraph deletion is NEVER allowed
     structural_requirements = """- Keep ALL paragraphs in their original order
@@ -616,14 +594,10 @@ COMPRESSION TECHNIQUES (APPLY AS NEEDED):
 
 7. PARAGRAPH-LEVEL COMPRESSION:
    - Compress WITHIN each paragraph (do NOT delete entire paragraphs)
-   - For very large reductions (>45%): DELETE 30-50% of sentences from each paragraph
-   - For extreme reductions (>55%): DELETE 50-70% of sentences from each paragraph
-   - For retries: DELETE 60-80% of sentences from each paragraph
-   - Keep only 1-3 core sentences per paragraph that contain essential arguments
-   - DELETE entire sentences that are: examples, case studies, supporting details, transitions, repetitions
-   - Combine remaining sentences into single dense sentences
-   - Tighten every remaining sentence to absolute minimum
-   - Maximum compression within each paragraph while preserving all paragraphs (but not all sentences)
+   - Remove the least essential sentences in each paragraph
+   - Combine related paragraphs if structure allows
+   - Tighten topic sentences and concluding sentences
+   - Maximum compression within each paragraph while preserving all paragraphs
 
 PRIORITY GUIDELINES:
 - PRESERVE: Core arguments, key facts, main conclusions, essential data points
@@ -634,14 +608,12 @@ STRUCTURAL REQUIREMENTS:
 {structural_requirements}
 
 WORD COUNT VALIDATION:
-- You MUST count words in your output BEFORE submitting
-- Target is EXACTLY {target_word_count} words (CRITICAL - NOT OPTIONAL)
+- You MUST count words in your output
+- Target is EXACTLY {target_word_count} words
 - Acceptable range: {target_word_count - 5} to {target_word_count + 5} words
-- Current: {current_word_count} words → Target: {target_word_count} words
-- Reduction needed: {reduction_needed} words ({reduction_percentage:.1f}% reduction)
-- If current > target: You MUST DELETE more sentences and compress more aggressively
-- For {reduction_percentage:.1f}% reduction: You need to remove approximately {int(reduction_percentage * 0.6)}% of sentences
-- Count your output words - if over target, compress MORE before finalizing
+- If you cannot achieve the target, you MUST compress more aggressively
+- Current output: {current_word_count} words → You need to reduce by {reduction_needed} words
+- This is a {reduction_percentage:.1f}% reduction - treat it with appropriate intensity
 
 CRITICAL: Word count is the HIGHEST PRIORITY after preserving meaning. 
 - Compress WITHIN paragraphs using all available techniques
