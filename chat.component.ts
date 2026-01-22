@@ -1,1861 +1,1584 @@
-@import '../../../shared/ui/styles/design-tokens';
-@import '../../../shared/ui/styles/mixins';
-@import '../../../shared/ui/styles/paragraph-edits';
-@import '../../ddc/brand-format-flow/brand-format-flow.component.scss';
+# ============================================================
+# Prompt Library for Refine Content LangGraph
+# Source of truth migrated from refine_content_service.py
+# ============================================================
 
-// Form label with required indicator
-.form-label {
-  display: block;
-  font-weight: 500;
-  color: var(--text-primary);
-  margin-bottom: 8px;
-  font-size: 11.5px;
+from typing import Optional, List, Dict
+import logging
 
-  .required {
-    color: #fd5108;
-    margin-left: 4px;
-    font-weight: normal;
-  }
-}
+logger = logging.getLogger(__name__)
 
-// Upload item container
-.upload-item {
-  margin-bottom: 16px;
-}
+# ------------------------------------------------------------
+# Utilities
+# ------------------------------------------------------------
 
-// File size info display
-.file-size-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-  padding: 10px 12px;
-  background: #F0F7FF;
-  border: 1px solid #BFDBFE;
-  border-radius: 6px;
-  font-size: 13px;
-  color: #1F2937;
-  
-  svg {
-    flex-shrink: 0;
-    color: #3B82F6;
-  }
-  
-  span {
-    font-weight: 500;
-    word-break: break-all;
-  }
-}
+def word_count(text: str) -> int:
+    return len(text.split()) if text else 0
 
-// Error message display
-.error-message {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  margin-top: 12px;
-  margin-bottom: 12px;
-  padding: 14px 16px;
-  background: #FEF2F2;
-  border-left: 4px solid #DC2626;
-  border-radius: 8px;
-  font-size: 13.5px;
-  line-height: 1.6;
-  color: #991B1B;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  animation: slideIn 0.3s ease-out;
-  position: relative;
-  
-  svg {
-    flex-shrink: 0;
-    margin-top: 2px;
-    stroke: #DC2626;
-  }
-  
-  span {
-    flex: 1;
-    font-weight: 500;
-  }
-}
 
-.error-close-btn {
-  flex-shrink: 0;
-  background: transparent;
-  border: none;
-  padding: 4px;
-  cursor: pointer;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
-  color: #c90c0c;
-  margin-left: 8px;
-  
-  svg {
-    stroke: #b70f0f;
-    transition: stroke 0.2s ease;
-  }
-  
-  &:hover {
-    background: rgba(220, 38, 38, 0.1);
+# ------------------------------------------------------------
+# SUGGESTIONS (PwC Editorial Framework)
+# ------------------------------------------------------------
+
+def get_suggestions_prompt_template() -> str:
+    """
+    EXACT migration of _get_suggestions_prompt_template
+    """
+    return """
+ROLE & OBJECTIVE
+You are a Senior PwC Brand & Content Strategist and Executive Editor. Your role is NOT to rewrite the content, but to act as a critical writing coach. Provide specific, actionable, and high-value suggestions to help the author elevate their draft to meet PwC's thought leadership standards.
+
+I. CORE ANALYSIS FRAMEWORK (PwC Tone Pillars)
+Evaluate the draft against these three tone pillars and identify specific opportunities for improvement:
+
+BOLD (Assertive, Decisive, Clear)
+- Standard: Lead with a strong point of view; avoid safe, academic language.
+- Watch For: Soft qualifiers (e.g., "somewhat," "arguably," "it seems that"), passive voice, dense jargon
+- Fix: Encourage decisive language. Replace banned word "catalyst" with driver, enabler, accelerator.
+
+COLLABORATIVE (Human, Conversational, Partnership-Focused)
+- Standard: Write to the reader, not at them.
+- Watch For: Third-person distancing ("PwC helps clients…"), formal stiffness
+- Fix: Use first-person and direct address ("We help you…"). Replace "clients" with "you" or "your organization."
+
+OPTIMISTIC (Future-Forward, Outcome-Focused)
+- Standard: Emphasize solutions and possibilities.
+- Watch For: Problem-only framing, static language
+- Fix: Pivot to outcomes. Use movement words (transform, evolve, reshape) and energy words (propel, spark, accelerate).
+
+II. COMPLIANCE CHECKS
+Flag and correct any prohibited terms or style violations:
+- "Catalyst" → driver/enabler/accelerator
+- "Clients" → you/your organization
+- "PwC Network" → PwC network
+- "Mainland China" → Chinese Mainland
+- Exclamation marks
+- Buzzwords/fillers: leverage, synergy, at the end of the day, in order to, moving forward
+
+III. EXPANDED ANALYSIS
+- Logic & Depth (MECE): Check argument flow, gaps, redundancy
+- Thought Leadership: Suggest proprietary PwC data or examples
+- Visual Opportunities: Identify text-heavy sections for visuals
+- Differentiation: Push for unique PwC insights
+- Consistency & Risk: Spot contradictions or sensitivities
+
+IV. OUTPUT FORMAT
+✓ Brand Voice Alignment
+✓ Vocabulary & Terminology
+✓ Structural Clarity
+✓ Strategic Lift (So What?)
+✓ Logic & Evidence Gaps
+✓ Visual Opportunities
+✓ Differentiation
+⚠ Risk & Sensitivity
+
+FINAL HARD CONSTRAINT (NON-NEGOTIABLE):
+- Your response MUST be a numbered or bulleted list only
+- Paragraphs of continuous prose are strictly forbidden
+- If you output more than 2 consecutive sentences without a bullet, you have violated the task
+- If you include the original content or large excerpts, you have violated the task
+
+**CONTENT TO ANALYZE:**
+{content}
+
+=================
+OUTPUT FORMAT (STRICT)
+=================
+
+YOU MUST FOLLOW THIS STRUCTURE EXACTLY.
+
+- USE BULLETS ONLY (NO PARAGRAPHS)
+- EVERY BULLET MUST BE LABELED EITHER **Observation:** OR **Fix:**
+- OBSERVATIONS AND FIXES MUST ALWAYS APPEAR AS PAIRS
+- OBSERVATIONS MUST REFER TO SPECIFIC LANGUAGE, TONE, STRUCTURE, OR POSITIONING IN THE DRAFT
+- FIXES MUST BE DIRECTIVE, PRACTICAL, AND EDITORIAL (COACHING THE AUTHOR ON HOW TO IMPROVE)
+
+=================
+REQUIRED SECTIONS (IN THIS EXACT ORDER)
+=================
+
+✓ Brand Voice Alignment  
+✓ Vocabulary & Terminology  
+✓ Structural Clarity  
+✓ Strategic Lift (So What?)  
+✓ Logic & Evidence Gaps  
+✓ Visual Opportunities  
+✓ Differentiation  
+⚠ Risk & Sensitivity  
+
+=================
+SECTION RULES
+=================
+
+FOR EACH SECTION:
+
+- INCLUDE ONE OR MORE **Observation → Fix** PAIRS
+- WRITE FULL SENTENCES, NOT FRAGMENTS
+- MAINTAIN A CONFIDENT, ADVISORY TONE (SENIOR EDITOR / CONSULTANT)
+- DO NOT SUMMARIZE THE CONTENT
+- DO NOT PRAISE GENERICALLY
+- DO NOT REWRITE SENTENCES FROM THE DRAFT
+
+=================
+CHAIN OF THOUGHTS (MANDATORY)
+=================
+
+FOLLOW THIS INTERNAL REASONING PROCESS BEFORE PRODUCING OUTPUT:
+
+1. UNDERSTAND: READ THE DRAFT CAREFULLY AND IDENTIFY ITS INTENDED AUDIENCE AND PURPOSE  
+2. BASICS: IDENTIFY THE CORE ARGUMENT, IMPLIED POINT OF VIEW, AND KEY CLAIMS  
+3. BREAK DOWN: ANALYZE EACH SECTION THROUGH THE LENS OF STRATEGY, CLARITY, AND IMPACT  
+4. ANALYZE: IDENTIFY WHERE LANGUAGE IS GENERIC, CAUTIOUS, ACADEMIC, OR UNDER-LEVERAGED  
+5. BUILD: FORM OBSERVATION → FIX PAIRS THAT ELEVATE THE PIECE FROM INFORMATIVE TO ADVISORY  
+6. EDGE CASES: CHECK FOR BRAND, REPUTATIONAL, CULTURAL, OR CLAIM-RISK ISSUES  
+7. FINAL ANSWER: PRESENT COACHING FEEDBACK USING THE REQUIRED FORMAT ONLY
+
+DO NOT EXPOSE THIS CHAIN OF THOUGHTS IN YOUR OUTPUT.
+
+=================
+QUALITY BAR (NON-NEGOTIABLE)
+=================
+
+- IF A BULLET COULD APPEAR IN A GENERIC WRITING CHECKLIST, IT IS TOO WEAK
+- EVERY OBSERVATION MUST PROVE YOU READ THE DRAFT
+- EVERY FIX MUST CHANGE HOW THE AUTHOR THINKS, NOT JUST WHAT THEY WRITE
+- WRITE AS IF THE AUTHOR IS A SMART PEER, NOT A STUDENT
+
+=================
+WHAT NOT TO DO (STRICTLY FORBIDDEN)
+=================
+
+- NEVER WRITE GENERIC ADVICE (E.G., “IMPROVE CLARITY,” “MAKE IT MORE ENGAGING”)
+- NEVER INCLUDE UNLABELED BULLETS
+- NEVER MIX OBSERVATIONS AND FIXES IN THE SAME BULLET
+- NEVER REWRITE THE DRAFT OR SUGGEST FINAL COPY
+- NEVER USE PARAGRAPHS OR HEADINGS OUTSIDE THE REQUIRED STRUCTURE
+- NEVER OMIT A REQUIRED SECTION
+- NEVER ASK THE USER QUESTIONS
+
+=================
+FEW-SHOT PATTERN (STYLE GUIDE)
+=================
+
+✓ Brand Voice Alignment
+• Observation: The opening framing is accurate but neutral and reads like a general explainer rather than a point of view.
+• Fix: Encourage the author to lead with a sharper, outcome-oriented claim that positions the topic as a strategic or leadership issue.
+
+• Observation: The tone remains largely third-person and academic throughout the section.
+• Fix: Coach the author to address the reader directly to create a more collaborative, advisory voice.
+
+⚠ Risk & Sensitivity
+• Observation: No prohibited terms or sensitive regional references appear in the draft.
+• Fix: No immediate action required, but ensure future examples are supported by credible sources and framed as general guidance, not advice.
+
+"""
+
+
+def build_suggestions_prompt(content: str) -> List[Dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a Senior PwC Brand & Content Strategist and Executive Editor. "
+                "You must provide editorial suggestions ONLY. "
+                "You are strictly prohibited from rewriting or editing the content."
+            )
+        },
+        {
+            "role": "user",
+            "content": get_suggestions_prompt_template().format(content=content)
+        },
+    ]
+
+
+
+def get_tone_instruction(tone: str) -> str:
+    return f"""
+Interpret the tone description exactly as provided: "{tone}"
+
+TONE INTERPRETATION RULES:
+- Adjust vocabulary, sentence length, rhythm, and formality to match the tone described
+- If the tone suggests approachability, friendliness, clarity, or conversation:
+  - Prefer shorter sentences
+  - Use plain, everyday language
+  - Use natural transitions and flow
+- If the tone suggests professionalism or authority:
+  - Stay clear and confident without sounding stiff
+- Never default to academic, policy, or consulting-whitepaper language unless the tone explicitly asks for it
+- When the tone description is ambiguous, prioritize clarity and natural human expression
+
+CONSISTENCY:
+- Apply the interpreted tone consistently to every sentence and paragraph
+- Do not drift into a generic corporate or formal voice
+"""
+
+
+
+def build_tone_prompt(
+    content: str,
+    tone: str,
+    current_word_count: int,
+    target_word_count: Optional[int] = None,
+) -> List[Dict[str, str]]:
+
+    length_constraint = (
+        f"\n- Target length: {target_word_count} words (±10% acceptable)"
+        if target_word_count
+        else ""
+    )
+
+    return [
+        {
+            "role": "system",
+            "content": f"""
+You are a tone adjustment expert writing for PwC audiences.
+Tone instructions override any default corporate, consulting, or academic style.
+
+TASK:
+Rewrite the content to match the requested tone.
+
+TONE REQUIREMENTS:
+{get_tone_instruction(tone)}
+
+CONSTRAINTS:
+- Preserve original structure and paragraph count
+- Keep ALL paragraphs in their original order
+- Preserve original meaning and key points{length_constraint}
+- Only change HOW things are said, not WHAT is said
+- Do NOT sound like a consulting report, academic paper, or policy document unless explicitly requested by the tone
+
+METHOD:
+- Adjust vocabulary to match tone
+- Modify sentence length and structure for tone
+- Adjust formality level as required
+- Maintain a consistent tone from first word to last
+- Validate before finalizing that the tone matches the request
+- The content should sound natural if read aloud by a human
+
+OUTPUT FORMAT:
+
+[Content rewritten in the requested tone while preserving structure and meaning]
+"""
+        },
+        {
+            "role": "user",
+            "content": content,
+        },
+    ]
+
+
+
+# ------------------------------------------------------------
+# EXPANSION
+# ------------------------------------------------------------
+
+def build_expansion_prompt(
+    content: str,
+    target_word_count: int,
+    current_word_count: int,
+    supporting_doc: Optional[str] = None,
+    supporting_doc_instructions: Optional[str] = None,
+) -> List[Dict[str, str]]:
+
+    user_prompt = f"""
+PRIMARY DOCUMENT (BASE CONTENT):
+{content}
+"""
+
+    if supporting_doc:
+        user_prompt += f"""
+
+SUPPORTING DOCUMENT (FOR EXPANSION ONLY):
+{supporting_doc}
+
+SUPPORTING DOCUMENT INSTRUCTIONS:
+{supporting_doc_instructions}
+"""
+
+    return [
+        {
+            "role": "system",
+            "content": f"""
+You are a PwC content expansion expert.
+- Use 80% of content from the supporting document when expanding the document.
+- Example 1000 words to 1500 then 500 words to be added or expanded. then 80% 500 means 400 words should come from supporting document content.
+
+{get_legacy_expansion_instructions(
+    target_word_count=target_word_count,
+    current_word_count=current_word_count
+)}
+
+{get_legacy_expansion_guidelines()}
+"""
+        },
+        {
+            "role": "user",
+            "content": user_prompt.strip(),
+        },
+    ]
+
+# ------------------------------------------------------------
+# LEGACY EXPANSION GUIDELINES
+# ------------------------------------------------------------
+def get_legacy_expansion_guidelines() -> str:
+    return """
+EXPANSION PRINCIPLES & GUIDELINES:
+
+PRIMARY OBJECTIVE:
+Expand existing author material with new quantitative and qualitative support to strengthen existing objectives, arguments, and perspectives.
+
+CORE REQUIREMENTS:
+
+1. PRESERVE AUTHOR'S VOICE & INTENT:
+- Maintain the author's original tone, style, and voice throughout
+- Do NOT change the fundamental perspective or viewpoint
+- Do NOT rewrite sentences for stylistic preferences
+- Ensure all additions align with author's established arguments
+
+2. STRUCTURAL INTEGRITY (NON-NEGOTIABLE):
+- Do NOT fundamentally change or reorganize the original structure
+- Keep ALL original paragraphs in their exact order
+- Do NOT move paragraphs, sections, or content blocks
+- Do NOT merge or split existing paragraphs unless adding substantial context
+- Maintain the logical flow and progression of ideas as authored
+
+3. SENTENCE & CONTENT EXPANSION STRATEGY:
+- Do NOT arbitrarily increase existing sentence length
+- Only extend sentences if adding new sources, examples, evidence, or support
+- Create new sentences/paragraphs to support and strengthen existing points
+- Add supporting details, examples, and evidence between existing content
+- Use natural spacing to integrate new material seamlessly
+
+4. RESEARCH & DATA INTEGRATION (MANDATORY):
+- Conduct research on the topic to find supporting evidence
+- Incorporate at least 2–3 new sources or cite data points
+- If insufficient valid sources exist, explicitly note:
+  "No additional valid sources found for [specific claim]"
+- Ensure all sources are credible, relevant, and properly contextualized
+- Prioritize quantitative data, case studies, and industry benchmarks
+
+5. SUPPORTING EVIDENCE STRATEGY:
+- Add data points that validate and strengthen existing claims
+- Include real-world examples that demonstrate author's perspectives
+- Provide statistical support or case study evidence where applicable
+
+6. CONTENT SECTION RECOMMENDATIONS:
+- Suggest missing sections ONLY in a separate “Recommendations” section
+- Do NOT add contradictory viewpoints
+
+7. TONE & STYLE CONSISTENCY:
+- Match sentence structure patterns from the original text
+- Maintain formality and paragraph density
+
+### TRUE EXPANSION REQUIREMENT (MANDATORY)
+ALL EXPANSION MUST BE **TRUE EXPANSION — WEAVE, NOT APPEND**.
+- DO NOT expand by adding sentences only at the end of paragraphs.
+- ALL new material MUST be INTEGRATED INTO EXISTING PARAGRAPHS by:
+  - introducing clarifying context or mechanisms early in the paragraph,
+  - embedding concrete examples, data, or evidence mid-paragraph,
+  - rewriting or restructuring existing sentences where needed to smoothly incorporate new insight.
+- You MAY rewrite sentences to integrate evidence or explanation, PROVIDED the original meaning and intent are preserved.
+- End-of-paragraph additions are permitted ONLY for brief implications or transitions.
+TRUE EXPANSION REQUIRES **INTEGRATION, NOT ACCUMULATION**.
+
+---
+
+### EXPANSION QUALITY BAR
+EVERY added sentence MUST introduce AT LEAST ONE of the following:
+- a causal mechanism (“how” or “why”),
+- a concrete example or real-world application,
+- empirical or quantitative support,
+- a practical implication for executives or stakeholders.
+DO NOT add filler, emphasis-only restatements, or surface-level paraphrasing.
+
+---
+
+### STATISTICAL ENRICHMENT (MANDATORY)
+- INCLUDE **1–2 concrete quantitative data points per major section**, where credible data exists.
+- ALL statistics MUST:
+  - follow the required source hierarchy,
+  - be cited inline using numbered references,
+  - include qualifiers if estimates vary.
+- IF strong quantitative evidence does not exist, EXPLICITLY STATE this (e.g., “published estimates vary” or “quantitative evidence is limited”).
+
+---
+
+### COMPETITOR PROHIBITION (ABSOLUTE)
+UNDER NO CIRCUMSTANCES may you use, cite, reference, or mention content, frameworks, research, case studies, tools, or examples from:
+McKinsey & Company, Boston Consulting Group, Bain & Company, Deloitte (including Monitor Deloitte), EY (including EY-Parthenon), KPMG, AT Kearney, Oliver Wyman, Roland Berger, L.E.K. Consulting, Accenture, Alvarez & Marsal.
+"""
+
+# ------------------------------------------------------------
+# LEGACY EXPANSION INSTRUCTIONS
+# ------------------------------------------------------------
+def get_legacy_expansion_instructions(
+    target_word_count: int,
+    current_word_count: int,
+) -> str:
+    return f"""1. WORD COUNT (HIGHEST PRIORITY):
+- Current Word Count: {current_word_count} words
+- Target: EXACTLY {target_word_count} words
+- Expansion Needed: {target_word_count - current_word_count} words
+- Method: Expand WITHIN each paragraph by:
+  • Adding relevant details and examples
+  • Developing key concepts more thoroughly
+  • Providing deeper analysis and context
+  • Using supporting documents if available
+- Preserve: ALL original content, paragraphs, and structure
+- DO NOT: Remove any original paragraphs or content
+- DO NOT: Invent facts or contradict existing content
+"""
+
+
+# ------------------------------------------------------------
+# COMPRESSION
+# ------------------------------------------------------------
+
+def build_compression_prompt(
+    content: str,
+    target_word_count: int,
+    current_word_count: int,
+    retry_count: int = 0,
+    previous_word_count: Optional[int] = None,
+) -> List[Dict[str, str]]:
+    reduction_needed = current_word_count - target_word_count
+    reduction_percentage = (reduction_needed / current_word_count * 100) if current_word_count > 0 else 0
     
-    svg {
-      stroke: #ba1f1f;
-    }
-  }
-  
-  &:active {
-    background: rgba(220, 38, 38, 0.2);
-  }
-  
-  &:focus {
-    outline: 2px solid #DC2626;
-    outline-offset: 2px;
-  }
-}
-
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateY(-10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.uploaded-file-indicator {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  background: #F0F7FF;
-  border: 1px solid #BFDBFE;
-  border-radius: 8px;
-  margin-top: 12px;
-
-  .file-icon {
-    flex-shrink: 0;
-    color: #fd5108;
-  }
-
-  .file-details {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-
-    .file-name {
-      font-size: 14px;
-      font-weight: 500;
-      color: #1F2937;
-    }
-
-    .file-size {
-      font-size: 12px;
-      color: #6B7280;
-    }
-  }
-
-  .remove-file-btn {
-    flex-shrink: 0;
-    width: 28px;
-    height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: none;
-    background: transparent;
-    color: #6B7280;
-    cursor: pointer;
-    border-radius: 4px;
-    transition: all 0.2s;
-
-    &:hover {
-      background: #FEE2E2;
-      color: #DC2626;
-    }
-
-    svg {
-      width: 16px;
-      height: 16px;
-    }
-  }
-}
-
-.editor-checklist {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.editor-toggle-item {
-  position: relative;
-  cursor: pointer;
-  display: block;
-
-  &.disabled {
-    cursor: not-allowed;
-    opacity: 1;
-  }
-
-  input[type="checkbox"] {
-  position: absolute;
-  opacity: 0;
-  width: 0;
-  height: 0;
-
-  &:checked + .editor-toggle-switch {
-    background: #fd5108;
-    color: white;
-
-    .editor-toggle-indicator {
-      background: rgba(255, 255, 255, 0.3);
-      
-      &::before {
-        transform: translateX(24px);
-      }
-    }
-  }
-
-  &:disabled + .editor-toggle-switch {
-    background: #fd5108;  // Exact same color as checked state
-    color: white;
-    cursor: not-allowed;
-    opacity: 1;  // Remove opacity to match exactly
-
-    .editor-toggle-indicator {
-      background: rgb(202, 198, 198);  // Changed to solid white
-      
-      &::before {
-        background: rgb(126, 123, 123);  // Changed to orange
-        transform: translateX(24px);
-      }
-    }
-  }
-}
-}
-
-.editor-toggle-switch {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  background: #F5F5F5;
-  border-radius: 8px;
-  transition: all 0.1s ease;
-  min-height: 48px;
-
-  &.disabled {
-    cursor: not-allowed;
-  }
-}
-
-.editor-toggle-indicator {
-  flex-shrink: 0;
-  width: 48px;
-  height: 24px;
-  background: #E0E0E0;
-  border-radius: 12px;
-  position: relative;
-  transition: all 0.1s ease;
-
-  &::before {
-    content: '';
-    position: absolute;
-    width: 20px;
-    height: 20px;
-    background: var(--bg-primary);
-    border-radius: 50%;
-    top: 2px;
-    left: 2px;
-    transition: transform 0.1s ease;
-  }
-}
-
-.editor-content {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-}
-
-.editor-title {
-  font-weight: 600;
-  font-size: 11.5px;
-}
-
-.editor-description {
-  font-size: 11.5px;
-  opacity: 0.85;
-  font-style: italic;
-}
-
-.result-section {
-  margin-top: 16px;
-}
-
-.result-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 8px;
-}
-
-.bulk-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 24px;
-  margin-bottom: 16px;
-  padding: 8px 12px;
-  background: var(--bg-secondary, #F9FAFB);
-  border-radius: 8px;
-  border: 1px solid var(--border-color, #E5E7EB);
-  width: fit-content;
-  margin-left: auto;
-  
-  // Style buttons inside bulk-actions with borders
-  .ef-approve-btn,
-  .ef-reject-btn {
-    padding: 6px 16px;
-    border-radius: 6px;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    border: 2px solid transparent;
-  }
-  
-  .ef-approve-btn {
-    background: #F0FDF4;
-    color: #059669;
-    border-color: #10b981;
-  }
-  
-  .ef-approve-btn:hover:not(:disabled) {
-    background: #D1FAE5;
-    border-color: #059669;
-  }
-  
-  .ef-reject-btn {
-    background: #FEF2F2;
-    color: #DC2626;
-    border-color: #EF4444;
-  }
-  
-  .ef-reject-btn:hover:not(:disabled) {
-    background: #FEE2E2;
-    border-color: #DC2626;
-  }
-  
-  .ef-approve-btn:disabled,
-  .ef-reject-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-}
-
-.bulk-action-btn {
-  padding: 6px 16px;
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: 2px solid transparent;
-  display: inline-block;
-  text-align: center;
-  text-decoration: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  appearance: none;
-  user-select: none;
-  margin: 0;
-  font-family: inherit;
-  position: relative;
-  pointer-events: auto;
-  touch-action: manipulation;
-}
-
-.bulk-action-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.bulk-action-btn:active:not(:disabled) {
-  transform: translateY(0);
-}
-
-.bulk-action-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  pointer-events: none;
-}
-
-.bulk-action-btn:focus:not(:disabled) {
-  outline: 2px solid #fd5108;
-  outline-offset: 2px;
-}
-
-.approve-all-btn {
-  background-color: #F0FDF4;
-  color: #059669;
-  border-color: #10b981;
-}
-
-.approve-all-btn:hover:not(:disabled) {
-  background-color: #D1FAE5;
-  border-color: #059669;
-}
-
-.decline-all-btn {
-  background-color: #FEF2F2;
-  color: #DC2626;
-  border-color: #EF4444;
-}
-
-.decline-all-btn:hover:not(:disabled) {
-  background-color: #FEE2E2;
-  border-color: #DC2626;
-}
-
-@media (max-width: 768px) {
-  .bulk-actions {
-    flex-direction: row;
-    width: 100%;
-    justify-content: flex-end;
-  }
-  
-  .bulk-action-btn {
-    flex: 0 0 auto;
-  }
-}
-
-.generation-output {
-  margin-top: 24px;
-}
-
-.assistant-message {
-  background: var(--bg-primary);
-  padding: 16px;
-  border-radius: 8px;
-  border: 1px solid var(--border-color);
-  font-size: 14px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  color: var(--text-primary);
-  max-height: 400px;
-  overflow-y: auto;
-  margin-bottom: 12px;
-}
-
-.revised-content-formatted {
-  white-space: normal;
-  
-  h1 {
-    font-size: 2em;
-    font-weight: 700;
-    margin-top: 1.5em;
-    margin-bottom: 0.75em;
-    color: var(--text-primary);
-    line-height: 1.2;
-    border-bottom: 2px solid var(--border-color);
-    padding-bottom: 0.5em;
-  }
-
-  h2 {
-    font-size: 1.5em;
-    font-weight: 600;
-    margin-top: 1.25em;
-    margin-bottom: 0.625em;
-    color: var(--text-primary);
-    line-height: 1.3;
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 0.375em;
-  }
-
-  h3 {
-    font-size: 1.25em;
-    font-weight: 600;
-    margin-top: 1em;
-    margin-bottom: 0.5em;
-    color: var(--text-primary);
-    line-height: 1.4;
-  }
-
-  h4 {
-    font-size: 1.1em;
-    font-weight: 600;
-    margin-top: 0.875em;
-    margin-bottom: 0.5em;
-    color: var(--text-primary);
-    line-height: 1.4;
-  }
-
-  h5 {
-    font-size: 1em;
-    font-weight: 600;
-    margin-top: 0.75em;
-    margin-bottom: 0.5em;
-    color: var(--text-primary);
-    line-height: 1.5;
-  }
-
-  h6 {
-    font-size: 0.9em;
-    font-weight: 600;
-    margin-top: 0.75em;
-    margin-bottom: 0.5em;
-    color: var(--text-primary);
-    line-height: 1.5;
-  }
-
-  p {
-    margin-top: 0.75em;
-    margin-bottom: 0.75em;
-    line-height: 1.7;
-    color: var(--text-primary);
+    # Determine compression intensity based on reduction percentage
+    is_large_reduction = reduction_percentage > 30
+    is_very_large_reduction = reduction_percentage > 45
+    is_extreme_reduction = reduction_percentage > 55  # For >55%, require maximum sentence-level compression
+    # Note: Paragraph deletion is NOT allowed - only word and sentence-level compression within paragraphs
     
-    &:first-child {
-      margin-top: 0;
-    }
+    # Build retry context message
+    retry_context = ""
+    if retry_count > 0:
+        if previous_word_count:
+            additional_reduction = previous_word_count - target_word_count
+            retry_context = f"""
+RETRY ATTEMPT #{retry_count}:
+- Previous attempt resulted in {previous_word_count} words (still {additional_reduction} words above target)
+- You MUST compress more aggressively than the previous attempt
+- The previous compression was insufficient - apply more intensive techniques
+"""
+        else:
+            retry_context = f"""
+RETRY ATTEMPT #{retry_count}:
+- Previous compression attempt did not meet the target
+- You MUST apply more aggressive compression techniques
+- Focus on maximum compression while preserving core meaning
+"""
     
-    &:last-child {
-      margin-bottom: 0;
-    }
-  }
-
-  ul, ol {
-    margin-top: 0.75em;
-    margin-bottom: 0.75em;
-    padding-left: 2em;
-    line-height: 1.7;
-    color: var(--text-primary);
-  }
-
-  ul {
-    list-style-type: disc;
+    # Build compression intensity instructions
+    intensity_instructions = ""
+    if retry_count == 0:
+        if is_extreme_reduction:
+            intensity_instructions = """
+COMPRESSION INTENSITY: EXTREME REDUCTION (>{:.1f}%) - CRITICAL
+- This is an EXTREME compression requiring maximum sentence-level reduction
+- You MUST remove 50-70% of sentences from each paragraph, keeping only the most essential
+- Combine remaining sentences aggressively into single dense sentences
+- DELETE entire sentences that are examples, case studies, or supporting details
+- DELETE sentences that repeat or restate main points
+- Keep ONLY 1-2 core sentences per paragraph that contain essential arguments
+- Remove ALL transitional sentences, introductory sentences, and concluding sentences
+- Compress every remaining sentence to absolute minimum words
+- This level of reduction REQUIRES removing most sentences, not just compressing them
+""".format(reduction_percentage)
+        elif is_very_large_reduction:
+            intensity_instructions = """
+COMPRESSION INTENSITY: VERY LARGE REDUCTION (>{:.1f}%)
+- This requires maximum compression effort with significant sentence removal
+- Remove 30-50% of less essential sentences from each paragraph
+- Apply ALL compression techniques aggressively to remaining sentences
+- Prioritize core arguments - delete supporting sentence examples
+- Combine multiple sentences into single dense sentences
+- Remove all non-essential qualifiers and modifiers
+- Compress WITHIN paragraphs - do NOT delete entire paragraphs
+""".format(reduction_percentage)
+        elif is_large_reduction:
+            intensity_instructions = """
+COMPRESSION INTENSITY: LARGE REDUCTION (>{:.1f}%)
+- This requires significant compression effort
+- Apply multiple compression techniques simultaneously
+- Be more aggressive with sentence combining
+- Remove redundant examples and supporting details
+""".format(reduction_percentage)
+        else:
+            intensity_instructions = """
+COMPRESSION INTENSITY: MODERATE REDUCTION ({:.1f}%)
+- Apply standard compression techniques
+- Focus on removing redundancy and tightening language
+""".format(reduction_percentage)
+    elif retry_count == 1:
+        words_still_over = previous_word_count - target_word_count if previous_word_count else reduction_needed
+        intensity_instructions = f"""
+COMPRESSION INTENSITY: RETRY #1 - INCREASED AGGRESSION
+- Previous attempt resulted in {previous_word_count} words - still {words_still_over} words above target
+- You MUST remove MORE sentences and compress MORE aggressively:
+  * DELETE 40-60% of sentences from each paragraph (not just compress them)
+  * Combine remaining sentences more aggressively into single dense sentences
+  * Remove ALL supporting examples, case studies, and non-critical details (entire sentences)
+  * Tighten every phrase and eliminate all filler
+  * Compress lists and bullet points to minimum
+  * Remove ALL transitional sentences that don't add value
+  * Target: You need to reduce by {words_still_over} more words - this requires removing many sentences
+"""
+    else:  # retry_count >= 2
+        words_still_over = previous_word_count - target_word_count if previous_word_count else reduction_needed
+        intensity_instructions = f"""
+COMPRESSION INTENSITY: RETRY #{retry_count} - MAXIMUM COMPRESSION - CRITICAL FAILURE
+- Previous attempts were insufficient - you MUST be DRAMATICALLY more aggressive
+- Current result: {previous_word_count} words, Target: {target_word_count} words
+- You need to remove {words_still_over} MORE words - this is CRITICAL
+- Apply MAXIMUM sentence deletion and compression (WITHIN paragraphs only):
+  * DELETE 60-80% of sentences from each paragraph - keep only 1-2 core sentences per paragraph
+  * DELETE ALL example sentences, case study sentences, supporting detail sentences
+  * DELETE ALL transitional sentences, introductory sentences, concluding sentences
+  * DELETE ALL sentences that repeat or restate main points
+  * Combine remaining 1-2 sentences per paragraph into single ultra-dense sentences
+  * Compress every remaining word to absolute minimum
+  * Remove ALL qualifiers, modifiers, adjectives, adverbs that aren't essential
+  * Compress lists to 1-2 items maximum or remove entirely
+  * Use telegraphic style - maximum information density per word
+- Do NOT delete entire paragraphs - but DELETE most sentences within them
+- Each paragraph should have 1-2 sentences maximum after compression
+- Word count target is MANDATORY - you MUST achieve {target_word_count} words
+""".format(retry_count=retry_count)
     
-    ul {
-      list-style-type: circle;
-      margin-top: 0.5em;
-      margin-bottom: 0.5em;
-      
-      ul {
-        list-style-type: square;
-      }
-    }
-  }
-
-  ol {
-    list-style-type: decimal;
+    # Build structural requirements - paragraph deletion is NEVER allowed
+    structural_requirements = """- Keep ALL paragraphs in their original order
+- Do NOT delete entire sections or paragraphs
+- Do NOT add new content
+- Maintain logical flow and coherence
+- Preserve paragraph structure (compress content WITHIN paragraphs only)"""
     
-    ol {
-      list-style-type: lower-alpha;
-      margin-top: 0.5em;
-      margin-bottom: 0.5em;
-      
-      ol {
-        list-style-type: lower-roman;
-      }
-    }
-  }
+    return [
+        {
+            "role": "system",
+            "content": f"""
+You are a senior PwC editorial consultant specializing in content compression.
 
-  li {
-    margin-top: 0.375em;
-    margin-bottom: 0.375em;
-    line-height: 1.7;
+PRIMARY OBJECTIVES (IN ORDER):
+1. Preserve meaning and factual accuracy
+2. Preserve structure and paragraph order
+3. Achieve EXACTLY {target_word_count} words (NON-NEGOTIABLE)
+
+DOCUMENT CONTEXT:
+- Current words: {current_word_count}
+- Target words: {target_word_count}
+- Reduction needed: {reduction_needed} words
+- Reduction percentage: {reduction_percentage:.1f}%
+{retry_context}
+{intensity_instructions}
+
+COMPRESSION TECHNIQUES (APPLY AS NEEDED):
+
+1. SENTENCE COMBINING & RESTRUCTURING:
+   - Combine two or more related sentences into one
+   - Merge parallel ideas using semicolons, colons, or conjunctions
+   - Convert compound sentences to simple sentences where meaning is preserved
+   - Eliminate sentence fragments that repeat information
+
+2. PHRASE TIGHTENING:
+   - Replace wordy phrases with concise alternatives:
+     * "in order to" → "to"
+     * "due to the fact that" → "because"
+     * "at this point in time" → "now"
+     * "in the event that" → "if"
+     * "with regard to" → "regarding" or "about"
+   - Remove unnecessary qualifiers: "very", "quite", "rather", "somewhat", "fairly"
+   - Eliminate redundant adjectives and adverbs
+   - Use active voice instead of passive voice (saves words)
+
+3. ELIMINATE REDUNDANCY:
+   - Remove repeated concepts expressed in different words
+   - Eliminate restatements of the same idea
+   - Remove redundant explanations that don't add new information
+   - Cut duplicate examples or similar case studies
+
+4. REMOVE FILLER & TRANSITIONAL PHRASES:
+   - Eliminate unnecessary transitions: "furthermore", "moreover", "in addition" (if redundant)
+   - Remove hedging language where certainty is appropriate: "may", "might", "could" (when facts are certain)
+   - Cut introductory phrases that don't add value: "It is important to note that", "It should be mentioned that"
+
+5. COMPRESS LISTS & ENUMERATIONS:
+   - Combine list items where possible
+   - Use parallel structure to reduce word count
+   - Remove less critical items from lists if needed
+   - Convert long lists to concise summaries
+
+6. SUPPORTING DETAIL COMPRESSION:
+   - Compress examples to their essential points
+   - Remove non-critical background information
+   - Tighten case study descriptions to key facts only
+   - Eliminate extended explanations of obvious points
+
+7. PARAGRAPH-LEVEL COMPRESSION:
+   - Compress WITHIN each paragraph (do NOT delete entire paragraphs)
+   - For very large reductions (>45%): DELETE 30-50% of sentences from each paragraph
+   - For extreme reductions (>55%): DELETE 50-70% of sentences from each paragraph
+   - For retries: DELETE 60-80% of sentences from each paragraph
+   - Keep only 1-3 core sentences per paragraph that contain essential arguments
+   - DELETE entire sentences that are: examples, case studies, supporting details, transitions, repetitions
+   - Combine remaining sentences into single dense sentences
+   - Tighten every remaining sentence to absolute minimum
+   - Maximum compression within each paragraph while preserving all paragraphs (but not all sentences)
+
+PRIORITY GUIDELINES:
+- PRESERVE: Core arguments, key facts, main conclusions, essential data points
+- COMPRESS AGGRESSIVELY: Supporting examples, background context, transitional phrases, redundant explanations
+- REMOVE: Filler words, unnecessary qualifiers, repeated concepts, non-essential details
+
+STRUCTURAL REQUIREMENTS:
+{structural_requirements}
+
+WORD COUNT VALIDATION:
+- You MUST count words in your output BEFORE submitting
+- Target is EXACTLY {target_word_count} words (CRITICAL - NOT OPTIONAL)
+- Acceptable range: {target_word_count - 5} to {target_word_count + 5} words
+- Current: {current_word_count} words → Target: {target_word_count} words
+- Reduction needed: {reduction_needed} words ({reduction_percentage:.1f}% reduction)
+- If current > target: You MUST DELETE more sentences and compress more aggressively
+- For {reduction_percentage:.1f}% reduction: You need to remove approximately {int(reduction_percentage * 0.6)}% of sentences
+- Count your output words - if over target, compress MORE before finalizing
+
+CRITICAL: Word count is the HIGHEST PRIORITY after preserving meaning. 
+- Compress WITHIN paragraphs using all available techniques
+- Do NOT delete entire paragraphs or sections - compress content within them
+- If you are not meeting the target, you MUST apply more aggressive word-level compression
+- Every sentence, phrase, and word must be compressed to maximum efficiency
+"""
+        },
+        {
+            "role": "user",
+            "content": content,
+        },
+    ]
+
+
+# ------------------------------------------------------------
+# RESEARCH ENRICHMENT
+# ------------------------------------------------------------
+
+def build_research_enrich_prompt(
+    content: str,
+    pwc_doc: Optional[str],
+    market_insights: Optional[str],
+) -> List[Dict[str, str]]:
+    user_prompt = content
+
+    if pwc_doc:
+        user_prompt += f"""
+
+MAIN INSTRUCTIONS:
+- Use 80% of content from the market insights when expanding the document.
+- Example 1000 words to 1500 then 500 words to be added or expanded. then 80% 500 means 400 words should come from research content.
+
+PWC RESEARCH (PRIMARY SOURCE):
+{pwc_doc}
+"""
+
+    if market_insights:
+        user_prompt += f"""
+
+MARKET INSIGHTS (SECONDARY):
+{market_insights}
+"""
+
+    return [
+        {
+            "role": "system",
+            "content": """
+You are a PwC research-grounded editorial expert.
+
+RULES:
+- Strengthen existing arguments ONLY
+- Use PwC content FIRST
+- Use market insights only to support existing points
+- Do NOT add sections
+- Do NOT invent facts
+"""
+        },
+        {
+            "role": "user",
+            "content": user_prompt.strip(),
+        },
+    ]
+
+
+# ------------------------------------------------------------
+# EDIT
+# ------------------------------------------------------------
+
+def get_editor_prompt_mapping() -> Dict[str, str]:
+    """
+    Returns a dictionary of individual editor prompt constants.
+    """
+    return {
+        "Development Editor": DEVELOPMENT_EDITOR_PROMPT,
+        "Content Editor": CONTENT_EDITOR_PROMPT,
+        "Line Editor": LINE_EDITOR_PROMPT,
+        "Copy Editor": COPY_EDITOR_PROMPT,
+        "PwC Brand Alignment Editor": BRAND_EDITOR_PROMPT,
+    }
+
+
+def get_editor_prompts_dict() -> Dict[str, str]:
+    """
+    Returns the editor prompt dictionary mapping editor names to their prompts.
+    """
+    return get_editor_prompt_mapping()
+
+
+def selected_editors(editors: Optional[List[str]] = None) -> List[str]:
+    """
+    Selects and validates editors from the provided list.
+    If no editors provided or empty list, returns all available editors.
     
-    p {
-      margin-top: 0.5em;
-      margin-bottom: 0.5em;
-    }
-  }
-
-  strong {
-    font-weight: 700;
-    color: var(--text-primary);
-  }
-
-  em {
-    font-style: italic;
-    color: var(--text-primary);
-  }
-
-  pre {
-    background: #F5F5F5;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    padding: 1em;
-    margin-top: 1em;
-    margin-bottom: 1em;
-    overflow-x: auto;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 0.9em;
-    line-height: 1.5;
-  }
-
-  code {
-    background: #F5F5F5;
-    border: 1px solid var(--border-color);
-    border-radius: 3px;
-    padding: 0.2em 0.4em;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 0.9em;
-  }
-
-  pre code {
-    background: transparent;
-    border: none;
-    padding: 0;
-  }
-
-  // Links
-  a {
-    color: #fd5108;
-    text-decoration: underline;
-    transition: color 0.2s ease;
+    Args:
+        editors: Optional list of editor names to select
+        
+    Returns:
+        List of valid editor names
+    """
+    editor_prompts = get_editor_prompt_mapping()
     
-    &:hover {
-      color: #b83d01;
-    }
-  }
-
-  // Horizontal rules
-  hr {
-    border: none;
-    border-top: 2px solid var(--border-color);
-    margin: 2em 0;
-  }
-
-  // Blockquotes (if needed in future)
-  blockquote {
-    border-left: 4px solid #fd5108;
-    padding-left: 1em;
-    margin-left: 0;
-    margin-top: 1em;
-    margin-bottom: 1em;
-    color: #6B7280;
-    font-style: italic;
-  }
-}
-
-.action-buttons {
-  display: flex;
-  gap: 12px;
-  margin-top: 16px;
-  flex-wrap: wrap;
-}
-
-// Satisfaction Prompt Styles
-.satisfaction-prompt {
-  margin-top: 24px;
-  padding: 16px;
-  background-color: #F0F7FF;
-  border-radius: 8px;
-  border: 1px solid #BFDBFE;
-}
-
-.satisfaction-question {
-  font-size: 14px;
-  font-weight: 500;
-  color: #1F2937;
-  margin-bottom: 12px;
-}
-
-.satisfaction-buttons {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.satisfaction-btn {
-  padding: 0.75rem 1.5rem;
-  border-radius: 8px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: 2px solid transparent;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  
-  &:hover:not(:disabled) {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-  }
-  
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-}
-
-.satisfied-btn {
-  background-color: #10b981;
-  color: white;
-  border-color: #10b981;
-  
-  &:hover:not(:disabled) {
-    background-color: #059669;
-    border-color: #059669;
-  }
-}
-
-.improve-btn {
-  background-color: #f59e0b;
-  color: white;
-  border-color: #f59e0b;
-  
-  &:hover:not(:disabled) {
-    background-color: #d97706;
-    border-color: #d97706;
-  }
-}
-
-// Improvement Input Styles
-.improvement-input {
-  margin-top: 24px;
-  padding: 16px;
-  background-color: #F0F7FF;
-  border-radius: 8px;
-  border: 1px solid #BFDBFE;
-}
-
-.improvement-textarea {
-  width: 100%;
-  min-height: 100px;
-  padding: 0.75rem;
-  margin-top: 0.5rem;
-  border: 1px solid #BFDBFE;
-  border-radius: 6px;
-  background-color: white;
-  color: #1F2937;
-  font-size: 0.875rem;
-  font-family: inherit;
-  resize: vertical;
-  transition: all 0.2s ease;
-  
-  &:focus {
-    outline: none;
-    border-color: #fd5108;
-    box-shadow: 0 0 0 3px rgba(208, 74, 2, 0.1);
-  }
-  
-  &::placeholder {
-    color: #6B7280;
-  }
-}
-
-.improvement-actions {
-  display: flex;
-  gap: 12px;
-  margin-top: 12px;
-  justify-content: flex-end;
-}
-
-.improvement-submit-btn,
-.improvement-cancel-btn {
-  padding: 0.625rem 1.25rem;
-  border-radius: 6px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: 2px solid transparent;
-  
-  &:hover:not(:disabled) {
-    transform: translateY(-1px);
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  }
-  
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-}
-
-.improvement-submit-btn {
-  background-color: #fd5108;
-  color: white;
-  border-color: #fd5108;
-  
-  &:hover:not(:disabled) {
-    background-color: #b83d01;
-    border-color: #b83d01;
-  }
-}
-
-.improvement-cancel-btn {
-  background-color: transparent;
-  color: #6B7280;
-  border-color: #E5E7EB;
-  
-  &:hover:not(:disabled) {
-    background-color: #F9FAFB;
-    border-color: #6B7280;
-    color: #1F2937;
-  }
-}
-
-/* Editorial feedback card styles */
-.ef-container,
-.ef-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 8px;
-}
-
-.ef-card {
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  padding: 12px;
-  background: #fff;
-  margin-bottom: 8px;
-}
-
-.ef-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.ef-issue {
-  font-weight: 600;
-  font-size: 13px;
-  color: #111827;
-  flex: 1;
-}
-
-.ef-priority {
-  display: inline-block;
-  padding: 3px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.priority-critical {
-  background: #fee2e2;
-  color: #991b1b;
-}
-
-.priority-important {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-.priority-enhancement {
-  background: #dbeafe;
-  color: #1e40af;
-}
-
-.ef-body {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.ef-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.ef-label {
-  font-weight: 600;
-  min-width: 40px;
-  color: #374151;
-  background: #dcfce7;
-  border-radius: 4px;
-  padding: 2px 8px;
-  font-size: 12px;
-}
-
-.ef-value {
-  flex: 1;
-  color: #1f2937;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.ef-label-small {
-  font-weight: 500;
-  min-width: 50px;
-  color: #6b7280;
-  font-size: 11px;
-}
-
-.ef-value-small {
-  flex: 1;
-  color: #6b7280;
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.ef-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.ef-approve-btn, .ef-reject-btn {
-  padding: 4px 12px;
-  border-radius: 5px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  border: none;
-  transition: all 0.2s;
-}
-
-.ef-approve-btn {
-  background: #d1fae5;
-  color: #059669;
-}
-
-.ef-approve-btn:hover:not(:disabled) {
-  background: #10b981;
-  color: #fff;
-}
-
-.ef-approve-btn.active {
-  background: #10b981;
-  color: #fff;
-  font-weight: 600;
-}
-
-.ef-approve-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.ef-reject-btn {
-  background: #fee2e2;
-  color: #dc2626;
-}
-
-.ef-reject-btn:hover:not(:disabled) {
-  background: #dc2626;
-  color: #fff;
-}
-
-.ef-reject-btn.active {
-  background: #dc2626;
-  color: #fff;
-  font-weight: 600;
-}
-
-.ef-reject-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.ef-status {
-  margin-top: 4px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.ef-approved {
-  color: #059669;
-}
-
-.ef-rejected {
-  color: #dc2626;
-}
-
-/* Inline message when there is no paragraph-level feedback */
-.paragraph-no-feedback {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.2rem;
-  margin-top: 5rem;
-  border-radius: 0.5rem;
-  border: 1px dashed rgba(0, 0, 0, 0.12);
-  background-color: #fd5108;
-  text-align: center;
-  font-size: 0.95rem;
-  color: rgba(0, 0, 0, 0.7);
-}
-
-.paragraph-no-feedback p {
-  margin: 0;
-  font-size: 1.12rem;
-}
-
-.paragraph-feedback-section {
-  margin-bottom: 32px;
-  padding: 16px;
-  background: #fafafa;
-  border-radius: 8px;
-  border: 1px solid #e5e7eb;
-}
-
-.paragraph-row {
-  display: flex;
-  gap: 24px;
-  margin-bottom: 16px;
-}
-
-.paragraph-col {
-  flex: 1;
-}
-
-.paragraph-col h5 {
-  margin: 0 0 8px 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: #374151;
-}
-
-.paragraph-text-box {
-  height: auto;
-  overflow: hidden;
-  background: #fff;
-  border-radius: 6px;
-  border: 1px solid #d1d5db;
-  padding: 12px;
-  min-height: 60px;
-  font-size: 14px;
-  color: #1f2937;
-  line-height: 1.6;
-  word-break: break-word;
-}
-
-:host ::ng-deep .highlight-border {
-  border: 2px solid #fa1515;
-  border-radius: 4px;
-  box-shadow: 0 0 2px #ffdd00;
-  padding: 1px 3px;
-}
-
-:host ::ng-deep .highlight-yellow {
-  background: #fef08a;
-  color: #92400e;
-  font-weight: 700;
-  padding: 2px 4px;
-  border-radius: 3px;
-}
-
-:host ::ng-deep .highlight-green {
-  background: #86efac;
-  color: #166534;
-  font-weight: 700;
-  padding: 2px 4px;
-  border-radius: 3px;
-}
-
-:host ::ng-deep .strikeout {
-  text-decoration: line-through;
-}
-
-// Strikeout with yellow background (for approved issues in original)
-:host ::ng-deep .strikeout.highlight-yellow {
-  background: #fef08a;
-  color: #92400e;
-  text-decoration: line-through;
-  font-weight: 700;
-  padding: 2px 4px;
-  border-radius: 3px;
-}
-
-:host ::ng-deep .highlight-fix {
-  color: #0c9500;
-  font-weight: 700;
-  padding: 2px 4px;
-  border-radius: 3px;
-}
-
-// .editorial-feedback-list {
-//   margin-bottom: 12px;
-// }
-
-.editorial-feedback-list {
-  max-height: 300px;   /* adjust height as you prefer */
-  overflow-y: auto;
-  padding-right: 8px;  /* optional: avoids content flush against scrollbar */
-}
-
-.editor-type-label {
-  font-weight: 600;
-  margin: 12px 0 6px 0;
-  color: #0369a1;
-  font-size: 13px;
-}
-
-.flow-container {
-  width: 110%;  // Increase from default (usually 80%)
-  max-width: 1200px;  // Adjust max-width as needed
-  max-height: 98vh;
-  background: white;
-  border-radius: 8px;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  overflow: hidden;
-}
-
-// .approved-section {
-//   background: #e6fbe6;
-//   border: 1px solid #34d399;
-// }
-
-// .rejected-section {
-//   background: #fee2e2;
-//   border: 1px solid #f87171;
-//   text-decoration: line-through;
-//   color: #dc2626;
-  
-//   // Apply strikethrough and red color to all nested elements
-//   * {
-//     text-decoration: line-through;
-//     color: #dc2626;
-//   }
-// }
-
-// Final Output Section
-.final-output-actions {
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 2px solid var(--border-color, #E5E7EB);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-}
-
-.final-output-btn {
-  padding: 12px 24px;
-  background-color: #fd5108;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  
-  &:hover:not(:disabled) {
-    background-color: #b83d01;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(208, 74, 2, 0.3);
-  }
-  
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-}
-
-.final-output-hint {
-  margin-top: 12px;
-  font-size: 13px;
-  color: #6B7280;
-  font-style: italic;
-  text-align: center;
-}
-
-.spinner {
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-radius: 50%;
-  border-top-color: white;
-  animation: spin 0.6s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.final-output-section {
-  margin-top: 32px;
-  padding: 24px;
-  background: #F9FAFB;
-  border-radius: 8px;
-  border: 1px solid #E5E7EB;
-}
-
-.final-output-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: #1F2937;
-  margin-bottom: 16px;
-}
-
-.final-output-content {
-  background: white;
-  padding: 20px;
-  border-radius: 8px;
-  border: 1px solid #E5E7EB;
-  margin-bottom: 20px;
-  max-height: 600px;
-  overflow-y: auto;
-
-  // Style for title blocks (h1 with bold)
-  h1 {
-    font-weight: 700 !important; // Bold title
-    display: block;
-    font-size: 2em;
-    margin-top: 1.5em;
-    margin-bottom: 0.75em;
-    color: var(--text-primary);
-    line-height: 1.2;
-    border-bottom: 2px solid var(--border-color);
-    padding-bottom: 0.5em;
-    text-align: left;
-  }
-
-  // Style for headings (h2-h6, bold but less than title)
-  h2, h3, h4, h5, h6 {
-    font-weight: 600 !important; // Bold but less than title
-    display: block;
-    margin-top: 1em;
-    margin-bottom: 0.5em;
-    color: var(--text-primary);
-    text-align: left;
-  }
-
-  h2 {
-    font-size: 1.5em;
-    line-height: 1.3;
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 0.375em;
-  }
-
-  h3 {
-    font-size: 1.25em;
-    line-height: 1.4;
-  }
-
-  h4 {
-    font-size: 1.1em;
-    line-height: 1.4;
-  }
-
-  h5 {
-    font-size: 1em;
-    line-height: 1.5;
-  }
-
-  h6 {
-    font-size: 0.9em;
-    line-height: 1.5;
-  }
-
-  // Style for paragraphs (proper alignment)
-  p {
-    display: block;
-    text-align: left;
-    margin: 0.75em 0;
-    line-height: 1.7;
-    color: var(--text-primary);
+    if not editors:
+        selected_editors = list(editor_prompts.keys())
+        logger.debug("No editors provided. Falling back to all editors.")
+    else:
+        selected_editors = [e for e in editors if e in editor_prompts]
+        if len(selected_editors) != len(editors):
+            invalid = [e for e in editors if e not in editor_prompts]
+            logger.warning(f"Invalid editor names filtered out: {invalid}")
     
-    &:first-child {
-      margin-top: 0;
-    }
+    logger.info(f"Selected editors: {selected_editors}")
+    return selected_editors
+
+
+def combine_editor_prompts(selected_editors: List[str]) -> str:
+    """
+    Combines selected editor prompts into a single formatted string.
     
-    &:last-child {
-      margin-bottom: 0;
-    }
-  }
-
-  // Style for lists (proper ordering)
-  ul, ol {
-    display: block;
-    margin: 0.75em 0;
-    padding-left: 2em;
-    line-height: 1.7;
-    color: var(--text-primary);
-    text-align: left;
-  }
-
-  ul {
-    list-style-type: disc;
-    list-style-position: outside;
+    Args:
+        selected_editors: List of editor names to combine
+        
+    Returns:
+        Combined prompt string with editor names as headers
+    """
+    editor_prompts = get_editor_prompts_dict()
+    editor_prompt_strings = []
     
-    ul {
-      list-style-type: circle;
-      margin-top: 0.5em;
-      margin-bottom: 0.5em;
-      
-      ul {
-        list-style-type: square;
-      }
-    }
-  }
-
-  ol {
-    list-style-type: decimal;
-    list-style-position: outside;
+    for editor_name in selected_editors:
+        logger.debug(f"Applying editor prompt: {editor_name}")
+        prompt = editor_prompts[editor_name]
+        editor_prompt_strings.append(f"{editor_name.upper()}\n{prompt}")
     
-    ol {
-      list-style-type: lower-alpha;
-      margin-top: 0.5em;
-      margin-bottom: 0.5em;
-      
-      ol {
-        list-style-type: lower-roman;
-      }
-    }
-  }
-
-  li {
-    display: list-item;
-    margin: 0.375em 0;
-    line-height: 1.7;
-    padding-left: 0.5em;
+    combined_prompt = "\n\n".join(editor_prompt_strings)
+    logger.info(f"Combined all the editor prompt")
     
-    p {
-      margin: 0.5em 0;
-      display: block;
-    }
-  }
-}
+    return combined_prompt
 
-.export-actions {
-  display: flex;
-  gap: 12px;
-  margin-top: 20px;
-  flex-wrap: wrap;
-}
-
-.export-btn {
-  padding: 10px 20px;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: 2px solid transparent;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  
-  &:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  }
-  
-  svg {
-    width: 16px;
-    height: 16px;
-  }
-}
-
-.pdf-btn {
-  background-color: #DC2626;
-  color: white;
-  border-color: #DC2626;
-  
-  &:hover {
-    background-color: #B91C1C;
-    border-color: #B91C1C;
-  }
-}
-
-.docx-btn {
-  background-color: #2563EB;
-  color: white;
-  border-color: #2563EB;
-  
-  &:hover {
-    background-color: #1D4ED8;
-    border-color: #1D4ED8;
-  }
-}
-
-.copy-btn {
-  background-color: #6B7280;
-  color: white;
-  border-color: #6B7280;
-  
-  &:hover {
-    background-color: #4B5563;
-    border-color: #4B5563;
-  }
-}
-.helper-text {
-  font-size: 12px;
-  color: #6c757d;
-  margin: 4px 0 8px;
-}
-
-// Sequential Workflow Progress Indicator
-.sequential-progress {
-  margin: 24px 0;
-  padding: 16px;
-  background: #F9FAFB;
-  border: 1px solid #E5E7EB;
-  border-radius: 8px;
-}
-
-.progress-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.progress-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0;
-}
-
-.progress-badge {
-  padding: 4px 12px;
-  background: #3B82F6;
-  color: white;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.progress-bar-container {
-  width: 100%;
-  height: 8px;
-  background: #E5E7EB;
-  border-radius: 4px;
-  overflow: hidden;
-  margin-bottom: 12px;
-}
-
-.progress-bar {
-  height: 100%;
-  background: linear-gradient(90deg, #3B82F6, #60A5FA);
-  border-radius: 4px;
-  transition: width 0.3s ease;
-}
-
-.progress-text {
-  font-size: 14px;
-  color: var(--text-secondary);
-  margin: 0;
-  
-  strong {
-    color: var(--text-primary);
-    font-weight: 600;
-  }
-}
-
-// Horizontal Editor Timeline
-.editor-timeline.horizontal {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  margin: 16px 0 20px;
-  padding: 16px 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  
-  // Hide scrollbar but keep functionality
-  scrollbar-width: thin;
-  scrollbar-color: #E5E7EB transparent;
-  
-  &::-webkit-scrollbar {
-    height: 6px;
-  }
-  
-  &::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  
-  &::-webkit-scrollbar-thumb {
-    background: #E5E7EB;
-    border-radius: 3px;
+def build_edit_prompt(content: str, editors: Optional[List[str]] = None) -> List[Dict[str, str]]:
+    """
+    Build edit prompt combining only the selected editors' prompts.
     
-    &:hover {
-      background: #D1D5DB;
-    }
-  }
-}
+    Args:
+        content: The content to be edited
+        editors: Optional list of editor names. If None or empty, all editors are used.
+        
+    Returns:
+        List of message dictionaries for the edit prompt
+    """
+    # Select editors using the unified function
+    selected_editors_list = selected_editors(editors)
+    
+    # Combine editor prompts using the unified function
+    combined_prompt = combine_editor_prompts(selected_editors_list)
+    
+    system_content = f"""
+        You are a PwC editorial reviewer applying multiple editors to improve the content.
 
-.timeline-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 120px;
-  text-align: center;
-  flex-shrink: 0;
-}
+        CRITICAL INSTRUCTIONS:
+        - You must apply ALL of the following editors SIMULTANEOUSLY: {', '.join(selected_editors_list)}
+        - Do NOT apply editors sequentially
+        - Do NOT add or remove content unless explicitly required
+        - Do NOT change meaning
+        - Word count (if requested) has highest priority
 
-.timeline-marker {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: #d0d0d0;
-  color: #333;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  transition: all 0.2s ease;
-}
+        EDITOR INSTRUCTIONS
 
-.timeline-item.completed .timeline-marker {
-  background: #2e7d32;
-  color: #fff;
-}
+        {combined_prompt}
 
-.timeline-item.active .timeline-marker {
-  background: #1976d2;
-  color: #fff;
-  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.2);
-}
+        FINAL REQUIREMENTS
+        - Apply all selected editors' rules simultaneously
+        - Maintain consistency across all editorial changes
+        """
 
-.timeline-item.upcoming .timeline-marker {
-  background: #d0d0d0;
-  color: #666;
-}
+    return [
+        {"role": "system", "content": system_content.strip()},
+        {"role": "user", "content": content},
+    ]
 
-.timeline-editor-name {
-  margin-top: 6px;
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--text-primary);
-  line-height: 1.3;
-  max-width: 120px;
-  word-wrap: break-word;
-}
 
-.timeline-item.completed .timeline-editor-name {
-  color: #2e7d32;
-}
 
-.timeline-item.active .timeline-editor-name {
-  color: #1976d2;
-  font-weight: 700;
-}
+DEVELOPMENT_EDITOR_PROMPT = """
 
-.timeline-item.upcoming .timeline-editor-name {
-  color: #666;
-}
+ROLE:
+You are the Development Editor for PwC thought leadership content.
 
-.timeline-status {
-  margin-top: 2px;
-  font-size: 12px;
-  color: #666;
-  font-weight: 500;
-}
+You operate at a development-editing level (not copyediting) and are accountable for structure, narrative clarity, logic, tone, and point of view—while strictly preserving the original meaning, intent, and factual accuracy.
 
-.timeline-item.completed .timeline-status {
-  color: #2e7d32;
-}
+Your output must reflect PwC’s verbal brand voice:
+• Collaborative
+• Bold
+• Optimistic
 
-.timeline-item.active .timeline-status {
-  color: #1976d2;
-  font-weight: 600;
-}
+============================================================
+PRIMARY OBJECTIVE
+============================================================
 
-.timeline-connector {
-  flex: 1;
-  height: 2px;
-  background: #d0d0d0;
-  margin-top: 13px;
-  min-width: 20px;
-  transition: background 0.2s ease;
-}
+Apply development-level editing to strengthen the article’s:
+• Narrative arc
+• Structural coherence
+• Logical progression
+• Thematic clarity
+• Authoritative point of view
 
-.timeline-connector.completed {
-  background: #2e7d32;
-}
+You MUST preserve the original ideas and facts, but you are REQUIRED to improve how they are framed, connected, and expressed.
 
-// Feedback decision summary inside sequential progress card
-.paragraph-status-summary {
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid #E5E7EB;
-}
+============================================================
+MANDATORY DEVELOPMENT OUTCOMES
+============================================================
 
-.status-summary-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0 0 12px 0;
-}
+You MUST actively enforce all of the following outcomes across the full document.
 
-.feedback-pills {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
+1. STRONG POV & CONFIDENCE
+- Eliminate unnecessary qualifiers, hedging, and passive constructions
+- Assert a clear, decisive point of view appropriate for PwC thought leadership
+- Frame insights as informed judgments, not tentative observations
+- Where ambiguity exists, resolve it in favor of clarity and authority
 
-.status-pill {
-  border: 1px solid #e5e7eb;
-  background: #ffffff;
-  padding: 8px 12px;
-  border-radius: 999px;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+2. ENERGY, MOMENTUM & DIRECTION
+- Favor active voice and forward-looking language
+- Emphasize progress, opportunity, and implications
+- Ensure ideas point toward outcomes, decisions, or actions—not explanation alone
+- If content explains without directing, revise it to introduce consequence or action
 
-  &:hover:not(:disabled) {
-    transform: translateY(-1px);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
-  }
+3. AUDIENCE ENGAGEMENT & GUIDANCE
+- Address the reader directly where appropriate (“you,” “your organization”)
+- Use inclusive, partnership-oriented language (“we,” “together”)
+- Position PwC as a trusted guide helping leaders navigate decisions
+- Avoid detached, academic, or purely observational tone
 
-  &:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-    transform: none;
-    box-shadow: none;
-  }
+============================================================
+STRUCTURE & NARRATIVE — STRICT REQUIREMENTS
+============================================================
 
-  &:focus {
-    outline: 2px solid #fd5108;
-    outline-offset: 2px;
-  }
+You are REQUIRED to:
+- Strengthen the overall structure and narrative arc of the FULL ARTICLE
+- Establish a single, clear central argument early
+- Improve logical flow across sections and paragraphs
+- Reorder, restructure, consolidate, or remove sections where necessary
+- Eliminate redundancy, tangents, thematic drift, and overlap
 
-  strong {
-    font-weight: 700;
-  }
+============================================================
+THEME & FRAMING — STRICT REQUIREMENTS
+============================================================
 
-  &.approved {
-    border-color: #10b981;
-    color: #059669;
-    background: #f0fdf4;
-  }
+You MUST ensure:
+- Thematic coherence from introduction through conclusion
+- Every section clearly contributes to the central narrative
+- Ambiguity, contradiction, or weak positioning is resolved at the IDEA level
+- Any introduced theme is meaningfully developed—or removed
 
-  &.rejected {
-    border-color: #ef4444;
-    color: #dc2626;
-    background: #fef2f2;
-  }
+============================================================
+PwC TONE OF VOICE — NON-NEGOTIABLE
+============================================================
 
-  &.pending {
-    border-color: #f59e0b;
-    color: #92400e;
-    background: #fffbeb;
-  }
-}
+You MUST apply ALL three principles simultaneously.
 
-// Sequential Actions Container (holds both Next Editor and Generate Final Output)
-.sequential-actions-container {
-  margin: 24px 0;
-  display: flex;
-  flex-direction: row;
-  gap: 16px;
-  align-items: flex-start;
+COLLABORATIVE
+- Use “we,” “you,” and “your organization” intentionally
+- Signal partnership and shared problem-solving
+- Introduce questions only when they advance decision-making
+- Position PwC as a collaborator, not a distant authority
 
-  .final-output-actions,
-  .next-editor-actions {
-    flex: 1;
-    padding: 20px;
-    background: #F0F7FF;
-    border: 1px solid #BFDBFE;
-    border-radius: 8px;
-    text-align: center;
-  }
+BOLD
+- Remove hedging (“might,” “may,” “could”)
+- Use confident, assertive, and direct language
+- Prefer active voice
+- Eliminate jargon and inflated phrasing
+- Simplify complexity without reducing substance
 
-}
+OPTIMISTIC
+- Reframe challenges as navigable opportunities
+- Use future-forward, progress-oriented language
+- Emphasize agency and momentum without introducing new facts
 
-// // Next Editor Button
-// .next-editor-actions {
-//   padding: 20px;
-//   background: #F0F7FF;
-//   border: 1px solid #BFDBFE;
-//   border-radius: 8px;
-//   text-align: center;
-// }
+"""
 
-.next-editor-btn {
-  padding: 12px 24px;
-  background: #3B82F6;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  
-  &:hover:not(:disabled) {
-    background: #2563EB;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(59, 130, 246, 0.3);
-  }
-  
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-  
-  .spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: white;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-}
+CONTENT_EDITOR_PROMPT = """
+ROLE:
+You are the Content Editor for PwC thought leadership.
 
-.next-editor-hint {
-  margin-top: 12px;
-  font-size: 13px;
-  color: #6B7280;
-  margin-bottom: 0;
-}
+============================================================
+CORE OBJECTIVE — NON-NEGOTIABLE
+============================================================
 
-// Final Output Actions (updated for sequential mode)
-.final-output-actions {
-  margin: 24px 0;
-  padding: 20px;
-  background: #F0F7FF;
-  border: 1px solid #BFDBFE;
-  border-radius: 8px;
-  text-align: center;
+Refine EACH content block to strengthen:
+- Clarity
+- Insight sharpness
+- Argument logic
+- Executive relevance
+- Narrative coherence
 
-  .sequential-actions-container & {
-    margin: 0;
-  }
+You MUST strictly preserve:
+- Original meaning
+- Authorial intent
+- Factual content
+- Stated objectives
 
-}
+You are accountable for producing content that is:
+clear, authoritative, non-redundant, and decision-relevant
+for a senior executive audience.
 
-.final-output-btn {
-  padding: 12px 24px;
-  background: #10B981;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  
-  &:hover:not(:disabled) {
-    background: #059669;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(16, 185, 129, 0.3);
-  }
-  
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-  
-  .spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: white;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-}
+============================================================
+CONTENT EDITOR — REQUIRED OUTCOMES
+============================================================
 
-.final-output-hint {
-  margin-top: 12px;
-  font-size: 13px;
-  color: #6B7280;
-  margin-bottom: 0;
-}
+For EVERY edited block, you MUST ensure the content demonstrates:
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
+1. STRONGER, ACTIONABLE INSIGHTS
+- Convert descriptive or exploratory language into
+  explicit leadership-relevant implications
+- State consequences or takeaways already implied
+- Do NOT introduce new meaning or conclusions
 
-// Notification Toast Styles
-.notification-toast {
-  position: fixed;
-  top: 20px;
-  right: 20px;
-  z-index: 10000;
-  min-width: 300px;
-  max-width: 500px;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  border: 1px solid #E5E7EB;
-  animation: slideInRight 0.3s ease-out;
-  
-  &[data-type="success"] {
-    border-left: 4px solid #10B981;
-  }
-  
-  &[data-type="error"] {
-    border-left: 4px solid #DC2626;
-  }
-}
+2. SHARPER EMPHASIS & PRIORITISATION
+- Surface the most important ideas within the block
+- De-emphasise secondary or supporting points
+- Enforce a clear hierarchy of ideas inside the block
 
-.notification-content {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 20px;
-  
-  svg {
-    flex-shrink: 0;
-    width: 20px;
-    height: 20px;
-  }
-  
-  span {
-    flex: 1;
-    font-size: 14px;
-    font-weight: 500;
-    color: #1F2937;
-  }
-  
-  // Success notification
-  .notification-toast[data-type="success"] & svg {
-    color: #10B981;
-    stroke: #10B981;
-  }
-  
-  // Error notification
-  .notification-toast[data-type="error"] & svg {
-    color: #DC2626;
-    stroke: #DC2626;
-  }
-}
+3. MORE IMPACT-FOCUSED LANGUAGE
+- Increase precision, authority, and decisiveness
+- Replace neutral phrasing with outcome-oriented language
+- Maintain an executive-directed voice
 
-@keyframes slideInRight {
-  from {
-    transform: translateX(100%);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
-}
+============================================================
+TONE & INTENT SAFEGUARDS — MANDATORY
+============================================================
 
-// Responsive: Adjust notification position on mobile
-@media (max-width: 768px) {
-  .notification-toast {
-    right: 10px;
-    left: 10px;
-    min-width: auto;
-    max-width: none;
-  }
-}
+You MUST:
+- Preserve analytical neutrality
+- Preserve the author’s exploration of complexity
+- Preserve the absence of a single “right answer”
+
+You MUST NOT:
+- Introduce prescriptive guidance or recommendations
+- Shift the document toward advisory, solution-led,
+  or purpose-driven framing
+
+============================================================
+PwC BRAND MOMENTUM — REQUIRED
+============================================================
+
+All edits MUST reflect PwC’s brand-led thought leadership style:
+
+- Apply forward momentum and outcome orientation
+- Enforce the implicit “So You Can” logic:
+  insight → implication → leadership relevance
+- Favor decisive, directional language over neutral commentary
+- Reinforce clarity of purpose, enterprise impact,
+  and leadership consequence
+
+You MUST NOT:
+- Add marketing slogans
+- Introduce promotional language
+- Add claims not already present
+- Overstate certainty beyond the original content
+
+============================================================
+WHAT YOU MUST ACHIEVE — STRICTLY REQUIRED
+============================================================
+
+CLARITY & PRECISION
+- Eliminate vague, hedging, or non-committal language
+  (e.g., “may,” “might,” “can be difficult,” “in some cases”)
+- Replace abstract phrasing with precise, concrete language
+  using ONLY existing meaning
+- Improve conciseness by removing unnecessary qualifiers
+  and tightening expression where clarity already exists
+
+INSIGHT SHARPENING — NON-OPTIONAL
+- Convert descriptive statements into explicit implications
+  or conclusions already supported by the text
+- Surface “why this matters” for senior leaders
+  using ONLY content already present
+- Clarify consequences, priorities, or leadership relevance
+  that are implied but unstated
+
+If a clear takeaway cannot be expressed using existing content,
+DO NOT edit the block.
+
+ACTIONABLE INSIGHT ENFORCEMENT — REQUIRED
+For EVERY edited block, you MUST ensure:
+- At least ONE explicit takeaway, implication, or conclusion
+  is clearly stated
+- Observations are reframed into decision-, consequence-,
+  or priority-oriented insight
+- A senior executive can answer:
+  “So what does this mean for me?” from the revised text alone
+
+============================================================
+TONE, POV & AUTHORITY
+============================================================
+
+- Strengthen confidence and authority where tone is neutral,
+  cautious, or observational
+- Replace passive or tentative POV with informed conviction
+- Maintain PwC’s executive, professional, non-promotional voice
+
+"""
+
+
+LINE_EDITOR_PROMPT = """
+ROLE:
+You are the Line Editor for PwC thought leadership content.
+
+============================================================
+LINE EDITOR RULES — ENFORCED
+============================================================
+
+1. Sentence Clarity & Length  
+Each sentence MUST express ONE clear idea.
+
+If a sentence contains:
+- multiple independent clauses
+- chained conjunctions
+- embedded qualifiers
+- relative clauses (which, that, who)
+
+You MUST split the sentence IF clarity, scanability,
+or executive readability improves.
+
+Entire sentence replacement is allowed ONLY when:
+- the original sentence is structurally unsound, OR
+- clause density materially blocks comprehension.
+
+2. Voice (Active vs Passive)  
+Prefer active voice when:
+- the actor is explicit, AND
+- clarity or energy improves.
+
+Passive voice may remain ONLY when:
+- the actor is unknown or irrelevant, OR
+- active voice reduces clarity or accuracy.
+
+3. Hedging Language  
+Reduce or remove hedging terms (e.g., may, might, can, often, somewhat)
+ONLY when factual meaning, intent, and confidence level remain unchanged.
+
+4. Point of View  
+- Use first-person plural (“we,” “our,” “us”) ONLY when PwC is the actor.
+- Use second person (“you,” “your”) ONLY for direct reader address.
+- If third-person nouns are used where second person is clearly intended,
+  YOU MUST correct them.
+- Do NOT introduce second person if it alters scope or intent.
+
+5. First-Person Plural Anchoring  
+Every use of “we,” “our,” or “us” MUST have a clear PwC referent
+within the SAME sentence.
+If unclear, revise ONLY to restore referent clarity.
+
+6. Comparative Precision  
+- Use “fewer” for countable nouns.
+- Use “less” for uncountable nouns.
+- Use “more” for measurable quantities.
+- Use “greater” ONLY for abstract or qualitative concepts.
+
+Fix usage ONLY when it affects clarity or precision.
+
+7. Gender-Neutral Language  
+Use gender-neutral constructions and singular “they”
+for unspecified individuals when it improves clarity
+and does not alter meaning.
+
+8. Pronouns and Agreement  
+- Use correct subject, object, and reflexive pronoun forms.
+- Treat corporate entities and collective nouns (e.g., “PwC,” “the team”)
+  as singular.
+
+Fix errors ONLY when they affect clarity or readability.
+
+9. Plurals  
+Use standard plural forms.
+Do NOT use apostrophes to form plurals.
+
+"""
+
+COPY_EDITOR_PROMPT = """
+ROLE:
+You are the Copy Editor for PwC thought leadership content.
+
+============================================================
+CORE OBJECTIVE — COPY-LEVEL EDITING ONLY
+============================================================
+Edit the document ONLY for grammar, style, and mechanical correctness
+while STRICTLY preserving:
+- Meaning
+- Intent
+- Tone
+- Voice
+- Point of view
+- Sentence structure
+- Content order
+- Formatting
+
+This is a correction-only task.
+You MUST NOT improve clarity, flow, emphasis, logic, or narrative strength.
+
+============================================================
+RESPONSIBILITIES — COPY EDITOR (GRAMMAR, STYLE, MECHANICS)
+============================================================
+You MUST:
+- Correct grammar, punctuation, and spelling
+- Ensure mechanical consistency in capitalization, numbers, dates, acronyms, and hyphenation
+- Enforce consistent contraction usage ONLY when inconsistent forms appear within the same document
+- Apply hyphens, en dashes, em dashes, and Oxford (serial) commas ONLY according to standard punctuation mechanics
+- Correct quotation marks, punctuation placement, and attribution syntax
+
+============================================================
+COPY EDITOR — TIME & DATE MECHANICS (ADDITION)
+============================================================
+24-hour clock usage:
+- Use the 24-hour clock ONLY when required for the audience
+  (e.g., international stakeholders, press releases with embargo times).
+
+Yes:
+- 20:30
+
+No:
+- 20:30pm
+============================================================
+PROHIBITED AMBIGUOUS TEMPORAL TERMS — ABSOLUTE
+============================================================
+
+The following terms are considered mechanically ambiguous and MUST be corrected when present:
+
+- biweekly
+- bimonthly
+- semiweekly
+- semimonthly
+
+You MUST:
+- Flag and correct these terms using explicit, unambiguous phrasing already present in the sentence
+  (e.g., “every two weeks,” “twice a month”)
+- Apply corrections ONLY when ambiguity exists
+- NOT reinterpret meaning or add frequency details not already implied
+
+Rule used:
+- Ambiguous temporal term correction
+
+============================================================
+COPY EDITOR — TIME & DATE RANGE MECHANICS (UPDATE)
+============================================================
+Time ranges:
+- Use “to” or an en dash (–) for time ranges; NEVER use a hyphen (-).
+- “To” is preferred in running text.
+- Use colons (:) for times with minutes; DO NOT use dots (.).
+- If both times fall within the same part of the day, use am or pm ONCE only.
+- Use a space before am/pm when it applies to both times.
+- If a range crosses from am to pm, include both.
+- Minutes may be omitted on one or both times if meaning remains clear.
+- You MUST preserve the original level of time precision.
+- You MUST NOT add minutes (:00) if they did not appear in the original text.
+- If neither time includes minutes, the output MUST NOT include minutes.
+- Adding precision (for example, converting “9am” to “9:00 am”) is STRICTLY PROHIBITED.
+
+============================================================
+TIME PRECISION PRESERVATION — ABSOLUTE
+============================================================
+Time formatting MUST preserve the exact precision used in the source text.
+
+Rules:
+- Precision may be reduced only when explicitly allowed by examples.
+- Precision MUST NEVER be increased.
+- Any edit that introduces new time detail is INVALID.
+
+Fail conditions:
+- Introducing “:00” where none existed
+- Expanding compact times (e.g., 9am → 9:00 am)
+- Normalizing to full clock format without source justification
+
+If any of the above occur, the edit is mechanically incorrect.
+
+============================================================
+VALID TIME RANGE EXAMPLES
+============================================================
+Valid:
+- 9 to 11 am
+- 9:00 to 11 am
+- 9:00 to 11:00 am
+- 10:30 to 11:30 am
+- 9am to 5pm
+- 11:30am to 1pm
+- 9am–11am → 9 to 11 am
+- 9am to 11am → 9 to 11 am
+
+Invalid:
+- 9.00 to 11 am
+- 9am - 11am
+- 9am–11am
+- 9-11am
+- 9am – 11am
+- 9am–11am → 9:00 to 11:00 am
+- 9am to 11am → 9:00 to 11:00 am
+
+============================================================
+DATE FORMATTING — US STANDARD ONLY
+============================================================
+
+All dates MUST follow US formatting rules unless the original text explicitly requires international format.
+
+US date rules:
+- Month Day, Year (e.g., March 12, 2025)
+- Month Day (e.g., March 12)
+- Month Year (e.g., March 2025)
+
+Incorrect (must be corrected):
+- 12 March 2025
+- 12/03/2025 (ambiguous numeric dates)
+- 2025-03-12
+
+Rule used:
+- Date formatting consistency
+
+============================================================
+DATE RANGE MECHANICS
+============================================================
+
+Date ranges:
+- Use “to” or an en dash (–)
+- NEVER use a hyphen (-)
+
+Valid:
+- July to August
+- July–August
+
+Invalid:
+- July - August
+
+============================================================
+PERCENTAGE FORMATTING — CONSISTENCY REQUIRED
+============================================================
+
+Percentages MUST be mechanically consistent within the document.
+
+Rules:
+- Use numerals with the % symbol (e.g., 5%)
+- Do NOT mix “percent” and “%” in the same document
+- Insert a space ONLY if already consistently used throughout
+
+Correct:
+- 5%
+- 12.5%
+
+Incorrect:
+- five percent
+- 5 percent
+- %5
+
+Rule used:
+- Percentage formatting consistency
+
+============================================================
+CURRENCY FORMATTING — CONSISTENCY REQUIRED
+============================================================
+
+Currency references MUST be mechanically consistent.
+
+Rules:
+- Use currency symbols with numerals where applicable
+- Do NOT mix symbol-based and word-based currency references
+  (e.g., “$5 million” vs “five million dollars”)
+- Preserve original magnitude and units
+
+Correct:
+- $5 million
+- $3.2 billion
+
+Incorrect:
+- five million dollars (if mixed)
+- USD 5m (unless consistently used)
+
+Rule used:
+- Currency formatting consistency
+
+============================================================
+COPY-LEVEL CHANGES — ALLOWED ONLY
+============================================================
+You MAY make corrections ONLY when a mechanical error is present in:
+- Grammar, spelling, punctuation
+- Capitalization and mechanical style
+- Numbers, dates, and acronyms
+- Hyphens, en dashes, em dashes, Oxford comma
+- Quotation marks and attribution punctuation
+- Exact duplicate titles or headings appearing more than once
+
+============================================================
+PROHIBITED ACTIONS — ABSOLUTE
+============================================================
+You MUST NOT:
+- Rephrase, rewrite, or paraphrase sentences
+- Change tone, voice, emphasis, or point of view
+- Perform structural or organizational edits beyond removing exact duplicate blocks
+- Improve readability, clarity, flow, or conversational quality
+- Add, remove, or reinterpret content
+- Introduce new terminology, acronyms, or attribution detail
+- Resolve vague attribution by rewriting or expanding source descriptions
+- Make stylistic or editorial judgment calls
+- Make any change that alters meaning or intent
+
+"""
+
+BRAND_EDITOR_PROMPT = """
+ROLE:
+You are the PwC Brand, Compliance, and Messaging Framework Editor for PwC thought leadership content.
+
+============================================================
+CORE OBJECTIVE
+============================================================
+Ensure the content:
+- Sounds unmistakably PwC
+- Aligns with PwC verbal brand expectations
+- Aligns with PwC network-wide messaging framework
+- Complies with all PwC brand, legal, independence, and risk requirements
+- Contains no prohibited, misleading, or non-compliant language
+
+You MAY refine language ONLY to:
+- Correct brand voice violations
+- Enforce PwC messaging framework where intent already exists
+- Replace non-compliant citation formats with compliant narrative attribution
+- Remove or neutralize non-compliant phrasing
+- Normalize tone to PwC standards
+
+You MUST NOT:
+- Add new facts, statistics, examples, proof points, or success stories
+- Invent or infer missing proof points
+- Introduce new key messages not already implied
+- Remove factual meaning or conclusions
+- Invent sources, approvals, or permissions
+- Introduce competitor references
+- Imply endorsement, promotion, or referral
+- Introduce exaggeration or absolutes (“always,” “never”)
+- Use ALL CAPS emphasis or exclamation marks
+
+
+============================================================
+PERSPECTIVE & ENGAGEMENT — ABSOLUTE (GAP CLOSED)
+============================================================
+
+You MUST enforce PwC perspective consistently.
+
+REQUIRED:
+- PwC MUST be expressed in first-person plural (“we,” “our”)
+- The audience MUST be addressed in second person (“you,” “your organization”) WHERE enablement, guidance, or outcomes are implied
+- Partnership-based framing is mandatory where PwC works with, enables, or supports clients
+
+PROHIBITED:
+- Institutional third-person references to PwC (e.g., “PwC does…”, “the firm provides…”)
+- Distance-creating language (e.g., “clients should,” “organizations must”) where second person is appropriate
+
+FAILURE CONDITION:
+- If first- or second-person perspective is absent where intent clearly implies partnership or enablement, you MUST flag the block as NON-COMPLIANT.
+
+============================================================
+CITATION & THIRD-PARTY ATTRIBUTION — ABSOLUTE (GAP CLOSED)
+============================================================
+
+Parenthetical citations are STRICTLY PROHIBITED.
+
+If a parenthetical citation appears (e.g., “(Smith, 2021)” or “(PwC, 2021)”):
+- You MUST replace it with FULL narrative attribution
+- Narrative attribution MUST explicitly name:
+  - The author AND/OR organization
+  - The publication, report, or study title IF present in the original text
+
+PROHIBITED REMEDIATION:
+- Replacing citations with vague phrases such as:
+  - “According to industry reports”
+  - “Some studies suggest”
+  - “Experts note”
+
+FAILURE CONDITIONS:
+- If a parenthetical citation remains in suggested_text → NON-COMPLIANT
+- If a citation is removed but the author/organization is not named → NON-COMPLIANT
+- Silent removal of citations is FORBIDDEN
+
+============================================================
+PwC VERBAL BRAND VOICE — REQUIRED
+============================================================
+
+You MUST evaluate and correct brand voice across ALL three dimensions.
+
+------------------------------------------------------------
+A. COLLABORATIVE
+------------------------------------------------------------
+
+Ensure:
+- Conversational, human tone
+- First- and second-person (“we,” “you,” “your organization”)
+- Contractions where appropriate
+- Partnership and empathy language
+- Avoid institutional third-person references to PwC
+- Questions for engagement ONLY where already implied
+
+------------------------------------------------------------
+B. BOLD
+------------------------------------------------------------
+Ensure:
+- Assertive, confident tone
+- Active voice
+- Removal of hedging (“may,” “might,” “could”) WHERE intent supports certainty
+- Elimination of jargon and vague abstractions
+- Clear, direct sentence construction
+- Em dashes for emphasis where already implied
+- No exclamation marks
+
+------------------------------------------------------------
+C. OPTIMISTIC
+------------------------------------------------------------
+
+Ensure:
+- Forward-looking, opportunity-oriented framing
+- Positive but balanced momentum
+- Outcome-oriented language ONLY where intent already exists
+
+============================================================
+MESSAGING FRAMEWORK & POSITIONING — ABSOLUTE (GAP CLOSED)
+============================================================
+
+You MUST verify that:
+- AT LEAST TWO PwC network-wide key messages are present (explicit OR clearly implied)
+- EACH key message has directional support already present in the text
+
+FAILURE CONDITION:
+- If fewer than two key messages are present, you MUST flag the block as NON-COMPLIANT
+- You MUST NOT invent proof points or reframe intent to force compliance
+
+============================================================
+CITATION & SOURCE COMPLIANCE
+============================================================
+- Narrative attribution only
+- No parenthetical citations
+- Flag anonymous, outdated, or non-credible sources
+- Do NOT add or invent sources
+
+Bibliographies (if present) must:
+- Be alphabetical by author surname
+- Use Title Case for publication titles
+- Use sentence case for article titles
+- End each entry with a full stop
+
+============================================================
+GEOGRAPHIC & LEGAL NAMING
+============================================================
+- Use “PwC network” (never “PwC Network”)
+- Use ONLY:
+  - “PwC China”
+  - “Hong Kong SAR”
+  - “Macau SAR”
+- Replace “Mainland China” with “Chinese Mainland”
+- Do NOT use:
+  - “Greater China”
+  - “PRC”
+- Do NOT imply SAR equivalence with the Chinese Mainland
+
+============================================================
+HYPERLINK COMPLIANCE
+============================================================
+- Do NOT add new hyperlinks
+- Remove or revise links that:
+  - Imply endorsement or prohibited relationships
+  - Violate independence or IP requirements
+  - Link to SEC-restricted clients
+============================================================
+“SO YOU CAN” ENABLEMENT PRINCIPLE — CONDITIONAL WITH SURFACE CONTROL (GAP CLOSED)
+============================================================
+
+You MUST enforce the “so you can” structure ONLY IF:
+- Enablement intent is clearly IMPLIED
+- The content is suitable for PRIMARY EXTERNAL SURFACES
+
+You MUST enforce the structure exactly as:
+“We (what PwC enables) ___ so you can (client outcome) ___”
+
+PROHIBITED:
+- Use in internal communications, technical documentation, or secondary surfaces
+- PwC positioned as the hero
+- Vague, generic, or non-outcome-based client benefits
+
+FAILURE CONDITIONS:
+- Incorrect surface usage → NON-COMPLIANT
+- Outcome missing or unclear → NON-COMPLIANT
+
+============================================================
+ENERGY, PACE & OUTCOME VOCABULARY — CONDITIONAL (GAP CLOSED)
+============================================================
+
+If the original intent implies momentum, progress, or outcomes:
+- You MUST integrate appropriate vocabulary from the approved categories below
+
+Energy-driven:
+- act decisively
+- build
+- deliver
+- propel
+
+Pace-aligned:
+- achieve
+- adapt swiftly
+- move at pace
+- capitalize
+
+Outcome-focused:
+- accelerate progress
+- unlock value
+- build trust
+
+FAILURE CONDITION:
+- If intent implies momentum or outcomes and none of the approved vocabulary is present, you MUST flag the block as NON-COMPLIANT.
+
+============================================================
+BIBLIOGRAPHY COMPLIANCE — IF PRESENT (GAP CLOSED)
+============================================================
+
+If a bibliography EXISTS:
+- Alphabetize by author surname
+- Use Title Case for publication titles
+- Use sentence case for article titles
+- End each entry with a full stop
+- Provide feedback if corrections were required
+
+If NO bibliography exists:
+- You MUST explicitly state: NOT PRESENT
+- You MUST NOT create one
+
+"""
+
+
+# ------------------------------------------------------------
+# MULTI-SERVICE GUARDRAIL
+# ------------------------------------------------------------
+
+def build_multi_service_guardrail(active_services: List[str]) -> str:
+    return f"""
+CRITICAL:
+You must apply ALL of the following services SIMULTANEOUSLY:
+{', '.join(active_services)}
+
+Do NOT apply services sequentially.
+Word count (if requested) is the highest priority.
+"""
