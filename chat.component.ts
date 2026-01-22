@@ -452,30 +452,42 @@ async def compress_enforce_node(state: RefineGraphState, config: RunnableConfig)
 # ============================================================
 
 async def expand_trim_node(state: RefineGraphState, config: RunnableConfig):
-    logger.info("[EXPAND_TRIM]")
+    logger.info("[EXPAND_TRIM] retry=%s", state.retry_count)
 
     latest_wc = state.current_word_count
     max_wc = state.max_allowed_word_count
 
-    # Use max_allowed_word_count as the trim target to ensure content stays within bounds
-    # If max_wc is not set, fall back to ideal or hard target
-    target_wc = (
-        max_wc
-        if max_wc is not None
-        else state.ideal_word_count
-        if state.ideal_word_count is not None
-        else state.hard_target_word_count
-    )
+    # Use max_allowed_word_count as the trim target directly
+    # The planner already calculated min/max with 15% tolerance, so we use max directly
+    # The compression prompt will enforce max limit even with its ±5 tolerance
+    if max_wc is not None:
+        # Trim to max_allowed_word_count - the planner's tolerance already accounts for this
+        target_wc = max_wc
+        # Ensure target is not below min (shouldn't happen, but safety check)
+        if state.min_allowed_word_count is not None:
+            target_wc = max(target_wc, state.min_allowed_word_count)
+    else:
+        target_wc = (
+            state.ideal_word_count
+            if state.ideal_word_count is not None
+            else state.hard_target_word_count
+        )
 
     content_to_trim = _latest_text(state)
     current_wc = word_count(content_to_trim)
+    
+    # Use retry_count from state so trim gets more aggressive on retries
+    # Get previous word count for retry context
+    previous_wc = state.current_word_count if state.retry_count > 0 else None
     
     prompt = build_compression_prompt(
         content=content_to_trim,
         target_word_count=target_wc,
         current_word_count=current_wc,
-        retry_count=0,  # Trim is not part of compression retry loop
-        previous_word_count=None,
+        retry_count=state.retry_count,
+        previous_word_count=previous_wc,
+        min_allowed_word_count=state.min_allowed_word_count,
+        max_allowed_word_count=state.max_allowed_word_count,
     )
 
     llm = config["configurable"]["llm_service"]
