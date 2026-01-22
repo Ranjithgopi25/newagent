@@ -440,6 +440,7 @@ def build_compression_prompt(
     current_word_count: int,
     retry_count: int = 0,
     previous_word_count: Optional[int] = None,
+    max_allowed_word_count: Optional[int] = None,
 ) -> List[Dict[str, str]]:
     reduction_needed = current_word_count - target_word_count
     reduction_percentage = (reduction_needed / current_word_count * 100) if current_word_count > 0 else 0
@@ -531,6 +532,15 @@ COMPRESSION INTENSITY: RETRY #{} - MAXIMUM COMPRESSION - CRITICAL
 - Maintain logical flow and coherence
 - Preserve paragraph structure (compress content WITHIN paragraphs only)"""
     
+    # Build max allowed word count validation text
+    max_allowed_text = ""
+    if max_allowed_word_count:
+        max_allowed_text = f"\n- MAXIMUM ALLOWED: {max_allowed_word_count} words (ABSOLUTE UPPER LIMIT - DO NOT EXCEED)"
+    
+    max_validation_text = ""
+    if max_allowed_word_count:
+        max_validation_text = f"\n- Your output MUST NOT exceed {max_allowed_word_count} words under any circumstances"
+    
     return [
         {
             "role": "system",
@@ -613,13 +623,22 @@ WORD COUNT VALIDATION:
 - Acceptable range: {target_word_count - 5} to {target_word_count + 5} words
 - If you cannot achieve the target, you MUST compress more aggressively
 - Current output: {current_word_count} words → You need to reduce by {reduction_needed} words
-- This is a {reduction_percentage:.1f}% reduction - treat it with appropriate intensity
+- This is a {reduction_percentage:.1f}% reduction - treat it with appropriate intensity{max_allowed_text}
+
+POST-COMPRESSION VALIDATION (MANDATORY):
+- After compressing, you MUST verify your output word count
+- Count the words in your final compressed output
+- Your output MUST be within the target range ({target_word_count - 5} to {target_word_count + 5} words){max_validation_text}
+- If your output exceeds the maximum limit, you MUST compress further before submitting
+- DO NOT submit output that exceeds the maximum allowed word count
+- Validate word count BEFORE finalizing your response
 
 CRITICAL: Word count is the HIGHEST PRIORITY after preserving meaning. 
 - Compress WITHIN paragraphs using all available techniques
 - Do NOT delete entire paragraphs or sections - compress content within them
 - If you are not meeting the target, you MUST apply more aggressive word-level compression
 - Every sentence, phrase, and word must be compressed to maximum efficiency
+- ALWAYS validate your output word count is within limits before completing the task
 """
         },
         {
