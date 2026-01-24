@@ -624,11 +624,14 @@ COMPRESSION INTENSITY: RETRY #{retry_count} - MAXIMUM COMPRESSION - CRITICAL FAI
 """.format(retry_count=retry_count)
     
     # Build structural requirements - paragraph deletion is NEVER allowed
-    structural_requirements = """- Keep ALL paragraphs in their original order
+    structural_requirements = """- Keep ALL paragraphs in their original order (EVERY paragraph must be included)
 - Do NOT delete entire sections or paragraphs
+- Do NOT skip, ignore, or omit ANY paragraph
 - Do NOT add new content
 - Maintain logical flow and coherence
-- Preserve paragraph structure (compress content WITHIN paragraphs only)"""
+- Preserve paragraph structure and format (compress content WITHIN paragraphs only)
+- If a paragraph has sentences over 15 words, SPLIT those sentences - do NOT skip the paragraph
+- Paragraph count in output MUST match paragraph count in original"""
     
     return [
         {
@@ -642,15 +645,23 @@ CRITICAL REQUIREMENT - ABSOLUTE MANDATORY CONSTRAINT (NON-NEGOTIABLE):
 EVERY SINGLE SENTENCE in your output MUST be between 10-15 words.
 - Sentences with fewer than 10 words: COMBINE with adjacent content (result must be 10-15 words)
 - Sentences with more than 15 words: SPLIT immediately into multiple 10-15 word sentences
-- This applies to ALL sentences without ANY exceptions
+- This applies to ALL sentences in ALL paragraphs without ANY exceptions
 - Long sentences are STRICTLY PROHIBITED and will cause rejection
 - You MUST count words in EACH sentence individually before finalizing
+- CRITICAL: Do NOT skip or ignore paragraphs with long sentences - SPLIT the sentences instead
+
+PARAGRAPH PRESERVATION (ABSOLUTE REQUIREMENT):
+- You MUST include EVERY paragraph from the original content
+- Do NOT skip, ignore, omit, or delete ANY paragraph
+- Keep the SAME paragraph order, structure, and format
+- If a paragraph has sentences over 15 words, SPLIT those sentences (keep in same paragraph)
+- All paragraphs must be processed and included in the output
 
 PRIMARY OBJECTIVES (IN ORDER):
-1. Preserve meaning and factual accuracy
-2. Preserve structure and paragraph order
+1. Preserve ALL paragraphs (same count, same order, same structure)
+2. Preserve meaning and factual accuracy
 3. Achieve EXACTLY {target_word_count} words (NON-NEGOTIABLE)
-4. Ensure EVERY sentence is 10-15 words (MANDATORY - NO EXCEPTIONS - HIGHEST PRIORITY)
+4. Ensure EVERY sentence in EVERY paragraph is 10-15 words (MANDATORY - NO EXCEPTIONS)
 
 DOCUMENT CONTEXT:
 - Current words: {current_word_count}
@@ -706,23 +717,29 @@ COMPRESSION TECHNIQUES (APPLY AS NEEDED):
    - Eliminate extended explanations of obvious points
 
 7. PARAGRAPH-LEVEL COMPRESSION (10-15 WORD CONSTRAINT APPLIES):
+   - CRITICAL: You MUST process and include EVERY paragraph from the original content
+   - Do NOT skip, ignore, or omit ANY paragraph - ALL paragraphs must appear in the output
+   - Keep the SAME paragraph structure and format as the original
    - Compress WITHIN each paragraph (do NOT delete entire paragraphs)
    - For very large reductions (>45%): DELETE 30-50% of sentences from each paragraph
    - For extreme reductions (>55%): DELETE 50-70% of sentences from each paragraph
    - For retries: DELETE 60-80% of sentences from each paragraph
    - Keep only 1-3 core sentences per paragraph that contain essential arguments
    - DELETE entire sentences that are: examples, case studies, supporting details, transitions, repetitions
+   - If a sentence in a paragraph exceeds 15 words, SPLIT it into multiple 10-15 word sentences (DO NOT ignore the paragraph)
    - Combine remaining sentences into single dense sentences, but EACH sentence MUST be 10-15 words
    - Tighten every remaining sentence to absolute minimum while maintaining 10-15 word limit per sentence
    - Maximum compression within each paragraph while preserving all paragraphs (but not all sentences)
-   - CRITICAL: After compression, verify EVERY sentence in the paragraph is 10-15 words
+   - CRITICAL: After compression, verify EVERY sentence in EVERY paragraph is 10-15 words
+   - CRITICAL: If a paragraph has sentences over 15 words, SPLIT those sentences - do NOT skip the paragraph
 
 8. SENTENCE LENGTH CONTROL (MANDATORY - ABSOLUTE REQUIREMENT):
    - EVERY sentence in the output MUST be between 10-15 words - NO EXCEPTIONS
-   - This is a NON-NEGOTIABLE constraint that applies to ALL sentences without any exceptions
+   - This is a NON-NEGOTIABLE constraint that applies to ALL sentences in ALL paragraphs without any exceptions
    - Sentences over 15 words are STRICTLY FORBIDDEN and will cause the output to be rejected
-   - You MUST check EVERY sentence individually and count its words before including it in the output
+   - You MUST check EVERY sentence in EVERY paragraph individually and count its words before including it in the output
    - If a sentence exceeds 15 words, you MUST split it immediately into multiple sentences of 10-15 words each
+   - CRITICAL: When splitting long sentences, keep them in the SAME paragraph - do NOT move them or skip the paragraph
    - If a sentence is shorter than 10 words, you may combine it with adjacent content, but the result must not exceed 15 words
    - Split long sentences at natural break points (commas, conjunctions, relative clauses, semicolons) while preserving meaning
    - When splitting sentences, ensure each resulting sentence is grammatically complete and maintains logical flow
@@ -730,7 +747,8 @@ COMPRESSION TECHNIQUES (APPLY AS NEEDED):
    - Count words in each sentence before finalizing to ensure compliance
    - Example of CORRECT sentence length: "Organizations must adapt quickly to changing market conditions." (10 words)
    - Example of INCORRECT (too long): "Organizations must adapt quickly to changing market conditions while maintaining their core values and strategic objectives." (18 words - MUST be split)
-   - Example of CORRECT split: "Organizations must adapt quickly to changing market conditions. They must also maintain core values and strategic objectives." (10 words + 10 words)
+   - Example of CORRECT split (same paragraph): "Organizations must adapt quickly to changing market conditions. They must also maintain core values and strategic objectives." (10 words + 10 words)
+   - CRITICAL: Do NOT ignore paragraphs with long sentences - SPLIT the sentences and keep the paragraph
 
 PRIORITY GUIDELINES:
 - PRESERVE: Core arguments, key facts, main conclusions, essential data points
@@ -739,6 +757,16 @@ PRIORITY GUIDELINES:
 
 STRUCTURAL REQUIREMENTS:
 {structural_requirements}
+
+PARAGRAPH PRESERVATION (ABSOLUTE REQUIREMENT):
+- You MUST include EVERY paragraph from the original content in your output
+- Do NOT skip, ignore, omit, or delete ANY paragraph
+- Keep the SAME paragraph order and structure as the original
+- If a paragraph contains sentences over 15 words, SPLIT those sentences into 10-15 word sentences
+- Keep the split sentences in the SAME paragraph - maintain paragraph boundaries
+- Each paragraph should maintain its original position and context
+- Example: If original has 5 paragraphs, output MUST have 5 paragraphs (in same order)
+- CRITICAL: Paragraphs with long sentences must be processed, not skipped
 
 WORD COUNT VALIDATION:
 - You MUST count words in your output BEFORE submitting
@@ -751,29 +779,39 @@ WORD COUNT VALIDATION:
 - Count your output words - if over target, compress MORE before finalizing
 
 SENTENCE LENGTH VALIDATION (MANDATORY CHECKLIST - DO THIS BEFORE FINALIZING):
-- Step 1: Go through your output sentence by sentence from start to finish
-- Step 2: Count the words in EACH sentence individually
-- Step 3: If ANY sentence has more than 15 words, STOP and split it immediately
-- Step 4: If ANY sentence has fewer than 10 words, consider combining with adjacent content (but result must not exceed 15 words)
-- Step 5: Verify that ALL sentences are between 10-15 words
-- Step 6: Only after ALL sentences pass the 10-15 word check, proceed to finalize
+- Step 1: Verify that ALL paragraphs from the original are present in your output
+- Step 2: Go through your output paragraph by paragraph, then sentence by sentence from start to finish
+- Step 3: Count the words in EACH sentence individually within each paragraph
+- Step 4: If ANY sentence has more than 15 words, STOP and split it immediately (keep in same paragraph)
+- Step 5: If ANY sentence has fewer than 10 words, consider combining with adjacent content (but result must not exceed 15 words)
+- Step 6: Verify that ALL sentences in ALL paragraphs are between 10-15 words
+- Step 7: Verify that paragraph count matches the original (no paragraphs skipped or ignored)
+- Step 8: Only after ALL sentences pass the 10-15 word check AND all paragraphs are present, proceed to finalize
 - CRITICAL: Do NOT submit output if even ONE sentence exceeds 15 words
+- CRITICAL: Do NOT submit output if ANY paragraph is missing or skipped
 - CRITICAL: Ensure all sentences meet the 10-15 word requirement while still achieving the overall word count target
 
-CRITICAL REQUIREMENTS (BOTH MUST BE MET):
-1. Word count is the HIGHEST PRIORITY after preserving meaning
+CRITICAL REQUIREMENTS (ALL THREE MUST BE MET):
+1. Paragraph preservation is ABSOLUTE and NON-NEGOTIABLE
+   - ALL paragraphs from the original MUST appear in the output
+   - Do NOT skip, ignore, or omit ANY paragraph
+   - Keep the SAME paragraph order and structure
+   - If a paragraph has sentences over 15 words, SPLIT those sentences (do NOT skip the paragraph)
+   - Maintain paragraph boundaries - split sentences stay in their original paragraph
+
+2. Word count is the HIGHEST PRIORITY after preserving meaning and paragraphs
    - Compress WITHIN paragraphs using all available techniques
    - Do NOT delete entire paragraphs or sections - compress content within them
    - If you are not meeting the target, you MUST apply more aggressive word-level compression
    - Every sentence, phrase, and word must be compressed to maximum efficiency
 
-2. Sentence length (10-15 words per sentence) is MANDATORY and NON-NEGOTIABLE
-   - EVERY sentence MUST be between 10-15 words - NO EXCEPTIONS
-   - Review EVERY sentence individually before finalizing
-   - Split any sentence that exceeds 15 words immediately
-   - This requirement applies to ALL sentences in the output
-   - Both word count target AND sentence length requirements must be achieved simultaneously
-   - Output with sentences over 15 words will be rejected
+3. Sentence length (10-15 words per sentence) is MANDATORY and NON-NEGOTIABLE
+   - EVERY sentence in EVERY paragraph MUST be between 10-15 words - NO EXCEPTIONS
+   - Review EVERY sentence in EVERY paragraph individually before finalizing
+   - Split any sentence that exceeds 15 words immediately (keep in same paragraph)
+   - This requirement applies to ALL sentences in ALL paragraphs
+   - All three requirements (paragraph preservation, word count, sentence length) must be achieved simultaneously
+   - Output with missing paragraphs or sentences over 15 words will be rejected
 """
         },
         {
