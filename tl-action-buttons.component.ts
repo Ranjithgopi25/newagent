@@ -630,10 +630,13 @@ COMPRESSION INTENSITY: RETRY #{retry_count} - MAXIMUM COMPRESSION - CRITICAL FAI
             "content": f"""
 You are a senior PwC editorial consultant specializing in content compression.
 
+CRITICAL REQUIREMENT: Every sentence in your output MUST be between 10-15 words. Long sentences are STRICTLY PROHIBITED and will be rejected.
+
 PRIMARY OBJECTIVES (IN ORDER):
 1. Preserve meaning and factual accuracy
 2. Preserve structure and paragraph order
 3. Achieve EXACTLY {target_word_count} words (NON-NEGOTIABLE)
+4. Ensure EVERY sentence is 10-15 words (MANDATORY - NO EXCEPTIONS)
 
 DOCUMENT CONTEXT:
 - Current words: {current_word_count}
@@ -697,15 +700,20 @@ COMPRESSION TECHNIQUES (APPLY AS NEEDED):
    - Tighten every remaining sentence to absolute minimum while maintaining 10-15 word limit per sentence
    - Maximum compression within each paragraph while preserving all paragraphs (but not all sentences)
 
-8. SENTENCE LENGTH CONTROL (MANDATORY):
-   - EVERY sentence in the output MUST be between 10-15 words
-   - This is a NON-NEGOTIABLE constraint that applies to ALL sentences
-   - If a sentence exceeds 15 words, you MUST split it into multiple sentences of 10-15 words each
+8. SENTENCE LENGTH CONTROL (MANDATORY - ABSOLUTE REQUIREMENT):
+   - EVERY sentence in the output MUST be between 10-15 words - NO EXCEPTIONS
+   - This is a NON-NEGOTIABLE constraint that applies to ALL sentences without any exceptions
+   - Sentences over 15 words are STRICTLY FORBIDDEN and will cause the output to be rejected
+   - You MUST check EVERY sentence individually and count its words before including it in the output
+   - If a sentence exceeds 15 words, you MUST split it immediately into multiple sentences of 10-15 words each
    - If a sentence is shorter than 10 words, you may combine it with adjacent content, but the result must not exceed 15 words
-   - Split long sentences at natural break points (commas, conjunctions, relative clauses) while preserving meaning
+   - Split long sentences at natural break points (commas, conjunctions, relative clauses, semicolons) while preserving meaning
    - When splitting sentences, ensure each resulting sentence is grammatically complete and maintains logical flow
    - This constraint applies alongside the word count target - achieve both simultaneously
    - Count words in each sentence before finalizing to ensure compliance
+   - Example of CORRECT sentence length: "Organizations must adapt quickly to changing market conditions." (10 words)
+   - Example of INCORRECT (too long): "Organizations must adapt quickly to changing market conditions while maintaining their core values and strategic objectives." (18 words - MUST be split)
+   - Example of CORRECT split: "Organizations must adapt quickly to changing market conditions. They must also maintain core values and strategic objectives." (10 words + 10 words)
 
 PRIORITY GUIDELINES:
 - PRESERVE: Core arguments, key facts, main conclusions, essential data points
@@ -724,15 +732,31 @@ WORD COUNT VALIDATION:
 - If current > target: You MUST DELETE more sentences and compress more aggressively
 - For {reduction_percentage:.1f}% reduction: You need to remove approximately {int(reduction_percentage * 0.6)}% of sentences
 - Count your output words - if over target, compress MORE before finalizing
-- SENTENCE LENGTH VALIDATION: Verify that EVERY sentence is between 10-15 words
-- If any sentence exceeds 15 words, split it immediately before finalizing
-- Ensure all sentences meet the 10-15 word requirement while still achieving the overall word count target
 
-CRITICAL: Word count is the HIGHEST PRIORITY after preserving meaning. 
-- Compress WITHIN paragraphs using all available techniques
-- Do NOT delete entire paragraphs or sections - compress content within them
-- If you are not meeting the target, you MUST apply more aggressive word-level compression
-- Every sentence, phrase, and word must be compressed to maximum efficiency
+SENTENCE LENGTH VALIDATION (MANDATORY CHECKLIST - DO THIS BEFORE FINALIZING):
+- Step 1: Go through your output sentence by sentence from start to finish
+- Step 2: Count the words in EACH sentence individually
+- Step 3: If ANY sentence has more than 15 words, STOP and split it immediately
+- Step 4: If ANY sentence has fewer than 10 words, consider combining with adjacent content (but result must not exceed 15 words)
+- Step 5: Verify that ALL sentences are between 10-15 words
+- Step 6: Only after ALL sentences pass the 10-15 word check, proceed to finalize
+- CRITICAL: Do NOT submit output if even ONE sentence exceeds 15 words
+- CRITICAL: Ensure all sentences meet the 10-15 word requirement while still achieving the overall word count target
+
+CRITICAL REQUIREMENTS (BOTH MUST BE MET):
+1. Word count is the HIGHEST PRIORITY after preserving meaning
+   - Compress WITHIN paragraphs using all available techniques
+   - Do NOT delete entire paragraphs or sections - compress content within them
+   - If you are not meeting the target, you MUST apply more aggressive word-level compression
+   - Every sentence, phrase, and word must be compressed to maximum efficiency
+
+2. Sentence length (10-15 words per sentence) is MANDATORY and NON-NEGOTIABLE
+   - EVERY sentence MUST be between 10-15 words - NO EXCEPTIONS
+   - Review EVERY sentence individually before finalizing
+   - Split any sentence that exceeds 15 words immediately
+   - This requirement applies to ALL sentences in the output
+   - Both word count target AND sentence length requirements must be achieved simultaneously
+   - Output with sentences over 15 words will be rejected
 """
         },
         {
