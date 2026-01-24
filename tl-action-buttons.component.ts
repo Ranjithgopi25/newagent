@@ -548,13 +548,14 @@ RETRY ATTEMPT #{retry_count}:
 COMPRESSION INTENSITY: EXTREME REDUCTION (>{:.1f}%) - CRITICAL
 - This is an EXTREME compression requiring maximum sentence-level reduction
 - You MUST remove 50-70% of sentences from each paragraph, keeping only the most essential
-- Combine remaining sentences aggressively into single dense sentences
+- Combine remaining sentences aggressively, but EACH resulting sentence MUST be 10-15 words
 - DELETE entire sentences that are examples, case studies, or supporting details
 - DELETE sentences that repeat or restate main points
 - Keep ONLY 1-2 core sentences per paragraph that contain essential arguments
 - Remove ALL transitional sentences, introductory sentences, and concluding sentences
-- Compress every remaining sentence to absolute minimum words
+- Compress every remaining sentence to 10-15 words (MANDATORY - NO EXCEPTIONS)
 - This level of reduction REQUIRES removing most sentences, not just compressing them
+- CRITICAL: Every sentence in output MUST be between 10-15 words
 """.format(reduction_percentage)
         elif is_very_large_reduction:
             intensity_instructions = """
@@ -563,23 +564,26 @@ COMPRESSION INTENSITY: VERY LARGE REDUCTION (>{:.1f}%)
 - Remove 30-50% of less essential sentences from each paragraph
 - Apply ALL compression techniques aggressively to remaining sentences
 - Prioritize core arguments - delete supporting sentence examples
-- Combine multiple sentences into single dense sentences
+- Combine multiple sentences, but EACH resulting sentence MUST be 10-15 words
 - Remove all non-essential qualifiers and modifiers
 - Compress WITHIN paragraphs - do NOT delete entire paragraphs
+- CRITICAL: Every sentence in output MUST be between 10-15 words
 """.format(reduction_percentage)
         elif is_large_reduction:
             intensity_instructions = """
 COMPRESSION INTENSITY: LARGE REDUCTION (>{:.1f}%)
 - This requires significant compression effort
 - Apply multiple compression techniques simultaneously
-- Be more aggressive with sentence combining
+- Be more aggressive with sentence combining, but EACH sentence MUST be 10-15 words
 - Remove redundant examples and supporting details
+- CRITICAL: Every sentence in output MUST be between 10-15 words
 """.format(reduction_percentage)
         else:
             intensity_instructions = """
 COMPRESSION INTENSITY: MODERATE REDUCTION ({:.1f}%)
 - Apply standard compression techniques
 - Focus on removing redundancy and tightening language
+- CRITICAL: Every sentence in output MUST be between 10-15 words
 """.format(reduction_percentage)
     elif retry_count == 1:
         words_still_over = previous_word_count - target_word_count if previous_word_count else reduction_needed
@@ -588,12 +592,13 @@ COMPRESSION INTENSITY: RETRY #1 - INCREASED AGGRESSION
 - Previous attempt resulted in {previous_word_count} words - still {words_still_over} words above target
 - You MUST remove MORE sentences and compress MORE aggressively:
   * DELETE 40-60% of sentences from each paragraph (not just compress them)
-  * Combine remaining sentences more aggressively into single dense sentences
+  * Combine remaining sentences more aggressively, but EACH sentence MUST be 10-15 words
   * Remove ALL supporting examples, case studies, and non-critical details (entire sentences)
   * Tighten every phrase and eliminate all filler
   * Compress lists and bullet points to minimum
   * Remove ALL transitional sentences that don't add value
   * Target: You need to reduce by {words_still_over} more words - this requires removing many sentences
+  * CRITICAL: Every sentence in output MUST be between 10-15 words - NO EXCEPTIONS
 """
     else:  # retry_count >= 2
         words_still_over = previous_word_count - target_word_count if previous_word_count else reduction_needed
@@ -607,14 +612,15 @@ COMPRESSION INTENSITY: RETRY #{retry_count} - MAXIMUM COMPRESSION - CRITICAL FAI
   * DELETE ALL example sentences, case study sentences, supporting detail sentences
   * DELETE ALL transitional sentences, introductory sentences, concluding sentences
   * DELETE ALL sentences that repeat or restate main points
-  * Combine remaining 1-2 sentences per paragraph into single ultra-dense sentences
-  * Compress every remaining word to absolute minimum
+  * Combine remaining 1-2 sentences per paragraph, but EACH sentence MUST be 10-15 words
+  * Compress every remaining word to absolute minimum while maintaining 10-15 word limit
   * Remove ALL qualifiers, modifiers, adjectives, adverbs that aren't essential
   * Compress lists to 1-2 items maximum or remove entirely
   * Use telegraphic style - maximum information density per word
 - Do NOT delete entire paragraphs - but DELETE most sentences within them
 - Each paragraph should have 1-2 sentences maximum after compression
 - Word count target is MANDATORY - you MUST achieve {target_word_count} words
+- CRITICAL: Every sentence in output MUST be between 10-15 words - ABSOLUTE REQUIREMENT
 """.format(retry_count=retry_count)
     
     # Build structural requirements - paragraph deletion is NEVER allowed
@@ -630,13 +636,21 @@ COMPRESSION INTENSITY: RETRY #{retry_count} - MAXIMUM COMPRESSION - CRITICAL FAI
             "content": f"""
 You are a senior PwC editorial consultant specializing in content compression.
 
-CRITICAL REQUIREMENT: Every sentence in your output MUST be between 10-15 words. Long sentences are STRICTLY PROHIBITED and will be rejected.
+═══════════════════════════════════════════════════════════════════════════════
+CRITICAL REQUIREMENT - ABSOLUTE MANDATORY CONSTRAINT (NON-NEGOTIABLE):
+═══════════════════════════════════════════════════════════════════════════════
+EVERY SINGLE SENTENCE in your output MUST be between 10-15 words.
+- Sentences with fewer than 10 words: COMBINE with adjacent content (result must be 10-15 words)
+- Sentences with more than 15 words: SPLIT immediately into multiple 10-15 word sentences
+- This applies to ALL sentences without ANY exceptions
+- Long sentences are STRICTLY PROHIBITED and will cause rejection
+- You MUST count words in EACH sentence individually before finalizing
 
 PRIMARY OBJECTIVES (IN ORDER):
 1. Preserve meaning and factual accuracy
 2. Preserve structure and paragraph order
 3. Achieve EXACTLY {target_word_count} words (NON-NEGOTIABLE)
-4. Ensure EVERY sentence is 10-15 words (MANDATORY - NO EXCEPTIONS)
+4. Ensure EVERY sentence is 10-15 words (MANDATORY - NO EXCEPTIONS - HIGHEST PRIORITY)
 
 DOCUMENT CONTEXT:
 - Current words: {current_word_count}
@@ -648,12 +662,14 @@ DOCUMENT CONTEXT:
 
 COMPRESSION TECHNIQUES (APPLY AS NEEDED):
 
-1. SENTENCE COMBINING & RESTRUCTURING:
+1. SENTENCE COMBINING & RESTRUCTURING (10-15 WORD CONSTRAINT APPLIES):
    - Combine two or more related sentences into one ONLY if the result stays within 10-15 words
+   - If combining would exceed 15 words, DO NOT combine - keep as separate 10-15 word sentences
    - Merge parallel ideas using semicolons, colons, or conjunctions, but keep combined sentences to 10-15 words maximum
    - Convert compound sentences to simple sentences where meaning is preserved, ensuring each sentence is 10-15 words
    - Eliminate sentence fragments that repeat information
    - If combining would create a sentence longer than 15 words, split it into multiple sentences of 10-15 words each
+   - CRITICAL: Every combined sentence MUST be counted and verified to be 10-15 words
 
 2. PHRASE TIGHTENING:
    - Replace wordy phrases with concise alternatives:
@@ -689,16 +705,17 @@ COMPRESSION TECHNIQUES (APPLY AS NEEDED):
    - Tighten case study descriptions to key facts only
    - Eliminate extended explanations of obvious points
 
-7. PARAGRAPH-LEVEL COMPRESSION:
+7. PARAGRAPH-LEVEL COMPRESSION (10-15 WORD CONSTRAINT APPLIES):
    - Compress WITHIN each paragraph (do NOT delete entire paragraphs)
    - For very large reductions (>45%): DELETE 30-50% of sentences from each paragraph
    - For extreme reductions (>55%): DELETE 50-70% of sentences from each paragraph
    - For retries: DELETE 60-80% of sentences from each paragraph
    - Keep only 1-3 core sentences per paragraph that contain essential arguments
    - DELETE entire sentences that are: examples, case studies, supporting details, transitions, repetitions
-   - Combine remaining sentences into single dense sentences, but ensure each sentence is 10-15 words maximum
+   - Combine remaining sentences into single dense sentences, but EACH sentence MUST be 10-15 words
    - Tighten every remaining sentence to absolute minimum while maintaining 10-15 word limit per sentence
    - Maximum compression within each paragraph while preserving all paragraphs (but not all sentences)
+   - CRITICAL: After compression, verify EVERY sentence in the paragraph is 10-15 words
 
 8. SENTENCE LENGTH CONTROL (MANDATORY - ABSOLUTE REQUIREMENT):
    - EVERY sentence in the output MUST be between 10-15 words - NO EXCEPTIONS
