@@ -670,16 +670,32 @@ CRITICAL: Cross-paragraph enforcement complements and works together with all ex
 
 {cross_paragraph_analysis_context}
 
-CROSS-PARAGRAPH ENFORCEMENT
-The Content Editor MUST apply the following checks across paragraphs and sections, in addition to block-level editing:
+CROSS-PARAGRAPH ENFORCEMENT — MANDATORY
 
-Cross-Paragraph Logic
+The Content Editor MUST comply with all of the following across paragraphs and sections, in addition to block-level editing.
+
+4. Cross-Paragraph Logic
+Does each paragraph explicitly assume and build on the reader's understanding from the preceding paragraph?
+Are there no soft resets, re-introductions, or restatements of previously established context?
+
 Each paragraph MUST assume and build on the reader's understanding from the preceding paragraph. The Content Editor MUST eliminate soft resets, re-introductions, or restatement of previously established context.
 
-Redundancy Awareness (Non-Structural)
+5. Redundancy Awareness (Non-Structural)
+If a paragraph repeats an idea already established elsewhere:
+Has reinforcement language been reduced, not expanded?
+Has the editor avoided adding new emphasis, framing, or rhetorical weight?
+The editor MUST NOT remove, merge, or structurally consolidate ideas across blocks.
+
 If a paragraph materially repeats an idea already established elsewhere in the article, the Content Editor MUST reduce reinforcement language and avoid adding emphasis or framing that increases redundancy. The Content Editor MUST NOT remove or merge ideas across blocks.
 
-Executive Signal Hierarchy
+6. Executive Signal Hierarchy
+Do later sections convey clearer implications, priorities, or decision relevance than earlier sections?
+Is emphasis progressive, not flat or repetitive?
+Has this been achieved without:
+Introducing new conclusions
+Shifting author intent
+Adding strategic interpretation not present in the Draft?
+
 The Content Editor MUST calibrate emphasis so that later sections convey clearer implications, priorities, or decision relevance than earlier sections, without introducing new conclusions or shifting the author's intent.
 
 ============================================================
@@ -2004,47 +2020,68 @@ CONTENT_EDITOR_VALIDATION_PROMPT = """
 You are validating whether the Agent-edited document demonstrates the following Content Editor behaviors.
 
 ============================================================
-A) Content Editor Validation Questions
+CONTENT EDITOR VALIDATION QUESTIONS
 ============================================================
 
 1. Clarity and Strength of Insights
-• Does the content clearly present strong, actionable insights already present in the Draft Document?
-• Are ideas clearly articulated without embellishment?
-• Has the editor avoided introducing new framing, examples, or explanatory layers?
+
+Does the content clearly present strong, actionable insights already present in the Draft Document?
+
+Are ideas clearly articulated without embellishment?
+
+Has the editor avoided introducing new framing, examples, or explanatory layers?
 
 2. Alignment with Author's Objectives
-• Does the Agent-Edited Document reflect the same objectives and priorities as the Draft Document?
-• Are emphasis and sequencing preserved?
-• Has the editor avoided reframing goals, implications, or outcomes?
+
+Does the Agent-Edited Document reflect the same objectives and priorities as the Draft Document?
+
+Are emphasis and sequencing preserved?
+
+Has the editor avoided reframing goals, implications, or outcomes?
 
 3. Language Refinement (Block-Level)
-• Is language refined for clarity and precision only?
-• Are sentences concise and non-redundant?
-• Has the editor avoided adding persuasive, executive, or instructional tone not present in the Draft?
+
+Is language refined for clarity and precision only?
+
+Are sentences concise and non-redundant?
+
+Has the editor avoided adding persuasive, executive, or instructional tone not present in the Draft?
 
 ============================================================
-4. CROSS-PARAGRAPH ENFORCEMENT — MANDATORY (Add-on)
+🔁 CROSS-PARAGRAPH ENFORCEMENT — MANDATORY
 ============================================================
 
-Validate whether the Agent-edited document demonstrates the following Content Editor cross-paragraph enforcement behaviors:
+The Content Editor MUST comply with all of the following across paragraphs and sections, in addition to block-level editing.
 
-Cross-Paragraph Logic
-• Does each paragraph explicitly assume and build on the reader's understanding from the preceding paragraph?
-• Are there no soft resets, re-introductions, or restatements of previously established context?
+4. Cross-Paragraph Logic
 
-Redundancy Awareness (Non-Structural)
-• If a paragraph repeats an idea already established elsewhere:
-  o Has reinforcement language been reduced, not expanded?
-  o Has the editor avoided adding new emphasis, framing, or rhetorical weight?
-• The editor MUST NOT remove, merge, or structurally consolidate ideas across blocks.
+Does each paragraph explicitly assume and build on the reader's understanding from the preceding paragraph?
 
-Executive Signal Hierarchy
-• Do later sections convey clearer implications, priorities, or decision relevance than earlier sections?
-• Is emphasis progressive, not flat or repetitive?
-• Has this been achieved without:
-  o Introducing new conclusions
-  o Shifting author intent
-  o Adding strategic interpretation not present in the Draft?
+Are there no soft resets, re-introductions, or restatements of previously established context?
+
+5. Redundancy Awareness (Non-Structural)
+
+If a paragraph repeats an idea already established elsewhere:
+
+Has reinforcement language been reduced, not expanded?
+
+Has the editor avoided adding new emphasis, framing, or rhetorical weight?
+
+The editor MUST NOT remove, merge, or structurally consolidate ideas across blocks.
+
+6. Executive Signal Hierarchy
+
+Do later sections convey clearer implications, priorities, or decision relevance than earlier sections?
+
+Is emphasis progressive, not flat or repetitive?
+
+Has this been achieved without:
+
+Introducing new conclusions
+
+Shifting author intent
+
+Adding strategic interpretation not present in the Draft?
 
 ============================================================
 CROSS-PARAGRAPH ENFORCEMENT — DETAILED REQUIREMENTS
@@ -2083,7 +2120,7 @@ EDITED PARAGRAPH COUNT: {edited_paragraph_count}
 SCORING INSTRUCTIONS
 ============================================================
 
-Evaluate all validation criteria above (3 from Content Editor Validation Questions + 3 from CROSS-PARAGRAPH ENFORCEMENT) and provide:
+Evaluate all validation criteria above (3 from Content Editor Validation Questions + 3 from CROSS-PARAGRAPH ENFORCEMENT — questions 4, 5, and 6) and provide:
 1. A score from 0-10 for overall compliance (where 10 = fully compliant, 0 = non-compliant)
 2. For each criterion in feedback_remarks:
    - passed: True if criterion met, False if not
