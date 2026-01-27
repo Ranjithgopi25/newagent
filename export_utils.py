@@ -48,7 +48,7 @@ class SupervisorState(TypedDict):
     thread_id: Optional[str]  # For checkpointing
     article_analysis: Optional[str]  # Article-level analysis text for Development Editor (LLM-based, not schema)
     cross_paragraph_analysis: Optional[str]  # Cross-paragraph analysis text for Content Editor (LLM-based, not schema)
-    dev_editor_retry_count: Optional[int]  # Retry count for Development Editor (0 = no retry yet, 1 = retry used, max 1 retry allowed)
+    dev_editor_retry_count: Optional[int]  # Retry count for Development Editor (retries until score >= 8, max 5 retries)
     validation_result: Optional[DevelopmentEditorValidationResult]  # Validation result for Development Editor
 
 
@@ -312,10 +312,7 @@ Be specific and actionable in your warnings. Reference the actual paragraph cont
 def development_editor_node(state: SupervisorState) -> SupervisorState:
     logger.info("RUNNING: development_editor_tool")
     
-    # Get article analysis if available
     article_analysis = state.get("article_analysis")
-    
-    # Run editor engine with article analysis
     result = run_editor_engine("development", state["document"].blocks, article_analysis)
 
     return {
@@ -324,22 +321,14 @@ def development_editor_node(state: SupervisorState) -> SupervisorState:
 
 
 # ---------------------------------------------------------------------
-# DEVELOPMENT EDITOR RETRY NODE (runs if validation score < 8)
+# DEVELOPMENT EDITOR RETRY NODE
 # ---------------------------------------------------------------------
 def development_editor_retry_node(state: SupervisorState) -> SupervisorState:
-    """
-    Retry Development Editor if validation score < 8.
-    Max 1 retry attempt allowed.
-    """
-    logger.info("RUNNING: development_editor_retry_node (retry attempt)")
+    """Retry Development Editor if validation score < 8."""
+    logger.info("RUNNING: development_editor_retry_node")
     
-    # Get article analysis if available
     article_analysis = state.get("article_analysis")
-    
-    # Run editor engine again with article analysis
     result = run_editor_engine("development", state["document"].blocks, article_analysis)
-    
-    # Increment retry count
     retry_count = state.get("dev_editor_retry_count", 0) + 1
 
     return {
@@ -405,10 +394,7 @@ def brand_editor_node(state: SupervisorState) -> SupervisorState:
 # ARTICLE-LEVEL ANALYSIS NODE (runs before Development Editor)
 # ---------------------------------------------------------------------
 def article_analysis_node(state: SupervisorState) -> SupervisorState:
-    """
-    Analyze the article before Development Editor runs.
-    Stores analysis in state for use by Development Editor.
-    """
+    """Analyze article before Development Editor runs."""
     logger.info("RUNNING: article_analysis_node")
     
     analysis = analyze_article(state["document"])
@@ -422,23 +408,18 @@ def article_analysis_node(state: SupervisorState) -> SupervisorState:
 # ARTICLE-LEVEL VALIDATION NODE (runs after Development Editor)
 # ---------------------------------------------------------------------
 def article_validation_node(state: SupervisorState) -> SupervisorState:
-    """
-    Validate that Development Editor output meets article-level requirements.
-    Returns validation result with score (0-10). Score >= 8 passes, < 8 triggers retry.
-    """
+    """Validate Development Editor output and return score."""
     logger.info("RUNNING: article_validation_node")
     
     article_analysis_text = state.get("article_analysis")
     editor_results = state.get("editor_results", [])
     
-    # Find Development Editor result (should be the last one)
     dev_editor_result = None
     for result in reversed(editor_results):
         if result.editor_type == "development":
             dev_editor_result = result
             break
     
-    # Validate using new validation tool
     validation_result = validate_development_editor(
         article_analysis_text,
         dev_editor_result,
@@ -648,25 +629,15 @@ def merge_node(state: SupervisorState) -> SupervisorState:
 # SEQUENTIAL ROUTER (routes to single editor based on index)
 # ---------------------------------------------------------------------
 def route_sequential_editor(state: SupervisorState):
-    """
-    Route to the current editor based on current_editor_index.
-    Used for sequential execution mode.
-    
-    Special handling for Development Editor:
-    - If Development Editor is next and no analysis exists: route to article_analysis_node
-    - After analysis: route to development_editor_tool
-    - After Development Editor: route to article_validation_node
-    """
+    """Route to current editor based on current_editor_index."""
     current_idx = state.get("current_editor_index", 0)
     selected_editors = state.get("selected_editors", [])
     
     if current_idx >= len(selected_editors):
-        return "merge"  # All editors done, go to merge
+        return "merge"
     
     editor_name = selected_editors[current_idx]
-    logger.info(f"ROUTING TO SEQUENTIAL EDITOR: {editor_name} (index {current_idx})")
     
-    # Special handling for Development Editor: check if analysis needed
     if editor_name == "development":
         article_analysis = state.get("article_analysis")
         editor_results = state.get("editor_results", [])
@@ -744,14 +715,12 @@ def sequential_merge_node(state: SupervisorState) -> SupervisorState:
 # ROUTER AFTER VALIDATION
 # ---------------------------------------------------------------------
 def route_after_validation(state: SupervisorState) -> str:
-    """After validation: retry if score < 8 and retry_count == 0, else merge."""
+    """After validation: retry if score < 8 (max 5 retries), else merge."""
     validation_result = state.get("validation_result")
     retry_count = state.get("dev_editor_retry_count", 0)
+    MAX_RETRIES = 5
     
-    if retry_count >= 1:
-        return "merge"
-    
-    if validation_result and validation_result.score < 8:
+    if validation_result and validation_result.score < 8 and retry_count < MAX_RETRIES:
         return "development_editor_retry"
     
     return "merge"
@@ -802,18 +771,17 @@ def build_sequential_graph():
     """
     graph = StateGraph(SupervisorState)
     
-    # REUSE existing nodes
     graph.add_node("development_editor_tool", development_editor_node)
-    graph.add_node("development_editor_retry", development_editor_retry_node)  # Retry node for Development Editor
+    graph.add_node("development_editor_retry", development_editor_retry_node)
     graph.add_node("content_editor_tool", content_editor_node)
     graph.add_node("line_editor_tool", line_editor_node)
     graph.add_node("copy_editor_tool", copy_editor_node)
     graph.add_node("brand_editor_tool", brand_editor_node)
-    graph.add_node("article_analysis", article_analysis_node)  # Article analysis before Development Editor
-    graph.add_node("article_validation", article_validation_node)  # Article validation after Development Editor
-    graph.add_node("cross_paragraph_analysis", cross_paragraph_analysis_node)  # Cross-paragraph analysis before Content Editor
-    graph.add_node("cross_paragraph_validation", cross_paragraph_validation_node)  # Cross-paragraph validation after Content Editor
-    graph.add_node("merge", sequential_merge_node)  # Sequential merge (filters to current editor)
+    graph.add_node("article_analysis", article_analysis_node)
+    graph.add_node("article_validation", article_validation_node)
+    graph.add_node("cross_paragraph_analysis", cross_paragraph_analysis_node)
+    graph.add_node("cross_paragraph_validation", cross_paragraph_validation_node)
+    graph.add_node("merge", sequential_merge_node)
     
     # Set entry point - use conditional routing directly
     graph.set_conditional_entry_point(
@@ -833,13 +801,9 @@ def build_sequential_graph():
         }
     )
     
-    # Article analysis goes to Development Editor
     graph.add_edge("article_analysis", "development_editor_tool")
-    
-    # Development Editor goes to validation
     graph.add_edge("development_editor_tool", "article_validation")
     
-    # Article validation conditionally routes: retry if score < 8 and retry_count == 0, else merge
     graph.add_conditional_edges(
         "article_validation",
         route_after_validation,
@@ -849,25 +813,13 @@ def build_sequential_graph():
         }
     )
     
-    # Development Editor retry goes back to validation (then to merge regardless of score)
     graph.add_edge("development_editor_retry", "article_validation")
     
-    # Cross-paragraph analysis goes to Content Editor
     graph.add_edge("cross_paragraph_analysis", "content_editor_tool")
-    
-    # Content Editor goes to validation
     graph.add_edge("content_editor_tool", "cross_paragraph_validation")
-    
-    # Cross-paragraph validation goes to merge
     graph.add_edge("cross_paragraph_validation", "merge")
     
-    # All other editor nodes go to merge
-    for node in [
-        "line_editor_tool",
-        "copy_editor_tool",
-        "brand_editor_tool",
-    ]:
+    for node in ["line_editor_tool", "copy_editor_tool", "brand_editor_tool"]:
         graph.add_edge(node, "merge")
     
-    # Compile with SHARED checkpointer and request an interrupt after merge
     return graph.compile(checkpointer=_sequential_checkpointer, interrupt_after=["merge"]) 
