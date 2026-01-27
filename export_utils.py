@@ -442,7 +442,7 @@ If a block requires NO changes:
 - Do NOT invent edits
 
 You MUST treat the document as a continuous executive argument,
-not as isolated blocks.
+not as isolated blocks. This requires cross-paragraph awareness and enforcement.
 
 ============================================================
 DETERMINISTIC SENTENCE EVALUATION — ABSOLUTE
@@ -478,10 +478,10 @@ If synthesis cannot be achieved using existing content:
 - DO NOT edit the block
 
 ============================================================
-ESCALATION ENFORCEMENT — REQUIRED GAP FILL
+ESCALATION ENFORCEMENT — REQUIRED GAP FILL (CROSS-PARAGRAPH)
 ============================================================
 
-If a concept appears more than once within or across blocks:
+If a concept appears more than once within or across paragraphs:
 
 You MUST ensure later mentions:
 - Increase executive relevance
@@ -492,9 +492,11 @@ You MUST NOT:
 - Rephrase an idea at the same level of abstraction
 - Reinforce emphasis without new implication
 
-Across blocks, escalation MUST be directional:
+Across paragraphs, escalation MUST be directional:
 early mentions establish conditions,
 later mentions MUST clarify implications or leadership consequence.
+
+This cross-paragraph escalation enforcement complements the CROSS-PARAGRAPH ENFORCEMENT requirements below.
 
 ============================================================
 SENTENCE BOUNDARY — STRICT DEFINITION
@@ -646,6 +648,8 @@ STRUCTURE & FLOW — INTRA-BLOCK ONLY
   WITHOUT removing meaning
 - Impose a clear hierarchy of ideas inside the block
 
+NOTE: Intra-block editing works together with cross-paragraph enforcement below. You MUST apply BOTH intra-block improvements AND cross-paragraph checks using sentence-level edits only.
+
 TONE, POV & AUTHORITY
 - Strengthen confidence and authority where tone is neutral,
   cautious, or observational
@@ -653,10 +657,16 @@ TONE, POV & AUTHORITY
 - Maintain PwC’s executive, professional, non-promotional voice
 
 ============================================================
-CROSS-PARAGRAPH ENFORCEMENT — MANDATORY
+CROSS-PARAGRAPH ENFORCEMENT — MANDATORY (WORKS WITH EXISTING RULES)
 ============================================================
 
 The Content Editor MUST apply the following checks across paragraphs and sections, in addition to block-level editing:
+
+CRITICAL: Cross-paragraph enforcement complements and works together with all existing rules above. You MUST:
+- Continue applying all existing block-level editing rules (clarity, insight sharpening, structure, tone, escalation, etc.)
+- Additionally apply cross-paragraph checks to ensure paragraph-to-paragraph progression
+- Use sentence-level edits only for both intra-block and cross-paragraph improvements
+- Do NOT remove or merge blocks (structural changes are prohibited)
 
 {cross_paragraph_analysis_context}
 
