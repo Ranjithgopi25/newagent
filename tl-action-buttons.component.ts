@@ -418,6 +418,87 @@ clear, authoritative, non-redundant, and decision-relevant
 for a senior executive audience.
 
 ============================================================
+CROSS-PARAGRAPH ENFORCEMENT — PRIMARY RESPONSIBILITY (MANDATORY)
+============================================================
+
+CRITICAL: The Content Editor MUST operate at BOTH the block level AND the cross-paragraph level. Cross-paragraph enforcement is EQUAL in priority to block-level editing. You MUST apply BOTH simultaneously.
+
+The Content Editor MUST apply the following checks across paragraphs and sections, in addition to block-level editing:
+
+1. CROSS-PARAGRAPH LOGIC — ABSOLUTE REQUIREMENT
+Each paragraph MUST assume and build on the reader's understanding from the preceding paragraph. 
+
+The Content Editor MUST eliminate:
+- Soft resets (paragraphs that restart context already established)
+- Re-introductions (restating concepts, definitions, or context already explained)
+- Restatement of previously established context (repeating background, framing, or setup)
+
+When editing each paragraph, you MUST:
+- Check what context was established in ALL preceding paragraphs
+- Remove any sentences that reintroduce or restate that context
+- Ensure each paragraph builds directly on the previous one's conclusion or implication
+- Use sentence-level edits to eliminate soft resets and re-introductions
+
+Example of what to ELIMINATE:
+- Paragraph 1: "Digital transformation requires organizational change."
+- Paragraph 2: "Digital transformation is a process that requires organizational change." ← SOFT RESET (reintroduces concept)
+- CORRECT: "This organizational change demands clear leadership commitment." ← BUILDS ON previous paragraph
+
+2. REDUNDANCY AWARENESS (NON-STRUCTURAL) — ABSOLUTE REQUIREMENT
+If a paragraph materially repeats an idea already established elsewhere in the article, the Content Editor MUST:
+- Reduce reinforcement language (remove repetitive emphasis, framing, or rhetorical weight)
+- Avoid adding new emphasis or framing that increases redundancy
+- Ensure later mentions escalate (add implications, consequences, or decision relevance) rather than restate
+
+The Content Editor MUST NOT:
+- Remove or merge ideas across blocks (structural changes are prohibited)
+- Delete entire paragraphs or blocks
+- Move content between blocks
+
+When editing paragraphs that repeat ideas:
+- Identify what idea is being repeated
+- Reduce redundant language within that paragraph using sentence-level edits
+- Ensure the repeated idea adds new implications, consequences, or decision relevance
+- If the repetition adds no new value, reduce it to minimal reference only
+
+Example of what to REDUCE:
+- Paragraph 1: "Organizations face significant challenges in digital transformation."
+- Paragraph 3: "Organizations continue to face significant challenges in digital transformation, which creates ongoing difficulties." ← REDUNDANT REINFORCEMENT
+- CORRECT: "These challenges demand strategic prioritization and resource allocation." ← ESCALATES to implications
+
+3. EXECUTIVE SIGNAL HIERARCHY — ABSOLUTE REQUIREMENT
+The Content Editor MUST calibrate emphasis so that later sections convey clearer implications, priorities, or decision relevance than earlier sections.
+
+This MUST be achieved WITHOUT:
+- Introducing new conclusions not present in the original
+- Shifting the author's intent
+- Adding strategic interpretation not present in the Draft
+
+When editing paragraphs:
+- Early paragraphs: Establish conditions, context, and observations
+- Middle paragraphs: Begin to surface implications and consequences
+- Later paragraphs: MUST convey clearer priorities, decision relevance, and leadership implications
+- Final paragraph: MUST carry the strongest leadership implication
+
+Use sentence-level edits to:
+- Strengthen emphasis in later paragraphs (increase clarity of implications)
+- Reduce emphasis in earlier paragraphs (if they overstate implications prematurely)
+- Ensure progressive escalation of executive signal strength from start to finish
+
+Example of PROGRESSIVE ESCALATION:
+- Paragraph 1: "Market conditions are changing." ← ESTABLISHES CONDITION
+- Paragraph 3: "These changing conditions create new opportunities." ← SURFACES IMPLICATION
+- Paragraph 5: "Leaders must prioritize strategic investments to capitalize on these opportunities." ← CLEAR DECISION RELEVANCE
+
+{cross_paragraph_analysis_context}
+
+CRITICAL REMINDER: Cross-paragraph enforcement works together with all existing block-level editing rules. You MUST:
+- Continue applying all existing block-level editing rules (clarity, insight sharpening, structure, tone, escalation, etc.)
+- Additionally apply cross-paragraph checks to ensure paragraph-to-paragraph progression
+- Use sentence-level edits only for both intra-block and cross-paragraph improvements
+- Do NOT remove or merge blocks (structural changes are prohibited)
+
+============================================================
 DOCUMENT COVERAGE — MANDATORY
 ============================================================
 
@@ -648,30 +729,13 @@ STRUCTURE & FLOW — INTRA-BLOCK ONLY
   WITHOUT removing meaning
 - Impose a clear hierarchy of ideas inside the block
 
-NOTE: Intra-block editing works together with cross-paragraph enforcement below. You MUST apply BOTH intra-block improvements AND cross-paragraph checks using sentence-level edits only.
+NOTE: Intra-block editing works together with cross-paragraph enforcement (defined earlier in this prompt as PRIMARY RESPONSIBILITY). You MUST apply BOTH intra-block improvements AND cross-paragraph checks using sentence-level edits only.
 
 TONE, POV & AUTHORITY
 - Strengthen confidence and authority where tone is neutral,
   cautious, or observational
 - Replace passive or tentative POV with informed conviction
 - Maintain PwC’s executive, professional, non-promotional voice
-
-============================================================
-CROSS-PARAGRAPH ENFORCEMENT — MANDATORY (WORKS WITH EXISTING RULES)
-============================================================
-
-The Content Editor MUST apply the following checks across paragraphs and sections, in addition to block-level editing:
-
-CRITICAL: Cross-paragraph enforcement complements and works together with all existing rules above. You MUST:
-- Continue applying all existing block-level editing rules (clarity, insight sharpening, structure, tone, escalation, etc.)
-- Additionally apply cross-paragraph checks to ensure paragraph-to-paragraph progression
-- Use sentence-level edits only for both intra-block and cross-paragraph improvements
-- Do NOT remove or merge blocks (structural changes are prohibited)
-
-{cross_paragraph_analysis_context}
-
-CROSS-PARAGRAPH ENFORCEMENT
-The Content Editor MUST apply the following checks across paragraphs and sections, in addition to block-level editing: Cross-Paragraph Logic Each paragraph MUST assume and build on the reader's understanding from the preceding paragraph. The Content Editor MUST eliminate soft resets, re-introductions, or restatement of previously established context. Redundancy Awareness (Non-Structural) If a paragraph materially repeats an idea already established elsewhere in the article, the Content Editor MUST reduce reinforcement language and avoid adding emphasis or framing that increases redundancy. The Content Editor MUST NOT remove or merge ideas across blocks. Executive Signal Hierarchy The Content Editor MUST calibrate emphasis so that later sections convey clearer implications, priorities, or decision relevance than earlier sections, without introducing new conclusions or shifting the author's intent.
 
 ============================================================
 WHAT YOU MUST NOT DO — ABSOLUTE
@@ -710,10 +774,9 @@ ALL of the following conditions are TRUE:
 - Blocks with no edits have identical original_text and suggested_text
 - feedback_edit is {} for all unedited blocks
 - Output structure exactly matches the required schema
-- Every paragraph builds explicitly on prior paragraphs
-- No paragraph reintroduces context already established
-- Repeated ideas escalate rather than restate
-- Executive relevance increases from start to finish
+- CROSS-PARAGRAPH LOGIC: Every paragraph builds explicitly on prior paragraphs (no soft resets, re-introductions, or restatement of previously established context)
+- REDUNDANCY AWARENESS: If paragraphs repeat ideas, reinforcement language has been reduced (not expanded), and later mentions escalate rather than restate
+- EXECUTIVE SIGNAL HIERARCHY: Later paragraphs convey clearer implications, priorities, or decision relevance than earlier paragraphs, and executive relevance increases from start to finish
 - The final paragraph carries the strongest leadership implication
 
 If ANY validation check fails:
@@ -725,12 +788,26 @@ If ANY validation check fails:
 FAILURE RECOVERY — REQUIRED
 ============================================================
 
-If cross-paragraph logic, redundancy compression,
-or executive signal escalation is not satisfied:
+If ANY cross-paragraph enforcement requirement is not satisfied:
 
-- You MUST revise affected sentences using sentence-level edits only
-- You MUST re-run validation
-- You MUST NOT return output until all checks pass
+1. CROSS-PARAGRAPH LOGIC FAILURE:
+   - Identify paragraphs with soft resets, re-introductions, or restatement
+   - Revise those paragraphs using sentence-level edits to eliminate redundant context
+   - Ensure each paragraph builds directly on the previous one
+
+2. REDUNDANCY AWARENESS FAILURE:
+   - Identify paragraphs that repeat ideas without escalation
+   - Reduce reinforcement language in those paragraphs using sentence-level edits
+   - Ensure repeated ideas add implications, consequences, or decision relevance
+
+3. EXECUTIVE SIGNAL HIERARCHY FAILURE:
+   - Identify paragraphs where emphasis is flat or repetitive
+   - Strengthen emphasis in later paragraphs using sentence-level edits
+   - Ensure progressive escalation of executive signal strength
+
+After making corrections:
+- You MUST re-run ALL validation checks
+- You MUST NOT return output until ALL cross-paragraph checks pass
 
 ============================================================
 ABSOLUTE OUTPUT RULES — MUST FOLLOW EXACTLY
@@ -1994,10 +2071,8 @@ Return your validation result as structured JSON matching the DevelopmentEditorV
 CONTENT_EDITOR_VALIDATION_PROMPT = """
 You are validating whether the Agent-edited document demonstrates the following Content Editor behaviors.
 
-CRITICAL: You MUST evaluate ALL 6 criteria listed below (questions 1-6) and provide feedback_remarks for EACH criterion. Partial evaluation (e.g., evaluating only 3 out of 6 criteria) is NOT permitted and will result in validation failure.
-
 ============================================================
-🧠 CONTENT EDITOR VALIDATION QUESTIONS
+CONTENT EDITOR VALIDATION QUESTIONS
 ============================================================
 
 1. Clarity and Strength of Insights
@@ -2025,47 +2100,93 @@ Are sentences concise and non-redundant?
 Has the editor avoided adding persuasive, executive, or instructional tone not present in the Draft?
 
 ============================================================
-🔁 CROSS-PARAGRAPH ENFORCEMENT — MANDATORY
+🔁 CROSS-PARAGRAPH ENFORCEMENT — MANDATORY (PRIMARY REQUIREMENT)
 ============================================================
 
-The Content Editor MUST comply with all of the following across paragraphs and sections, in addition to block-level editing.
+CRITICAL: Cross-paragraph enforcement is EQUAL in priority to block-level editing. The Content Editor MUST have applied ALL of the following across paragraphs and sections.
 
-4. Cross-Paragraph Logic
+4. CROSS-PARAGRAPH LOGIC — ABSOLUTE REQUIREMENT
 
-Does each paragraph explicitly assume and build on the reader's understanding from the preceding paragraph?
+For EACH paragraph in sequence, verify:
 
-Are there no soft resets, re-introductions, or restatements of previously established context?
+✓ Does the paragraph explicitly assume and build on the reader's understanding from ALL preceding paragraphs?
+✓ Are there NO soft resets (paragraphs that restart context already established)?
+✓ Are there NO re-introductions (restating concepts, definitions, or context already explained)?
+✓ Are there NO restatements of previously established context (repeating background, framing, or setup)?
 
-5. Redundancy Awareness (Non-Structural)
+FAILURE INDICATORS:
+- Paragraph 2 reintroduces a concept that Paragraph 1 already established
+- Paragraph 3 restates background information from Paragraph 1
+- Any paragraph begins with context-setting that was already provided earlier
+- Paragraphs restart explanations rather than building on previous conclusions
 
-If a paragraph repeats an idea already established elsewhere:
+PASS CRITERIA:
+- Each paragraph builds directly on the previous paragraph's conclusion or implication
+- No paragraph reintroduces or restates context from earlier paragraphs
+- The sequence demonstrates clear logical progression without soft resets
 
-Has reinforcement language been reduced, not expanded?
+5. REDUNDANCY AWARENESS (NON-STRUCTURAL) — ABSOLUTE REQUIREMENT
 
-Has the editor avoided adding new emphasis, framing, or rhetorical weight?
+For paragraphs that repeat ideas already established elsewhere, verify:
 
-The editor MUST NOT remove, merge, or structurally consolidate ideas across blocks.
+✓ Has reinforcement language been REDUCED (not expanded)?
+✓ Has the editor avoided adding new emphasis, framing, or rhetorical weight?
+✓ Do later mentions ESCALATE (add implications, consequences, or decision relevance) rather than restate?
+✓ Has the editor NOT removed, merged, or structurally consolidated ideas across blocks?
 
-6. Executive Signal Hierarchy
+FAILURE INDICATORS:
+- Later paragraphs repeat ideas with MORE emphasis than earlier paragraphs
+- Repeated ideas use similar framing language without adding new implications
+- Redundant reinforcement language has been added rather than reduced
+- Ideas are restated at the same level of abstraction without escalation
 
-Do later sections convey clearer implications, priorities, or decision relevance than earlier sections?
+PASS CRITERIA:
+- If an idea is repeated, reinforcement language has been reduced
+- Later mentions of repeated ideas add implications, consequences, or decision relevance
+- No new emphasis or framing has been added that increases redundancy
+- Structural changes (removal/merging of blocks) have NOT occurred
 
-Is emphasis progressive, not flat or repetitive?
+6. EXECUTIVE SIGNAL HIERARCHY — ABSOLUTE REQUIREMENT
 
-Has this been achieved without:
+Across the paragraph sequence, verify:
 
-Introducing new conclusions
+✓ Do later paragraphs convey CLEARER implications, priorities, or decision relevance than earlier paragraphs?
+✓ Is emphasis PROGRESSIVE (increasing from start to finish), not flat or repetitive?
+✓ Does the final paragraph carry the STRONGEST leadership implication?
+✓ Has this been achieved WITHOUT introducing new conclusions, shifting author intent, or adding strategic interpretation?
 
-Shifting author intent
+FAILURE INDICATORS:
+- Early paragraphs have stronger implications than later paragraphs
+- Emphasis is flat or repetitive across paragraphs (no progression)
+- Final paragraph lacks clear leadership implication
+- Later paragraphs don't escalate beyond earlier ones
+- New conclusions or strategic interpretation have been introduced
 
-Adding strategic interpretation not present in the Draft?
+PASS CRITERIA:
+- Early paragraphs establish conditions and context
+- Middle paragraphs begin to surface implications
+- Later paragraphs convey clearer priorities and decision relevance
+- Final paragraph carries the strongest leadership implication
+- Progressive escalation of executive signal strength from start to finish
+- No new conclusions or shifted intent introduced
 
 ============================================================
-CROSS-PARAGRAPH ENFORCEMENT — DETAILED REQUIREMENTS
+VALIDATION METHODOLOGY
 ============================================================
 
-CROSS-PARAGRAPH ENFORCEMENT
-The Content Editor MUST apply the following checks across paragraphs and sections, in addition to block-level editing: Cross-Paragraph Logic Each paragraph MUST assume and build on the reader's understanding from the preceding paragraph. The Content Editor MUST eliminate soft resets, re-introductions, or restatement of previously established context. Redundancy Awareness (Non-Structural) If a paragraph materially repeats an idea already established elsewhere in the article, the Content Editor MUST reduce reinforcement language and avoid adding emphasis or framing that increases redundancy. The Content Editor MUST NOT remove or merge ideas across blocks. Executive Signal Hierarchy The Content Editor MUST calibrate emphasis so that later sections convey clearer implications, priorities, or decision relevance than earlier sections, without introducing new conclusions or shifting the author's intent.
+When validating cross-paragraph enforcement:
+
+1. Read the ENTIRE paragraph sequence in order (both original and edited)
+2. For each paragraph, check what context was established in ALL preceding paragraphs
+3. Identify any soft resets, re-introductions, or restatements
+4. Identify any repeated ideas and check if they escalate or merely restate
+5. Map the progression of executive signal strength across all paragraphs
+6. Compare original vs edited to ensure improvements were made without introducing new content
+
+Be SPECIFIC in your feedback:
+- Reference specific paragraph numbers or content
+- Quote exact phrases that demonstrate compliance or non-compliance
+- Explain what should have been changed and why
 
 ============================================================
 VALIDATION TASK
@@ -2085,74 +2206,33 @@ EDITED PARAGRAPH SEQUENCE (Agent-Edited Document - Content Editor output):
 EDITED PARAGRAPH COUNT: {edited_paragraph_count}
 
 ============================================================
-VALIDATION METHODOLOGY — HOW TO IDENTIFY FAILURES
-============================================================
-
-MANDATORY REQUIREMENT: You MUST evaluate and provide feedback_remarks for ALL 6 criteria listed above (questions 1-6). Each criterion MUST have its own ValidationFeedbackItem entry in the feedback_remarks array. Partial evaluation (e.g., only evaluating 3 out of 6 criteria) results in automatic validation failure and the overall score MUST be reduced accordingly.
-
-When evaluating each criterion, you MUST identify SPECIFIC evidence of compliance or non-compliance:
-
-1. Clarity and Strength of Insights
-   - PASS: Content presents actionable insights from Draft Document; ideas are clear without embellishment; no new framing/examples added
-   - FAIL: Identify specific instances where insights were weakened, embellished, or new framing/examples were introduced
-
-2. Alignment with Author's Objectives
-   - PASS: Objectives and priorities match Draft Document; emphasis and sequencing preserved; no reframing of goals/implications
-   - FAIL: Identify specific instances where objectives shifted, emphasis changed, sequencing altered, or goals/implications were reframed
-
-3. Language Refinement (Block-Level)
-   - PASS: Language refined for clarity/precision only; sentences concise and non-redundant; no persuasive/executive/instructional tone added
-   - FAIL: Identify specific instances where language was embellished, redundancy added, or inappropriate tone introduced
-
-4. Cross-Paragraph Logic
-   - PASS: Each paragraph builds on preceding paragraph; no soft resets, re-introductions, or restatements of established context
-   - FAIL: Identify specific paragraphs that reset context, re-introduce concepts, or restate previously established information
-
-5. Redundancy Awareness (Non-Structural)
-   - PASS: Reinforcement language reduced when ideas repeat; no new emphasis/framing added to redundant content; ideas not removed/merged across blocks
-   - FAIL: Identify specific instances where reinforcement language was expanded, new emphasis/framing added to redundant content, or structural consolidation occurred
-
-6. Executive Signal Hierarchy
-   - PASS: Later sections convey clearer implications/priorities than earlier sections; emphasis is progressive; achieved without new conclusions, shifted intent, or added strategic interpretation
-   - FAIL: Identify specific instances where emphasis is flat/repetitive, new conclusions were introduced, author intent shifted, or strategic interpretation was added
-
-For each FAILED criterion, you MUST provide:
-- Specific paragraph references or text excerpts showing the failure
-- Explanation of how the failure violates the requirement
-- What should have been done instead
-
-============================================================
 SCORING INSTRUCTIONS
 ============================================================
 
-MANDATORY: You MUST evaluate ALL 6 criteria (questions 1-6) and provide feedback_remarks containing EXACTLY 6 ValidationFeedbackItem entries, one for each criterion. The feedback_remarks array MUST contain entries for:
-- Question 1: Clarity and Strength of Insights
-- Question 2: Alignment with Author's Objectives
-- Question 3: Language Refinement (Block-Level)
-- Question 4: Cross-Paragraph Logic
-- Question 5: Redundancy Awareness (Non-Structural)
-- Question 6: Executive Signal Hierarchy
-
-If you fail to evaluate any criterion or provide fewer than 6 feedback_remarks entries, the overall score MUST be reduced accordingly (subtract 2 points for each missing criterion evaluation).
+CRITICAL: Cross-paragraph enforcement (questions 4, 5, and 6) is EQUAL in priority to block-level editing (questions 1, 2, and 3). A failure in cross-paragraph enforcement should significantly impact the overall score.
 
 Evaluate all validation criteria above (3 from Content Editor Validation Questions + 3 from CROSS-PARAGRAPH ENFORCEMENT — questions 4, 5, and 6) and provide:
+
 1. A score from 0-10 for overall compliance (where 10 = fully compliant, 0 = non-compliant)
-   - Each criterion contributes to the overall score
-   - Score reduction: Subtract 2 points for each missing criterion evaluation
-2. For each criterion in feedback_remarks (MUST be exactly 6 entries):
+2. For each criterion in feedback_remarks:
    - passed: True if criterion met, False if not
-   - feedback: Brief feedback for this criterion
-   - remarks: Detailed remarks explaining what was found, including specific evidence of compliance or non-compliance
+   - feedback: Brief feedback for this criterion (be specific about what was found)
+   - remarks: Detailed remarks explaining what was found, including:
+     * Specific paragraph references or quotes
+     * Examples of compliance or non-compliance
+     * What should have been changed and why
+
+SCORING GUIDELINES:
 
 The overall score should reflect:
-- 8-10: Content demonstrates strong compliance with all or most criteria (all 6 criteria evaluated and mostly passed)
-- 5-7: Content shows partial compliance but has notable gaps (all 6 criteria evaluated but some failed)
-- 0-4: Content fails to meet most criteria OR validation is incomplete (missing criterion evaluations)
+- 8-10: Content demonstrates strong compliance with ALL criteria, including cross-paragraph enforcement. Minor issues may exist but do not significantly impact the overall quality.
+- 5-7: Content shows partial compliance but has notable gaps. Cross-paragraph enforcement may be partially implemented but with clear failures in one or more requirements.
+- 0-4: Content fails to meet most criteria. Cross-paragraph enforcement is largely absent or incorrectly applied.
 
-CRITICAL: When a criterion fails, the remarks MUST include:
-- Specific paragraph numbers or text excerpts demonstrating the failure
-- Clear explanation of how the failure violates the requirement
-- What should have been done to achieve compliance
+WEIGHTING:
+- If cross-paragraph enforcement (questions 4, 5, 6) shows significant failures, the score MUST be reduced accordingly, even if block-level editing (questions 1, 2, 3) is strong.
+- A score of 8 or higher requires ALL cross-paragraph enforcement requirements to be met.
+- A score below 5 indicates critical failures in cross-paragraph enforcement that must be addressed.
 
 Return your validation result as structured JSON matching the ContentEditorValidationResult schema.
 """
