@@ -21,10 +21,8 @@ from .prompt import (
     COPY_EDITOR_PROMPT,
     LINE_EDITOR_PROMPT,
     CONTENT_EDITOR_PROMPT,
-    DEVELOPMENT_EDITOR_PROMPT,
-    ARTICLE_ANALYSIS_CONTEXT_TEMPLATE
+    DEVELOPMENT_EDITOR_PROMPT
 )
-from .schema import ArticleAnalysis
 import logging
 
 logger = logging.getLogger(__name__)
@@ -52,7 +50,7 @@ PROMPTS_BY_EDITOR: Dict[str, str] = {
 # ----------------------------------------------------------------------
 # EDITOR ENGINE — runs the correct prompt, parses JSON, normalizes schema
 # ----------------------------------------------------------------------
-def run_editor_engine(editor_type: EditorName, blocks: list[DocumentBlock], article_analysis: Optional[ArticleAnalysis] = None) -> EditorResult:
+def run_editor_engine(editor_type: EditorName, blocks: list[DocumentBlock], article_analysis_text: Optional[str] = None) -> EditorResult:
     logger.info(f"AM IN EDITOR ENGINE: {editor_type}_editor_tool")
     warnings: List[str] = []
     prompt = PROMPTS_BY_EDITOR[editor_type]
@@ -61,25 +59,27 @@ def run_editor_engine(editor_type: EditorName, blocks: list[DocumentBlock], arti
     document_json = doc.model_dump_json(indent=2)
     
     # For Development Editor, inject article analysis context if available
-    if editor_type == "development" and article_analysis:
-        # Format repetition patterns as a list
-        repetition_list = "\n     - ".join(article_analysis.repetition_patterns) if article_analysis.repetition_patterns else "None identified"
-        if not article_analysis.repetition_patterns:
-            repetition_list = "None identified"
-        
-        # Format repetition patterns for display
-        repetition_patterns_display = "\n".join([f"- {pattern}" for pattern in article_analysis.repetition_patterns]) if article_analysis.repetition_patterns else "None identified"
-        
-        # Build analysis context
-        analysis_context = ARTICLE_ANALYSIS_CONTEXT_TEMPLATE.format(
-            central_argument=article_analysis.central_argument,
-            primary_pov=article_analysis.primary_pov,
-            repetition_patterns=repetition_patterns_display,
-            repetition_list=repetition_list,
-            original_length=article_analysis.original_length,
-            section_count=article_analysis.section_count,
-            has_redundancy="Yes" if article_analysis.has_redundancy else "No"
-        )
+    if editor_type == "development" and article_analysis_text and article_analysis_text.strip():
+        # Format analysis text as context section
+        analysis_context = f"""
+============================================================
+ARTICLE-LEVEL ANALYSIS — PRE-EDITING CONTEXT
+============================================================
+
+{article_analysis_text}
+
+============================================================
+USE THIS ANALYSIS TO GUIDE YOUR EDITING
+============================================================
+
+The analysis above provides article-level insights. You MUST use this to:
+- Ensure the central argument is explicit in the introduction
+- Eliminate repetition patterns identified above
+- Maintain the identified POV consistently
+- Reduce length if redundancy was identified
+- Work at the ARTICLE LEVEL, not paragraph-by-paragraph
+
+"""
         
         # Inject analysis context into prompt
         prompt = prompt.replace("{article_analysis_context}", analysis_context)
