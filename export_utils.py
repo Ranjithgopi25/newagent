@@ -1,51 +1,102 @@
-ARTICLE-LEVEL ENFORCEMENT — MANDATORY (Add-on) 
+from typing import List, Dict, Optional, Literal
+from pydantic import BaseModel, Field
 
-Validate whether the Agent-edited document demonstrates the following Development Editor article-level enforcement behaviors: 
 
-Central Argument Enforcement 
+BlockType = Literal["title", "heading", "paragraph", "bullet_item"]
 
-Has the Development Editor articulated the article’s central argument in one sentence before editing (or as an explicit guiding sentence in the revised article)? 
+EditorName = Literal[
+    "development",
+    "content",
+    "copy",
+    "line",
+    "brand-alignment"
+]
 
-Does the article maintain a single governing argument throughout? 
 
-Section-to-Argument Alignment 
+class FeedbackItem(BaseModel):
+    issue: str = Field(
+        ..., description="Quoted problematic text from ORIGINAL paragraph"
+    )
+    fix: str = Field(
+        ..., description="Replacement text suggested by the editor"
+    )
+    impact: str = Field(
+        ..., description="Why this change matters"
+    )
+    rule_used: str = Field(
+        ..., description="[editor_name] - [Rule Name]"
+    )
+    priority: Literal["Critical", "Important", "Enhancement"] = "Enhancement"
 
-Does every section clearly advance, substantiate, or logically support the central argument? 
 
-Are any sections off-argument or adjacent? If yes, were they reframed or reduced? 
+class DocumentBlock(BaseModel):
+    id: str = Field(..., description="Unique id, e.g., 'b1'")
+    type: BlockType
+    level: int = Field(..., description="0 for title/paragraph, 1–3 for headings")
+    text: str = Field(..., description="Exact original text")
 
-Repetition & Consolidation Discipline 
 
-Once a core idea has been introduced and explained, is it avoided in later sections unless: 
+class DocumentStructure(BaseModel):
+    blocks: List[DocumentBlock]
 
-it adds new implications, new evidence, or new consequences? 
+class SingleEditorFeedback(BaseModel):
+    editor: EditorName
+    items: List[FeedbackItem]
 
-If a core idea appears in more than two sections, did the editor: 
+class BlockEditResult(BaseModel):
+    id: str
+    type: BlockType
+    level: int
+    original_text: str
+    suggested_text: Optional[str] = None
+    has_changes: bool
+    feedback_edit: List[SingleEditorFeedback] = Field(default_factory=list)
 
-consolidate, elevate, remove, or reframe repeated material? 
+class ListedBlockEditResult(BaseModel):
+    blocks: List[BlockEditResult]
 
-Is repetition used only when it serves a distinct narrative function (framing vs substantiation vs synthesis)? 
+class EditorResult(BaseModel):
+    editor_type: EditorName
+    blocks: List[BlockEditResult]
+    warnings: List[str] = Field(default_factory=list)
+    raw_output: Optional[str] = None
 
-Length Discipline Through Pruning 
 
-Did the editor reduce total article length where redundancy or over-explanation exists (even if the content is “good”)? 
+class EditorFeedback(BaseModel):
+    development: List[FeedbackItem] = Field(default_factory=list)
+    content: List[FeedbackItem] = Field(default_factory=list)
+    copy: List[FeedbackItem] = Field(default_factory=list)
+    line: List[FeedbackItem] = Field(default_factory=list)
+    brand: List[FeedbackItem] = Field(default_factory=list)
 
-Is redundancy removed via: 
+class ConsolidatedBlockEdit(BaseModel):
+    id: str
+    type: BlockType
+    level: int
+    original_text: str
+    final_text: str
+    editorial_feedback: EditorFeedback
 
-consolidation, 
 
-pruning repeated phrasing, 
+class ConsolidateResult(BaseModel):
+    blocks: List[ConsolidatedBlockEdit]
 
-cutting off-topic tangents? 
 
-Point of View Control 
+# ---------------------------------------------------------------------
+# VALIDATION SCHEMAS FOR DEVELOPMENT EDITOR
+# ---------------------------------------------------------------------
 
-Did the editor explicitly select and maintain one primary POV (e.g., market analyst, advisor, collaborator)? 
+class ValidationFeedbackItem(BaseModel):
+    """Feedback for a validation criterion: pass/fail, feedback, remarks."""
+    passed: bool = Field(..., description="Whether this criterion passed")
+    feedback: str = Field(..., description="Feedback for this criterion")
+    remarks: str = Field(..., description="Remarks for this criterion")
 
-Are there POV shifts (e.g., advisor → narrator → executive observer)? If yes, were they corrected? 
 
-One-Sentence Defensibility Test 
-
-If the article were summarized in one sentence, could every section be defended as serving that sentence? 
-
-If not, were non-serving sections revised or cut? 
+class DevelopmentEditorValidationResult(BaseModel):
+    """Validation result: score and feedback_remarks."""
+    score: int = Field(..., ge=0, le=10, description="Overall validation score from 0-10")
+    feedback_remarks: List[ValidationFeedbackItem] = Field(
+        default_factory=list,
+        description="Feedback and remarks for each validation criterion"
+    )
