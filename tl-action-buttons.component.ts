@@ -15,7 +15,7 @@ from .schema import (
     ConsolidatedBlockEdit,
     BlockEditResult,
     EditorFeedback,
-    ArticleAnalysis
+    DevelopmentEditorValidationResult
 )
 
 from .tools import (
@@ -25,6 +25,7 @@ from .tools import (
     copy_editor_tool,
     brand_editor_tool,
     run_editor_engine,
+    validate_development_editor,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,16 +46,20 @@ class SupervisorState(TypedDict):
     final_result: Optional[ConsolidateResult]
     current_editor_index: Optional[int]  # For sequential execution
     thread_id: Optional[str]  # For checkpointing
-    article_analysis: Optional[ArticleAnalysis]  # Article-level analysis for Development Editor
+    article_analysis: Optional[str]  # Article-level analysis text for Development Editor (LLM-based, not schema)
+    cross_paragraph_analysis: Optional[str]  # Cross-paragraph analysis text for Content Editor (LLM-based, not schema)
+    dev_editor_retry_count: Optional[int]  # Retry count for Development Editor (retries until score >= 8, max 5 retries)
+    validation_result: Optional[DevelopmentEditorValidationResult]  # Validation result for Development Editor
 
 
 # ---------------------------------------------------------------------
 # ARTICLE-LEVEL ANALYSIS AND VALIDATION HELPERS
 # ---------------------------------------------------------------------
-def analyze_article(document: DocumentStructure) -> ArticleAnalysis:
+def analyze_article(document: DocumentStructure) -> str:
     """
-    Analyze the entire article to extract article-level metadata.
-    This provides context for the Development Editor to enforce article-level requirements.
+    Analyze the entire article using LLM.
+    Returns formatted text analysis for Development Editor guidance.
+    No schema parsing - direct LLM text response.
     """
     logger.info("ANALYZING ARTICLE FOR DEVELOPMENT EDITOR")
     
@@ -65,126 +70,240 @@ def analyze_article(document: DocumentStructure) -> ArticleAnalysis:
     # Count sections (headings)
     section_count = sum(1 for block in document.blocks if block.type == "heading")
     
-    # Create analysis prompt
-    analysis_prompt = f"""Analyze the following article and extract article-level metadata.
+    # Create analysis prompt - request formatted text, not JSON
+    analysis_prompt = f"""Analyze the following article for Development Editor guidance.
 
 ARTICLE:
 {full_text}
 
-Provide a JSON response with:
-1. central_argument: The article's central argument in ONE clear, assertive sentence
-2. primary_pov: The primary point of view (e.g., "advisor/collaborator", "observer", "analyst")
-3. repetition_patterns: List of core ideas/concepts that appear in multiple sections (be specific)
-4. has_redundancy: true/false - whether the article has redundant or repetitive content
+Provide article-level analysis in the following format:
 
-Return ONLY valid JSON in this format:
-{{
-  "central_argument": "...",
-  "primary_pov": "...",
-  "repetition_patterns": ["...", "..."],
-  "has_redundancy": true/false
-}}
+CENTRAL ARGUMENT:
+[Articulate the article's central argument in ONE clear, assertive sentence. This must appear explicitly in the introduction.]
+
+PRIMARY POINT OF VIEW:
+[Identify the primary point of view: advisor/collaborator, observer, analyst, etc.]
+
+REPETITION PATTERNS:
+[List specific core ideas/concepts that appear in multiple sections. Be specific about what concepts are repeated and where they appear.]
+
+ARTICLE METRICS:
+- Original length: {word_count} words
+- Sections: {section_count}
+- Has redundancy: [yes/no - indicate if the article has redundant or repetitive content]
+
+ACTIONABLE GUIDANCE:
+[Provide specific guidance on what needs to be addressed: which sections need consolidation, which ideas are repeated, what POV should be maintained, etc.]
+
+Provide clear, actionable guidance for the Development Editor to work at the article level, not paragraph-by-paragraph.
 """
     
     try:
         response = llm.invoke([HumanMessage(content=analysis_prompt)])
-        content = response.content if hasattr(response, 'content') else str(response)
+        analysis_text = response.content if hasattr(response, 'content') else str(response)
         
-        # Parse JSON from response
-        if isinstance(content, str):
-            # Try to extract JSON from markdown code blocks if present
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-            if json_match:
-                content = json_match.group(0)
-            
-            analysis_data = json.loads(content)
-        else:
-            analysis_data = content
+        if not analysis_text or analysis_text.strip() == "":
+            logger.warning("Article analysis returned empty response")
+            return ""
         
-        return ArticleAnalysis(
-            central_argument=analysis_data.get("central_argument", "Not identified"),
-            primary_pov=analysis_data.get("primary_pov", "Not identified"),
-            repetition_patterns=analysis_data.get("repetition_patterns", []),
-            original_length=word_count,
-            section_count=section_count,
-            has_redundancy=analysis_data.get("has_redundancy", False)
-        )
+        return analysis_text
     except Exception as e:
         logger.error(f"Error analyzing article: {e}")
-        # Return default analysis on error
-        return ArticleAnalysis(
-            central_argument="Analysis unavailable",
-            primary_pov="Not identified",
-            repetition_patterns=[],
-            original_length=word_count,
-            section_count=section_count,
-            has_redundancy=False
-        )
+        # Return empty string on error - no fallback values
+        return ""
 
 
-def validate_article_compliance(
-    original_analysis: ArticleAnalysis,
+def analyze_cross_paragraph_logic(document: DocumentStructure) -> str:
+    """
+    Analyze cross-paragraph progression using LLM.
+    Returns formatted text analysis for Content Editor guidance.
+    No schema parsing - direct LLM text response.
+    """
+    logger.info("ANALYZING CROSS-PARAGRAPH LOGIC FOR CONTENT EDITOR")
+    
+    # Extract paragraphs (paragraph and bullet_item blocks)
+    paragraphs = []
+    for i, block in enumerate(document.blocks):
+        if block.type in ["paragraph", "bullet_item"]:
+            paragraphs.append({
+                "id": block.id,
+                "index": i,
+                "text": block.text
+            })
+    
+    if len(paragraphs) < 2:
+        logger.info("Not enough paragraphs for cross-paragraph analysis")
+        return ""
+    
+    # Build paragraph sequence text
+    paragraph_sequence = "\n\n".join([
+        f"PARAGRAPH {i+1} (ID: {p['id']}):\n{p['text']}"
+        for i, p in enumerate(paragraphs)
+    ])
+    
+    # Create analysis prompt
+    analysis_prompt = f"""Analyze the following paragraph sequence for Content Editor cross-paragraph enforcement guidance.
+
+PARAGRAPH SEQUENCE:
+{paragraph_sequence}
+
+Provide cross-paragraph analysis in the following format:
+
+Cross-Paragraph Logic Issues:
+[List specific instances where paragraphs soft-reset, re-introduce context, or fail to build on preceding paragraphs. Identify which paragraphs have these issues and what context is being unnecessarily reintroduced.]
+
+Redundancy Patterns (Non-Structural):
+[Identify paragraphs that materially repeat ideas already established in earlier paragraphs. Specify which paragraphs repeat which concepts, and whether later mentions increase specificity, consequence, or decision relevance, or merely restate.]
+
+Executive Signal Hierarchy:
+[Map the progression of executive signal strength across paragraphs. Identify which paragraphs should convey clearer implications, priorities, or decision relevance than earlier ones. Note if later paragraphs fail to escalate appropriately or if the final paragraph lacks sufficient executive signal.]
+
+Actionable Guidance:
+[Provide specific guidance for Content Editor: which paragraphs need edits to eliminate soft resets, which redundant language should be reduced, and how to strengthen executive signal hierarchy through sentence-level edits only.]
+
+Provide clear, actionable guidance for the Content Editor to work across paragraphs using sentence-level edits only.
+"""
+    
+    try:
+        response = llm.invoke([HumanMessage(content=analysis_prompt)])
+        analysis_text = response.content if hasattr(response, 'content') else str(response)
+        
+        if not analysis_text or analysis_text.strip() == "":
+            logger.warning("Cross-paragraph analysis returned empty response")
+            return ""
+        
+        return analysis_text
+    except Exception as e:
+        logger.error(f"Error analyzing cross-paragraph logic: {e}")
+        # Return empty string on error - no fallback values
+        return ""
+
+
+
+
+def validate_cross_paragraph_compliance(
+    original_analysis_text: str,
     edited_result: EditorResult,
     original_document: DocumentStructure
 ) -> List[str]:
     """
-    Validate that Development Editor output meets article-level requirements.
+    Use LLM to validate that Content Editor output meets cross-paragraph enforcement requirements.
     Returns list of validation warnings (empty if compliant).
     """
-    logger.info("VALIDATING ARTICLE-LEVEL COMPLIANCE")
-    warnings = []
+    logger.info("VALIDATING CROSS-PARAGRAPH COMPLIANCE USING LLM")
     
-    # Calculate edited article length
-    edited_text = " ".join([
-        block.suggested_text or block.original_text 
-        for block in edited_result.blocks
-    ])
-    edited_word_count = len(edited_text.split())
+    if not original_analysis_text or not original_analysis_text.strip():
+        logger.warning("No original cross-paragraph analysis text available for validation")
+        return []
     
-    # Check 1: Article length reduction (if redundancy existed)
-    if original_analysis.has_redundancy:
-        reduction_percent = ((original_analysis.original_length - edited_word_count) / 
-                            original_analysis.original_length * 100) if original_analysis.original_length > 0 else 0
-        if reduction_percent < 5:  # Less than 5% reduction
-            warnings.append(
-                f"Article length reduction insufficient: Only {reduction_percent:.1f}% reduction "
-                f"({original_analysis.original_length} → {edited_word_count} words). "
-                "Expected visible reduction due to redundancy elimination."
-            )
+    # Extract paragraphs from original and edited documents
+    original_paragraphs = []
+    for block in original_document.blocks:
+        if block.type in ["paragraph", "bullet_item"]:
+            original_paragraphs.append(block.text)
     
-    # Check 2: Central argument visibility (check if it appears in introduction)
-    intro_blocks = [b for b in edited_result.blocks[:5] if b.type in ["paragraph", "heading"]]
-    intro_text = " ".join([b.suggested_text or b.original_text for b in intro_blocks]).lower()
-    central_arg_lower = original_analysis.central_argument.lower()
+    edited_paragraphs = []
+    for block in edited_result.blocks:
+        if block.type in ["paragraph", "bullet_item"]:
+            edited_paragraphs.append(block.suggested_text or block.original_text)
     
-    # Check if key terms from central argument appear in introduction
-    key_terms = [word for word in central_arg_lower.split() if len(word) > 4]
-    if key_terms:
-        matches = sum(1 for term in key_terms if term in intro_text)
-        if matches < len(key_terms) * 0.3:  # Less than 30% of key terms
-            warnings.append(
-                "Central argument may not be clearly visible in introduction. "
-                "Ensure the central argument is explicitly stated early in the article."
-            )
+    original_text = "\n\n".join(original_paragraphs)
+    edited_text = "\n\n".join(edited_paragraphs)
     
-    # Check 3: Repetition patterns - verify they were addressed
-    if original_analysis.repetition_patterns:
-        edited_full_text = edited_text.lower()
-        still_repeated = []
-        for pattern in original_analysis.repetition_patterns[:3]:  # Check first 3 patterns
-            pattern_lower = pattern.lower()
-            # Count occurrences in edited text
-            count = edited_full_text.count(pattern_lower)
-            if count > 2:  # Still appears more than twice
-                still_repeated.append(pattern)
+    # Create validation prompt for LLM - uses exact CROSS-PARAGRAPH ENFORCEMENT requirements
+    validation_prompt = f"""You are validating that the Content Editor output meets the CROSS-PARAGRAPH ENFORCEMENT requirements.
+
+ORIGINAL CROSS-PARAGRAPH ANALYSIS (provided to Content Editor):
+{original_analysis_text}
+
+ORIGINAL PARAGRAPH SEQUENCE:
+{original_text}
+
+EDITED PARAGRAPH SEQUENCE (Content Editor output):
+{edited_text}
+
+============================================================
+CROSS-PARAGRAPH ENFORCEMENT REQUIREMENTS — VALIDATE AGAINST THESE
+============================================================
+
+The Content Editor MUST have:
+
+1. Cross-Paragraph Logic
+   Each paragraph MUST assume and build on the reader's understanding from the preceding paragraph. The Content Editor MUST have eliminated soft resets, re-introductions, or restatement of previously established context.
+
+2. Redundancy Awareness (Non-Structural)
+   If a paragraph materially repeats an idea already established elsewhere in the article, the Content Editor MUST have reduced reinforcement language and avoided adding emphasis or framing that increases redundancy. The Content Editor MUST NOT have removed or merged ideas across blocks.
+
+3. Executive Signal Hierarchy
+   The Content Editor MUST have calibrated emphasis so that later sections convey clearer implications, priorities, or decision relevance than earlier sections, without introducing new conclusions or shifting the author's intent.
+
+============================================================
+VALIDATION TASK
+============================================================
+
+Analyze the EDITED PARAGRAPH SEQUENCE against the ORIGINAL CROSS-PARAGRAPH ANALYSIS and the requirements above.
+
+For EACH requirement (1-3), check if it was met:
+- If met: No warning needed
+- If NOT met: Provide a specific warning explaining what requirement failed and what needs to be fixed
+
+Return your response as a JSON array of warnings. If all requirements are met, return an empty array [].
+Format: ["Warning 1: [specific requirement and issue]", "Warning 2: [specific requirement and issue]", ...]
+
+Be specific and actionable in your warnings. Reference the actual paragraph content where possible.
+"""
+    
+    try:
+        response = llm.invoke([HumanMessage(content=validation_prompt)])
+        content = response.content if hasattr(response, 'content') else str(response)
         
-        if still_repeated:
-            warnings.append(
-                f"Repetition patterns may not be fully addressed: {', '.join(still_repeated[:2])}. "
-                "Ensure repeated concepts are consolidated or removed."
-            )
-    
-    return warnings
+        # Parse warnings from LLM response
+        warnings = []
+        
+        if isinstance(content, str):
+            # Try to extract JSON array from response
+            json_match = re.search(r'\[.*\]', content, re.DOTALL)
+            if json_match:
+                try:
+                    warnings = json.loads(json_match.group(0))
+                    if not isinstance(warnings, list):
+                        warnings = []
+                except json.JSONDecodeError:
+                    # If JSON parsing fails, try to extract warnings from text
+                    # Look for list-like patterns
+                    lines = content.split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if line.startswith('-') or line.startswith('•') or (line.startswith('"') and line.endswith('"')):
+                            # Extract warning text
+                            warning = line.lstrip('-•"').rstrip('"').strip()
+                            if warning:
+                                warnings.append(warning)
+            else:
+                # If no JSON found, check if response indicates compliance
+                content_lower = content.lower()
+                if "compliant" in content_lower or "no issues" in content_lower or "all requirements met" in content_lower:
+                    warnings = []
+                elif "warning" in content_lower or "issue" in content_lower or "failed" in content_lower:
+                    # Extract warnings from text format
+                    lines = content.split('\n')
+                    for line in lines:
+                        if any(keyword in line.lower() for keyword in ['warning', 'issue', 'failed', 'not met', 'missing']):
+                            warning = line.strip().lstrip('-•1234567890.').strip()
+                            if warning and len(warning) > 10:  # Filter out very short lines
+                                warnings.append(warning)
+        
+        if warnings:
+            logger.warning(f"Cross-paragraph validation found {len(warnings)} issues")
+        else:
+            logger.info("Cross-paragraph validation: All requirements met")
+        
+        return warnings if isinstance(warnings, list) else []
+        
+    except Exception as e:
+        logger.error(f"Error validating cross-paragraph compliance: {e}")
+        # Return empty list on error - don't block workflow
+        return []
 
 
 # ---------------------------------------------------------------------
@@ -193,10 +312,7 @@ def validate_article_compliance(
 def development_editor_node(state: SupervisorState) -> SupervisorState:
     logger.info("RUNNING: development_editor_tool")
     
-    # Get article analysis if available
     article_analysis = state.get("article_analysis")
-    
-    # Run editor engine with article analysis
     result = run_editor_engine("development", state["document"].blocks, article_analysis)
 
     return {
@@ -204,13 +320,39 @@ def development_editor_node(state: SupervisorState) -> SupervisorState:
     }
 
 
+# ---------------------------------------------------------------------
+# DEVELOPMENT EDITOR RETRY NODE
+# ---------------------------------------------------------------------
+def development_editor_retry_node(state: SupervisorState) -> SupervisorState:
+    """Retry Development Editor using validation feedback to improve."""
+    logger.info("RUNNING: development_editor_retry_node")
+    
+    article_analysis = state.get("article_analysis")
+    validation_result = state.get("validation_result")
+    validation_feedback = validation_result.feedback_remarks if validation_result else None
+    
+    result = run_editor_engine(
+        "development", 
+        state["document"].blocks, 
+        article_analysis,
+        validation_feedback=validation_feedback
+    )
+    retry_count = state.get("dev_editor_retry_count", 0) + 1
+
+    return {
+        "editor_results": state["editor_results"] + [result],
+        "dev_editor_retry_count": retry_count
+    }
+
+
 def content_editor_node(state: SupervisorState) -> SupervisorState:
     logger.info("RUNNING: content_editor_tool")
-    raw_blocks = content_editor_tool.invoke(
-        {"blocks": state["document"].blocks}
-    )
-
-    result = normalize_editor_output("content", raw_blocks)
+    
+    # Get cross-paragraph analysis if available
+    cross_paragraph_analysis = state.get("cross_paragraph_analysis")
+    
+    # Run editor engine with cross-paragraph analysis
+    result = run_editor_engine("content", state["document"].blocks, cross_paragraph_analysis_text=cross_paragraph_analysis)
 
     return {
         "editor_results": state["editor_results"] + [result]
@@ -260,10 +402,7 @@ def brand_editor_node(state: SupervisorState) -> SupervisorState:
 # ARTICLE-LEVEL ANALYSIS NODE (runs before Development Editor)
 # ---------------------------------------------------------------------
 def article_analysis_node(state: SupervisorState) -> SupervisorState:
-    """
-    Analyze the article before Development Editor runs.
-    Stores analysis in state for use by Development Editor.
-    """
+    """Analyze article before Development Editor runs."""
     logger.info("RUNNING: article_analysis_node")
     
     analysis = analyze_article(state["document"])
@@ -277,15 +416,61 @@ def article_analysis_node(state: SupervisorState) -> SupervisorState:
 # ARTICLE-LEVEL VALIDATION NODE (runs after Development Editor)
 # ---------------------------------------------------------------------
 def article_validation_node(state: SupervisorState) -> SupervisorState:
-    """
-    Validate that Development Editor output meets article-level requirements.
-    Adds validation warnings to the editor result if non-compliant.
-    """
+    """Validate Development Editor output and return score."""
     logger.info("RUNNING: article_validation_node")
     
-    article_analysis = state.get("article_analysis")
-    if not article_analysis:
-        logger.warning("No article analysis found for validation")
+    article_analysis_text = state.get("article_analysis")
+    editor_results = state.get("editor_results", [])
+    
+    dev_editor_result = None
+    for result in reversed(editor_results):
+        if result.editor_type == "development":
+            dev_editor_result = result
+            break
+    
+    validation_result = validate_development_editor(
+        article_analysis_text,
+        dev_editor_result,
+        state["document"]
+    )
+    
+    logger.info(f"Development Editor validation: score={validation_result.score}")
+    
+    return {
+        "validation_result": validation_result
+    }
+
+
+# ---------------------------------------------------------------------
+# CROSS-PARAGRAPH ANALYSIS NODE (runs before Content Editor)
+# ---------------------------------------------------------------------
+def cross_paragraph_analysis_node(state: SupervisorState) -> SupervisorState:
+    """
+    Analyze cross-paragraph logic before Content Editor runs.
+    Stores analysis in state for use by Content Editor.
+    """
+    logger.info("RUNNING: cross_paragraph_analysis_node")
+    
+    analysis = analyze_cross_paragraph_logic(state["document"])
+    
+    return {
+        "cross_paragraph_analysis": analysis
+    }
+
+
+# ---------------------------------------------------------------------
+# CROSS-PARAGRAPH VALIDATION NODE (runs after Content Editor)
+# ---------------------------------------------------------------------
+def cross_paragraph_validation_node(state: SupervisorState) -> SupervisorState:
+    """
+    Validate that Content Editor output meets cross-paragraph enforcement requirements using LLM.
+    Adds validation warnings to the editor result if non-compliant.
+    """
+    logger.info("RUNNING: cross_paragraph_validation_node")
+    
+    cross_paragraph_analysis_text = state.get("cross_paragraph_analysis")
+    if not cross_paragraph_analysis_text or not cross_paragraph_analysis_text.strip():
+        logger.warning("No cross-paragraph analysis text found for validation")
         return {}
     
     editor_results = state.get("editor_results", [])
@@ -293,34 +478,36 @@ def article_validation_node(state: SupervisorState) -> SupervisorState:
         logger.warning("No editor results found for validation")
         return {}
     
-    # Find Development Editor result (should be the last one)
-    dev_editor_result = None
+    # Find Content Editor result (should be the last one)
+    content_editor_result = None
     for result in reversed(editor_results):
-        if result.editor_type == "development":
-            dev_editor_result = result
+        if result.editor_type == "content":
+            content_editor_result = result
             break
     
-    if not dev_editor_result:
-        logger.warning("Development Editor result not found for validation")
+    if not content_editor_result:
+        logger.warning("Content Editor result not found for validation")
         return {}
     
-    # Validate compliance
-    warnings = validate_article_compliance(
-        article_analysis,
-        dev_editor_result,
+    # Validate compliance using LLM
+    warnings = validate_cross_paragraph_compliance(
+        cross_paragraph_analysis_text,
+        content_editor_result,
         state["document"]
     )
     
-    # Add warnings to the Development Editor result
+    # Add warnings to the Content Editor result
     if warnings:
-        dev_editor_result.warnings.extend(warnings)
-        logger.warning(f"Article-level validation found {len(warnings)} issues")
+        content_editor_result.warnings.extend(warnings)
+        logger.warning(f"Cross-paragraph validation found {len(warnings)} issues: {warnings}")
+    else:
+        logger.info("Cross-paragraph validation: All requirements met")
     
     # Update the editor result in state
     updated_results = []
     for result in editor_results:
-        if result.editor_type == "development":
-            updated_results.append(dev_editor_result)
+        if result.editor_type == "content":
+            updated_results.append(content_editor_result)
         else:
             updated_results.append(result)
     
@@ -450,47 +637,49 @@ def merge_node(state: SupervisorState) -> SupervisorState:
 # SEQUENTIAL ROUTER (routes to single editor based on index)
 # ---------------------------------------------------------------------
 def route_sequential_editor(state: SupervisorState):
-    """
-    Route to the current editor based on current_editor_index.
-    Used for sequential execution mode.
-    
-    Special handling for Development Editor:
-    - If Development Editor is next and no analysis exists: route to article_analysis_node
-    - After analysis: route to development_editor_tool
-    - After Development Editor: route to article_validation_node
-    """
+    """Route to current editor based on current_editor_index."""
     current_idx = state.get("current_editor_index", 0)
     selected_editors = state.get("selected_editors", [])
     
     if current_idx >= len(selected_editors):
-        return "merge"  # All editors done, go to merge
+        return "merge"
     
     editor_name = selected_editors[current_idx]
-    logger.info(f"ROUTING TO SEQUENTIAL EDITOR: {editor_name} (index {current_idx})")
     
-    # Special handling for Development Editor: check if analysis needed
     if editor_name == "development":
         article_analysis = state.get("article_analysis")
-        # Check if we just completed analysis (by checking if analysis exists but no editor results yet)
         editor_results = state.get("editor_results", [])
         has_dev_result = any(r.editor_type == "development" for r in editor_results)
         
         if not article_analysis and not has_dev_result:
-            # Need to run analysis first
-            logger.info("ROUTING TO ARTICLE ANALYSIS (before Development Editor)")
             return "article_analysis"
         elif article_analysis and not has_dev_result:
-            # Analysis done, now run Development Editor
-            logger.info("ROUTING TO DEVELOPMENT EDITOR (after analysis)")
             return "development_editor_tool"
         elif has_dev_result:
-            # Development Editor done, now validate
-            logger.info("ROUTING TO ARTICLE VALIDATION (after Development Editor)")
             return "article_validation"
+    
+    # Special handling for Content Editor: check if analysis needed
+    if editor_name == "content":
+        cross_paragraph_analysis = state.get("cross_paragraph_analysis")
+        # Check if we just completed analysis (by checking if analysis exists but no editor results yet)
+        editor_results = state.get("editor_results", [])
+        has_content_result = any(r.editor_type == "content" for r in editor_results)
+        
+        if not cross_paragraph_analysis and not has_content_result:
+            # Need to run analysis first
+            logger.info("ROUTING TO CROSS-PARAGRAPH ANALYSIS (before Content Editor)")
+            return "cross_paragraph_analysis"
+        elif cross_paragraph_analysis and not has_content_result:
+            # Analysis done, now run Content Editor
+            logger.info("ROUTING TO CONTENT EDITOR (after analysis)")
+            return "content_editor_tool"
+        elif has_content_result:
+            # Content Editor done, now validate
+            logger.info("ROUTING TO CROSS-PARAGRAPH VALIDATION (after Content Editor)")
+            return "cross_paragraph_validation"
     
     # Map editor name to node name for other editors
     editor_node_map = {
-        "content": "content_editor_tool",
         "line": "line_editor_tool",
         "copy": "copy_editor_tool",
         "brand-alignment": "brand_editor_tool",
@@ -528,6 +717,21 @@ def sequential_merge_node(state: SupervisorState) -> SupervisorState:
     merged = merge_node(temp_state)
     
     return merged
+
+
+# ---------------------------------------------------------------------
+# ROUTER AFTER VALIDATION
+# ---------------------------------------------------------------------
+def route_after_validation(state: SupervisorState) -> str:
+    """After validation: retry if score < 8 (max 5 retries), else merge."""
+    validation_result = state.get("validation_result")
+    retry_count = state.get("dev_editor_retry_count", 0)
+    MAX_RETRIES = 5
+    
+    if validation_result and validation_result.score < 8 and retry_count < MAX_RETRIES:
+        return "development_editor_retry"
+    
+    return "merge"
 
 
 # ---------------------------------------------------------------------
@@ -575,48 +779,55 @@ def build_sequential_graph():
     """
     graph = StateGraph(SupervisorState)
     
-    # REUSE existing nodes
     graph.add_node("development_editor_tool", development_editor_node)
+    graph.add_node("development_editor_retry", development_editor_retry_node)
     graph.add_node("content_editor_tool", content_editor_node)
     graph.add_node("line_editor_tool", line_editor_node)
     graph.add_node("copy_editor_tool", copy_editor_node)
     graph.add_node("brand_editor_tool", brand_editor_node)
-    graph.add_node("article_analysis", article_analysis_node)  # Article analysis before Development Editor
-    graph.add_node("article_validation", article_validation_node)  # Article validation after Development Editor
-    graph.add_node("merge", sequential_merge_node)  # Sequential merge (filters to current editor)
+    graph.add_node("article_analysis", article_analysis_node)
+    graph.add_node("article_validation", article_validation_node)
+    graph.add_node("cross_paragraph_analysis", cross_paragraph_analysis_node)
+    graph.add_node("cross_paragraph_validation", cross_paragraph_validation_node)
+    graph.add_node("merge", sequential_merge_node)
     
     # Set entry point - use conditional routing directly
     graph.set_conditional_entry_point(
         route_sequential_editor,
         {
             "development_editor_tool": "development_editor_tool",
+            "development_editor_retry": "development_editor_retry",
             "content_editor_tool": "content_editor_tool",
             "line_editor_tool": "line_editor_tool",
             "copy_editor_tool": "copy_editor_tool",
             "brand_editor_tool": "brand_editor_tool",
             "article_analysis": "article_analysis",
             "article_validation": "article_validation",
+            "cross_paragraph_analysis": "cross_paragraph_analysis",
+            "cross_paragraph_validation": "cross_paragraph_validation",
             "merge": "merge",  # All editors done
         }
     )
     
-    # Article analysis goes to Development Editor
     graph.add_edge("article_analysis", "development_editor_tool")
-    
-    # Development Editor goes to validation
     graph.add_edge("development_editor_tool", "article_validation")
     
-    # Article validation goes to merge
-    graph.add_edge("article_validation", "merge")
+    graph.add_conditional_edges(
+        "article_validation",
+        route_after_validation,
+        {
+            "development_editor_retry": "development_editor_retry",
+            "merge": "merge"
+        }
+    )
     
-    # All other editor nodes go to merge
-    for node in [
-        "content_editor_tool",
-        "line_editor_tool",
-        "copy_editor_tool",
-        "brand_editor_tool",
-    ]:
+    graph.add_edge("development_editor_retry", "article_validation")
+    
+    graph.add_edge("cross_paragraph_analysis", "content_editor_tool")
+    graph.add_edge("content_editor_tool", "cross_paragraph_validation")
+    graph.add_edge("cross_paragraph_validation", "merge")
+    
+    for node in ["line_editor_tool", "copy_editor_tool", "brand_editor_tool"]:
         graph.add_edge(node, "merge")
     
-    # Compile with SHARED checkpointer and request an interrupt after merge
     return graph.compile(checkpointer=_sequential_checkpointer, interrupt_after=["merge"]) 
