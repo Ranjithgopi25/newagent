@@ -1,1660 +1,622 @@
-
-# ============================================================
-# Prompt Library for Refine Content LangGraph
-# Source of truth migrated from refine_content_service.py
-# ============================================================
-
-from typing import Optional, List, Dict, Tuple
+from typing import TypedDict, List, Optional, Annotated
+import operator
+import json
+import re
+from langgraph.graph import StateGraph
+from langchain_core.messages import BaseMessage, HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
+from app.core.deps import get_llm_client_agent
 import logging
+
+from .schema import (
+    DocumentStructure,
+    EditorResult,
+    ConsolidateResult,
+    ConsolidatedBlockEdit,
+    BlockEditResult,
+    EditorFeedback,
+    ArticleAnalysis
+)
+
+from .tools import (
+    development_editor_tool,
+    content_editor_tool,
+    line_editor_tool,
+    copy_editor_tool,
+    brand_editor_tool,
+    run_editor_engine,
+)
 
 logger = logging.getLogger(__name__)
 
-# ------------------------------------------------------------
-# Utilities
-# ------------------------------------------------------------
+# ---------------------------------------------------------------------
+# LLM (shared)
+# ---------------------------------------------------------------------
+llm = get_llm_client_agent()
 
-def word_count(text: str) -> int:
-    return len(text.split()) if text else 0
+# ---------------------------------------------------------------------
+# GRAPH STATE
+# ---------------------------------------------------------------------
+class SupervisorState(TypedDict):
+    messages: List[BaseMessage]
+    document: DocumentStructure
+    selected_editors: List[str]
+    editor_results: Annotated[List[EditorResult], operator.add]
+    final_result: Optional[ConsolidateResult]
+    current_editor_index: Optional[int]  # For sequential execution
+    thread_id: Optional[str]  # For checkpointing
+    article_analysis: Optional[ArticleAnalysis]  # Article-level analysis for Development Editor
 
 
-# ------------------------------------------------------------
-# SUGGESTIONS (PwC Editorial Framework)
-# ------------------------------------------------------------
-
-def get_suggestions_prompt_template() -> str:
+# ---------------------------------------------------------------------
+# ARTICLE-LEVEL ANALYSIS AND VALIDATION HELPERS
+# ---------------------------------------------------------------------
+def analyze_article(document: DocumentStructure) -> ArticleAnalysis:
     """
-    EXACT migration of _get_suggestions_prompt_template
+    Analyze the entire article to extract article-level metadata.
+    This provides context for the Development Editor to enforce article-level requirements.
     """
-    return """
-ROLE & OBJECTIVE
-You are a Senior PwC Brand & Content Strategist and Executive Editor. Your role is NOT to rewrite the content, but to act as a critical writing coach. Provide specific, actionable, and high-value suggestions to help the author elevate their draft to meet PwC's thought leadership standards.
+    logger.info("ANALYZING ARTICLE FOR DEVELOPMENT EDITOR")
+    
+    # Calculate article length
+    full_text = " ".join([block.text for block in document.blocks])
+    word_count = len(full_text.split())
+    
+    # Count sections (headings)
+    section_count = sum(1 for block in document.blocks if block.type == "heading")
+    
+    # Create analysis prompt
+    analysis_prompt = f"""Analyze the following article and extract article-level metadata.
 
-I. CORE ANALYSIS FRAMEWORK (PwC Tone Pillars)
-Evaluate the draft against these three tone pillars and identify specific opportunities for improvement:
+ARTICLE:
+{full_text}
 
-BOLD (Assertive, Decisive, Clear)
-- Standard: Lead with a strong point of view; avoid safe, academic language.
-- Watch For: Soft qualifiers (e.g., "somewhat," "arguably," "it seems that"), passive voice, dense jargon
-- Fix: Encourage decisive language. Replace banned word "catalyst" with driver, enabler, accelerator.
+Provide a JSON response with:
+1. central_argument: The article's central argument in ONE clear, assertive sentence
+2. primary_pov: The primary point of view (e.g., "advisor/collaborator", "observer", "analyst")
+3. repetition_patterns: List of core ideas/concepts that appear in multiple sections (be specific)
+4. has_redundancy: true/false - whether the article has redundant or repetitive content
 
-COLLABORATIVE (Human, Conversational, Partnership-Focused)
-- Standard: Write to the reader, not at them.
-- Watch For: Third-person distancing ("PwC helps clients…"), formal stiffness
-- Fix: Use first-person and direct address ("We help you…"). Replace "clients" with "you" or "your organization."
-
-OPTIMISTIC (Future-Forward, Outcome-Focused)
-- Standard: Emphasize solutions and possibilities.
-- Watch For: Problem-only framing, static language
-- Fix: Pivot to outcomes. Use movement words (transform, evolve, reshape) and energy words (propel, spark, accelerate).
-
-II. COMPLIANCE CHECKS
-Flag and correct any prohibited terms or style violations:
-- "Catalyst" → driver/enabler/accelerator
-- "Clients" → you/your organization
-- "PwC Network" → PwC network
-- "Mainland China" → Chinese Mainland
-- Exclamation marks
-- Buzzwords/fillers: leverage, synergy, at the end of the day, in order to, moving forward
-
-III. EXPANDED ANALYSIS
-- Logic & Depth (MECE): Check argument flow, gaps, redundancy
-- Thought Leadership: Suggest proprietary PwC data or examples
-- Visual Opportunities: Identify text-heavy sections for visuals
-- Differentiation: Push for unique PwC insights
-- Consistency & Risk: Spot contradictions or sensitivities
-
-IV. OUTPUT FORMAT
-✓ Brand Voice Alignment
-✓ Vocabulary & Terminology
-✓ Structural Clarity
-✓ Strategic Lift (So What?)
-✓ Logic & Evidence Gaps
-✓ Visual Opportunities
-✓ Differentiation
-⚠ Risk & Sensitivity
-
-FINAL HARD CONSTRAINT (NON-NEGOTIABLE):
-- Your response MUST be a numbered or bulleted list only
-- Paragraphs of continuous prose are strictly forbidden
-- If you output more than 2 consecutive sentences without a bullet, you have violated the task
-- If you include the original content or large excerpts, you have violated the task
-
-**CONTENT TO ANALYZE:**
-{content}
-
-=================
-OUTPUT FORMAT (STRICT)
-=================
-
-YOU MUST FOLLOW THIS STRUCTURE EXACTLY.
-
-- USE BULLETS ONLY (NO PARAGRAPHS)
-- EVERY BULLET MUST BE LABELED EITHER **Observation:** OR **Fix:**
-- OBSERVATIONS AND FIXES MUST ALWAYS APPEAR AS PAIRS
-- OBSERVATIONS MUST REFER TO SPECIFIC LANGUAGE, TONE, STRUCTURE, OR POSITIONING IN THE DRAFT
-- FIXES MUST BE DIRECTIVE, PRACTICAL, AND EDITORIAL (COACHING THE AUTHOR ON HOW TO IMPROVE)
-
-=================
-REQUIRED SECTIONS (IN THIS EXACT ORDER)
-=================
-
-✓ Brand Voice Alignment  
-✓ Vocabulary & Terminology  
-✓ Structural Clarity  
-✓ Strategic Lift (So What?)  
-✓ Logic & Evidence Gaps  
-✓ Visual Opportunities  
-✓ Differentiation  
-⚠ Risk & Sensitivity  
-
-=================
-SECTION RULES
-=================
-
-FOR EACH SECTION:
-
-- INCLUDE ONE OR MORE **Observation → Fix** PAIRS
-- WRITE FULL SENTENCES, NOT FRAGMENTS
-- MAINTAIN A CONFIDENT, ADVISORY TONE (SENIOR EDITOR / CONSULTANT)
-- DO NOT SUMMARIZE THE CONTENT
-- DO NOT PRAISE GENERICALLY
-- DO NOT REWRITE SENTENCES FROM THE DRAFT
-
-=================
-CHAIN OF THOUGHTS (MANDATORY)
-=================
-
-FOLLOW THIS INTERNAL REASONING PROCESS BEFORE PRODUCING OUTPUT:
-
-1. UNDERSTAND: READ THE DRAFT CAREFULLY AND IDENTIFY ITS INTENDED AUDIENCE AND PURPOSE  
-2. BASICS: IDENTIFY THE CORE ARGUMENT, IMPLIED POINT OF VIEW, AND KEY CLAIMS  
-3. BREAK DOWN: ANALYZE EACH SECTION THROUGH THE LENS OF STRATEGY, CLARITY, AND IMPACT  
-4. ANALYZE: IDENTIFY WHERE LANGUAGE IS GENERIC, CAUTIOUS, ACADEMIC, OR UNDER-LEVERAGED  
-5. BUILD: FORM OBSERVATION → FIX PAIRS THAT ELEVATE THE PIECE FROM INFORMATIVE TO ADVISORY  
-6. EDGE CASES: CHECK FOR BRAND, REPUTATIONAL, CULTURAL, OR CLAIM-RISK ISSUES  
-7. FINAL ANSWER: PRESENT COACHING FEEDBACK USING THE REQUIRED FORMAT ONLY
-
-DO NOT EXPOSE THIS CHAIN OF THOUGHTS IN YOUR OUTPUT.
-
-=================
-QUALITY BAR (NON-NEGOTIABLE)
-=================
-
-- IF A BULLET COULD APPEAR IN A GENERIC WRITING CHECKLIST, IT IS TOO WEAK
-- EVERY OBSERVATION MUST PROVE YOU READ THE DRAFT
-- EVERY FIX MUST CHANGE HOW THE AUTHOR THINKS, NOT JUST WHAT THEY WRITE
-- WRITE AS IF THE AUTHOR IS A SMART PEER, NOT A STUDENT
-
-=================
-WHAT NOT TO DO (STRICTLY FORBIDDEN)
-=================
-
-- NEVER WRITE GENERIC ADVICE (E.G., “IMPROVE CLARITY,” “MAKE IT MORE ENGAGING”)
-- NEVER INCLUDE UNLABELED BULLETS
-- NEVER MIX OBSERVATIONS AND FIXES IN THE SAME BULLET
-- NEVER REWRITE THE DRAFT OR SUGGEST FINAL COPY
-- NEVER USE PARAGRAPHS OR HEADINGS OUTSIDE THE REQUIRED STRUCTURE
-- NEVER OMIT A REQUIRED SECTION
-- NEVER ASK THE USER QUESTIONS
-
-=================
-FEW-SHOT PATTERN (STYLE GUIDE)
-=================
-
-✓ Brand Voice Alignment
-• Observation: The opening framing is accurate but neutral and reads like a general explainer rather than a point of view.
-• Fix: Encourage the author to lead with a sharper, outcome-oriented claim that positions the topic as a strategic or leadership issue.
-
-• Observation: The tone remains largely third-person and academic throughout the section.
-• Fix: Coach the author to address the reader directly to create a more collaborative, advisory voice.
-
-⚠ Risk & Sensitivity
-• Observation: No prohibited terms or sensitive regional references appear in the draft.
-• Fix: No immediate action required, but ensure future examples are supported by credible sources and framed as general guidance, not advice.
-
+Return ONLY valid JSON in this format:
+{{
+  "central_argument": "...",
+  "primary_pov": "...",
+  "repetition_patterns": ["...", "..."],
+  "has_redundancy": true/false
+}}
 """
+    
+    try:
+        response = llm.invoke([HumanMessage(content=analysis_prompt)])
+        content = response.content if hasattr(response, 'content') else str(response)
+        
+        # Parse JSON from response
+        if isinstance(content, str):
+            # Try to extract JSON from markdown code blocks if present
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                content = json_match.group(0)
+            
+            analysis_data = json.loads(content)
+        else:
+            analysis_data = content
+        
+        return ArticleAnalysis(
+            central_argument=analysis_data.get("central_argument", "Not identified"),
+            primary_pov=analysis_data.get("primary_pov", "Not identified"),
+            repetition_patterns=analysis_data.get("repetition_patterns", []),
+            original_length=word_count,
+            section_count=section_count,
+            has_redundancy=analysis_data.get("has_redundancy", False)
+        )
+    except Exception as e:
+        logger.error(f"Error analyzing article: {e}")
+        # Return default analysis on error
+        return ArticleAnalysis(
+            central_argument="Analysis unavailable",
+            primary_pov="Not identified",
+            repetition_patterns=[],
+            original_length=word_count,
+            section_count=section_count,
+            has_redundancy=False
+        )
 
 
-def build_suggestions_prompt(content: str) -> List[Dict[str, str]]:
-    return [
-        {
-            "role": "system",
-            "content": (
-                "You are a Senior PwC Brand & Content Strategist and Executive Editor. "
-                "You must provide editorial suggestions ONLY. "
-                "You are strictly prohibited from rewriting or editing the content."
+def validate_article_compliance(
+    original_analysis: ArticleAnalysis,
+    edited_result: EditorResult,
+    original_document: DocumentStructure
+) -> List[str]:
+    """
+    Validate that Development Editor output meets article-level requirements.
+    Returns list of validation warnings (empty if compliant).
+    """
+    logger.info("VALIDATING ARTICLE-LEVEL COMPLIANCE")
+    warnings = []
+    
+    # Calculate edited article length
+    edited_text = " ".join([
+        block.suggested_text or block.original_text 
+        for block in edited_result.blocks
+    ])
+    edited_word_count = len(edited_text.split())
+    
+    # Check 1: Article length reduction (if redundancy existed)
+    if original_analysis.has_redundancy:
+        reduction_percent = ((original_analysis.original_length - edited_word_count) / 
+                            original_analysis.original_length * 100) if original_analysis.original_length > 0 else 0
+        if reduction_percent < 5:  # Less than 5% reduction
+            warnings.append(
+                f"Article length reduction insufficient: Only {reduction_percent:.1f}% reduction "
+                f"({original_analysis.original_length} → {edited_word_count} words). "
+                "Expected visible reduction due to redundancy elimination."
             )
-        },
-        {
-            "role": "user",
-            "content": get_suggestions_prompt_template().format(content=content)
-        },
-    ]
-
-
-
-def get_tone_instruction(tone: str) -> str:
-    return f"""
-Interpret the tone description exactly as provided: "{tone}"
-
-TONE INTERPRETATION RULES:
-- Adjust vocabulary, sentence length, rhythm, and formality to match the tone described
-- If the tone suggests approachability, friendliness, clarity, or conversation:
-  - Prefer shorter sentences
-  - Use plain, everyday language
-  - Use natural transitions and flow
-- If the tone suggests professionalism or authority:
-  - Stay clear and confident without sounding stiff
-- Never default to academic, policy, or consulting-whitepaper language unless the tone explicitly asks for it
-- When the tone description is ambiguous, prioritize clarity and natural human expression
-
-CONSISTENCY:
-- Apply the interpreted tone consistently to every sentence and paragraph
-- Do not drift into a generic corporate or formal voice
-"""
-
-
-
-def build_tone_prompt(
-    content: str,
-    tone: str,
-    current_word_count: int,
-    target_word_count: Optional[int] = None,
-) -> List[Dict[str, str]]:
-
-    length_constraint = (
-        f"\n- Target length: {target_word_count} words (±10% acceptable)"
-        if target_word_count
-        else ""
-    )
-
-    return [
-        {
-            "role": "system",
-            "content": f"""
-You are a tone adjustment expert writing for PwC audiences.
-Tone instructions override any default corporate, consulting, or academic style.
-
-TASK:
-Rewrite the content to match the requested tone.
-
-TONE REQUIREMENTS:
-{get_tone_instruction(tone)}
-
-CONSTRAINTS:
-- Preserve original structure and paragraph count
-- Keep ALL paragraphs in their original order
-- Preserve original meaning and key points{length_constraint}
-- Only change HOW things are said, not WHAT is said
-- Do NOT sound like a consulting report, academic paper, or policy document unless explicitly requested by the tone
-
-METHOD:
-- Adjust vocabulary to match tone
-- Modify sentence length and structure for tone
-- Adjust formality level as required
-- Maintain a consistent tone from first word to last
-- Validate before finalizing that the tone matches the request
-- The content should sound natural if read aloud by a human
-
-OUTPUT FORMAT:
-
-[Content rewritten in the requested tone while preserving structure and meaning]
-"""
-        },
-        {
-            "role": "user",
-            "content": content,
-        },
-    ]
-
-
-
-# ------------------------------------------------------------
-# EXPANSION
-# ------------------------------------------------------------
-
-def build_expansion_prompt(
-    content: str,
-    target_word_count: Optional[int],
-    current_word_count: Optional[int],
-    supporting_doc: Optional[str] = None,
-    supporting_doc_instructions: Optional[str] = None,
-    min_allowed_word_count: Optional[int] = None,
-    max_allowed_word_count: Optional[int] = None,
-) -> List[Dict[str, str]]:
-
-    user_prompt = f"""
-PRIMARY DOCUMENT (BASE CONTENT):
-{content}
-"""
-
-    if supporting_doc:
-        user_prompt += f"""
-
-SUPPORTING DOCUMENT (FOR EXPANSION ONLY):
-{supporting_doc}
-
-SUPPORTING DOCUMENT INSTRUCTIONS:
-{supporting_doc_instructions}
-"""
-
-    safe_target_word_count = target_word_count if target_word_count is not None else 0
-    safe_current_word_count = current_word_count if current_word_count is not None else 0
-    safe_min_allowed = min_allowed_word_count if min_allowed_word_count is not None else None
-    safe_max_allowed = max_allowed_word_count if max_allowed_word_count is not None else None
     
-    # Build word count constraint message
-    if safe_min_allowed is not None and safe_max_allowed is not None:
-        word_count_constraint = f"""
-CRITICAL: WORD COUNT LIMITS (NON-NEGOTIABLE)
-- The FINAL word count MUST be between {safe_min_allowed} and {safe_max_allowed} words (inclusive).
-- DO NOT exceed {safe_max_allowed} words - this is a HARD LIMIT.
-- DO NOT go below {safe_min_allowed} words - this is a HARD LIMIT.
-- The FINAL word count MUST include:
-  - All citations
-  - Reference lists
-  - Inline URLs
-  - Parenthetical citations
-  - Footnotes or numbered references
-- Target word count: {safe_target_word_count} words (aim for this, but stay within {safe_min_allowed}-{safe_max_allowed} range)
-- Current word count: {safe_current_word_count} words
-- You MUST count words in your output and ensure it falls within the {safe_min_allowed}-{safe_max_allowed} range before finalizing.
-"""
-    else:
-        word_count_constraint = f"""
-WORD COUNT CONTROL:
-- Expand the document to reach a FINAL word count of approximately {safe_target_word_count} words.
-- The FINAL word count MUST include:
-  - All citations
-  - Reference lists
-  - Inline URLs
-  - Parenthetical citations
-  - Footnotes or numbered references
-- Anticipate citation-related word inflation.
-- Adjust narrative length so the FINAL output (including citations) stays within ±3% of the target word count.
-"""
+    # Check 2: Central argument visibility (check if it appears in introduction)
+    intro_blocks = [b for b in edited_result.blocks[:5] if b.type in ["paragraph", "heading"]]
+    intro_text = " ".join([b.suggested_text or b.original_text for b in intro_blocks]).lower()
+    central_arg_lower = original_analysis.central_argument.lower()
     
-    return [
-        {
-            "role": "system",
-            "content": f"""
-You are a PwC content expansion expert.
-
-EXPANSION RULES:
-{word_count_constraint}
-
-SUPPORTING DOCUMENT USAGE:
-- When expanding, 80% of ALL newly added words (including citation text) must come directly from the supporting document.
-- Example:
-  - Current: 1000 words
-  - Target: 1500 words
-  - Words to add: 500
-  - At least 400 of those 500 words (INCLUDING citations) must be derived from the supporting document.
-
-CRITICAL: CITATION PRESERVATION (MANDATORY)
-- DO NOT remove, modify, or delete any citations from the original content.
-- Preserve citations exactly as they appear (format, numbering, links).
-- When adding new content, include citations using the same citation style.
-- Citations count toward the total word count and must be planned accordingly.
-
-{get_legacy_expansion_instructions(
-    target_word_count=safe_target_word_count,
-    current_word_count=safe_current_word_count
-)}
-
-{get_legacy_expansion_guidelines()}
-"""
-        },
-        {
-            "role": "user",
-            "content": user_prompt.strip(),
-        },
-    ]
-
-# ------------------------------------------------------------
-# LEGACY EXPANSION GUIDELINES
-# ------------------------------------------------------------
-def get_legacy_expansion_guidelines() -> str:
-    return """
-EXPANSION PRINCIPLES & GUIDELINES:
-
-PRIMARY OBJECTIVE:
-Expand existing author material with new quantitative and qualitative support to strengthen existing objectives, arguments, and perspectives.
-
-CORE REQUIREMENTS:
-
-1. PRESERVE AUTHOR'S VOICE & INTENT:
-- Maintain the author's original tone, style, and voice throughout
-- Do NOT change the fundamental perspective or viewpoint
-- Do NOT rewrite sentences for stylistic preferences
-- Ensure all additions align with author's established arguments
-
-2. STRUCTURAL INTEGRITY (NON-NEGOTIABLE):
-- Do NOT fundamentally change or reorganize the original structure
-- Keep ALL original paragraphs in their exact order
-- Do NOT move paragraphs, sections, or content blocks
-- Do NOT merge or split existing paragraphs unless adding substantial context
-- Maintain the logical flow and progression of ideas as authored
-
-3. CITATION & LINK PRESERVATION (MANDATORY):
-- PRESERVE ALL existing citations in their original format
-- Citations may appear as:
-  * Numbered references: [1], [2], [3], etc.
-  * Markdown links: [text](URL) or [text][1]
-  * Inline URLs: http://example.com or https://example.com
-  * Parenthetical citations: (Source, 2024)
-  * Narrative attributions: "According to Source..."
-- DO NOT remove, modify, or reformat existing citations
-- When adding new content that references sources, include citations in the same format as existing ones
-- If the original content has numbered citations [1], [2], continue the numbering sequence for new citations
-- Preserve all hyperlinks and URLs exactly as they appear
-- Citations are critical for credibility and must be maintained throughout expansion
-
-4. SENTENCE & CONTENT EXPANSION STRATEGY:
-- Do NOT arbitrarily increase existing sentence length
-- Only extend sentences if adding new sources, examples, evidence, or support
-- Create new sentences/paragraphs to support and strengthen existing points
-- Add supporting details, examples, and evidence between existing content
-- Use natural spacing to integrate new material seamlessly
-
-5. RESEARCH & DATA INTEGRATION (MANDATORY):
-- Conduct research on the topic to find supporting evidence
-- Incorporate at least 2–3 new sources or cite data points
-- If insufficient valid sources exist, explicitly note:
-  "No additional valid sources found for [specific claim]"
-- Ensure all sources are credible, relevant, and properly contextualized
-- Prioritize quantitative data, case studies, and industry benchmarks
-
-6. SUPPORTING EVIDENCE STRATEGY:
-- Add data points that validate and strengthen existing claims
-- Include real-world examples that demonstrate author's perspectives
-- Provide statistical support or case study evidence where applicable
-
-7. CONTENT SECTION RECOMMENDATIONS:
-- Suggest missing sections ONLY in a separate “Recommendations” section
-- Do NOT add contradictory viewpoints
-
-8. TONE & STYLE CONSISTENCY:
-- Match sentence structure patterns from the original text
-- Maintain formality and paragraph density
-
-### TRUE EXPANSION REQUIREMENT (MANDATORY)
-ALL EXPANSION MUST BE **TRUE EXPANSION — WEAVE, NOT APPEND**.
-- DO NOT expand by adding sentences only at the end of paragraphs.
-- ALL new material MUST be INTEGRATED INTO EXISTING PARAGRAPHS by:
-  - introducing clarifying context or mechanisms early in the paragraph,
-  - embedding concrete examples, data, or evidence mid-paragraph,
-  - rewriting or restructuring existing sentences where needed to smoothly incorporate new insight.
-- You MAY rewrite sentences to integrate evidence or explanation, PROVIDED the original meaning and intent are preserved.
-- End-of-paragraph additions are permitted ONLY for brief implications or transitions.
-TRUE EXPANSION REQUIRES **INTEGRATION, NOT ACCUMULATION**.
-
----
-
-### EXPANSION QUALITY BAR
-EVERY added sentence MUST introduce AT LEAST ONE of the following:
-- a causal mechanism (“how” or “why”),
-- a concrete example or real-world application,
-- empirical or quantitative support,
-- a practical implication for executives or stakeholders.
-DO NOT add filler, emphasis-only restatements, or surface-level paraphrasing.
-
----
-
-### STATISTICAL ENRICHMENT (MANDATORY)
-- INCLUDE **1–2 concrete quantitative data points per major section**, where credible data exists.
-- ALL statistics MUST:
-  - follow the required source hierarchy,
-  - be cited inline using numbered references,
-  - include qualifiers if estimates vary.
-- IF strong quantitative evidence does not exist, EXPLICITLY STATE this (e.g., “published estimates vary” or “quantitative evidence is limited”).
-
----
-
-### COMPETITOR PROHIBITION (ABSOLUTE)
-UNDER NO CIRCUMSTANCES may you use, cite, reference, or mention content, frameworks, research, case studies, tools, or examples from:
-McKinsey & Company, Boston Consulting Group, Bain & Company, Deloitte (including Monitor Deloitte), EY (including EY-Parthenon), KPMG, AT Kearney, Oliver Wyman, Roland Berger, L.E.K. Consulting, Accenture, Alvarez & Marsal.
-"""
-
-# ------------------------------------------------------------
-# LEGACY EXPANSION INSTRUCTIONS
-# ------------------------------------------------------------
-def get_legacy_expansion_instructions(
-    target_word_count: int,
-    current_word_count: int,
-) -> str:
-        safe_target = target_word_count if target_word_count is not None else 0
-        safe_current = current_word_count if current_word_count is not None else 0
-        expansion_needed = safe_target - safe_current
-        return f"""1. WORD COUNT (HIGHEST PRIORITY):
-- Current Word Count: {safe_current} words
-- Target: EXACTLY {safe_target} words
-- Expansion Needed: {expansion_needed} words
-- Method: Expand WITHIN each paragraph by:
-    • Adding relevant details and examples
-    • Developing key concepts more thoroughly
-    • Providing deeper analysis and context
-    • Using supporting documents if available
-- Preserve: ALL original content, paragraphs, and structure
-- DO NOT: Remove any original paragraphs or content
-- DO NOT: Invent facts or contradict existing content
-"""
-
-
-# ------------------------------------------------------------
-# COMPRESSION
-# ------------------------------------------------------------
-
-def build_compression_prompt(
-    content: str,
-    target_word_count: int,
-    current_word_count: int,
-    retry_count: int = 0,
-    previous_word_count: Optional[int] = None,
-) -> List[Dict[str, str]]:
-    reduction_needed = current_word_count - target_word_count
-    reduction_percentage = (reduction_needed / current_word_count * 100) if current_word_count > 0 else 0
+    # Check if key terms from central argument appear in introduction
+    key_terms = [word for word in central_arg_lower.split() if len(word) > 4]
+    if key_terms:
+        matches = sum(1 for term in key_terms if term in intro_text)
+        if matches < len(key_terms) * 0.3:  # Less than 30% of key terms
+            warnings.append(
+                "Central argument may not be clearly visible in introduction. "
+                "Ensure the central argument is explicitly stated early in the article."
+            )
     
-    # Determine compression intensity based on reduction percentage
-    is_large_reduction = reduction_percentage > 30
-    is_very_large_reduction = reduction_percentage > 45
-    is_extreme_reduction = reduction_percentage > 55  # For >55%, require maximum sentence-level compression
-    # Note: Paragraph deletion is NOT allowed - only word and sentence-level compression within paragraphs
+    # Check 3: Repetition patterns - verify they were addressed
+    if original_analysis.repetition_patterns:
+        edited_full_text = edited_text.lower()
+        still_repeated = []
+        for pattern in original_analysis.repetition_patterns[:3]:  # Check first 3 patterns
+            pattern_lower = pattern.lower()
+            # Count occurrences in edited text
+            count = edited_full_text.count(pattern_lower)
+            if count > 2:  # Still appears more than twice
+                still_repeated.append(pattern)
+        
+        if still_repeated:
+            warnings.append(
+                f"Repetition patterns may not be fully addressed: {', '.join(still_repeated[:2])}. "
+                "Ensure repeated concepts are consolidated or removed."
+            )
     
-    # Build retry context message
-    retry_context = ""
-    if retry_count > 0:
-        if previous_word_count:
-            additional_reduction = previous_word_count - target_word_count
-            retry_context = f"""
-RETRY ATTEMPT #{retry_count}:
-- Previous attempt resulted in {previous_word_count} words (still {additional_reduction} words above target)
-- You MUST compress more aggressively than the previous attempt
-- The previous compression was insufficient - apply more intensive techniques
-"""
-        else:
-            retry_context = f"""
-RETRY ATTEMPT #{retry_count}:
-- Previous compression attempt did not meet the target
-- You MUST apply more aggressive compression techniques
-- Focus on maximum compression while preserving core meaning
-"""
+    return warnings
+
+
+# ---------------------------------------------------------------------
+# EDITOR NODES (EXECUTE EXACTLY ONCE)
+# ---------------------------------------------------------------------
+def development_editor_node(state: SupervisorState) -> SupervisorState:
+    logger.info("RUNNING: development_editor_tool")
     
-    # Build compression intensity instructions
-    intensity_instructions = ""
-    if retry_count == 0:
-        if is_extreme_reduction:
-            intensity_instructions = """
-COMPRESSION INTENSITY: EXTREME REDUCTION (>{:.1f}%) - CRITICAL
-- This is an EXTREME compression requiring maximum sentence-level reduction
-- You MUST remove 50-70% of sentences from each paragraph, keeping only the most essential
-- Combine remaining sentences aggressively, but EACH resulting sentence MUST be 10-15 words
-- DELETE entire sentences that are examples, case studies, or supporting details
-- DELETE sentences that repeat or restate main points
-- Keep ONLY 1-2 core sentences per paragraph that contain essential arguments
-- Remove ALL transitional sentences, introductory sentences, and concluding sentences
-- Compress every remaining sentence to 10-15 words (MANDATORY - NO EXCEPTIONS)
-- This level of reduction REQUIRES removing most sentences, not just compressing them
-- CRITICAL: Every sentence in output MUST be between 10-15 words
-""".format(reduction_percentage)
-        elif is_very_large_reduction:
-            intensity_instructions = """
-COMPRESSION INTENSITY: VERY LARGE REDUCTION (>{:.1f}%)
-- This requires maximum compression effort with significant sentence removal
-- Remove 30-50% of less essential sentences from each paragraph
-- Apply ALL compression techniques aggressively to remaining sentences
-- Prioritize core arguments - delete supporting sentence examples
-- Combine multiple sentences, but EACH resulting sentence MUST be 10-15 words
-- Remove all non-essential qualifiers and modifiers
-- Compress WITHIN paragraphs - do NOT delete entire paragraphs
-- CRITICAL: Every sentence in output MUST be between 10-15 words
-""".format(reduction_percentage)
-        elif is_large_reduction:
-            intensity_instructions = """
-COMPRESSION INTENSITY: LARGE REDUCTION (>{:.1f}%)
-- This requires significant compression effort
-- Apply multiple compression techniques simultaneously
-- Be more aggressive with sentence combining, but EACH sentence MUST be 10-15 words
-- Remove redundant examples and supporting details
-- CRITICAL: Every sentence in output MUST be between 10-15 words
-""".format(reduction_percentage)
-        else:
-            intensity_instructions = """
-COMPRESSION INTENSITY: MODERATE REDUCTION ({:.1f}%)
-- Apply standard compression techniques
-- Focus on removing redundancy and tightening language
-- CRITICAL: Every sentence in output MUST be between 10-15 words
-""".format(reduction_percentage)
-    elif retry_count == 1:
-        words_still_over = previous_word_count - target_word_count if previous_word_count else reduction_needed
-        intensity_instructions = f"""
-COMPRESSION INTENSITY: RETRY #1 - INCREASED AGGRESSION
-- Previous attempt resulted in {previous_word_count} words - still {words_still_over} words above target
-- You MUST remove MORE sentences and compress MORE aggressively:
-  * DELETE 40-60% of sentences from each paragraph (not just compress them)
-  * Combine remaining sentences more aggressively, but EACH sentence MUST be 10-15 words
-  * Remove ALL supporting examples, case studies, and non-critical details (entire sentences)
-  * Tighten every phrase and eliminate all filler
-  * Compress lists and bullet points to minimum
-  * Remove ALL transitional sentences that don't add value
-  * Target: You need to reduce by {words_still_over} more words - this requires removing many sentences
-  * CRITICAL: Every sentence in output MUST be between 10-15 words - NO EXCEPTIONS
-"""
-    else:  # retry_count >= 2
-        words_still_over = previous_word_count - target_word_count if previous_word_count else reduction_needed
-        intensity_instructions = f"""
-COMPRESSION INTENSITY: RETRY #{retry_count} - MAXIMUM COMPRESSION - CRITICAL FAILURE
-- Previous attempts were insufficient - you MUST be DRAMATICALLY more aggressive
-- Current result: {previous_word_count} words, Target: {target_word_count} words
-- You need to remove {words_still_over} MORE words - this is CRITICAL
-- Apply MAXIMUM sentence deletion and compression (WITHIN paragraphs only):
-  * DELETE 60-80% of sentences from each paragraph - keep only 1-2 core sentences per paragraph
-  * DELETE ALL example sentences, case study sentences, supporting detail sentences
-  * DELETE ALL transitional sentences, introductory sentences, concluding sentences
-  * DELETE ALL sentences that repeat or restate main points
-  * Combine remaining 1-2 sentences per paragraph, but EACH sentence MUST be 10-15 words
-  * Compress every remaining word to absolute minimum while maintaining 10-15 word limit
-  * Remove ALL qualifiers, modifiers, adjectives, adverbs that aren't essential
-  * Compress lists to 1-2 items maximum or remove entirely
-  * Use telegraphic style - maximum information density per word
-- Do NOT delete entire paragraphs - but DELETE most sentences within them
-- Each paragraph should have 1-2 sentences maximum after compression
-- Word count target is MANDATORY - you MUST achieve {target_word_count} words
-- CRITICAL: Every sentence in output MUST be between 10-15 words - ABSOLUTE REQUIREMENT
-""".format(retry_count=retry_count)
+    # Get article analysis if available
+    article_analysis = state.get("article_analysis")
     
-    # Build structural requirements - paragraph deletion is NEVER allowed
-    structural_requirements = """- Keep ALL paragraphs in their original order (EVERY paragraph must be included)
-- Do NOT delete entire sections or paragraphs
-- Do NOT skip, ignore, or omit ANY paragraph
-- Do NOT add new content
-- Maintain logical flow and coherence
-- Preserve paragraph structure and format (compress content WITHIN paragraphs only)
-- If a paragraph has sentences over 15 words, SPLIT those sentences - do NOT skip the paragraph
-- Paragraph count in output MUST match paragraph count in original"""
-    
-    return [
-        {
-            "role": "system",
-            "content": f"""
-You are a senior PwC editorial consultant specializing in content compression.
+    # Run editor engine with article analysis
+    result = run_editor_engine("development", state["document"].blocks, article_analysis)
 
-CRITICAL REQUIREMENT: Every sentence MUST be 10-15 words. Split sentences over 15 words; combine sentences under 10 words. Keep all paragraphs; split long sentences within their original paragraph.
-
-PRIMARY OBJECTIVES (IN ORDER):
-1. Preserve ALL paragraphs (same count, same order, same structure)
-2. Preserve meaning and factual accuracy
-3. Achieve EXACTLY {target_word_count} words (NON-NEGOTIABLE)
-4. Every sentence must be 10-15 words (MANDATORY)
-
-DOCUMENT CONTEXT:
-- Current words: {current_word_count}
-- Target words: {target_word_count}
-- Reduction needed: {reduction_needed} words
-- Reduction percentage: {reduction_percentage:.1f}%
-{retry_context}
-{intensity_instructions}
-
-COMPRESSION TECHNIQUES (APPLY AS NEEDED):
-
-1. SENTENCE COMBINING & RESTRUCTURING:
-   - Combine sentences ONLY if result stays within 10-15 words
-   - Split sentences over 15 words into multiple 10-15 word sentences
-   - Keep split sentences in the same paragraph
-
-2. PHRASE TIGHTENING:
-   - Replace wordy phrases with concise alternatives:
-     * "in order to" → "to"
-     * "due to the fact that" → "because"
-     * "at this point in time" → "now"
-     * "in the event that" → "if"
-     * "with regard to" → "regarding" or "about"
-   - Remove unnecessary qualifiers: "very", "quite", "rather", "somewhat", "fairly"
-   - Eliminate redundant adjectives and adverbs
-   - Use active voice instead of passive voice (saves words)
-
-3. ELIMINATE REDUNDANCY:
-   - Remove repeated concepts expressed in different words
-   - Eliminate restatements of the same idea
-   - Remove redundant explanations that don't add new information
-   - Cut duplicate examples or similar case studies
-
-4. REMOVE FILLER & TRANSITIONAL PHRASES:
-   - Eliminate unnecessary transitions: "furthermore", "moreover", "in addition" (if redundant)
-   - Remove hedging language where certainty is appropriate: "may", "might", "could" (when facts are certain)
-   - Cut introductory phrases that don't add value: "It is important to note that", "It should be mentioned that"
-
-5. COMPRESS LISTS & ENUMERATIONS:
-   - Combine list items where possible
-   - Use parallel structure to reduce word count
-   - Remove less critical items from lists if needed
-   - Convert long lists to concise summaries
-
-6. SUPPORTING DETAIL COMPRESSION:
-   - Compress examples to their essential points
-   - Remove non-critical background information
-   - Tighten case study descriptions to key facts only
-   - Eliminate extended explanations of obvious points
-
-7. PARAGRAPH-LEVEL COMPRESSION:
-   - Process and include EVERY paragraph from the original (do NOT skip any)
-   - Compress WITHIN each paragraph (do NOT delete entire paragraphs)
-   - For very large reductions (>45%): DELETE 30-50% of sentences from each paragraph
-   - For extreme reductions (>55%): DELETE 50-70% of sentences from each paragraph
-   - For retries: DELETE 60-80% of sentences from each paragraph
-   - Keep only 1-3 core sentences per paragraph that contain essential arguments
-   - DELETE entire sentences that are: examples, case studies, supporting details, transitions, repetitions
-   - Split sentences over 15 words into multiple 10-15 word sentences (keep in same paragraph)
-   - All remaining sentences must be 10-15 words
-
-8. SENTENCE LENGTH CONTROL:
-   - Every sentence MUST be 10-15 words (NO EXCEPTIONS)
-   - Split sentences over 15 words; combine sentences under 10 words
-   - Keep split sentences in the same paragraph
-
-PRIORITY GUIDELINES:
-- PRESERVE: Core arguments, key facts, main conclusions, essential data points
-- COMPRESS AGGRESSIVELY: Supporting examples, background context, transitional phrases, redundant explanations
-- REMOVE: Filler words, unnecessary qualifiers, repeated concepts, non-essential details
-
-STRUCTURAL REQUIREMENTS:
-{structural_requirements}
-
-WORD COUNT VALIDATION:
-- You MUST count words in your output BEFORE submitting
-- Target is EXACTLY {target_word_count} words (CRITICAL - NOT OPTIONAL)
-- Acceptable range: {target_word_count - 5} to {target_word_count + 5} words
-- Current: {current_word_count} words → Target: {target_word_count} words
-- Reduction needed: {reduction_needed} words ({reduction_percentage:.1f}% reduction)
-- If current > target: You MUST DELETE more sentences and compress more aggressively
-- For {reduction_percentage:.1f}% reduction: You need to remove approximately {int(reduction_percentage * 0.6)}% of sentences
-- Count your output words - if over target, compress MORE before finalizing
-
-SENTENCE LENGTH VALIDATION:
-- Verify all paragraphs are present
-- Count words in each sentence
-- Split sentences over 15 words; combine sentences under 10 words
-- All sentences must be 10-15 words before finalizing
-
-CRITICAL REQUIREMENTS:
-1. Preserve ALL paragraphs (same count, same order)
-2. Achieve EXACTLY {target_word_count} words
-3. Every sentence must be 10-15 words (split over 15; combine under 10)
-"""
-        },
-        {
-            "role": "user",
-            "content": content,
-        },
-    ]
-
-
-# ------------------------------------------------------------
-# RESEARCH ENRICHMENT
-# ------------------------------------------------------------
-
-def build_research_enrich_prompt(
-    content: str,
-    pwc_doc: Optional[str],
-    market_insights: Optional[str],
-) -> List[Dict[str, str]]:
-    user_prompt = content
-
-    if pwc_doc:
-        user_prompt += f"""
-
-MAIN INSTRUCTIONS:
-- Use 80% of content from the market insights when expanding the document.
-- Example 1000 words to 1500 then 500 words to be added or expanded. then 80% 500 means 400 words should come from research content.
-
-PWC RESEARCH (PRIMARY SOURCE):
-{pwc_doc}
-"""
-
-    if market_insights:
-        user_prompt += f"""
-
-MARKET INSIGHTS (SECONDARY):
-{market_insights}
-"""
-
-    return [
-        {
-            "role": "system",
-            "content": """
-You are a PwC research-grounded editorial expert.
-
-RULES:
-- Strengthen existing arguments ONLY
-- Use PwC content FIRST
-- Use market insights only to support existing points
-- Do NOT add sections
-- Do NOT invent facts
-"""
-        },
-        {
-            "role": "user",
-            "content": user_prompt.strip(),
-        },
-    ]
-
-
-# ------------------------------------------------------------
-# EDIT
-# ------------------------------------------------------------
-
-def get_editor_prompt_mapping() -> Dict[str, str]:
-    """
-    Returns a dictionary of individual editor prompt constants.
-    """
     return {
-        "Development Editor": DEVELOPMENT_EDITOR_PROMPT,
-        "Content Editor": CONTENT_EDITOR_PROMPT,
-        "Line Editor": LINE_EDITOR_PROMPT,
-        "Copy Editor": COPY_EDITOR_PROMPT,
-        "PwC Brand Alignment Editor": BRAND_EDITOR_PROMPT,
+        "editor_results": state["editor_results"] + [result]
     }
 
 
-def get_combined_editor_prompts(editors: Optional[List[str]] = None) -> Tuple[str, List[str]]:
+def content_editor_node(state: SupervisorState) -> SupervisorState:
+    logger.info("RUNNING: content_editor_tool")
+    raw_blocks = content_editor_tool.invoke(
+        {"blocks": state["document"].blocks}
+    )
+
+    result = normalize_editor_output("content", raw_blocks)
+
+    return {
+        "editor_results": state["editor_results"] + [result]
+    }
+
+
+def line_editor_node(state: SupervisorState) -> SupervisorState:
+    logger.info("RUNNING: line_editor_tool")
+    raw_blocks = line_editor_tool.invoke(
+        {"blocks": state["document"].blocks}
+    )
+
+    result = normalize_editor_output("line", raw_blocks)
+
+    return {
+        "editor_results": state["editor_results"] + [result]
+    }
+
+
+def copy_editor_node(state: SupervisorState) -> SupervisorState:
+    logger.info("RUNNING: copy_editor_tool")
+    raw_blocks = copy_editor_tool.invoke(
+        {"blocks": state["document"].blocks}
+    )
+
+    result = normalize_editor_output("copy", raw_blocks)
+
+    return {
+        "editor_results": state["editor_results"] + [result]
+    }
+
+
+def brand_editor_node(state: SupervisorState) -> SupervisorState:
+    logger.info("RUNNING: brand_editor_tool")
+    raw_blocks = brand_editor_tool.invoke(
+        {"blocks": state["document"].blocks}
+    )
+
+    result = normalize_editor_output("brand-alignment", raw_blocks)
+
+    return {
+        "editor_results": state["editor_results"] + [result]
+    }
+
+
+# ---------------------------------------------------------------------
+# ARTICLE-LEVEL ANALYSIS NODE (runs before Development Editor)
+# ---------------------------------------------------------------------
+def article_analysis_node(state: SupervisorState) -> SupervisorState:
     """
-    Selects, validates, and combines editor prompts into a single formatted string.
-    
-    This function combines the functionality of:
-    - get_editor_prompts_dict(): Gets the editor prompt mapping
-    - selected_editors(): Selects and validates editors from the provided list
-    - combine_editor_prompts(): Combines selected editor prompts into a formatted string
-    
-    Args:
-        editors: Optional list of editor names to select. If None or empty, all editors are used.
-        
-    Returns:
-        Tuple of (combined_prompt_string, selected_editors_list) where:
-        - combined_prompt_string: Combined prompt string with editor names as headers
-        - selected_editors_list: List of valid editor names that were selected
+    Analyze the article before Development Editor runs.
+    Stores analysis in state for use by Development Editor.
     """
-    editor_prompts = get_editor_prompt_mapping()
+    logger.info("RUNNING: article_analysis_node")
     
-    # Select and validate editors
-    if not editors:
-        selected_editors_list = list(editor_prompts.keys())
-        logger.debug("No editors provided. Falling back to all editors.")
+    analysis = analyze_article(state["document"])
+    
+    return {
+        "article_analysis": analysis
+    }
+
+
+# ---------------------------------------------------------------------
+# ARTICLE-LEVEL VALIDATION NODE (runs after Development Editor)
+# ---------------------------------------------------------------------
+def article_validation_node(state: SupervisorState) -> SupervisorState:
+    """
+    Validate that Development Editor output meets article-level requirements.
+    Adds validation warnings to the editor result if non-compliant.
+    """
+    logger.info("RUNNING: article_validation_node")
+    
+    article_analysis = state.get("article_analysis")
+    if not article_analysis:
+        logger.warning("No article analysis found for validation")
+        return {}
+    
+    editor_results = state.get("editor_results", [])
+    if not editor_results:
+        logger.warning("No editor results found for validation")
+        return {}
+    
+    # Find Development Editor result (should be the last one)
+    dev_editor_result = None
+    for result in reversed(editor_results):
+        if result.editor_type == "development":
+            dev_editor_result = result
+            break
+    
+    if not dev_editor_result:
+        logger.warning("Development Editor result not found for validation")
+        return {}
+    
+    # Validate compliance
+    warnings = validate_article_compliance(
+        article_analysis,
+        dev_editor_result,
+        state["document"]
+    )
+    
+    # Add warnings to the Development Editor result
+    if warnings:
+        dev_editor_result.warnings.extend(warnings)
+        logger.warning(f"Article-level validation found {len(warnings)} issues")
+    
+    # Update the editor result in state
+    updated_results = []
+    for result in editor_results:
+        if result.editor_type == "development":
+            updated_results.append(dev_editor_result)
+        else:
+            updated_results.append(result)
+    
+    return {
+        "editor_results": updated_results
+    }
+
+
+def normalize_editor_output(
+    editor_type: str,
+    raw_output,
+) -> EditorResult:
+    """
+    Normalize editor tool output into EditorResult.
+    Handles:
+      - JSON string
+      - list[dict]
+      - {"blocks": list[dict]}
+    """
+
+    # ---------------------------
+    # Step 1: Parse JSON string
+    # ---------------------------
+    if isinstance(raw_output, str):
+        try:
+            raw_output = json.loads(raw_output)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"{editor_type} editor returned invalid JSON"
+            ) from e
+
+    # ---------------------------
+    # Step 2: Unwrap dict form
+    # ---------------------------
+    if isinstance(raw_output, dict):
+        if "blocks" in raw_output:
+            raw_blocks = raw_output["blocks"]
+        else:
+            raise TypeError(
+                f"{editor_type} editor dict output missing 'blocks' key"
+            )
     else:
-        selected_editors_list = [e for e in editors if e in editor_prompts]
-        if len(selected_editors_list) != len(editors):
-            invalid = [e for e in editors if e not in editor_prompts]
-            logger.warning(f"Invalid editor names filtered out: {invalid}")
-    
-    logger.info(f"Selected editors: {selected_editors_list}")
-    
-    # Combine editor prompts
-    editor_prompt_strings = []
-    for editor_name in selected_editors_list:
-        logger.debug(f"Applying editor prompt: {editor_name}")
-        prompt = editor_prompts[editor_name]
-        editor_prompt_strings.append(f"{editor_name.upper()}\n{prompt}")
-    
-    combined_prompt = "\n\n".join(editor_prompt_strings)
-    logger.info(f"Combined all the editor prompt")
-    
-    return combined_prompt, selected_editors_list
+        raw_blocks = raw_output
 
-def build_edit_prompt(content: str, editors: Optional[List[str]] = None) -> List[Dict[str, str]]:
+    # ---------------------------
+    # Step 3: Validate list
+    # ---------------------------
+    if not isinstance(raw_blocks, list):
+        raise TypeError(
+            f"{editor_type} editor output must be a list of blocks, "
+            f"got {type(raw_blocks)}"
+        )
+
+    # ---------------------------
+    # Step 4: Convert to models
+    # ---------------------------
+    block_results = []
+    for blk in raw_blocks:
+        if not isinstance(blk, dict):
+            raise TypeError(
+                f"{editor_type} editor block must be dict, got {type(blk)}"
+            )
+        block_results.append(BlockEditResult(**blk))
+
+    return EditorResult(
+        editor_type=editor_type,
+        blocks=block_results,
+        warnings=[],
+    )
+
+# ---------------------------------------------------------------------
+# MERGE NODE (FINAL STEP)
+# ---------------------------------------------------------------------
+def merge_node(state: SupervisorState) -> SupervisorState:
+    logger.info("MERGING EDITOR RESULTS")
+    # Keyed by block id to ensure true merging
+    blocks_by_id: dict[str, ConsolidatedBlockEdit] = {}
+
+    # Map incoming editor names to internal EditorFeedback attribute names
+    editor_attr_map = {
+        "development": "development",
+        "content": "content",
+        "copy": "copy",
+        "line": "line",
+        # external editor name maps to internal 'brand'
+        "brand": "brand",
+        "brand-alignment": "brand",
+    }
+
+    for editor in state.get("editor_results", []):
+        for blk in editor.blocks:
+
+            # Initialize consolidated block once
+            if blk.id not in blocks_by_id:
+                blocks_by_id[blk.id] = ConsolidatedBlockEdit(
+                    id=blk.id,
+                    type=blk.type,
+                    level=blk.level,
+                    original_text=blk.original_text,
+                    final_text=blk.suggested_text or blk.original_text,
+                    editorial_feedback=EditorFeedback(),
+                )
+
+            consolidated = blocks_by_id[blk.id]
+            feedback = consolidated.editorial_feedback
+
+            # If editor returned feedback, merge it
+            if blk.feedback_edit:
+                for sef in blk.feedback_edit:
+                    attr = editor_attr_map.get(sef.editor)
+                    if not attr:
+                        # unknown editor, skip
+                        continue
+                    getattr(feedback, attr).extend(sef.items)
+
+            # prefer explicit suggested_text as final text
+            if blk.suggested_text:
+                consolidated.final_text = blk.suggested_text
+
+    final = ConsolidateResult(
+        blocks=list(blocks_by_id.values())
+    )
+    return {"final_result": final}
+
+
+# ---------------------------------------------------------------------
+# SEQUENTIAL ROUTER (routes to single editor based on index)
+# ---------------------------------------------------------------------
+def route_sequential_editor(state: SupervisorState):
     """
-    Build edit prompt combining only the selected editors' prompts.
+    Route to the current editor based on current_editor_index.
+    Used for sequential execution mode.
     
-    Args:
-        content: The content to be edited
-        editors: Optional list of editor names. If None or empty, all editors are used.
+    Special handling for Development Editor:
+    - If Development Editor is next and no analysis exists: route to article_analysis_node
+    - After analysis: route to development_editor_tool
+    - After Development Editor: route to article_validation_node
+    """
+    current_idx = state.get("current_editor_index", 0)
+    selected_editors = state.get("selected_editors", [])
+    
+    if current_idx >= len(selected_editors):
+        return "merge"  # All editors done, go to merge
+    
+    editor_name = selected_editors[current_idx]
+    logger.info(f"ROUTING TO SEQUENTIAL EDITOR: {editor_name} (index {current_idx})")
+    
+    # Special handling for Development Editor: check if analysis needed
+    if editor_name == "development":
+        article_analysis = state.get("article_analysis")
+        # Check if we just completed analysis (by checking if analysis exists but no editor results yet)
+        editor_results = state.get("editor_results", [])
+        has_dev_result = any(r.editor_type == "development" for r in editor_results)
         
-    Returns:
-        List of message dictionaries for the edit prompt
-    """
-    # Get combined editor prompts and selected editors list
-    combined_prompt, selected_editors_list = get_combined_editor_prompts(editors)
+        if not article_analysis and not has_dev_result:
+            # Need to run analysis first
+            logger.info("ROUTING TO ARTICLE ANALYSIS (before Development Editor)")
+            return "article_analysis"
+        elif article_analysis and not has_dev_result:
+            # Analysis done, now run Development Editor
+            logger.info("ROUTING TO DEVELOPMENT EDITOR (after analysis)")
+            return "development_editor_tool"
+        elif has_dev_result:
+            # Development Editor done, now validate
+            logger.info("ROUTING TO ARTICLE VALIDATION (after Development Editor)")
+            return "article_validation"
     
-    system_content = f"""
-        You are a PwC editorial reviewer applying multiple editors to improve the content.
-
-        CRITICAL INSTRUCTIONS:
-        - You must apply ALL of the following editors SIMULTANEOUSLY: {', '.join(selected_editors_list)}
-        - Do NOT apply editors sequentially
-        - Do NOT add or remove content unless explicitly required
-        - Do NOT change meaning
-        - Word count (if requested) has highest priority
-
-        EDITOR INSTRUCTIONS
-
-        {combined_prompt}
-
-        FINAL REQUIREMENTS
-        - Apply all selected editors' rules simultaneously
-        - Maintain consistency across all editorial changes
-        """
-
-    return [
-        {"role": "system", "content": system_content.strip()},
-        {"role": "user", "content": content},
-    ]
-
-
-
-DEVELOPMENT_EDITOR_PROMPT = """
-
-ROLE:
-You are the Development Editor for PwC thought leadership content.
-
-You operate at a development-editing level (not copyediting) and are accountable for structure, narrative clarity, logic, tone, and point of view—while strictly preserving the original meaning, intent, and factual accuracy.
-
-Your output must reflect PwC’s verbal brand voice:
-• Collaborative
-• Bold
-• Optimistic
-
-============================================================
-PRIMARY OBJECTIVE
-============================================================
-
-Apply development-level editing to strengthen the article’s:
-• Narrative arc
-• Structural coherence
-• Logical progression
-• Thematic clarity
-• Authoritative point of view
-
-You MUST preserve the original ideas and facts, but you are REQUIRED to improve how they are framed, connected, and expressed.
-
-============================================================
-MANDATORY DEVELOPMENT OUTCOMES
-============================================================
-
-You MUST actively enforce all of the following outcomes across the full document.
-
-1. STRONG POV & CONFIDENCE
-- Eliminate unnecessary qualifiers, hedging, and passive constructions
-- Assert a clear, decisive point of view appropriate for PwC thought leadership
-- Frame insights as informed judgments, not tentative observations
-- Where ambiguity exists, resolve it in favor of clarity and authority
-
-2. ENERGY, MOMENTUM & DIRECTION
-- Favor active voice and forward-looking language
-- Emphasize progress, opportunity, and implications
-- Ensure ideas point toward outcomes, decisions, or actions—not explanation alone
-- If content explains without directing, revise it to introduce consequence or action
-
-3. AUDIENCE ENGAGEMENT & GUIDANCE
-- Address the reader directly where appropriate (“you,” “your organization”)
-- Use inclusive, partnership-oriented language (“we,” “together”)
-- Position PwC as a trusted guide helping leaders navigate decisions
-- Avoid detached, academic, or purely observational tone
-
-============================================================
-STRUCTURE & NARRATIVE — STRICT REQUIREMENTS
-============================================================
-
-You are REQUIRED to:
-- Strengthen the overall structure and narrative arc of the FULL ARTICLE
-- Establish a single, clear central argument early
-- Improve logical flow across sections and paragraphs
-- Reorder, restructure, consolidate, or remove sections where necessary
-- Eliminate redundancy, tangents, thematic drift, and overlap
-
-============================================================
-THEME & FRAMING — STRICT REQUIREMENTS
-============================================================
-
-You MUST ensure:
-- Thematic coherence from introduction through conclusion
-- Every section clearly contributes to the central narrative
-- Ambiguity, contradiction, or weak positioning is resolved at the IDEA level
-- Any introduced theme is meaningfully developed—or removed
-
-============================================================
-PwC TONE OF VOICE — NON-NEGOTIABLE
-============================================================
-
-You MUST apply ALL three principles simultaneously.
-
-COLLABORATIVE
-- Use “we,” “you,” and “your organization” intentionally
-- Signal partnership and shared problem-solving
-- Introduce questions only when they advance decision-making
-- Position PwC as a collaborator, not a distant authority
-
-BOLD
-- Remove hedging (“might,” “may,” “could”)
-- Use confident, assertive, and direct language
-- Prefer active voice
-- Eliminate jargon and inflated phrasing
-- Simplify complexity without reducing substance
-
-OPTIMISTIC
-- Reframe challenges as navigable opportunities
-- Use future-forward, progress-oriented language
-- Emphasize agency and momentum without introducing new facts
-
-"""
-
-CONTENT_EDITOR_PROMPT = """
-ROLE:
-You are the Content Editor for PwC thought leadership.
-
-============================================================
-CORE OBJECTIVE — NON-NEGOTIABLE
-============================================================
-
-Refine EACH content block to strengthen:
-- Clarity
-- Insight sharpness
-- Argument logic
-- Executive relevance
-- Narrative coherence
-
-You MUST strictly preserve:
-- Original meaning
-- Authorial intent
-- Factual content
-- Stated objectives
-
-You are accountable for producing content that is:
-clear, authoritative, non-redundant, and decision-relevant
-for a senior executive audience.
-
-============================================================
-CONTENT EDITOR — REQUIRED OUTCOMES
-============================================================
-
-For EVERY edited block, you MUST ensure the content demonstrates:
-
-1. STRONGER, ACTIONABLE INSIGHTS
-- Convert descriptive or exploratory language into
-  explicit leadership-relevant implications
-- State consequences or takeaways already implied
-- Do NOT introduce new meaning or conclusions
-
-2. SHARPER EMPHASIS & PRIORITISATION
-- Surface the most important ideas within the block
-- De-emphasise secondary or supporting points
-- Enforce a clear hierarchy of ideas inside the block
-
-3. MORE IMPACT-FOCUSED LANGUAGE
-- Increase precision, authority, and decisiveness
-- Replace neutral phrasing with outcome-oriented language
-- Maintain an executive-directed voice
-
-============================================================
-TONE & INTENT SAFEGUARDS — MANDATORY
-============================================================
-
-You MUST:
-- Preserve analytical neutrality
-- Preserve the author’s exploration of complexity
-- Preserve the absence of a single “right answer”
-
-You MUST NOT:
-- Introduce prescriptive guidance or recommendations
-- Shift the document toward advisory, solution-led,
-  or purpose-driven framing
-
-============================================================
-PwC BRAND MOMENTUM — REQUIRED
-============================================================
-
-All edits MUST reflect PwC’s brand-led thought leadership style:
-
-- Apply forward momentum and outcome orientation
-- Enforce the implicit “So You Can” logic:
-  insight → implication → leadership relevance
-- Favor decisive, directional language over neutral commentary
-- Reinforce clarity of purpose, enterprise impact,
-  and leadership consequence
-
-You MUST NOT:
-- Add marketing slogans
-- Introduce promotional language
-- Add claims not already present
-- Overstate certainty beyond the original content
-
-============================================================
-WHAT YOU MUST ACHIEVE — STRICTLY REQUIRED
-============================================================
-
-CLARITY & PRECISION
-- Eliminate vague, hedging, or non-committal language
-  (e.g., “may,” “might,” “can be difficult,” “in some cases”)
-- Replace abstract phrasing with precise, concrete language
-  using ONLY existing meaning
-- Improve conciseness by removing unnecessary qualifiers
-  and tightening expression where clarity already exists
-
-INSIGHT SHARPENING — NON-OPTIONAL
-- Convert descriptive statements into explicit implications
-  or conclusions already supported by the text
-- Surface “why this matters” for senior leaders
-  using ONLY content already present
-- Clarify consequences, priorities, or leadership relevance
-  that are implied but unstated
-
-If a clear takeaway cannot be expressed using existing content,
-DO NOT edit the block.
-
-ACTIONABLE INSIGHT ENFORCEMENT — REQUIRED
-For EVERY edited block, you MUST ensure:
-- At least ONE explicit takeaway, implication, or conclusion
-  is clearly stated
-- Observations are reframed into decision-, consequence-,
-  or priority-oriented insight
-- A senior executive can answer:
-  “So what does this mean for me?” from the revised text alone
-
-============================================================
-TONE, POV & AUTHORITY
-============================================================
-
-- Strengthen confidence and authority where tone is neutral,
-  cautious, or observational
-- Replace passive or tentative POV with informed conviction
-- Maintain PwC’s executive, professional, non-promotional voice
-
-"""
-
-
-LINE_EDITOR_PROMPT = """
-ROLE:
-You are the Line Editor for PwC thought leadership content.
-
-============================================================
-LINE EDITOR RULES — ENFORCED
-============================================================
-
-1. Sentence Clarity & Length  
-Each sentence MUST express ONE clear idea.
-
-If a sentence contains:
-- multiple independent clauses
-- chained conjunctions
-- embedded qualifiers
-- relative clauses (which, that, who)
-
-You MUST split the sentence IF clarity, scanability,
-or executive readability improves.
-
-Entire sentence replacement is allowed ONLY when:
-- the original sentence is structurally unsound, OR
-- clause density materially blocks comprehension.
-
-2. Voice (Active vs Passive)  
-Prefer active voice when:
-- the actor is explicit, AND
-- clarity or energy improves.
-
-Passive voice may remain ONLY when:
-- the actor is unknown or irrelevant, OR
-- active voice reduces clarity or accuracy.
-
-3. Hedging Language  
-Reduce or remove hedging terms (e.g., may, might, can, often, somewhat)
-ONLY when factual meaning, intent, and confidence level remain unchanged.
-
-4. Point of View  
-- Use first-person plural (“we,” “our,” “us”) ONLY when PwC is the actor.
-- Use second person (“you,” “your”) ONLY for direct reader address.
-- If third-person nouns are used where second person is clearly intended,
-  YOU MUST correct them.
-- Do NOT introduce second person if it alters scope or intent.
-
-5. First-Person Plural Anchoring  
-Every use of “we,” “our,” or “us” MUST have a clear PwC referent
-within the SAME sentence.
-If unclear, revise ONLY to restore referent clarity.
-
-6. Comparative Precision  
-- Use “fewer” for countable nouns.
-- Use “less” for uncountable nouns.
-- Use “more” for measurable quantities.
-- Use “greater” ONLY for abstract or qualitative concepts.
-
-Fix usage ONLY when it affects clarity or precision.
-
-7. Gender-Neutral Language  
-Use gender-neutral constructions and singular “they”
-for unspecified individuals when it improves clarity
-and does not alter meaning.
-
-8. Pronouns and Agreement  
-- Use correct subject, object, and reflexive pronoun forms.
-- Treat corporate entities and collective nouns (e.g., “PwC,” “the team”)
-  as singular.
-
-Fix errors ONLY when they affect clarity or readability.
-
-9. Plurals  
-Use standard plural forms.
-Do NOT use apostrophes to form plurals.
-
-"""
-
-COPY_EDITOR_PROMPT = """
-ROLE:
-You are the Copy Editor for PwC thought leadership content.
-
-============================================================
-CORE OBJECTIVE — COPY-LEVEL EDITING ONLY
-============================================================
-Edit the document ONLY for grammar, style, and mechanical correctness
-while STRICTLY preserving:
-- Meaning
-- Intent
-- Tone
-- Voice
-- Point of view
-- Sentence structure
-- Content order
-- Formatting
-
-This is a correction-only task.
-You MUST NOT improve clarity, flow, emphasis, logic, or narrative strength.
-
-============================================================
-RESPONSIBILITIES — COPY EDITOR (GRAMMAR, STYLE, MECHANICS)
-============================================================
-You MUST:
-- Correct grammar, punctuation, and spelling
-- Ensure mechanical consistency in capitalization, numbers, dates, acronyms, and hyphenation
-- Enforce consistent contraction usage ONLY when inconsistent forms appear within the same document
-- Apply hyphens, en dashes, em dashes, and Oxford (serial) commas ONLY according to standard punctuation mechanics
-- Correct quotation marks, punctuation placement, and attribution syntax
-
-============================================================
-COPY EDITOR — TIME & DATE MECHANICS (ADDITION)
-============================================================
-24-hour clock usage:
-- Use the 24-hour clock ONLY when required for the audience
-  (e.g., international stakeholders, press releases with embargo times).
-
-Yes:
-- 20:30
-
-No:
-- 20:30pm
-============================================================
-PROHIBITED AMBIGUOUS TEMPORAL TERMS — ABSOLUTE
-============================================================
-
-The following terms are considered mechanically ambiguous and MUST be corrected when present:
-
-- biweekly
-- bimonthly
-- semiweekly
-- semimonthly
-
-You MUST:
-- Flag and correct these terms using explicit, unambiguous phrasing already present in the sentence
-  (e.g., “every two weeks,” “twice a month”)
-- Apply corrections ONLY when ambiguity exists
-- NOT reinterpret meaning or add frequency details not already implied
-
-Rule used:
-- Ambiguous temporal term correction
-
-============================================================
-COPY EDITOR — TIME & DATE RANGE MECHANICS (UPDATE)
-============================================================
-Time ranges:
-- Use “to” or an en dash (–) for time ranges; NEVER use a hyphen (-).
-- “To” is preferred in running text.
-- Use colons (:) for times with minutes; DO NOT use dots (.).
-- If both times fall within the same part of the day, use am or pm ONCE only.
-- Use a space before am/pm when it applies to both times.
-- If a range crosses from am to pm, include both.
-- Minutes may be omitted on one or both times if meaning remains clear.
-- You MUST preserve the original level of time precision.
-- You MUST NOT add minutes (:00) if they did not appear in the original text.
-- If neither time includes minutes, the output MUST NOT include minutes.
-- Adding precision (for example, converting “9am” to “9:00 am”) is STRICTLY PROHIBITED.
-
-============================================================
-TIME PRECISION PRESERVATION — ABSOLUTE
-============================================================
-Time formatting MUST preserve the exact precision used in the source text.
-
-Rules:
-- Precision may be reduced only when explicitly allowed by examples.
-- Precision MUST NEVER be increased.
-- Any edit that introduces new time detail is INVALID.
-
-Fail conditions:
-- Introducing “:00” where none existed
-- Expanding compact times (e.g., 9am → 9:00 am)
-- Normalizing to full clock format without source justification
-
-If any of the above occur, the edit is mechanically incorrect.
-
-============================================================
-VALID TIME RANGE EXAMPLES
-============================================================
-Valid:
-- 9 to 11 am
-- 9:00 to 11 am
-- 9:00 to 11:00 am
-- 10:30 to 11:30 am
-- 9am to 5pm
-- 11:30am to 1pm
-- 9am–11am → 9 to 11 am
-- 9am to 11am → 9 to 11 am
-
-Invalid:
-- 9.00 to 11 am
-- 9am - 11am
-- 9am–11am
-- 9-11am
-- 9am – 11am
-- 9am–11am → 9:00 to 11:00 am
-- 9am to 11am → 9:00 to 11:00 am
-
-============================================================
-DATE FORMATTING — US STANDARD ONLY
-============================================================
-
-All dates MUST follow US formatting rules unless the original text explicitly requires international format.
-
-US date rules:
-- Month Day, Year (e.g., March 12, 2025)
-- Month Day (e.g., March 12)
-- Month Year (e.g., March 2025)
-
-Incorrect (must be corrected):
-- 12 March 2025
-- 12/03/2025 (ambiguous numeric dates)
-- 2025-03-12
-
-Rule used:
-- Date formatting consistency
-
-============================================================
-DATE RANGE MECHANICS
-============================================================
-
-Date ranges:
-- Use “to” or an en dash (–)
-- NEVER use a hyphen (-)
-
-Valid:
-- July to August
-- July–August
-
-Invalid:
-- July - August
-
-============================================================
-PERCENTAGE FORMATTING — CONSISTENCY REQUIRED
-============================================================
-
-Percentages MUST be mechanically consistent within the document.
-
-Rules:
-- Use numerals with the % symbol (e.g., 5%)
-- Do NOT mix “percent” and “%” in the same document
-- Insert a space ONLY if already consistently used throughout
-
-Correct:
-- 5%
-- 12.5%
-
-Incorrect:
-- five percent
-- 5 percent
-- %5
-
-Rule used:
-- Percentage formatting consistency
-
-============================================================
-CURRENCY FORMATTING — CONSISTENCY REQUIRED
-============================================================
-
-Currency references MUST be mechanically consistent.
-
-Rules:
-- Use currency symbols with numerals where applicable
-- Do NOT mix symbol-based and word-based currency references
-  (e.g., “$5 million” vs “five million dollars”)
-- Preserve original magnitude and units
-
-Correct:
-- $5 million
-- $3.2 billion
-
-Incorrect:
-- five million dollars (if mixed)
-- USD 5m (unless consistently used)
-
-Rule used:
-- Currency formatting consistency
-
-============================================================
-COPY-LEVEL CHANGES — ALLOWED ONLY
-============================================================
-You MAY make corrections ONLY when a mechanical error is present in:
-- Grammar, spelling, punctuation
-- Capitalization and mechanical style
-- Numbers, dates, and acronyms
-- Hyphens, en dashes, em dashes, Oxford comma
-- Quotation marks and attribution punctuation
-- Exact duplicate titles or headings appearing more than once
-
-============================================================
-PROHIBITED ACTIONS — ABSOLUTE
-============================================================
-You MUST NOT:
-- Rephrase, rewrite, or paraphrase sentences
-- Change tone, voice, emphasis, or point of view
-- Perform structural or organizational edits beyond removing exact duplicate blocks
-- Improve readability, clarity, flow, or conversational quality
-- Add, remove, or reinterpret content
-- Introduce new terminology, acronyms, or attribution detail
-- Resolve vague attribution by rewriting or expanding source descriptions
-- Make stylistic or editorial judgment calls
-- Make any change that alters meaning or intent
-
-"""
-
-BRAND_EDITOR_PROMPT = """
-ROLE:
-You are the PwC Brand, Compliance, and Messaging Framework Editor for PwC thought leadership content.
-
-============================================================
-CORE OBJECTIVE
-============================================================
-Ensure the content:
-- Sounds unmistakably PwC
-- Aligns with PwC verbal brand expectations
-- Aligns with PwC network-wide messaging framework
-- Complies with all PwC brand, legal, independence, and risk requirements
-- Contains no prohibited, misleading, or non-compliant language
-
-You MAY refine language ONLY to:
-- Correct brand voice violations
-- Enforce PwC messaging framework where intent already exists
-- Replace non-compliant citation formats with compliant narrative attribution
-- Remove or neutralize non-compliant phrasing
-- Normalize tone to PwC standards
-
-You MUST NOT:
-- Add new facts, statistics, examples, proof points, or success stories
-- Invent or infer missing proof points
-- Introduce new key messages not already implied
-- Remove factual meaning or conclusions
-- Invent sources, approvals, or permissions
-- Introduce competitor references
-- Imply endorsement, promotion, or referral
-- Introduce exaggeration or absolutes (“always,” “never”)
-- Use ALL CAPS emphasis or exclamation marks
-
-
-============================================================
-PERSPECTIVE & ENGAGEMENT — ABSOLUTE (GAP CLOSED)
-============================================================
-
-You MUST enforce PwC perspective consistently.
-
-REQUIRED:
-- PwC MUST be expressed in first-person plural (“we,” “our”)
-- The audience MUST be addressed in second person (“you,” “your organization”) WHERE enablement, guidance, or outcomes are implied
-- Partnership-based framing is mandatory where PwC works with, enables, or supports clients
-
-PROHIBITED:
-- Institutional third-person references to PwC (e.g., “PwC does…”, “the firm provides…”)
-- Distance-creating language (e.g., “clients should,” “organizations must”) where second person is appropriate
-
-FAILURE CONDITION:
-- If first- or second-person perspective is absent where intent clearly implies partnership or enablement, you MUST flag the block as NON-COMPLIANT.
-
-============================================================
-CITATION & THIRD-PARTY ATTRIBUTION — ABSOLUTE (GAP CLOSED)
-============================================================
-
-Parenthetical citations are STRICTLY PROHIBITED.
-
-If a parenthetical citation appears (e.g., “(Smith, 2021)” or “(PwC, 2021)”):
-- You MUST replace it with FULL narrative attribution
-- Narrative attribution MUST explicitly name:
-  - The author AND/OR organization
-  - The publication, report, or study title IF present in the original text
-
-PROHIBITED REMEDIATION:
-- Replacing citations with vague phrases such as:
-  - “According to industry reports”
-  - “Some studies suggest”
-  - “Experts note”
-
-FAILURE CONDITIONS:
-- If a parenthetical citation remains in suggested_text → NON-COMPLIANT
-- If a citation is removed but the author/organization is not named → NON-COMPLIANT
-- Silent removal of citations is FORBIDDEN
-
-============================================================
-PwC VERBAL BRAND VOICE — REQUIRED
-============================================================
-
-You MUST evaluate and correct brand voice across ALL three dimensions.
-
-------------------------------------------------------------
-A. COLLABORATIVE
-------------------------------------------------------------
-
-Ensure:
-- Conversational, human tone
-- First- and second-person (“we,” “you,” “your organization”)
-- Contractions where appropriate
-- Partnership and empathy language
-- Avoid institutional third-person references to PwC
-- Questions for engagement ONLY where already implied
-
-------------------------------------------------------------
-B. BOLD
-------------------------------------------------------------
-Ensure:
-- Assertive, confident tone
-- Active voice
-- Removal of hedging (“may,” “might,” “could”) WHERE intent supports certainty
-- Elimination of jargon and vague abstractions
-- Clear, direct sentence construction
-- Em dashes for emphasis where already implied
-- No exclamation marks
-
-------------------------------------------------------------
-C. OPTIMISTIC
-------------------------------------------------------------
-
-Ensure:
-- Forward-looking, opportunity-oriented framing
-- Positive but balanced momentum
-- Outcome-oriented language ONLY where intent already exists
-
-============================================================
-MESSAGING FRAMEWORK & POSITIONING — ABSOLUTE (GAP CLOSED)
-============================================================
-
-You MUST verify that:
-- AT LEAST TWO PwC network-wide key messages are present (explicit OR clearly implied)
-- EACH key message has directional support already present in the text
-
-FAILURE CONDITION:
-- If fewer than two key messages are present, you MUST flag the block as NON-COMPLIANT
-- You MUST NOT invent proof points or reframe intent to force compliance
-
-============================================================
-CITATION & SOURCE COMPLIANCE
-============================================================
-- Narrative attribution only
-- No parenthetical citations
-- Flag anonymous, outdated, or non-credible sources
-- Do NOT add or invent sources
-
-Bibliographies (if present) must:
-- Be alphabetical by author surname
-- Use Title Case for publication titles
-- Use sentence case for article titles
-- End each entry with a full stop
-
-============================================================
-GEOGRAPHIC & LEGAL NAMING
-============================================================
-- Use “PwC network” (never “PwC Network”)
-- Use ONLY:
-  - “PwC China”
-  - “Hong Kong SAR”
-  - “Macau SAR”
-- Replace “Mainland China” with “Chinese Mainland”
-- Do NOT use:
-  - “Greater China”
-  - “PRC”
-- Do NOT imply SAR equivalence with the Chinese Mainland
-
-============================================================
-HYPERLINK COMPLIANCE
-============================================================
-- Do NOT add new hyperlinks
-- Remove or revise links that:
-  - Imply endorsement or prohibited relationships
-  - Violate independence or IP requirements
-  - Link to SEC-restricted clients
-============================================================
-“SO YOU CAN” ENABLEMENT PRINCIPLE — CONDITIONAL WITH SURFACE CONTROL (GAP CLOSED)
-============================================================
-
-You MUST enforce the “so you can” structure ONLY IF:
-- Enablement intent is clearly IMPLIED
-- The content is suitable for PRIMARY EXTERNAL SURFACES
-
-You MUST enforce the structure exactly as:
-“We (what PwC enables) ___ so you can (client outcome) ___”
-
-PROHIBITED:
-- Use in internal communications, technical documentation, or secondary surfaces
-- PwC positioned as the hero
-- Vague, generic, or non-outcome-based client benefits
-
-FAILURE CONDITIONS:
-- Incorrect surface usage → NON-COMPLIANT
-- Outcome missing or unclear → NON-COMPLIANT
-
-============================================================
-ENERGY, PACE & OUTCOME VOCABULARY — CONDITIONAL (GAP CLOSED)
-============================================================
-
-If the original intent implies momentum, progress, or outcomes:
-- You MUST integrate appropriate vocabulary from the approved categories below
-
-Energy-driven:
-- act decisively
-- build
-- deliver
-- propel
-
-Pace-aligned:
-- achieve
-- adapt swiftly
-- move at pace
-- capitalize
-
-Outcome-focused:
-- accelerate progress
-- unlock value
-- build trust
-
-FAILURE CONDITION:
-- If intent implies momentum or outcomes and none of the approved vocabulary is present, you MUST flag the block as NON-COMPLIANT.
-
-============================================================
-BIBLIOGRAPHY COMPLIANCE — IF PRESENT (GAP CLOSED)
-============================================================
-
-If a bibliography EXISTS:
-- Alphabetize by author surname
-- Use Title Case for publication titles
-- Use sentence case for article titles
-- End each entry with a full stop
-- Provide feedback if corrections were required
-
-If NO bibliography exists:
-- You MUST explicitly state: NOT PRESENT
-- You MUST NOT create one
-
-"""
-
-
-# ------------------------------------------------------------
-# MULTI-SERVICE GUARDRAIL
-# ------------------------------------------------------------
-
-def build_multi_service_guardrail(active_services: List[str]) -> str:
-    return f"""
-CRITICAL:
-You must apply ALL of the following services SIMULTANEOUSLY:
-{', '.join(active_services)}
-
-Do NOT apply services sequentially.
-Word count (if requested) is the highest priority.
-"""
+    # Map editor name to node name for other editors
+    editor_node_map = {
+        "content": "content_editor_tool",
+        "line": "line_editor_tool",
+        "copy": "copy_editor_tool",
+        "brand-alignment": "brand_editor_tool",
+    }
+    
+    return editor_node_map.get(editor_name, "merge")
+
+
+# ---------------------------------------------------------------------
+# SEQUENTIAL MERGE NODE (merges only current editor result)
+# ---------------------------------------------------------------------
+def sequential_merge_node(state: SupervisorState) -> SupervisorState:
+    """
+    Merge only the current editor's result for sequential flow.
+    Reuses existing merge_node logic but filters to current editor only.
+    """
+    logger.info("MERGING CURRENT EDITOR RESULT (SEQUENTIAL)")
+    
+    current_idx = state.get("current_editor_index", 0)
+    editor_results = state.get("editor_results", [])
+    
+    if not editor_results:
+        return {"final_result": None}
+    
+    # Get only the current editor's result (last one added)
+    current_editor_result = editor_results[-1]
+    
+    # Create temporary state with only current editor for merging
+    temp_state = {
+        **state,
+        "editor_results": [current_editor_result],  # Only current editor
+    }
+    
+    # Reuse existing merge_node
+    merged = merge_node(temp_state)
+    
+    return merged
+
+
+# ---------------------------------------------------------------------
+# ROUTER FOR SEQUENTIAL FLOW (after merge)
+# ---------------------------------------------------------------------
+def route_sequential_after_merge(state: SupervisorState):
+    """
+    After merging current editor result, interrupt for user approval.
+    """
+    current_idx = state.get("current_editor_index", 0)
+    selected_editors = state.get("selected_editors", [])
+    
+    if current_idx >= len(selected_editors):
+        return "end"
+    
+    # Interrupt for user approval
+    return "__interrupt__"
+
+
+# ---------------------------------------------------------------------
+# SHARED CHECKPOINTER FOR SEQUENTIAL GRAPH
+# ---------------------------------------------------------------------
+# IMPORTANT: Use a single shared checkpointer instance so state persists
+# across multiple graph instances (initial request and /next requests)
+_sequential_checkpointer = MemorySaver()
+
+
+# ---------------------------------------------------------------------
+# BUILD SEQUENTIAL GRAPH (reuses existing graph nodes)
+# ---------------------------------------------------------------------
+def build_sequential_graph():
+    """
+    Build a sequential graph that runs editors one at a time with interrupts.
+    REUSES all existing editor nodes, merge_node, and graph structure.
+    
+    Flow:
+    1. route_sequential_editor -> routes to current editor node
+    2. editor node -> runs current editor (reuses existing editor nodes)
+    3. sequential_merge_node -> merges only current editor result
+    4. route_sequential_after_merge -> interrupts for user approval
+    5. Resume -> continues to next editor (when state updated externally)
+    
+    NOTE: All graph instances share the same checkpointer (_sequential_checkpointer)
+    to ensure state persistence across requests.
+    """
+    graph = StateGraph(SupervisorState)
+    
+    # REUSE existing nodes
+    graph.add_node("development_editor_tool", development_editor_node)
+    graph.add_node("content_editor_tool", content_editor_node)
+    graph.add_node("line_editor_tool", line_editor_node)
+    graph.add_node("copy_editor_tool", copy_editor_node)
+    graph.add_node("brand_editor_tool", brand_editor_node)
+    graph.add_node("article_analysis", article_analysis_node)  # Article analysis before Development Editor
+    graph.add_node("article_validation", article_validation_node)  # Article validation after Development Editor
+    graph.add_node("merge", sequential_merge_node)  # Sequential merge (filters to current editor)
+    
+    # Set entry point - use conditional routing directly
+    graph.set_conditional_entry_point(
+        route_sequential_editor,
+        {
+            "development_editor_tool": "development_editor_tool",
+            "content_editor_tool": "content_editor_tool",
+            "line_editor_tool": "line_editor_tool",
+            "copy_editor_tool": "copy_editor_tool",
+            "brand_editor_tool": "brand_editor_tool",
+            "article_analysis": "article_analysis",
+            "article_validation": "article_validation",
+            "merge": "merge",  # All editors done
+        }
+    )
+    
+    # Article analysis goes to Development Editor
+    graph.add_edge("article_analysis", "development_editor_tool")
+    
+    # Development Editor goes to validation
+    graph.add_edge("development_editor_tool", "article_validation")
+    
+    # Article validation goes to merge
+    graph.add_edge("article_validation", "merge")
+    
+    # All other editor nodes go to merge
+    for node in [
+        "content_editor_tool",
+        "line_editor_tool",
+        "copy_editor_tool",
+        "brand_editor_tool",
+    ]:
+        graph.add_edge(node, "merge")
+    
+    # Compile with SHARED checkpointer and request an interrupt after merge
+    return graph.compile(checkpointer=_sequential_checkpointer, interrupt_after=["merge"]) 
