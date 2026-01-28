@@ -1,3 +1,4 @@
+
 /**
  * Shared utility functions for Edit Content workflow
  * Ensures deterministic results across Quick Start and Guided Journey flows
@@ -195,7 +196,34 @@ export function convertMarkdownToHtml(markdown: string): string {
   html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
 
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  // Links:
+  // - Standard markdown: [text](https://example.com)
+  // - Backend citation variant: [Title](URL: https://example.com)
+  //   If we don't strip "URL:", the href becomes invalid ("URL: https://...").
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, linkText, rawHref) => {
+    const textRaw = String(linkText ?? '');
+    const hrefRaw = String(rawHref ?? '').trim();
+
+    // Minimal escaping to avoid breaking attributes / HTML structure.
+    // Note: this utility already does simplistic markdown->HTML transforms elsewhere.
+    const escHtml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escAttr = (s: string) => escHtml(s).replace(/"/g, '&quot;');
+    const text = escHtml(textRaw);
+
+    // Handle "(URL: https://...)" (case-insensitive)
+    const citationUrlMatch = hrefRaw.match(/^url:\s*(https?:\/\/\S+)\s*$/i);
+    if (citationUrlMatch && citationUrlMatch[1]) {
+      const url = citationUrlMatch[1];
+      const urlAttr = escAttr(url);
+      const urlText = escHtml(url);
+      // Show both the title and the URL (common expectation for citation blocks)
+      return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(${urlText})</span>`;
+    }
+
+    // Standard markdown link
+    return `<a href="${escAttr(hrefRaw)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+  });
 
   const lines = html.split('\n');
   const processedLines: string[] = [];
