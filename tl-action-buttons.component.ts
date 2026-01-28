@@ -1805,12 +1805,13 @@ Examples:
 CRITICAL — URL PRESERVATION:
 - When converting citation markers, ONLY convert the marker itself (e.g., "[1]" or "(Ref. 1)")
 - DO NOT remove or modify any text that follows the citation marker, including URLs
-- If a citation marker is followed by "https:" or a URL, preserve the URL exactly as written
+- If a citation marker is followed by "https:" or a URL, wrap the URL in parentheses
 - Examples:
-  - "[1]https://example.com" → "¹https://example.com" (preserve URL)
-  - "[1]https:" → "¹https:" (preserve URL prefix)
-  - "Text [1]https://example.com more text" → "Text ¹https://example.com more text" (preserve URL)
-  - "(Ref. 1) https://example.com" → "¹ https://example.com" (preserve URL)
+  - "[1]https://example.com" → "¹(https://example.com)" (URL in parentheses)
+  - "[1]https:" → "¹(https:)" (URL prefix in parentheses)
+  - "Text [1]https://example.com more text" → "Text ¹(https://example.com) more text" (URL in parentheses)
+  - "(Ref. 1) https://example.com" → "¹ (https://example.com)" (URL in parentheses with space)
+  - "[1]http://example.com" → "¹(http://example.com)" (URL in parentheses)
 
 IMPORTANT:
 - Remove parentheses and "Ref." text
@@ -1819,6 +1820,7 @@ IMPORTANT:
 - Place superscripts immediately after the referenced text (no space before superscript)
 - For multiple references, combine superscripts or use comma-separated format for clarity
 - NEVER remove URLs or any text that appears after citation markers
+- URLs following citation markers must be wrapped in parentheses: (https://...) or (url)
 
 FAILURE CONDITIONS:
 - If an author-year parenthetical citation remains in suggested_text → NON-COMPLIANT
@@ -2356,12 +2358,13 @@ Examples:
 CRITICAL — URL PRESERVATION:
 - When converting citation markers, ONLY convert the marker itself (e.g., "[1]" or "(Ref. 1)")
 - DO NOT remove or modify any text that follows the citation marker, including URLs
-- If a citation marker is followed by "https:" or a URL, preserve the URL exactly as written
+- If a citation marker is followed by "https:" or a URL, wrap the URL in parentheses
 - Examples:
-  - "[1]https://example.com" → "¹https://example.com" (preserve URL)
-  - "[1]https:" → "¹https:" (preserve URL prefix)
-  - "Text [1]https://example.com more text" → "Text ¹https://example.com more text" (preserve URL)
-  - "(Ref. 1) https://example.com" → "¹ https://example.com" (preserve URL)
+  - "[1]https://example.com" → "¹(https://example.com)" (URL in parentheses)
+  - "[1]https:" → "¹(https:)" (URL prefix in parentheses)
+  - "Text [1]https://example.com more text" → "Text ¹(https://example.com) more text" (URL in parentheses)
+  - "(Ref. 1) https://example.com" → "¹ (https://example.com)" (URL in parentheses with space)
+  - "[1]http://example.com" → "¹(http://example.com)" (URL in parentheses)
 
 IMPORTANT:
 - Remove parentheses and "Ref." text
