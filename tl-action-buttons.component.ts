@@ -534,6 +534,143 @@ function isCitationParagraph(text: string): boolean {
   return false;
 }
 
+/**
+ * Convert markdown links in citation context to show both title and URL.
+ * Formats [Title](URL) as "Title (URL)" where URL is clickable.
+ * This is used specifically for citations where users need to see the actual URL.
+ */
+function formatCitationLinks(markdown: string): string {
+  if (!markdown || !markdown.trim()) {
+    return markdown;
+  }
+
+  // Convert markdown citation links to show both title and URL
+  // Format: [Title](URL) -> Title (<a href="URL">URL</a>)
+  // Note: Title is NOT escaped here to allow markdown processing later
+  // URL is escaped for use in href attribute
+  return markdown.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    (match, title, url) => {
+      // Escape HTML in URL for use in href attribute (prevents XSS)
+      const escapedUrl = url
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+      
+      // Don't escape title - let markdown processing handle it
+      // This allows titles with markdown like **bold** to be processed correctly
+      return `${title} (<a href="${escapedUrl}" target="_blank" rel="noopener noreferrer">${escapedUrl}</a>)`;
+    }
+  );
+}
+
+/**
+ * Convert markdown to HTML with citation-specific link formatting.
+ * This function is similar to convertMarkdownToHtml but formats citation links
+ * to show both title and URL instead of just the title.
+ */
+function convertMarkdownToHtmlWithCitations(markdown: string): string {
+  if (!markdown || !markdown.trim()) {
+    return '';
+  }
+
+  let html = markdown;
+
+  // Format citation links first (before other markdown processing)
+  html = formatCitationLinks(html);
+
+  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+
+  html = html.replace(/^---$/gm, '<hr>');
+  html = html.replace(/^\*\*\*$/gm, '<hr>');
+
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Note: Regular markdown links are already converted by formatCitationLinks
+  // So we don't need to process them again here
+
+  const lines = html.split('\n');
+  const processedLines: string[] = [];
+  let inUnorderedList = false;
+  let inOrderedList = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmedLine = line.trim();
+
+    const unorderedMatch = trimmedLine.match(/^[-*]\s+(.+)$/);
+    const orderedMatch = trimmedLine.match(/^\d+\.\s+(.+)$/);
+
+    if (unorderedMatch) {
+      if (!inUnorderedList) {
+        if (inOrderedList) {
+          processedLines.push('</ol>');
+          inOrderedList = false;
+        }
+        processedLines.push('<ul>');
+        inUnorderedList = true;
+      }
+      processedLines.push(`<li>${unorderedMatch[1]}</li>`);
+    } else if (orderedMatch) {
+      if (!inOrderedList) {
+        if (inUnorderedList) {
+          processedLines.push('</ul>');
+          inUnorderedList = false;
+        }
+        processedLines.push('<ol>');
+        inOrderedList = true;
+      }
+      processedLines.push(`<li>${orderedMatch[1]}</li>`);
+    } else {
+      if (inUnorderedList) {
+        processedLines.push('</ul>');
+        inUnorderedList = false;
+      }
+      if (inOrderedList) {
+        processedLines.push('</ol>');
+        inOrderedList = false;
+      }
+
+      if (trimmedLine) {
+        if (trimmedLine.startsWith('<')) {
+          processedLines.push(line);
+        } else {
+          processedLines.push(`<p>${trimmedLine}</p>`);
+        }
+      } else {
+        processedLines.push('');
+      }
+    }
+  }
+
+  if (inUnorderedList) {
+    processedLines.push('</ul>');
+  }
+  if (inOrderedList) {
+    processedLines.push('</ol>');
+  }
+
+  html = processedLines.join('\n');
+  html = html.replace(/(<p><\/p>\n?)+/g, '<p></p>');
+  html = html.replace(/<p>\s*<\/p>/g, '');
+
+  return html;
+}
+
 export function formatFinalArticleWithBlockTypes(
   article: string, 
   blockTypes: BlockTypeInfo[]
@@ -571,8 +708,9 @@ export function formatFinalArticleWithBlockTypes(
         // No block type info - check if this is a citation paragraph
         // Citations often appear at the end without block_type entries
         if (isCitationParagraph(trimmedPara)) {
-          // Format as citation paragraph with appropriate styling
-          const formatted = convertMarkdownToHtml(trimmedPara);
+          // Format as citation paragraph with citation-specific link formatting
+          // This ensures URLs are visible, not just the link text
+          const formatted = convertMarkdownToHtmlWithCitations(trimmedPara);
           // Remove wrapping <p> tags if they exist
           let citationContent = formatted.replace(/^<p>(.*)<\/p>$/s, '$1');
           
