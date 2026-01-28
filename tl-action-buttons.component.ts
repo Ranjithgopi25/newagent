@@ -1328,6 +1328,7 @@ def _split_paragraph_into_sentences(paragraph: str, target_sentences: int = 3) -
 def add_hyperlink(paragraph, url, text=None): #merge conflict resolved
     """
     Create a hyperlink in a Word paragraph with blue color and underline.
+    Prevents URL from breaking incorrectly by using noBreak property.
     """
     if not text:
         text = url
@@ -1358,6 +1359,11 @@ def add_hyperlink(paragraph, url, text=None): #merge conflict resolved
     color = OxmlElement('w:color')
     color.set(qn('w:val'), '0000FF')
     rPr.append(color)
+    
+    # Add noBreak property to prevent URL from breaking incorrectly
+    # This prevents Word from breaking the URL at inappropriate places
+    noBreak = OxmlElement('w:noBreak')
+    rPr.append(noBreak)
 
     run.append(rPr)
     
@@ -2043,7 +2049,8 @@ def _add_formatted_content(doc: Document, content: str, references: list[dict] |
                     
                     # Add URL as hyperlink if it exists
                     if entry['url']:
-                        para.add_run(" ")
+                        # Use non-breaking space (U+00A0) to prevent URL from breaking after punctuation
+                        para.add_run("\u00A0")
                         add_hyperlink(para, entry['url'], entry['url'])
                         logger.debug(f"[_add_formatted_content] Added hyperlink: {entry['url'][:40]}...")
                     else:
@@ -3565,6 +3572,8 @@ def export_to_word_edit_content(
                 sanitize_text_for_word(ref.get("title", ""))
             )
             if ref.get("url"):
+                # Use non-breaking space (U+00A0) to prevent URL from breaking after punctuation
+                para.add_run("\u00A0")
                 add_hyperlink(para, ref["url"])
 
     buffer = io.BytesIO()
@@ -3924,13 +3933,31 @@ def export_to_pdf_edit_content(
     
     # ===== STEP 2: Create content pages with block types =====
     content_buffer = io.BytesIO()
+    
+    # Custom page number function that accounts for cover page (starts from page 2)
+    def _add_page_number_edit_content(canvas, doc):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 9)
+        canvas.setFillColor('#666666')
+        # Page numbers start from 2 (cover page is page 1)
+        # doc.page is 0-indexed, so first content page (doc.page=0) should show as page 2
+        page_num_text = f"{doc.page + 2}"
+        canvas.drawRightString(
+            doc.pagesize[0] - 1 * inch,   # right margin
+            0.75 * inch,                  # footer height
+            page_num_text
+        )
+        canvas.restoreState()
+    
     doc = SimpleDocTemplate(
         content_buffer,
         pagesize=(page_width, page_height),
         topMargin=1*inch,
         bottomMargin=1*inch,
         leftMargin=1.1*inch,
-        rightMargin=1*inch
+        rightMargin=1*inch,
+        onFirstPage=_add_page_number_edit_content,
+        onLaterPages=_add_page_number_edit_content
     )
     
     styles = getSampleStyleSheet()
@@ -3959,10 +3986,7 @@ def export_to_pdf_edit_content(
     story = []
     _format_content_with_block_types_pdf(story, content, block_types, body_style, heading_style)
     
-    # Remove footers and add page numbers only
-    # _set_footer_with_page_numbers_only(doc)
-    
-    # Build the content PDF
+    # Build the content PDF with page numbers
     doc.build(story)
     content_buffer.seek(0)
     
