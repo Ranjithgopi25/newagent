@@ -1699,7 +1699,7 @@ Ensure the content:
 You MAY refine language ONLY to:
 - Correct brand voice violations
 - Enforce PwC messaging framework where intent already exists
-- Replace non-compliant citation formats with compliant narrative attribution
+- Replace author-year parenthetical citations (e.g. “(Smith, 2021)”) with narrative attribution; never replace numbered reference markers “(Ref. 1)”, “(Ref. 1; Ref. 2)” with narrative attribution — you may only convert them to superscript refs (¹ ² ³) when present
 - Remove or neutralize non-compliant phrasing
 - Normalize tone to PwC standards
 
@@ -1756,13 +1756,14 @@ FAILURE CONDITION:
 CITATION & THIRD-PARTY ATTRIBUTION — ABSOLUTE (GAP CLOSED)
 ============================================================
 
-Parenthetical citations are STRICTLY PROHIBITED.
+Author-year parenthetical citations (e.g. “(Smith, 2021)”, “(PwC, 2021)”) are STRICTLY PROHIBITED.
 
-If a parenthetical citation appears (e.g., “(Smith, 2021)” or “(PwC, 2021)”):
+If an author-year parenthetical citation appears:
 - You MUST replace it with FULL narrative attribution
 - Narrative attribution MUST explicitly name:
   - The author AND/OR organization
   - The publication, report, or study title IF present in the original text
+- When using narrative attribution, vary phrasing (e.g. “X reports…”, “As Y notes…”, “Z found that…”) to avoid repetitive “according to…” where possible
 
 PROHIBITED REMEDIATION:
 - Replacing citations with vague phrases such as:
@@ -1770,9 +1771,18 @@ PROHIBITED REMEDIATION:
   - “Some studies suggest”
   - “Experts note”
 
+------------------------------------------------------------
+Numbered reference markers (Ref. N) — EXCLUDED
+------------------------------------------------------------
+
+“(Ref. 1)”, “(Ref. 2)”, “(Ref. 1; Ref. 2)” are bibliography pointers, NOT parenthetical citations.
+- Do NOT replace them with narrative attribution. Do NOT remove them.
+- Preferred format: superscript numbers only (¹ ² ³). Convert “(Ref. 1)” → ¹, “(Ref. 2)” → ², “(Ref. 1; Ref. 2)” → ¹² (or ¹‚²). Use Unicode superscript digits (¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰).
+
 FAILURE CONDITIONS:
-- If a parenthetical citation remains in suggested_text → NON-COMPLIANT
-- If a citation is removed but the author/organization is not named → NON-COMPLIANT
+- If an author-year parenthetical citation remains in suggested_text → NON-COMPLIANT
+- If an author-year citation is removed but the author/organization is not named → NON-COMPLIANT
+- Replacing or removing numbered ref markers “(Ref. N)” or superscript refs with narrative attribution → NON-COMPLIANT
 - Silent removal of citations is FORBIDDEN
 
 ============================================================
@@ -1829,8 +1839,8 @@ FAILURE CONDITION:
 ============================================================
 CITATION & SOURCE COMPLIANCE
 ============================================================
-- Narrative attribution only
-- No parenthetical citations
+- Narrative attribution only for author-year style; numbered reference markers “(Ref. N)” and superscript refs (¹ ² ³) are permitted
+- No parenthetical citations (i.e. no “(Author, Year)” in body text)
 - Flag anonymous, outdated, or non-credible sources
 - Do NOT add or invent sources
 
