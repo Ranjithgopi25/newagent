@@ -500,6 +500,40 @@ export interface BlockTypeInfo {
  * @param blockTypes - Array of block type information with index, type, and optional level
  * @returns Formatted HTML with proper semantic structure
  */
+/**
+ * Detect if a paragraph contains citation patterns
+ */
+function isCitationParagraph(text: string): boolean {
+  if (!text || !text.trim()) return false;
+  
+  const trimmed = text.trim();
+  const lines = trimmed.split('\n').map(l => l.trim()).filter(l => l);
+  
+  // Check for "Sources:" or "References:" header
+  if (trimmed.match(/^(Sources|References):/i)) {
+    return true;
+  }
+  
+  // Check for citation patterns: [1.], [2.], 1., 2., etc. followed by URLs or text
+  const citationPattern = /^(\[\d+\.\]|\d+\.)\s+/;
+  const citationCount = lines.filter(line => citationPattern.test(line)).length;
+  
+  // If at least 2 lines match citation pattern, treat as citation block
+  if (citationCount >= 2) {
+    return true;
+  }
+  
+  // Check for single citation line with URL
+  if (lines.length === 1 && citationPattern.test(lines[0])) {
+    const hasUrl = /https?:\/\//i.test(lines[0]);
+    if (hasUrl) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
 export function formatFinalArticleWithBlockTypes(
   article: string, 
   blockTypes: BlockTypeInfo[]
@@ -524,8 +558,7 @@ export function formatFinalArticleWithBlockTypes(
     content: string;
     level: number;
     rawContent?: string;
-    isNumberedList?: boolean; // Track if numbered list (for HTML tag selection)
-    isBulletList?: boolean; // Track if bullet list (for HTML tag selection)
+    hasBulletIcon?: boolean; // Track if bullet icon exists in content
   }
 
   const formattedParagraphs = paragraphs
@@ -535,7 +568,38 @@ export function formatFinalArticleWithBlockTypes(
 
       const blockInfo = blockTypeMap.get(idx);
       if (!blockInfo) {
-        // Default to paragraph if no block type info
+        // No block type info - check if this is a citation paragraph
+        // Citations often appear at the end without block_type entries
+        if (isCitationParagraph(trimmedPara)) {
+          // Format as citation paragraph with appropriate styling
+          const formatted = convertMarkdownToHtml(trimmedPara);
+          // Remove wrapping <p> tags if they exist
+          let citationContent = formatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+          
+          // Check if citations are in list format (multiple lines with citation patterns)
+          const lines = trimmedPara.split('\n').map(l => l.trim()).filter(l => l);
+          const citationPattern = /^(\[\d+\.\]|\d+\.)\s+/;
+          const citationLines = lines.filter(line => citationPattern.test(line));
+          
+          if (citationLines.length >= 2) {
+            // Format as citation list - preserve citation numbers and URLs
+            // Use paragraph styling but with left alignment (not justify) for citations
+            return {
+              type: 'paragraph',
+              content: `<p style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; display: block; text-align: left; margin-top: 0.15em; margin-bottom: 0.7em; line-height: 1.5;">${citationContent}</p>`,
+              level: 0
+            };
+          } else {
+            // Single citation or citation header - format as regular paragraph
+            return {
+              type: 'paragraph',
+              content: `<p style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; display: block; text-align: left; margin-top: 0.15em; margin-bottom: 0.7em; line-height: 1.5;">${citationContent}</p>`,
+              level: 0
+            };
+          }
+        }
+        
+        // Default to paragraph if no block type info and not a citation
         const formatted = convertMarkdownToHtml(trimmedPara);
         const content = formatted.startsWith('<') ? formatted : `<p>${formatted}</p>`;
         return {
@@ -574,27 +638,42 @@ export function formatFinalArticleWithBlockTypes(
           };
         
         case 'bullet_item':
-          // Preserve backend content exactly - just convert markdown to HTML
-          // Backend LLM already handles numbering order correctly (1, 2, 3, 4, 5)
-          // Do NOT extract or modify prefixes - preserve backend formatting exactly
+          // Process bullet item: preserve numbered/lettered prefixes, only use bullets if original had them
+          let processedContent = trimmedPara;
           
-          // Simple detection for list type (for HTML tag selection only, not content modification)
-          const isNumberedList = /^\d+[.)]\s/.test(trimmedPara);
-          const isBulletList = /^[•\-\*]\s/.test(trimmedPara);
+          // Detect if content starts with a prefix (number, letter, roman numeral, or bullet)
+          const numberPrefixMatch = processedContent.match(/^(\d+[.)]\s*)/);
+          const letterPrefixMatch = processedContent.match(/^([A-Za-z][.)]\s*)/);
+          const romanPrefixMatch = processedContent.match(/^([ivxlcdmIVXLCDM]+[.)]\s*)/i);
+          const bulletPrefixMatch = processedContent.match(/^([•\-\*]\s*)/);
           
-          // Convert markdown to HTML, preserving backend's exact formatting
-          let processedContent = convertMarkdownToHtml(trimmedPara);
+          let preservedPrefix = '';
+          let contentWithoutPrefix = processedContent;
           
-          // Remove wrapping <p> tags if present (we'll wrap in list structure)
-          processedContent = processedContent.replace(/^<p>(.*)<\/p>$/s, '$1');
+          // Preserve the first prefix found (priority: number > letter > roman > bullet)
+          if (numberPrefixMatch) {
+            preservedPrefix = numberPrefixMatch[1];
+            contentWithoutPrefix = processedContent.substring(numberPrefixMatch[0].length).trim();
+          } else if (letterPrefixMatch) {
+            preservedPrefix = letterPrefixMatch[1];
+            contentWithoutPrefix = processedContent.substring(letterPrefixMatch[0].length).trim();
+          } else if (romanPrefixMatch) {
+            preservedPrefix = romanPrefixMatch[1];
+            contentWithoutPrefix = processedContent.substring(romanPrefixMatch[0].length).trim();
+          } else if (bulletPrefixMatch) {
+            preservedPrefix = bulletPrefixMatch[1];
+            contentWithoutPrefix = processedContent.substring(bulletPrefixMatch[0].length).trim();
+          }
           
-          // Format text before ":" as bold, after ":" as normal (if colon exists)
-          // But preserve the entire content structure from backend
-          const colonIndex = trimmedPara.indexOf(':');
+          // If no prefix found, use bullet icon as default
+          const useBulletIcon = !preservedPrefix || bulletPrefixMatch !== null;
+          const displayPrefix = preservedPrefix || (useBulletIcon ? '• ' : '');
+          
+          // Format text before ":" as bold, after ":" as normal
+          const colonIndex = contentWithoutPrefix.indexOf(':');
           if (colonIndex > 0) {
-            // Split at colon position in original text
-            const beforeColon = trimmedPara.substring(0, colonIndex).trim();
-            const afterColon = trimmedPara.substring(colonIndex + 1).trim();
+            const beforeColon = contentWithoutPrefix.substring(0, colonIndex).trim();
+            const afterColon = contentWithoutPrefix.substring(colonIndex + 1).trim();
             
             // Convert markdown in both parts
             let beforeFormatted = convertMarkdownToHtml(beforeColon);
@@ -604,14 +683,14 @@ export function formatFinalArticleWithBlockTypes(
             beforeFormatted = beforeFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
             afterFormatted = afterFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
             
-            // Reconstruct with bold formatting, preserving original prefix/numbering from backend
-            // Extract just the prefix part (number/bullet) from beforeColon to preserve it
-            const prefixMatch = beforeColon.match(/^(\d+[.)]\s*|[A-Za-z][.)]\s*|[ivxlcdmIVXLCDM]+[.)]\s*|[•\-\*]\s*)/i);
-            const prefix = prefixMatch ? prefixMatch[1] : '';
-            const labelText = prefixMatch ? beforeColon.substring(prefixMatch[0].length).trim() : beforeColon;
-            
-            const labelFormatted = convertMarkdownToHtml(labelText).replace(/^<p>(.*)<\/p>$/s, '$1');
-            processedContent = `${prefix}<strong>${labelFormatted}</strong>: ${afterFormatted}`;
+            // Apply bold to before part, normal to after part, preserve prefix
+            processedContent = `${displayPrefix}<strong>${beforeFormatted}</strong>: ${afterFormatted}`;
+          } else {
+            // No colon found, just convert markdown and remove <p> tags
+            contentWithoutPrefix = convertMarkdownToHtml(contentWithoutPrefix);
+            contentWithoutPrefix = contentWithoutPrefix.replace(/^<p>(.*)<\/p>$/s, '$1');
+            // Preserve prefix or use bullet icon
+            processedContent = `${displayPrefix}${contentWithoutPrefix}`;
           }
           
           return {
@@ -619,27 +698,25 @@ export function formatFinalArticleWithBlockTypes(
             content: processedContent,
             level: blockInfo.level || 0,
             rawContent: trimmedPara, // Store raw content for tracking
-            isNumberedList: isNumberedList, // Track if numbered for HTML tag selection
-            isBulletList: isBulletList // Track if bullet for HTML tag selection
+            hasBulletIcon: useBulletIcon // Only true if using bullet icon
           };
         
         case 'paragraph':
         default:
-          // Paragraph: 11pt font, line-height 1.5 (matches backend), justify alignment, reduced spacing for tighter layout
-          // margin-top: 0.15em (2pt), margin-bottom: 0.4em (4-5pt) - reduced from 0.7em for tighter spacing
+          // Paragraph: 11pt font, line-height 1.5 (matches backend), justify alignment, spacing matches backend
+          // margin-top: 0.15em (2pt), margin-bottom: 0.7em (8pt)
           return {
             type: 'paragraph',
-            content: `<p style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; display: block; text-align: justify; margin-top: 0.15em; margin-bottom: 0.4em; line-height: 1.5;">${formatted}</p>`,
+            content: `<p style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; display: block; text-align: justify; margin-top: 0.15em; margin-bottom: 0.7em; line-height: 1.5;">${formatted}</p>`,
             level: 0
           };
       }
     })
     .filter((para): para is ParagraphBlock => para !== null);
 
-  // Second pass: group consecutive bullet_item blocks into lists
-  // Use <ol> for numbered lists, <ul> for bullet lists - preserve backend formatting exactly
+  // Second pass: group consecutive bullet_item blocks into lists (use list-style-type: none if bullet icons exist)
   const finalOutput: string[] = [];
-  let currentList: Array<{content: string, level: number, rawContent: string, isNumberedList?: boolean, isBulletList?: boolean}> = [];
+  let currentList: Array<{content: string, level: number, rawContent: string, hasBulletIcon?: boolean}> = [];
   let prevBlockType: string | null = null;
   let prevBlockIndex: number = -1;
 
@@ -653,8 +730,7 @@ export function formatFinalArticleWithBlockTypes(
         content: para.content,
         level: para.level,
         rawContent: para.rawContent || '',
-        isNumberedList: para.isNumberedList,
-        isBulletList: para.isBulletList
+        hasBulletIcon: para.hasBulletIcon
       });
       prevBlockType = 'bullet_item';
       prevBlockIndex = i;
@@ -665,22 +741,15 @@ export function formatFinalArticleWithBlockTypes(
         const listMarginTop = prevBlockType === 'paragraph' ? '0.25em' : '0.5em';
         const listMarginBottom = nextPara && nextPara.type === 'paragraph' ? '0.25em' : '0.5em';
         
-        // Determine list type from first item (numbered or bullet)
-        // Backend already has correct numbering order - preserve it exactly
-        const firstItem = currentList[0];
-        const isNumbered = firstItem.isNumberedList === true;
-        const listTag = isNumbered ? 'ol' : 'ul';
-        
-        // For numbered lists, use list-style-type: none since numbers are already in content from backend
-        // For bullet lists, also use none since bullets are in content
+        // All lists use bullet icons (matches backend export - all lists rendered as bullets)
+        // Since we always add bullet icons to content, use list-style-type: none
         const listStyleType = 'none';
-        
-        // Font size: 11pt (matches paragraph font size), left indent: 12pt (0.5em)
-        finalOutput.push(`<${listTag} style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; list-style-type: ${listStyleType}; padding-left: 1.5em; margin-top: ${listMarginTop}; margin-bottom: ${listMarginBottom}; line-height: 1.5;">`);
+        // Font size: 11pt (matches paragraph font size), left indent: 12pt (0.5em), bullet indent: 0
+        finalOutput.push(`<ul style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; list-style-type: ${listStyleType}; padding-left: 1.5em; margin-top: ${listMarginTop}; margin-bottom: ${listMarginBottom}; line-height: 1.5;">`);
         currentList.forEach(item => {
           finalOutput.push(`<li style="display: list-item; margin: 0.375em 0;">${item.content}</li>`);
         });
-        finalOutput.push(`</${listTag}>`);
+        finalOutput.push('</ul>');
         currentList = [];
       }
 
@@ -708,22 +777,15 @@ export function formatFinalArticleWithBlockTypes(
     // Determine spacing: matches backend export
     const listMarginTop = prevBlockType === 'paragraph' ? '0.25em' : '0.5em';
     
-    // Determine list type from first item (numbered or bullet)
-    // Backend already has correct numbering order - preserve it exactly
-    const firstItem = currentList[0];
-    const isNumbered = firstItem.isNumberedList === true;
-    const listTag = isNumbered ? 'ol' : 'ul';
-    
-    // For numbered lists, use list-style-type: none since numbers are already in content from backend
-    // For bullet lists, also use none since bullets are in content
+    // All lists use bullet icons (matches backend export - all lists rendered as bullets)
+    // Since we always add bullet icons to content, use list-style-type: none
     const listStyleType = 'none';
-    
-    // Font size: 11pt (matches paragraph font size), left indent: 12pt (0.5em)
-    finalOutput.push(`<${listTag} style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; list-style-type: ${listStyleType}; padding-left: 1.5em; margin-top: ${listMarginTop}; margin-bottom: 0.5em; line-height: 1.5;">`);
+    // Font size: 11pt (matches paragraph font size), left indent: 12pt (0.5em), bullet indent: 0
+    finalOutput.push(`<ul style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; list-style-type: ${listStyleType}; padding-left: 1.5em; margin-top: ${listMarginTop}; margin-bottom: 0.5em; line-height: 1.5;">`);
     currentList.forEach(item => {
       finalOutput.push(`<li style="display: list-item; margin: 0.375em 0;">${item.content}</li>`);
     });
-    finalOutput.push(`</${listTag}>`);
+    finalOutput.push('</ul>');
   }
 
   return finalOutput.join('\n');
