@@ -1777,7 +1777,33 @@ Numbered reference markers (Ref. N) — EXCLUDED
 
 “(Ref. 1)”, “(Ref. 2)”, “(Ref. 1; Ref. 2)” are bibliography pointers, NOT parenthetical citations.
 - Do NOT replace them with narrative attribution. Do NOT remove them.
-- Preferred format: superscript numbers only (¹ ² ³). Convert “(Ref. 1)” → ¹, “(Ref. 2)” → ², “(Ref. 1; Ref. 2)” → ¹² (or ¹‚²). Use Unicode superscript digits (¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰).
+- Convert them to superscript format as specified in the REFERENCE FORMAT CONVERSION section below.(¹ ² ³). Convert “(Ref. 1)” → ¹, “(Ref. 2)” → ², “(Ref. 1; Ref. 2)” → ¹² (or ¹‚²). Use Unicode superscript digits (¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰).
+
+REFERENCE FORMAT CONVERSION — MANDATORY
+------------------------------------------------------------
+
+Convert ALL reference markers to superscript format using Unicode superscript digits.
+
+Conversion rules:
+- "(Ref. 1)" → "¹"
+- "(Ref. 2)" → "²"
+- "(Ref. 3)" → "³"
+- "(Ref. 1; Ref. 2)" → "¹²" or "¹,²" (use comma if multiple distinct references)
+- "(Ref. 1, Ref. 2, Ref. 3)" → "¹,²,³"
+- "(Ref. 1; Ref. 2; Ref. 3)" → "¹²³" or "¹,²,³" (use comma for clarity with multiple references)
+
+Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
+
+Examples:
+- "According to research (Ref. 1), the findings show..." → "According to research¹, the findings show..."
+- "Multiple studies (Ref. 1; Ref. 2) indicate..." → "Multiple studies¹² indicate..." or "Multiple studies¹,² indicate..."
+- "The data (Ref. 1, Ref. 2, Ref. 3) supports..." → "The data¹,²,³ supports..."
+
+IMPORTANT:
+- Remove parentheses and "Ref." text
+- Convert numbers to superscripts
+- Place superscripts immediately after the referenced text (no space before superscript)
+- For multiple references, combine superscripts or use comma-separated format for clarity
 
 FAILURE CONDITIONS:
 - If an author-year parenthetical citation remains in suggested_text → NON-COMPLIANT
