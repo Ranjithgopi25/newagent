@@ -146,51 +146,6 @@ export function extractDocumentTitle(content: string, filename?: string): string
   return 'Revised Article';
 }
 
-/**
- * Extract title from block_types where type is "title".
- * This matches how guided journey handles titles (using block type "title" as page 1).
- * 
- * @param content - The article content (plain text with "\n\n" separators)
- * @param blockTypes - Array of block type information with index, type, and optional level
- * @param fallbackFilename - Optional filename to use as fallback if no title block found
- * @returns Extracted title from block_types, or fallback title
- */
-export function extractTitleFromBlockTypes(
-  content: string,
-  blockTypes: BlockTypeInfo[],
-  fallbackFilename?: string
-): string {
-  if (!blockTypes || blockTypes.length === 0) {
-    // Fallback to extractDocumentTitle if no block_types
-    return extractDocumentTitle(content, fallbackFilename);
-  }
-
-  // Split content into paragraphs (assuming double newline separation)
-  const paragraphs = content.split(/\n\n+/).filter(p => p.trim());
-  
-  // Find the first block with type "title"
-  for (let i = 0; i < blockTypes.length && i < paragraphs.length; i++) {
-    const blockType = blockTypes[i];
-    if (blockType.type === 'title') {
-      // Extract title from the corresponding paragraph
-      const titleText = paragraphs[i].trim();
-      // Remove markdown formatting and number prefixes
-      const cleanTitle = titleText
-        .replace(/^#+\s*/, '')  // Remove markdown heading markers
-        .replace(/^\d+[.)]\s*/, '')  // Remove number prefixes
-        .replace(/\*+/g, '')  // Remove bold/italic markers
-        .trim();
-      
-      if (cleanTitle) {
-        return cleanTitle;
-      }
-    }
-  }
-  
-  // Fallback to extractDocumentTitle if no title block found
-  return extractDocumentTitle(content, fallbackFilename);
-}
-
 /** Editor name mapping (must match backend EDITOR_NAMES in edit_content_service.py) */
 const EDITOR_NAME_MAP: { [key: string]: string } = {
   'development': 'Development Editor',
@@ -500,194 +455,6 @@ export interface BlockTypeInfo {
  * @param blockTypes - Array of block type information with index, type, and optional level
  * @returns Formatted HTML with proper semantic structure
  */
-/**
- * Detect if a paragraph contains citation patterns
- */
-function isCitationParagraph(text: string): boolean {
-  if (!text || !text.trim()) return false;
-  
-  const trimmed = text.trim();
-  const lines = trimmed.split('\n').map(l => l.trim()).filter(l => l);
-  
-  // Check for "Sources:" or "References:" header
-  if (trimmed.match(/^(Sources|References|Bibliography):/i)) {
-    return true;
-  }
-  
-  // Check for markdown citation links [Title](URL) - this is the primary citation format
-  const markdownLinkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
-  const markdownLinkMatches = Array.from(trimmed.matchAll(markdownLinkPattern));
-  
-  // If paragraph contains markdown links, it's likely a citation paragraph
-  if (markdownLinkMatches.length > 0) {
-    // Check if it's in a citation context (numbered list, Sources section, etc.)
-    const hasCitationContext = 
-      trimmed.match(/^(Sources|References|Bibliography):/i) || // Has citation header
-      lines.some(line => /^(\[\d+\.\]|\d+\.)\s+/.test(line)) || // Has numbered citations
-      markdownLinkMatches.length >= 2; // Multiple citation links
-    
-    if (hasCitationContext) {
-      return true;
-    }
-  }
-  
-  // Check for citation patterns: [1.], [2.], 1., 2., etc. followed by URLs or text
-  const citationPattern = /^(\[\d+\.\]|\d+\.)\s+/;
-  const citationCount = lines.filter(line => citationPattern.test(line)).length;
-  
-  // If at least 2 lines match citation pattern, treat as citation block
-  if (citationCount >= 2) {
-    return true;
-  }
-  
-  // Check for single citation line with URL
-  if (lines.length === 1 && citationPattern.test(lines[0])) {
-    const hasUrl = /https?:\/\//i.test(lines[0]);
-    if (hasUrl) {
-      return true;
-    }
-  }
-  
-  return false;
-}
-
-/**
- * Convert markdown links in citation context to show both title and URL.
- * Formats [Title](URL) as "Title (URL)" where URL is clickable.
- * This is used specifically for citations where users need to see the actual URL.
- */
-function formatCitationLinks(markdown: string): string {
-  if (!markdown || !markdown.trim()) {
-    return markdown;
-  }
-
-  // Convert markdown citation links to show both title and URL
-  // Format: [Title](URL) -> Title (<a href="URL">URL</a>)
-  // Note: Title is NOT escaped here to allow markdown processing later
-  // URL is escaped for use in href attribute
-  return markdown.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    (match, title, url) => {
-      // Escape HTML in URL for use in href attribute (prevents XSS)
-      const escapedUrl = url
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-      
-      // Don't escape title - let markdown processing handle it
-      // This allows titles with markdown like **bold** to be processed correctly
-      return `${title} (<a href="${escapedUrl}" target="_blank" rel="noopener noreferrer">${escapedUrl}</a>)`;
-    }
-  );
-}
-
-/**
- * Convert markdown to HTML with citation-specific link formatting.
- * This function is similar to convertMarkdownToHtml but formats citation links
- * to show both title and URL instead of just the title.
- */
-function convertMarkdownToHtmlWithCitations(markdown: string): string {
-  if (!markdown || !markdown.trim()) {
-    return '';
-  }
-
-  let html = markdown;
-
-  // Format citation links first (before other markdown processing)
-  html = formatCitationLinks(html);
-
-  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
-  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
-  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
-  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
-
-  html = html.replace(/^---$/gm, '<hr>');
-  html = html.replace(/^\*\*\*$/gm, '<hr>');
-
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
-
-  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
-
-  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-  // Note: Regular markdown links are already converted by formatCitationLinks
-  // So we don't need to process them again here
-
-  const lines = html.split('\n');
-  const processedLines: string[] = [];
-  let inUnorderedList = false;
-  let inOrderedList = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmedLine = line.trim();
-
-    const unorderedMatch = trimmedLine.match(/^[-*]\s+(.+)$/);
-    const orderedMatch = trimmedLine.match(/^\d+\.\s+(.+)$/);
-
-    if (unorderedMatch) {
-      if (!inUnorderedList) {
-        if (inOrderedList) {
-          processedLines.push('</ol>');
-          inOrderedList = false;
-        }
-        processedLines.push('<ul>');
-        inUnorderedList = true;
-      }
-      processedLines.push(`<li>${unorderedMatch[1]}</li>`);
-    } else if (orderedMatch) {
-      if (!inOrderedList) {
-        if (inUnorderedList) {
-          processedLines.push('</ul>');
-          inUnorderedList = false;
-        }
-        processedLines.push('<ol>');
-        inOrderedList = true;
-      }
-      processedLines.push(`<li>${orderedMatch[1]}</li>`);
-    } else {
-      if (inUnorderedList) {
-        processedLines.push('</ul>');
-        inUnorderedList = false;
-      }
-      if (inOrderedList) {
-        processedLines.push('</ol>');
-        inOrderedList = false;
-      }
-
-      if (trimmedLine) {
-        if (trimmedLine.startsWith('<')) {
-          processedLines.push(line);
-        } else {
-          processedLines.push(`<p>${trimmedLine}</p>`);
-        }
-      } else {
-        processedLines.push('');
-      }
-    }
-  }
-
-  if (inUnorderedList) {
-    processedLines.push('</ul>');
-  }
-  if (inOrderedList) {
-    processedLines.push('</ol>');
-  }
-
-  html = processedLines.join('\n');
-  html = html.replace(/(<p><\/p>\n?)+/g, '<p></p>');
-  html = html.replace(/<p>\s*<\/p>/g, '');
-
-  return html;
-}
-
 export function formatFinalArticleWithBlockTypes(
   article: string, 
   blockTypes: BlockTypeInfo[]
@@ -722,39 +489,7 @@ export function formatFinalArticleWithBlockTypes(
 
       const blockInfo = blockTypeMap.get(idx);
       if (!blockInfo) {
-        // No block type info - check if this is a citation paragraph
-        // Citations often appear at the end without block_type entries
-        if (isCitationParagraph(trimmedPara)) {
-          // Format as citation paragraph with citation-specific link formatting
-          // This ensures URLs are visible, not just the link text
-          const formatted = convertMarkdownToHtmlWithCitations(trimmedPara);
-          // Remove wrapping <p> tags if they exist
-          let citationContent = formatted.replace(/^<p>(.*)<\/p>$/s, '$1');
-          
-          // Check if citations are in list format (multiple lines with citation patterns)
-          const lines = trimmedPara.split('\n').map(l => l.trim()).filter(l => l);
-          const citationPattern = /^(\[\d+\.\]|\d+\.)\s+/;
-          const citationLines = lines.filter(line => citationPattern.test(line));
-          
-          if (citationLines.length >= 2) {
-            // Format as citation list - preserve citation numbers and URLs
-            // Use paragraph styling but with left alignment (not justify) for citations
-            return {
-              type: 'paragraph',
-              content: `<p style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; display: block; text-align: left; margin-top: 0.15em; margin-bottom: 0.7em; line-height: 1.5;">${citationContent}</p>`,
-              level: 0
-            };
-          } else {
-            // Single citation or citation header - format as regular paragraph
-            return {
-              type: 'paragraph',
-              content: `<p style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; display: block; text-align: left; margin-top: 0.15em; margin-bottom: 0.7em; line-height: 1.5;">${citationContent}</p>`,
-              level: 0
-            };
-          }
-        }
-        
-        // Default to paragraph if no block type info and not a citation
+        // Default to paragraph if no block type info
         const formatted = convertMarkdownToHtml(trimmedPara);
         const content = formatted.startsWith('<') ? formatted : `<p>${formatted}</p>`;
         return {
@@ -793,42 +528,39 @@ export function formatFinalArticleWithBlockTypes(
           };
         
         case 'bullet_item':
-          // Process bullet item: preserve numbered/lettered prefixes, only use bullets if original had them
+          // Process bullet item: all lists use bullet icons (matches backend export)
+          // Remove ALL number/letter prefixes, always use bullet icon, format before/after colon
           let processedContent = trimmedPara;
           
-          // Detect if content starts with a prefix (number, letter, roman numeral, or bullet)
-          const numberPrefixMatch = processedContent.match(/^(\d+[.)]\s*)/);
-          const letterPrefixMatch = processedContent.match(/^([A-Za-z][.)]\s*)/);
-          const romanPrefixMatch = processedContent.match(/^([ivxlcdmIVXLCDM]+[.)]\s*)/i);
-          const bulletPrefixMatch = processedContent.match(/^([•\-\*]\s*)/);
-          
-          let preservedPrefix = '';
-          let contentWithoutPrefix = processedContent;
-          
-          // Preserve the first prefix found (priority: number > letter > roman > bullet)
-          if (numberPrefixMatch) {
-            preservedPrefix = numberPrefixMatch[1];
-            contentWithoutPrefix = processedContent.substring(numberPrefixMatch[0].length).trim();
-          } else if (letterPrefixMatch) {
-            preservedPrefix = letterPrefixMatch[1];
-            contentWithoutPrefix = processedContent.substring(letterPrefixMatch[0].length).trim();
-          } else if (romanPrefixMatch) {
-            preservedPrefix = romanPrefixMatch[1];
-            contentWithoutPrefix = processedContent.substring(romanPrefixMatch[0].length).trim();
-          } else if (bulletPrefixMatch) {
-            preservedPrefix = bulletPrefixMatch[1];
-            contentWithoutPrefix = processedContent.substring(bulletPrefixMatch[0].length).trim();
+          // Remove ALL prefixes - loop until no more prefixes found to handle nested cases
+          let previousContent = '';
+          while (previousContent !== processedContent) {
+            previousContent = processedContent;
+            
+            // Remove number prefixes (e.g., "1.", "2.", "10.", "1)", "2)", "10)", "1. ", "2) ", etc.)
+            processedContent = processedContent.replace(/^\d+[.)]\s*/g, '');
+            
+            // Remove letter prefixes (e.g., "A.", "a.", "B)", "b)", "A. ", "a) ", etc.)
+            processedContent = processedContent.replace(/^[A-Za-z][.)]\s*/g, '');
+            
+            // Remove roman numerals (e.g., "i.", "ii.", "I.", "II.", "iv.", "IV.", etc.)
+            processedContent = processedContent.replace(/^[ivxlcdmIVXLCDM]+[.)]\s*/gi, '');
+            
+            // Remove existing bullet icons (•, -, *) if present
+            processedContent = processedContent.replace(/^[•\-\*]\s*/g, '');
+            
+            // Remove any whitespace at the start
+            processedContent = processedContent.replace(/^\s+/, '');
           }
           
-          // If no prefix found, use bullet icon as default
-          const useBulletIcon = !preservedPrefix || bulletPrefixMatch !== null;
-          const displayPrefix = preservedPrefix || (useBulletIcon ? '• ' : '');
+          // Final trim
+          processedContent = processedContent.trim();
           
           // Format text before ":" as bold, after ":" as normal
-          const colonIndex = contentWithoutPrefix.indexOf(':');
+          const colonIndex = processedContent.indexOf(':');
           if (colonIndex > 0) {
-            const beforeColon = contentWithoutPrefix.substring(0, colonIndex).trim();
-            const afterColon = contentWithoutPrefix.substring(colonIndex + 1).trim();
+            const beforeColon = processedContent.substring(0, colonIndex).trim();
+            const afterColon = processedContent.substring(colonIndex + 1).trim();
             
             // Convert markdown in both parts
             let beforeFormatted = convertMarkdownToHtml(beforeColon);
@@ -838,14 +570,15 @@ export function formatFinalArticleWithBlockTypes(
             beforeFormatted = beforeFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
             afterFormatted = afterFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
             
-            // Apply bold to before part, normal to after part, preserve prefix
-            processedContent = `${displayPrefix}<strong>${beforeFormatted}</strong>: ${afterFormatted}`;
+            // Apply bold to before part, normal to after part
+            // Always use bullet icon (•) - all lists use bullets (matches backend)
+            processedContent = `• <strong>${beforeFormatted}</strong>: ${afterFormatted}`;
           } else {
             // No colon found, just convert markdown and remove <p> tags
-            contentWithoutPrefix = convertMarkdownToHtml(contentWithoutPrefix);
-            contentWithoutPrefix = contentWithoutPrefix.replace(/^<p>(.*)<\/p>$/s, '$1');
-            // Preserve prefix or use bullet icon
-            processedContent = `${displayPrefix}${contentWithoutPrefix}`;
+            processedContent = convertMarkdownToHtml(processedContent);
+            processedContent = processedContent.replace(/^<p>(.*)<\/p>$/s, '$1');
+            // Always use bullet icon (•) - all lists use bullets (matches backend)
+            processedContent = `• ${processedContent}`;
           }
           
           return {
@@ -853,7 +586,7 @@ export function formatFinalArticleWithBlockTypes(
             content: processedContent,
             level: blockInfo.level || 0,
             rawContent: trimmedPara, // Store raw content for tracking
-            hasBulletIcon: useBulletIcon // Only true if using bullet icon
+            hasBulletIcon: true // Always has bullet icon (matches backend - all lists use bullets)
           };
         
         case 'paragraph':
