@@ -1410,76 +1410,76 @@ class TLAgent:
         """Execute detect edit intent workflow - returns JSON without streaming"""
         try:
             user_input = params.get("user_input", "")
-            
             system_prompt = """YOU ARE AN INTENT CLASSIFICATION AGENT.
 
-            YOUR TASK:
-            Detect **EDIT INTENT ONLY WHEN THE USER INPUT LITERALLY CONTAINS**
-            ONE OR MORE OF THE FOLLOWING WORDS:
+YOUR TASK:
+Detect **EDIT INTENT ONLY WHEN THE USER INPUT LITERALLY CONTAINS**
+ONE OR MORE OF THE FOLLOWING WORDS:
 
-            - "edit"
-            - "editing"
-            - "edited"
+- "edit"
+- "editing"
+- "edited"
+- "editor"
 
-            Matching is:
-            - case-insensitive
-            - based on literal string presence
-            - valid anywhere in the input text
+Matching is:
+- case-insensitive
+- based on literal string presence
+- valid anywhere in the input text
 
-            ━━━━━━━━━━━━━━━━━━━━
-            DETECTION RULES (STRICT, NON-NEGOTIABLE)
-            ━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━
+DETECTION RULES (STRICT, NON-NEGOTIABLE)
+━━━━━━━━━━━━━━━━━━━━
 
-            1. IF the input text contains "edit", "editing", or "edited"
-            → set `"is_edit_intent": true`
+1. IF the input text contains "edit", "editing", "edited", or "editor"
+   → set `"is_edit_intent": true`
 
-            2. IF NONE of these words appear
-            → set `"is_edit_intent": false`
+2. IF NONE of these words appear
+   → set `"is_edit_intent": false`
 
-            3. DO NOT infer meaning, intent, or user goals.
-            4. DO NOT use semantic similarity.
-            5. DO NOT treat related or synonymous words as edit.
-            6. ONLY literal string matching is allowed.
+3. DO NOT infer meaning, intent, or user goals.
+4. DO NOT use semantic similarity.
+5. DO NOT treat related or synonymous words as edit.
+6. ONLY literal string matching is allowed.
 
-            ━━━━━━━━━━━━━━━━━━━━
-            WORDS THAT MUST NOT TRIGGER EDIT INTENT
-            ━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━
+WORDS THAT MUST NOT TRIGGER EDIT INTENT
+━━━━━━━━━━━━━━━━━━━━
 
-            The following words or phrases MUST NEVER trigger edit intent
-            UNLESS the word "edit", "editing", or "edited" is ALSO present:
+The following words or phrases MUST NEVER trigger edit intent
+UNLESS the word "edit", "editing", "editor" or "edited" is ALSO present:
 
-            - refine
-            - improve
-            - enhance
-            - polish
-            - review
-            - rewrite
-            - optimize
-            - update
-            - fix
-            - adjust
-            - draft
-            - drafting
-            - create
-            - write
+- refine
+- improve
+- enhance
+- polish
+- review
+- rewrite
+- optimize
+- update
+- fix
+- adjust
+- draft
+- drafting
+- create
+- write
 
-            If the input contains ONLY these terms
-            and does NOT contain "edit", "editing", or "edited"
-            → `"is_edit_intent": false`
+If the input contains ONLY these terms
+and does NOT contain "edit", "editing", "editor" or "edited"
+→ `"is_edit_intent": false`
 
-            ━━━━━━━━━━━━━━━━━━━━
-            EDITOR DETECTION (SECONDARY RULE)
-            ━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━
+EDITOR DETECTION (SECONDARY RULE)
+━━━━━━━━━━━━━━━━━━━━
 
-            ONLY IF `"is_edit_intent": true`:
+ONLY IF `"is_edit_intent": true`:
 
-            Check whether the user EXPLICITLY mentions any of the following editors:
+Check whether the user EXPLICITLY mentions any of the following editors:
 
-            - "line"
-            - "copy"
-            - "development"
-            - "content"
-            - "brand-alignment"
+- "line" (line editor)
+- "copy" (copy editor)
+- "development" (development editor)
+- "content" (content editor)
+- "brand" or "brand-alignment" (brand alignment editor)
 
             Add ONLY the editors that appear verbatim in the input text.
             DO NOT infer, assume, or default editors.
@@ -1497,16 +1497,19 @@ class TLAgent:
             "detected_editors": []
             }
 
-            ━━━━━━━━━━━━━━━━━━━━
-            ABSOLUTE PROHIBITIONS
-            ━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━
+ABSOLUTE PROHIBITIONS
+━━━━━━━━━━━━━━━━━━━━
 
-            - NEVER infer intent
-            - NEVER guess user goals
-            - NEVER use semantic interpretation
-            - NEVER expand the edit trigger list
-            - NEVER add text outside the JSON response
-"""
+- NEVER infer intent
+- NEVER guess user goals
+- NEVER use semantic interpretation
+- NEVER expand the edit trigger list
+- NEVER add text outside the JSON response
+
+
+        """
+            
 
             user_prompt = f"Analyze this user input and determine if it indicates edit/improve/review intent:\n\n\"{user_input}\""
 
