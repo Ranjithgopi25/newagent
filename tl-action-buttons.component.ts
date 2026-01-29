@@ -401,88 +401,6 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
             # No colon, add as-is
             _add_markdown_text_runs(para, clean_content)
 
-
-def _add_list_to_document_edit_content(doc: Document, list_items: list[dict], list_type: str, reset_numbering: bool = False, force_bullet_style: bool = False):
-    """
-    Edit-content Word only: same as _add_list_to_document but uses
-    _add_markdown_text_runs_edit_content so citation URLs (e.g. https://www.pwc.com/...)
-    are one contiguous hyperlink. Do not use for other export flows.
-    """
-    if not list_items:
-        return
-    
-    if force_bullet_style:
-        list_type = 'bullet'
-    
-    num_id = None
-    if reset_numbering and list_type in ['number', 'alpha_upper', 'alpha_lower']:
-        num_id = _create_new_numbering_instance(doc, list_type, 0)
-    
-    for item in list_items:
-        content = item.get('content', '')
-        level = item.get('level', 0)
-        parsed = item.get('parsed', parse_bullet(content))
-        
-        if list_type == 'bullet':
-            if level >= 1:
-                style_name = "List Bullet 2"
-            else:
-                style_name = "List Bullet"
-        elif list_type == 'number':
-            if level >= 1:
-                style_name = "List Number 2"
-            else:
-                style_name = "List Number"
-        elif list_type == 'alpha_upper':
-            if level >= 1:
-                style_name = "List Alpha 2"
-            else:
-                style_name = "List Alpha"
-        elif list_type == 'alpha_lower':
-            if level >= 1:
-                style_name = "List Alpha 2"
-            else:
-                style_name = "List Alpha"
-        else:
-            style_name = "List Bullet" if level == 0 else "List Bullet 2"
-        
-        try:
-            para = doc.add_paragraph(style=style_name)
-        except:
-            para = doc.add_paragraph(style="List Bullet")
-        
-        if num_id is not None:
-            pPr = para._p.get_or_add_pPr()
-            numPr = OxmlElement("w:numPr")
-            ilvl = OxmlElement("w:ilvl")
-            ilvl.set(qn("w:val"), str(level))
-            numId_elem = OxmlElement("w:numId")
-            numId_elem.set(qn("w:val"), str(num_id))
-            numPr.extend([ilvl, numId_elem])
-            pPr.append(numPr)
-        
-        _apply_body_text_style_word(para)
-        
-        clean_content = content
-        if force_bullet_style:
-            clean_content = re.sub(r'^\d+\.\s+', '', content.strip())
-            clean_content = re.sub(r'^[A-Za-z]\.\s+', '', clean_content.strip())
-            clean_content = re.sub(r'^[•\-\*]\s+', '', clean_content.strip())
-        elif list_type == 'number':
-            clean_content = re.sub(r'^\d+\.\s+', '', content.strip())
-        elif list_type in ['alpha_upper', 'alpha_lower']:
-            clean_content = re.sub(r'^[A-Za-z]\.\s+', '', content.strip())
-        elif list_type == 'bullet':
-            clean_content = re.sub(r'^[•\-\*]\s+', '', content.strip())
-        
-        if parsed.get('label') and parsed.get('body'):
-            run = para.add_run(sanitize_text_for_word(parsed['label']))
-            run.bold = True
-            para.add_run(f": {sanitize_text_for_word(parsed['body'])}")
-        else:
-            _add_markdown_text_runs_edit_content(para, clean_content)
-
-
 def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_style: ParagraphStyle, 
                      prev_block_type: str = None, next_block: dict = None, start_from: int = 1):
     """
@@ -1281,6 +1199,7 @@ def _format_content_for_pdf(text: str) -> str:
     - *italic* to <i>italic</i>
     - [text](url) to <a href="url" color="blue">text</a>
     - https?://... to <a href="url" color="blue">url</a>
+    - Unicode superscript digits (¹²³ etc.) to <sup>1</sup> so they render correctly (not as bullet)
     - Normalizes all Unicode dash variants to standard hyphen for reliable PDF rendering
     """
     # First, handle special quotation marks and other problematic characters BEFORE processing HTML
@@ -1290,6 +1209,15 @@ def _format_content_for_pdf(text: str) -> str:
     text = text.replace('\u2018', "'")  # Left single quotation mark
     text = text.replace('\u2019', "'")  # Right single quotation mark
     text = text.replace('\u2026', '...')  # Ellipsis
+
+    # Convert Unicode superscript digits to <sup>N</sup> so PDF renders them correctly
+    # (ReportLab may render ¹²³ as replacement glyphs/bullets; <sup> tag gives proper superscript)
+    _SUPERSCRIPT_MAP = {
+        '\u00B9': '1', '\u00B2': '2', '\u00B3': '3', '\u2074': '4', '\u2075': '5',
+        '\u2076': '6', '\u2077': '7', '\u2078': '8', '\u2079': '9', '\u2070': '0',
+    }
+    for sup_char, digit in _SUPERSCRIPT_MAP.items():
+        text = text.replace(sup_char, f'<sup>{digit}</sup>')
     
     # Normalize all Unicode dash/hyphen variants to standard ASCII hyphen-minus (-)
     # This prevents ReportLab rendering issues with special Unicode characters
@@ -1331,32 +1259,6 @@ def _format_content_for_pdf(text: str) -> str:
     text = re.sub(r'(?<!\*)\*([^\*]+?)\*(?!\*)', r'<i>\1</i>', text)
     
     return text
-
-
-def _format_content_for_pdf_edit_content(text: str) -> str:
-    """
-    Edit-content PDF only: map Unicode superscript digits to ReportLab <sup> tag
-    so they render as proper superscript (avoid bullet-like glyphs), then format
-    with shared _format_content_for_pdf. Do not use for other export flows.
-    """
-    if not text:
-        return text
-    # Map Unicode superscript digits to <sup>n</sup> (ReportLab renders these correctly)
-    superscript_map = {
-        '\u00B9': '<sup>1</sup>',  # ¹
-        '\u00B2': '<sup>2</sup>',  # ²
-        '\u00B3': '<sup>3</sup>',  # ³
-        '\u2074': '<sup>4</sup>',  # ⁴
-        '\u2075': '<sup>5</sup>',  # ⁵
-        '\u2076': '<sup>6</sup>',  # ⁶
-        '\u2077': '<sup>7</sup>',  # ⁷
-        '\u2078': '<sup>8</sup>',  # ⁸
-        '\u2079': '<sup>9</sup>',  # ⁹
-        '\u2070': '<sup>0</sup>',  # ⁰
-    }
-    for char, replacement in superscript_map.items():
-        text = text.replace(char, replacement)
-    return _format_content_for_pdf(text)
 
 
 def _is_bullet_list_block(block: str) -> bool:
@@ -1476,6 +1378,57 @@ def add_hyperlink(paragraph, url, text=None): #merge conflict resolved
         t.text = text
     run.append(t)
 
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+
+def _normalize_citation_url_for_word(url: str) -> str:
+    """
+    Normalize a citation URL for Word export so the full URL is preserved as one string.
+    Prevents breaks after dots (e.g. after www.pwc.) by stripping newlines and ensuring
+    the URL is a single contiguous string. Use this for edit content Word citation links.
+    """
+    if not url:
+        return ""
+    s = str(url).strip()
+    # Remove any newlines, carriage returns, or spaces that could cause Word to break the link
+    s = re.sub(r'[\r\n\t\s]+', '', s)
+    return s
+
+
+def add_hyperlink_edit_content_citation(paragraph, url: str):
+    """
+    Add a citation URL as a single hyperlink in Word for edit content export.
+    Uses noBreak on the run so the link does not break after dots (e.g. after www.pwc.);
+    the full URL stays one clickable link instead of breaking into link + plain text.
+    """
+    url = _normalize_citation_url_for_word(url)
+    if not url:
+        return
+    text = sanitize_text_for_word(url)
+    part = paragraph.part
+    r_id = part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(qn('r:id'), r_id)
+    run = OxmlElement('w:r')
+    rPr = OxmlElement('w:rPr')
+    rStyle = OxmlElement('w:rStyle')
+    rStyle.set(qn('w:val'), 'Hyperlink')
+    rPr.append(rStyle)
+    u = OxmlElement('w:u')
+    u.set(qn('w:val'), 'single')
+    rPr.append(u)
+    color = OxmlElement('w:color')
+    color.set(qn('w:val'), '0000FF')
+    rPr.append(color)
+    # Prevent line break inside the URL so it doesn't break after a dot
+    no_break = OxmlElement('w:noBreak')
+    rPr.append(no_break)
+    run.append(rPr)
+    t = OxmlElement('w:t')
+    if text:
+        t.text = text
+    run.append(t)
     hyperlink.append(run)
     paragraph._p.append(hyperlink)
 
@@ -1831,87 +1784,6 @@ def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
                 run = paragraph.add_run(sanitize_text_for_word(before_text))
         
         # Process the match
-        if match_type == 'placeholder':
-            placeholder_text = match.group(0)
-            if placeholder_text in link_placeholders:
-                link_text, link_url = link_placeholders[placeholder_text]
-                add_hyperlink(paragraph, link_url, link_text)
-            pos = match_pos + len(placeholder_text)
-        
-        elif match_type == 'bold':
-            bold_text = match.group(1)
-            run = paragraph.add_run(sanitize_text_for_word(bold_text))
-            run.bold = True
-            pos = match_pos + len(match.group(0))
-        
-        elif match_type == 'italic':
-            italic_text = match.group(1)
-            run = paragraph.add_run(sanitize_text_for_word(italic_text))
-            run.italic = True
-            pos = match_pos + len(match.group(0))
-        
-        elif match_type == 'url':
-            url = match.group(0).rstrip('.,;:')
-            add_hyperlink(paragraph, url, url)
-            pos = match_pos + len(url)
-
-
-def _add_markdown_text_runs_edit_content(paragraph, text: str, allow_bold: bool = True):
-    """
-    Edit-content Word only: same as _add_markdown_text_runs but plain URL regex
-    does NOT stop at dots (full URL like https://www.pwc.com/... becomes one hyperlink).
-    Do not use for other export flows.
-    """
-    if not text:
-        return
-    
-    link_placeholders = {}
-    placeholder_counter = 0
-    
-    def replace_link(match):
-        nonlocal placeholder_counter
-        link_text = match.group(1)
-        link_url = match.group(2)
-        placeholder = f"__LINK_PLACEHOLDER_{placeholder_counter}__"
-        link_placeholders[placeholder] = (link_text, link_url)
-        placeholder_counter += 1
-        return placeholder
-    
-    text_with_placeholders = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', replace_link, text)
-    
-    pos = 0
-    while pos < len(text_with_placeholders):
-        placeholder_match = re.search(r'__LINK_PLACEHOLDER_\d+__', text_with_placeholders[pos:])
-        bold_match = re.search(r'\*\*(.+?)\*\*', text_with_placeholders[pos:])
-        italic_match = re.search(r'(?<!\*)\*([^\*]+?)\*(?!\*)', text_with_placeholders[pos:])
-        # Greedy URL match: do NOT stop at dots; stop only at space, ), or ]
-        url_match = re.search(r'https?://\S+(?=[\s)\]]|$)', text_with_placeholders[pos:])
-        
-        matches = []
-        if placeholder_match:
-            matches.append(('placeholder', pos + placeholder_match.start(), placeholder_match))
-        if allow_bold and bold_match:
-            matches.append(('bold', pos + bold_match.start(), bold_match))
-        if italic_match:
-            matches.append(('italic', pos + italic_match.start(), italic_match))
-        if url_match:
-            matches.append(('url', pos + url_match.start(), url_match))
-        
-        if not matches:
-            if pos < len(text_with_placeholders):
-                remaining = text_with_placeholders[pos:]
-                if remaining:
-                    run = paragraph.add_run(sanitize_text_for_word(remaining))
-            break
-        
-        matches.sort(key=lambda x: x[1])
-        match_type, match_pos, match = matches[0]
-        
-        if match_pos > pos:
-            before_text = text_with_placeholders[pos:match_pos]
-            if before_text:
-                run = paragraph.add_run(sanitize_text_for_word(before_text))
-        
         if match_type == 'placeholder':
             placeholder_text = match.group(0)
             if placeholder_text in link_placeholders:
@@ -3477,10 +3349,10 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
                         clean = re.sub(r'^\s*[-•]\s+', '', line).strip()
                         if clean:
                             para = doc.add_paragraph(style="List Bullet")
-                            _add_markdown_text_runs_edit_content(para, clean)
+                            _add_markdown_text_runs(para, clean)
                 else:
                     para = doc.add_paragraph(style="Body Text")
-                    _add_markdown_text_runs_edit_content(para, block)
+                    _add_markdown_text_runs(para, block)
         return
     
     # Use split_blocks() - same as final article processing
@@ -3571,7 +3443,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
             # If previous block was heading, close current list (if any) and start new one with reset
             if reset_numbering and current_list:
                 ordered_list = _order_list_items(current_list)
-                _add_list_to_document_edit_content(doc, ordered_list, prev_list_type, reset_numbering=False)
+                _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=False)
                 current_list = []
             
             # Check if we should start a new list (different type or level)
@@ -3583,7 +3455,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
                     ordered_list = _order_list_items(current_list)
                     # Check if this list should reset numbering
                     should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
-                    _add_list_to_document_edit_content(doc, ordered_list, prev_list_type, reset_numbering=should_reset)
+                    _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=should_reset)
                     current_list = []
             
             # Add to current list
@@ -3598,7 +3470,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
             if current_list:
                 # Order list if needed (for numbered/alphabetical)
                 ordered_list = _order_list_items(current_list)
-                _add_list_to_document_edit_content(doc, ordered_list, prev_list_type, reset_numbering=False)
+                _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=False)
                 current_list = []
                 prev_list_type = None
             
@@ -3629,7 +3501,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
             elif block_type == "paragraph":
                 # Paragraph: proper spacing with Body Text style (matches PDF)
                 para = doc.add_paragraph(style="Body Text")
-                _add_markdown_text_runs_edit_content(para, content)
+                _add_markdown_text_runs(para, content)
                 
                 # Apply Body Text style configuration
                 _apply_body_text_style_word(para)
@@ -3652,7 +3524,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
         ordered_list = _order_list_items(current_list)
         # Check if this list should reset numbering (marked when started after heading)
         should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
-        _add_list_to_document_edit_content(doc, ordered_list, prev_list_type, reset_numbering=should_reset, force_bullet_style=use_bullet_icons_only)
+        _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=should_reset, force_bullet_style=use_bullet_icons_only)
 
 def export_to_word_edit_content(
     content: str,
@@ -3748,13 +3620,13 @@ def export_to_word_edit_content(
         if not references_heading_added:
             doc.add_paragraph("References", style="Heading 2")
 
-        for ref in references:
-            para = _add_numbered_paragraph(
-                doc,
-                sanitize_text_for_word(ref.get("title", ""))
-            )
+        for idx, ref in enumerate(references, start=1):
+            title_text = sanitize_text_for_word(ref.get("title", ""))
+            para = doc.add_paragraph(style="Body Text")
+            para.add_run(f"{idx}. {title_text}")
             if ref.get("url"):
-                add_hyperlink(para, ref["url"])
+                para.add_run(" ")
+                add_hyperlink_edit_content_citation(para, ref["url"])
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -3819,23 +3691,23 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
             
             if block.startswith('####'):
                 text = block.replace('####', '').strip()
-                text = _format_content_for_pdf_edit_content(text)
+                text = _format_content_for_pdf(text)
                 story.append(Paragraph(text, heading_style))
             elif block.startswith('###'):
                 text = block.replace('###', '').strip()
-                text = _format_content_for_pdf_edit_content(text)
+                text = _format_content_for_pdf(text)
                 story.append(Paragraph(text, heading_style))
             elif block.startswith('##'):
                 text = block.replace('##', '').strip()
-                text = _format_content_for_pdf_edit_content(text)
+                text = _format_content_for_pdf(text)
                 story.append(Paragraph(text, heading_style))
             elif block.startswith('#'):
                 text = block.replace('#', '').strip()
-                text = _format_content_for_pdf_edit_content(text)
+                text = _format_content_for_pdf(text)
                 story.append(Paragraph(text, heading_style))
             elif _is_bullet_list_block(block):
                 bullet_items = _parse_bullet_items(block)
-                list_items = [ListItem(Paragraph(_format_content_for_pdf_edit_content(text), body_style)) for indent, text in bullet_items]
+                list_items = [ListItem(Paragraph(_format_content_for_pdf(text), body_style)) for indent, text in bullet_items]
                 story.append(
                     ListFlowable(
                         list_items,
@@ -3847,7 +3719,7 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                     )
                 )
             else:
-                para = Paragraph(_format_content_for_pdf_edit_content(block), body_style)
+                para = Paragraph(_format_content_for_pdf(block), body_style)
                 story.append(para)
         return
     
@@ -3978,7 +3850,7 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                 clean_content = re.sub(r'^\d+[.)]\s+', '', content).strip()
                 
                 # Heading: Based on level, bold, black color, font-weight 600 equivalent
-                text = _format_content_for_pdf_edit_content(clean_content)
+                text = _format_content_for_pdf(clean_content)
                 # Adjust font size based on level (14pt base, decrease slightly for higher levels)
                 heading_font_size = max(12, 14 - (level - 1))
                 level_heading_style = ParagraphStyle(
@@ -4007,7 +3879,7 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                 if prev_block_type == 'heading':
                     para_style.spaceBefore = 0
                 
-                para = Paragraph(_format_content_for_pdf_edit_content(content), para_style)
+                para = Paragraph(_format_content_for_pdf(content), para_style)
                 story.append(para)
             
             prev_block_type = block_type
