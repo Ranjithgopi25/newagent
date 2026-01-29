@@ -1808,7 +1808,11 @@ def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
             placeholder_text = match.group(0)
             if placeholder_text in link_placeholders:
                 link_text, link_url = link_placeholders[placeholder_text]
-                add_hyperlink(paragraph, link_url, link_text)
+                # Citation refs [1](url), [2](url): make clickable superscript like PDF
+                if link_text.isdigit():
+                    add_superscript_hyperlink(paragraph, f"[{link_text}]", link_url)
+                else:
+                    add_hyperlink(paragraph, link_url, link_text)
             pos = match_pos + len(placeholder_text)
         
         elif match_type == 'bold':
@@ -3268,7 +3272,25 @@ def _add_page_number(canvas, doc):
     )
 
     canvas.restoreState()
- 
+
+
+def _add_page_number_edit_content_pdf(canvas, doc):
+    """
+    Add page number at bottom of each content page for edit content PDF export.
+    Content pages are merged after a single cover page, so display number as doc.page + 1.
+    Use only in export_to_pdf_edit_content when building content pages.
+    """
+    canvas.saveState()
+    canvas.setFont("Helvetica", 9)
+    canvas.setFillColor('#666666')
+    page_num_text = f"{doc.page + 1}"
+    canvas.drawRightString(
+        doc.pagesize[0] - 1 * inch,
+        0.75 * inch,
+        page_num_text
+    )
+    canvas.restoreState()
+
 
 def export_to_pdf_pwc_no_toc(
     content: str,
@@ -3812,7 +3834,8 @@ def export_to_word_edit_content(
             para.add_run(f"{idx}. {title_text}")
             if ref.get("url"):
                 para.add_run(" ")
-                add_hyperlink_edit_content_citation(para, ref["url"])
+                url_norm = _normalize_citation_url_for_word(ref["url"])
+                add_hyperlink(para, url_norm, url_norm)
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -4223,11 +4246,12 @@ def export_to_pdf_edit_content(
     story = []
     _format_content_with_block_types_pdf(story, content, block_types, body_style, heading_style)
     
-    # Remove footers and add page numbers only
-    # _set_footer_with_page_numbers_only(doc)
-    
-    # Build the content PDF
-    doc.build(story)
+    # Build the content PDF with page numbers at bottom (edit content only)
+    doc.build(
+        story,
+        onFirstPage=_add_page_number_edit_content_pdf,
+        onLaterPages=_add_page_number_edit_content_pdf
+    )
     content_buffer.seek(0)
     
     # ===== STEP 3: Merge cover + content =====
