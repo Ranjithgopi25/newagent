@@ -4,8 +4,9 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Flowable, ListFlowable, ListItem
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, PageBreak, Flowable, ListFlowable, ListItem, KeepTogether
 from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT, TA_CENTER
+from reportlab.lib import colors
 import docx
 from docx import Document
 from docx.shared import Pt as DocxPt, Inches as DocxInches, RGBColor as DocxRGBColor
@@ -25,8 +26,15 @@ from typing import List, Dict, Optional
 from xml.etree import ElementTree as ET
 from io import BytesIO
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 logger = logging.getLogger(__name__)
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FONT_DIR = os.path.join(BASE_DIR, "..", "assets", "fonts")
+
+pdfmetrics.registerFont(TTFont("DejaVu",os.path.join(FONT_DIR,  "DejaVuSans.ttf")))
+pdfmetrics.registerFont(TTFont("DejaVu-Bold",  os.path.join(FONT_DIR,"DejaVuSans-Bold.ttf")))
 
 # Path to PwC templates
 PWC_TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),"app","features","thought_leadership","template", "pwc_doc_template_2025.docx")
@@ -49,7 +57,7 @@ def _get_existing_pwc_pdf_template_path() -> str:
         os.path.join(base_dir, "app", "features", "thought_leadership", "template", "pwc_pdf_template_2025.pdf"),
         # If the module is under site-packages/app/, the templates may sit alongside the package
         os.path.join(base_dir, "features", "thought_leadership", "template", "pwc_pdf_template_2025.pdf"),
-        # Fallback to current working directory (useful in packaged container layouts)
+        # Fallback to the current working directory (useful in packaged container layouts)
         os.path.join(os.getcwd(), "app", "features", "thought_leadership", "template", "pwc_pdf_template_2025.pdf"),
     ]
 
@@ -1199,6 +1207,7 @@ def _format_content_for_pdf(text: str) -> str:
     - *italic* to <i>italic</i>
     - [text](url) to <a href="url" color="blue">text</a>
     - https?://... to <a href="url" color="blue">url</a>
+    - Unicode superscript digits (¹²³ etc.) to <sup>1</sup> so they render correctly (not as bullet)
     - Normalizes all Unicode dash variants to standard hyphen for reliable PDF rendering
     """
     # First, handle special quotation marks and other problematic characters BEFORE processing HTML
@@ -1208,6 +1217,15 @@ def _format_content_for_pdf(text: str) -> str:
     text = text.replace('\u2018', "'")  # Left single quotation mark
     text = text.replace('\u2019', "'")  # Right single quotation mark
     text = text.replace('\u2026', '...')  # Ellipsis
+
+    # Convert Unicode superscript digits to <sup>N</sup> so PDF renders them correctly
+    # (ReportLab may render ¹²³ as replacement glyphs/bullets; <sup> tag gives proper superscript)
+    _SUPERSCRIPT_MAP = {
+        '\u00B9': '1', '\u00B2': '2', '\u00B3': '3', '\u2074': '4', '\u2075': '5',
+        '\u2076': '6', '\u2077': '7', '\u2078': '8', '\u2079': '9', '\u2070': '0',
+    }
+    for sup_char, digit in _SUPERSCRIPT_MAP.items():
+        text = text.replace(sup_char, f'<sup>{digit}</sup>')
     
     # Normalize all Unicode dash/hyphen variants to standard ASCII hyphen-minus (-)
     # This prevents ReportLab rendering issues with special Unicode characters
@@ -1380,6 +1398,108 @@ def add_hyperlink(paragraph, url, text=None): #merge conflict resolved
         t.text = text
     run.append(t)
 
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+def add_hyperlink_mi(paragraph, url, text=None,bold=False): #merge conflict resolved
+    """
+    Create a hyperlink in a Word paragraph with blue color and underline.
+    """
+    if not text:
+        text = url
+    
+    # Sanitize inputs
+    text = sanitize_text_for_word(text)
+    url = str(url).strip()
+
+    part = paragraph.part
+    r_id = part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(qn('r:id'), r_id)
+
+    run = OxmlElement('w:r')
+    rPr = OxmlElement('w:rPr')
+
+    # Apply Hyperlink character style
+    rStyle = OxmlElement('w:rStyle')
+    rStyle.set(qn('w:val'), 'Hyperlink')
+    rPr.append(rStyle)
+    b = OxmlElement('w:b')
+    b.set(qn('w:val'), 'true' if bold else 'false')
+    rPr.append(b)
+
+
+    # Style (blue + underline) - ensure color is applied
+    u = OxmlElement('w:u')
+    u.set(qn('w:val'), 'single')
+    rPr.append(u)
+
+    color = OxmlElement('w:color')
+    color.set(qn('w:val'), '0000FF')
+    rPr.append(color)
+
+    run.append(rPr)
+    
+    # Add text to run - ensure it's properly encoded
+    t = OxmlElement('w:t')
+    # Set text with proper XML text handling
+    if text:
+        t.text = text
+    run.append(t)
+
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+
+
+def _normalize_citation_url_for_word(url: str) -> str:
+    """
+    Normalize a citation URL for Word export so the full URL is preserved as one string.
+    Prevents breaks after dots (e.g. after www.pwc.) by stripping newlines and ensuring
+    the URL is a single contiguous string. Use this for edit content Word citation links.
+    """
+    if not url:
+        return ""
+    s = str(url).strip()
+    # Remove any newlines, carriage returns, or spaces that could cause Word to break the link
+    s = re.sub(r'[\r\n\t\s]+', '', s)
+    return s
+
+
+def add_hyperlink_edit_content_citation(paragraph, url: str):
+    """
+    Add a citation URL as a single hyperlink in Word for edit content export.
+    Uses noBreak on the run so the link does not break after dots (e.g. after www.pwc.);
+    the full URL stays one clickable link instead of breaking into link + plain text.
+    """
+    url = _normalize_citation_url_for_word(url)
+    if not url:
+        return
+    text = sanitize_text_for_word(url)
+    part = paragraph.part
+    r_id = part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(qn('r:id'), r_id)
+    run = OxmlElement('w:r')
+    rPr = OxmlElement('w:rPr')
+    rStyle = OxmlElement('w:rStyle')
+    rStyle.set(qn('w:val'), 'Hyperlink')
+    rPr.append(rStyle)
+    u = OxmlElement('w:u')
+    u.set(qn('w:val'), 'single')
+    rPr.append(u)
+    color = OxmlElement('w:color')
+    color.set(qn('w:val'), '0000FF')
+    rPr.append(color)
+    # Prevent line break inside the URL so it doesn't break after a dot
+    no_break = OxmlElement('w:noBreak')
+    rPr.append(no_break)
+    run.append(rPr)
+    t = OxmlElement('w:t')
+    if text:
+        t.text = text
+    run.append(t)
     hyperlink.append(run)
     paragraph._p.append(hyperlink)
 
@@ -1760,7 +1880,11 @@ def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
             placeholder_text = match.group(0)
             if placeholder_text in link_placeholders:
                 link_text, link_url = link_placeholders[placeholder_text]
-                add_hyperlink(paragraph, link_url, link_text)
+                # Citation refs [1](url), [2](url): make clickable superscript like PDF
+                if link_text.isdigit():
+                    add_superscript_hyperlink(paragraph, f"[{link_text}]", link_url)
+                else:
+                    add_hyperlink(paragraph, link_url, link_text)
             pos = match_pos + len(placeholder_text)
         
         elif match_type == 'bracket_url':
@@ -2864,7 +2988,8 @@ def export_to_pdf_with_pwc_template_with_bullets(
     # First, extract all headings for Table of Contents
     headings = []
     if include_toc:
-        blocks = content.split('\n')
+        # blocks = content.split('\n')
+        blocks = re.split(r'\n\s*\n', content)
         for block in blocks:
             if not block.strip():
                 continue
@@ -2909,9 +3034,22 @@ def export_to_pdf_with_pwc_template_with_bullets(
         fontSize=11,
         leading=15,
         alignment=TA_JUSTIFY,
-        spaceAfter=12,
-        fontName='Helvetica'
+        spaceAfter=6,#12
+        # fontName='Helvetica'
+        fontName='DejaVu'
     )
+    body_style.hyphenationLang = None
+    table_cell_style = ParagraphStyle(
+    'PWCTableCell',
+    parent=styles['BodyText'],
+    fontName='Helvetica',
+    fontSize=10,
+    leading=14,
+    alignment=TA_LEFT,
+    spaceAfter=0,
+    spaceBefore=0,
+)
+
     bullet_style = ParagraphStyle(
         'PWCBullet',
         parent=body_style,
@@ -2927,7 +3065,8 @@ def export_to_pdf_with_pwc_template_with_bullets(
         alignment=TA_LEFT,
         spaceAfter=4,  
         spaceBefore=0,
-        fontName='Helvetica'
+        fontName='Helvetica',
+        bold = False
     )
     heading_style = ParagraphStyle(
         'PWCHeading',
@@ -2935,17 +3074,141 @@ def export_to_pdf_with_pwc_template_with_bullets(
         fontSize=14,
         textColor='#D04A02',
         spaceAfter=10,
-        spaceBefore=10,
-        fontName='Helvetica-Bold' #Helvetica
-    )   
+        spaceBefore=10, #10
+        # fontName='Helvetica-Bold' #Helvetica
+        fontName='DejaVu-Bold'
+
+    )
+ 
+   
     story = []   
     
     # Parse and add content with formatting
-    blocks = content.split('\n')
+    # blocks = content.split('\n')
+    blocks = re.split(r'\n\s*\n', content)
     for block in blocks:
         if not block.strip():
-            continue        
+            continue
+         # ===== TABLE DETECTION (ADD THIS BLOCK) =====
+        if "|" in block and re.search(r"\|\s*-{3,}", block):
+            rows = [r.strip() for r in block.split("\n") if "|" in r]
+            # data = [
+            #     [re.sub(r"[*#]+", "", cell).strip() for cell in row.strip("|").split("|")]
+            #     for row in rows
+            # ]
+            data = [
+                [
+                    Paragraph(
+                        re.sub(r"[*#]+", "", cell).strip(),
+                        table_cell_style
+                    )
+                    for cell in row.strip("|").split("|")
+                ]
+                for row in rows
+            ]
+
+            usable_width = page_width - (1.1*inch + 1*inch + 0.3*inch)
+            colWidths = [usable_width * 0.3] + [usable_width * 0.7 / (len(data[0]) - 1)] * (len(data[0]) - 1)
+
+
+            table = Table(
+                data,
+                # colWidths=[(page_width - 2.1*inch) / len(data[0])] * len(data[0]),
+                colWidths=colWidths,
+                repeatRows=1
+            )
+            table.setStyle([
+                ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                ('BACKGROUND', (0,0), (-1,0), colors.whitesmoke),
+                ('FONT', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                # ('WORDWRAP', (0,0), (-1,-1), 'CJK'),
+                ('LEFTPADDING', (0,0), (-1,-1), 6),
+                ('RIGHTPADDING', (0,0), (-1,-1), 6),
+                ('TOPPADDING', (0,0), (-1,-1), 4),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+                ('NOSPLIT', (0,0), (-1,-1)),
+                
+                # ('ROWHEIGHT', (0,0), (-1,-1), None),
+
+
+            ])
+            # story.append(table)
+            # # story.append(Spacer(1, 12))
+            # # story.append(Spacer(1, 20))
+            # story.append(Spacer(1, 12))
+            # story.append(KeepTogether([table]))
+            # story.append(Spacer(1, 18))
+            # story.append(Paragraph("&nbsp;", body_style))
+            # table.hAlign = 'LEFT'
+            story.append(KeepTogether([
+                table,
+                Spacer(1, 18)
+            ]))
+
+
+
+            continue
+            # ===== END TABLE DETECTION =====        
         block = block.strip()
+        if '\n' in block:
+            lines = [l.rstrip() for l in block.split('\n') if l.strip()]
+            first = lines[0].lstrip()
+            rest = lines[1:]
+
+            # ---------- 1️⃣ MARKDOWN HEADINGS ----------
+            if first.startswith('#'):
+                heading_text = re.sub(r'^#+\s*', '', first)
+                heading_text = re.sub(r'\*+', '', heading_text).rstrip(':').strip()
+
+                story.append(Paragraph(heading_text, heading_style))
+
+                # render remaining content normally
+                if rest:
+                    remaining_block = "\n".join(rest).strip()
+
+                    if _is_bullet_list_block(remaining_block):
+                        bullet_items = _parse_bullet_items(remaining_block)
+                        story.append(ListFlowable(
+                            [
+                                ListItem(
+                                    Paragraph(
+                                        _format_content_for_pdf_mi(
+                                            _clean_bullet_text(item)
+                                        ),
+                                        bullet_style
+                                    ),
+                                    leftIndent=24 + indent * 12,
+                                    bulletText='•'
+                                )
+                                for indent, item in bullet_items
+                            ],
+                            bulletType='bullet',
+                            leftIndent=24
+                        ))
+                    else:
+                        story.append(
+                            Paragraph(
+                                _format_content_for_pdf_mi(
+                                    _clean_bullet_text(remaining_block)
+                                ),
+                                body_style
+                            )
+                        )
+                continue
+
+            # ---------- 2️⃣ NON-HEADING MULTI-LINE PARAGRAPHS ----------
+            if not _is_bullet_list_block(block) and "|" not in block:
+                for line in lines:
+                    story.append(
+                        Paragraph(
+                            _format_content_for_pdf_mi(_clean_bullet_text(line)),
+                            body_style
+                        )
+                    )
+                continue
+
         if re.match(r'^\s*[-_]{3,}\s*$', block):
             continue
         # Check for headings (bold text on its own line or markdown style)
@@ -2992,8 +3255,9 @@ def export_to_pdf_with_pwc_template_with_bullets(
                     bullet_flow = ListFlowable(
                         [
                             ListItem(
-                                Paragraph(_format_content_for_pdf_mi(_strip_ui_markdown(_clean_bullet_text(text))), bullet_style),
-                                leftIndent=24 + indent * 2,
+                                Paragraph(_format_content_for_pdf_mi(_strip_ui_markdown(_clean_bullet_text(text)).lstrip("-–• ")), bullet_style),
+                                # leftIndent=24 + indent * 2,
+                                leftIndent=18 + indent * 12,
                                 bulletText='•'
                             )
                             for indent, text in bullet_items
@@ -3004,6 +3268,18 @@ def export_to_pdf_with_pwc_template_with_bullets(
                         spaceAfter=8
                     )
                     story.append(bullet_flow)
+                    # trailing_text = _remove_bullets_from_block(remaining_content).strip()
+                    if not _is_bullet_list_block(remaining_content):
+                        trailing_text = remaining_content.strip()
+                    else:
+                        trailing_text = _remove_bullets_from_block(remaining_content).strip()
+
+                    if trailing_text:
+                        story.append(Spacer(1, 6))
+                        story.append(Paragraph(
+                            _format_content_for_pdf_mi(trailing_text),
+                            body_style
+                        ))
                 else:
                     para = Paragraph(_format_content_for_pdf_mi( _strip_ui_markdown(remaining_content)), body_style)
                     story.append(para)
@@ -3054,8 +3330,10 @@ def export_to_pdf_with_pwc_template_with_bullets(
                 [
                     ListItem(
                         Paragraph(_format_content_for_pdf_mi(_clean_bullet_text(item)), bullet_style),
-                        leftIndent=24 + indent * 2,
-                        bulletText='•'
+                        # leftIndent=24 + indent * 2,
+                        leftIndent = 24 + indent * 12,
+                        # bulletText='•'
+                        bulletText = '•' if indent < 2 else '-'
                     )
                     for indent,item in bullet_items
                 ],
@@ -3080,14 +3358,21 @@ def export_to_pdf_with_pwc_template_with_bullets(
                 for line in lines:
                     line_stripped = line.strip()
                     if line_stripped:
-                        para = Paragraph(_format_content_for_pdf_mi( _strip_ui_markdown(line_stripped)), reference_style)
+                        clean = _strip_ui_markdown(line_stripped)
+                        para = Paragraph(_format_content_for_pdf_mi(clean), reference_style)
+
+                        # para = Paragraph(_format_content_for_pdf_mi( _strip_ui_markdown(line_stripped))+ " ", reference_style)
+                        # para = Paragraph(_strip_ui_markdown(line_stripped), reference_style)
+                        story.append(Spacer(1, 6))
+                        
                         story.append(para)
+                        story.append(Spacer(1, 6))
                 continue
         
         # Regular paragraph - intelligently split long paragraphs into smaller chunks
         sentence_count = len(re.findall(r'[.!?]', block))
-        if sentence_count > 999:
-            
+        # if sentence_count > 999:
+        if sentence_count > 20:    
             # This is a long paragraph, split it into smaller chunks (2-3 sentences each)
             split_paragraphs = _split_paragraph_into_sentences(block, target_sentences=3)
             for split_para in split_paragraphs:
@@ -3097,7 +3382,9 @@ def export_to_pdf_with_pwc_template_with_bullets(
         else:
             # Keep short paragraphs as is
             # para = Paragraph(_format_content_for_pdf_mi(_strip_ui_markdown(_clean_bullet_text(block))), body_style)
+            # para = Paragraph(_format_content_for_pdf_mi(_clean_bullet_text(block)), body_style)
             para = Paragraph(_format_content_for_pdf_mi(_clean_bullet_text(block)), body_style)
+
             story.append(para)
     
     # Build the content PDF
@@ -3127,7 +3414,7 @@ def export_to_pdf_with_pwc_template_with_bullets(
             parent=toc_styles['BodyText'],
             fontSize=11,
             textColor='#000000',
-            spaceAfter=12,
+            spaceAfter=6,#12
             alignment=TA_LEFT,
             fontName='Helvetica',
             leading=16,
@@ -3194,7 +3481,26 @@ def _add_page_number(canvas, doc):
     )
 
     canvas.restoreState()
- 
+
+
+def _add_page_number_edit_content_pdf(canvas, doc):
+    """
+    Add page number at bottom of each content page for edit content PDF export.
+    Content pages are merged after a single cover page, so display number as doc.page + 1.
+    Use only in export_to_pdf_edit_content when building content pages.
+    """
+    canvas.saveState()
+    canvas.setFont("Helvetica", 9)
+    canvas.setFillColor('#666666')
+    page_num_text = f"{doc.page + 1}"
+    canvas.drawRightString(
+        doc.pagesize[0] - 1 * inch,
+        0.75 * inch,
+        page_num_text
+    )
+    canvas.restoreState()
+
+
 def export_to_pdf_pwc_no_toc(
     content: str,
     title: str,
@@ -3504,7 +3810,24 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
         block = block.strip()
         if not block:
             continue
-        
+
+        # Citation/reference block: split into one paragraph per line so each has its own line,
+        # and merge split URLs ("https:\n//" -> "https://") so links are full and clickable (like PDF)
+        lines_in_block = [ln.strip() for ln in block.split('\n') if ln.strip()]
+        citation_line_count = sum(1 for ln in lines_in_block if _citation_line_pattern_word.match(ln))
+        if len(lines_in_block) >= 2 and citation_line_count >= 2:
+            # Merge URL continuations so "https:" on one line + "//url" on next -> "https://url"
+            block_merged = re.sub(r'https:\s*\n\s*//', 'https://', block)
+            lines_merged = [ln.strip() for ln in block_merged.split('\n') if ln.strip()]
+            for line in lines_merged:
+                formatted_blocks.append({
+                    'type': 'paragraph',
+                    'content': line,
+                    'level': 0,
+                    'raw_content': line
+                })
+            continue
+
         # Get block_info - use index from enumerate to match block_types indices
         # block_types indices are sequential (0, 1, 2, ...) matching paragraph positions
         block_info = block_type_map.get(idx)
