@@ -195,22 +195,11 @@ export class ChatEditWorkflowService {
   }
 
   beginWorkflow(file?: File): void {
-    if (file && this.isValidEditWorkflowFile(file)) {
-      const defaultState = this.getDefaultState();
-      this.updateState({
-        ...defaultState,
-        uploadedFile: file,
-        selectedEditors: ['brand-alignment'],
-        step: 'awaiting_content'
-      });
-      this.workflowStartedSubject.next();
-      void this.processWithContent();
-      return;
-    }
-
     const defaultState = this.getDefaultState();
+    const storedFile = file && this.isValidEditWorkflowFile(file) ? file : null;
     this.updateState({
       ...defaultState,
+      uploadedFile: storedFile,
       step: 'awaiting_editors'
     });
 
@@ -668,7 +657,6 @@ export class ChatEditWorkflowService {
       return;
     }
     
-    // Update state to ensure brand-alignment is included
     this.updateState({
       ...this.currentState,
       selectedEditors: selectedIds
@@ -679,22 +667,25 @@ export class ChatEditWorkflowService {
       step: 'awaiting_content'
     });
 
-    const editorNamesText = this.getSelectedEditorNames(selectedIds);
+    // Selector + file: skip "Upload document" UI, process immediately after editor selection
+    if (this.currentState.uploadedFile) {
+      void this.processWithContent();
+      return;
+    }
 
+    const editorNamesText = this.getSelectedEditorNames(selectedIds);
     const editWorkflowMetadata: EditWorkflowMetadata = {
       step: 'awaiting_content',
-      showFileUpload: true,  // Show file upload component
+      showFileUpload: true,
       showCancelButton: false,
       showSimpleCancelButton: true
     };
-
     const contentRequestMessage: Message = {
       role: 'assistant',
       content: `✅ **Using ${editorNamesText} to edit your content**\n\n**Now, please upload your document:**`,
       timestamp: new Date(),
       editWorkflow: editWorkflowMetadata
     };
-
     this.messageSubject.next({
       type: 'prompt',
       message: contentRequestMessage
