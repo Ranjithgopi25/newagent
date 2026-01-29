@@ -356,23 +356,30 @@ export class ChatEditWorkflowService {
     const trimmedInput = input.trim();
     const workflowActive = this.isActive;
 
-    if (!workflowActive) {
-      // NEW: If file is provided, detect edit intent and start workflow directly
-      if (file) {
-        const intentResult = await this.detectEditIntent(trimmedInput || `edit ${file.name}`);
-        if (intentResult.hasEditIntent) {
-          // Direct call: file + edit intent detected -> beginWorkflowWithFile
-          console.log('[ChatEditWorkflowService] File + edit intent detected, calling beginWorkflowWithFile');
-          await this.beginWorkflowWithFile(file, intentResult.detectedEditors, trimmedInput);
-          return;
-        } else {
-          // File provided but no edit intent - still start workflow with default editors
-          console.log('[ChatEditWorkflowService] File provided but no edit intent, using default editors');
-          await this.beginWorkflowWithFile(file, ['brand-alignment'], trimmedInput);
-          return;
-        }
+    // CRITICAL: If file is provided, ALWAYS use beginWorkflowWithFile (even if workflow is active)
+    // This prevents showing upload UI again when file is already uploaded
+    if (file) {
+      // If workflow is active but in awaiting_content step, cancel and restart with file
+      if (workflowActive && this.currentState.step === 'awaiting_content') {
+        console.log('[ChatEditWorkflowService] Workflow active but in awaiting_content, restarting with file');
+        this.cancelWorkflow();
       }
       
+      const intentResult = await this.detectEditIntent(trimmedInput || `edit ${file.name}`);
+      if (intentResult.hasEditIntent) {
+        // Direct call: file + edit intent detected -> beginWorkflowWithFile
+        console.log('[ChatEditWorkflowService] File + edit intent detected, calling beginWorkflowWithFile');
+        await this.beginWorkflowWithFile(file, intentResult.detectedEditors, trimmedInput);
+        return;
+      } else {
+        // File provided but no edit intent - still start workflow with default editors
+        console.log('[ChatEditWorkflowService] File provided but no edit intent, using default editors');
+        await this.beginWorkflowWithFile(file, ['brand-alignment'], trimmedInput);
+        return;
+      }
+    }
+
+    if (!workflowActive) {
       // No file: detect edit intent from text only
       const intentResult = await this.detectEditIntent(trimmedInput);
       if (intentResult.hasEditIntent) {
