@@ -3834,10 +3834,41 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
     }
 
     if (this.editWorkflowService.currentState.step === 'awaiting_content') {
-      // Store the file so it can be displayed in the upload component
+      // Store the file
       this.uploadedEditDocumentFile = file;
-      // Handle the file upload through the workflow service
-      this.editWorkflowService.handleFileUpload(file);
+      
+      // Check if there's a previous user query in messages (user typed query before uploading file)
+      // Look for the most recent user message that contains edit-related keywords
+      const userMessages = this.messages.filter(m => m.role === 'user');
+      let userQuery = '';
+      
+      // Find the last user message that might contain the edit query
+      // Skip messages that are just "Uploaded document: filename"
+      for (let i = userMessages.length - 1; i >= 0; i--) {
+        const msg = userMessages[i];
+        const content = msg?.content || '';
+        // Skip generic upload messages
+        if (!content.toLowerCase().includes('uploaded document') && content.trim().length > 0) {
+          userQuery = content.trim();
+          break;
+        }
+      }
+      
+      // If there's a user query with edit intent, restart workflow with file + query using beginWorkflowWithFile
+      // This prevents showing upload UI again
+      if (userQuery && userQuery.trim()) {
+        console.log('[ChatComponent] File uploaded after query "' + userQuery + '", restarting workflow with file + query');
+        // Cancel current workflow and restart with file
+        this.editWorkflowService.cancelWorkflow();
+        // Call handleChatInput with file + query to use beginWorkflowWithFile
+        this.editWorkflowService.handleChatInput(userQuery, file).catch(error => {
+          console.error('Error restarting workflow with file:', error);
+        });
+      } else {
+        // No query found, use standard file upload flow
+        console.log('[ChatComponent] File uploaded without query, using standard upload flow');
+        this.editWorkflowService.handleFileUpload(file);
+      }
     }
     
     // Also handle draft workflow file uploads
