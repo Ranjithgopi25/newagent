@@ -1237,9 +1237,15 @@ def _format_content_for_pdf(text: str) -> str:
     # Convert markdown links [text](url) to <a href="url" color="blue">text</a>
     text = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', r'<a href="\2" color="blue">\1</a>', text)
     
+    # Convert URLs in brackets [https://...] to clickable links
+    text = re.sub(r'\[(https?://[^\]]+)\]', r'<a href="\1" color="blue">\1</a>', text)
+    
     # Convert plain URLs to clickable links (but not those already inside HTML tags)
     # Match URLs that are not inside href= attributes or already converted
     text = re.sub(r'(?<![="])(?<![a-zA-Z])(?<!href)(https?://[^\s)>\]]+)', r'<a href="\1" color="blue">\1</a>', text)
+    
+    # Convert Unicode superscripts (¹, ², ³, etc.) to <sup> tags for PDF
+    text = re.sub(r'([¹²³⁴⁵⁶⁷⁸⁹⁰]+)', r'<sup>\1</sup>', text)
     
     # Convert **bold** to <b>bold</b>
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
@@ -1681,28 +1687,49 @@ def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
     # Replace all markdown links with placeholders
     text_with_placeholders = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', replace_link, text)
     
+    # Also handle URLs in brackets [https://...] format (not markdown links)
+    bracket_url_placeholders = {}
+    bracket_counter = 0
+    def replace_bracket_url(match):
+        nonlocal bracket_counter
+        url = match.group(1)
+        placeholder = f"__BRACKET_URL_{bracket_counter}__"
+        bracket_url_placeholders[placeholder] = url
+        bracket_counter += 1
+        return placeholder
+    # Replace [https://...] or [http://...] URLs (but not already processed markdown links)
+    text_with_placeholders = re.sub(r'\[(https?://[^\]]+)\]', replace_bracket_url, text_with_placeholders)
+    
     # Now process the text with placeholders
     pos = 0
     while pos < len(text_with_placeholders):
         # Check for placeholder (hyperlink)
         placeholder_match = re.search(r'__LINK_PLACEHOLDER_\d+__', text_with_placeholders[pos:])
+        # Check for bracket URL placeholder
+        bracket_url_match = re.search(r'__BRACKET_URL_\d+__', text_with_placeholders[pos:])
         # Check for bold
         bold_match = re.search(r'\*\*(.+?)\*\*', text_with_placeholders[pos:])
         # Check for italic
         italic_match = re.search(r'(?<!\*)\*([^\*]+?)\*(?!\*)', text_with_placeholders[pos:])
-        # Check for plain URL (that wasn't converted to markdown)
+        # Check for plain URL (that wasn't converted to markdown or brackets)
         url_match = re.search(r'https?://\S+?(?=[\s,.);\]"]|$)', text_with_placeholders[pos:])
+        # Check for Unicode superscripts (¹, ², ³, ⁴, ⁵, ⁶, ⁷, ⁸, ⁹, ⁰)
+        superscript_match = re.search(r'[¹²³⁴⁵⁶⁷⁸⁹⁰]+', text_with_placeholders[pos:])
         
         # Collect matches with positions
         matches = []
         if placeholder_match:
             matches.append(('placeholder', pos + placeholder_match.start(), placeholder_match))
+        if bracket_url_match:
+            matches.append(('bracket_url', pos + bracket_url_match.start(), bracket_url_match))
         if allow_bold and bold_match:
             matches.append(('bold', pos + bold_match.start(), bold_match))
         if italic_match:
             matches.append(('italic', pos + italic_match.start(), italic_match))
         if url_match:
             matches.append(('url', pos + url_match.start(), url_match))
+        if superscript_match:
+            matches.append(('superscript', pos + superscript_match.start(), superscript_match))
         
         if not matches:
             # No more patterns, add remaining text
@@ -1730,6 +1757,13 @@ def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
                 add_hyperlink(paragraph, link_url, link_text)
             pos = match_pos + len(placeholder_text)
         
+        elif match_type == 'bracket_url':
+            bracket_text = match.group(0)
+            if bracket_text in bracket_url_placeholders:
+                url = bracket_url_placeholders[bracket_text]
+                add_hyperlink(paragraph, url, url)
+            pos = match_pos + len(bracket_text)
+        
         elif match_type == 'bold':
             bold_text = match.group(1)
             run = paragraph.add_run(sanitize_text_for_word(bold_text))
@@ -1746,6 +1780,12 @@ def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
             url = match.group(0).rstrip('.,;:')
             add_hyperlink(paragraph, url, url)
             pos = match_pos + len(url)
+        
+        elif match_type == 'superscript':
+            superscript_text = match.group(0)
+            run = paragraph.add_run(sanitize_text_for_word(superscript_text))
+            run.font.superscript = True
+            pos = match_pos + len(superscript_text)
 
 
 def _add_numbered_paragraph(doc: Document, text: str):
@@ -2337,30 +2377,51 @@ def _add_text_with_formatting(para, text):
     # Replace all markdown links with placeholders
     text_with_placeholders = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', replace_link, text)
     
+    # Also handle URLs in brackets [https://...] format (not markdown links)
+    bracket_url_placeholders = {}
+    bracket_counter = 0
+    def replace_bracket_url(match):
+        nonlocal bracket_counter
+        url = match.group(1)
+        placeholder = f"__BRACKET_URL_{bracket_counter}__"
+        bracket_url_placeholders[placeholder] = url
+        bracket_counter += 1
+        return placeholder
+    # Replace [https://...] or [http://...] URLs (but not already processed markdown links)
+    text_with_placeholders = re.sub(r'\[(https?://[^\]]+)\]', replace_bracket_url, text_with_placeholders)
+    
     # Now process the text with placeholders
     pos = 0
     while pos < len(text_with_placeholders):
         # Check for placeholder (hyperlink)
         placeholder_match = re.search(r'__LINK_PLACEHOLDER_\d+__', text_with_placeholders[pos:])
+        # Check for bracket URL placeholder
+        bracket_url_match = re.search(r'__BRACKET_URL_\d+__', text_with_placeholders[pos:])
         # Check for bold
         bold_match = re.search(r'\*\*(.+?)\*\*', text_with_placeholders[pos:])
         # Check for italic
         italic_match = re.search(r'(?<!\*)\*([^\*]+?)\*(?!\*)', text_with_placeholders[pos:])
-        # Check for plain URL (that wasn't converted to markdown)
+        # Check for plain URL (that wasn't converted to markdown or brackets)
         # Match https?:// followed by non-whitespace characters, but stop at closing parens or end of string
         # Note: NOT stopping at dots since dots are normal in URLs
         url_match = re.search(r'https?://[^\s)]+(?=[)\s]|$)', text_with_placeholders[pos:])
+        # Check for Unicode superscripts (¹, ², ³, ⁴, ⁵, ⁶, ⁷, ⁸, ⁹, ⁰)
+        superscript_match = re.search(r'[¹²³⁴⁵⁶⁷⁸⁹⁰]+', text_with_placeholders[pos:])
         
         # Collect matches with positions
         matches = []
         if placeholder_match:
             matches.append(('placeholder', pos + placeholder_match.start(), placeholder_match))
+        if bracket_url_match:
+            matches.append(('bracket_url', pos + bracket_url_match.start(), bracket_url_match))
         if bold_match:
             matches.append(('bold', pos + bold_match.start(), bold_match))
         if italic_match:
             matches.append(('italic', pos + italic_match.start(), italic_match))
         if url_match:
             matches.append(('url', pos + url_match.start(), url_match))
+        if superscript_match:
+            matches.append(('superscript', pos + superscript_match.start(), superscript_match))
         
         if not matches:
             # No more patterns, add remaining text
@@ -2388,6 +2449,13 @@ def _add_text_with_formatting(para, text):
                 add_hyperlink(para, link_url, link_text)
             pos = match_pos + len(placeholder_text)
         
+        elif match_type == 'bracket_url':
+            bracket_text = match.group(0)
+            if bracket_text in bracket_url_placeholders:
+                url = bracket_url_placeholders[bracket_text]
+                add_hyperlink(para, url, url)
+            pos = match_pos + len(bracket_text)
+        
         elif match_type == 'bold':
             bold_text = match.group(1)
             run = para.add_run(sanitize_text_for_word(bold_text))
@@ -2404,6 +2472,12 @@ def _add_text_with_formatting(para, text):
             url = match.group(0).rstrip('.,;:')
             add_hyperlink(para, url, url)
             pos = match_pos + len(url)
+        
+        elif match_type == 'superscript':
+            superscript_text = match.group(0)
+            run = para.add_run(sanitize_text_for_word(superscript_text))
+            run.font.superscript = True
+            pos = match_pos + len(superscript_text)
 
 
 def export_to_word_with_metadata(content: str, title: str, subtitle: Optional[str] = None, 
