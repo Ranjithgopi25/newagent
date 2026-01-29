@@ -1475,12 +1475,15 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
     if (isThoughtLeadershipFlow && !workflowActive && (trimmedInput || hasEditWorkflowFile)) {
       // If file is uploaded (with or without query), detect edit intent and start workflow directly
       if (hasEditWorkflowFile) {
-        const fileToUpload = this.uploadedEditDocumentFile || undefined;
+        const fileToUpload = this.uploadedEditDocumentFile ?? undefined;
+        if (!fileToUpload) {
+          return;
+        }
         // Use user query if provided, otherwise create a message about the file
-        const messageContent = trimmedInput || (fileToUpload ? `Edit ${fileToUpload.name}` : '');
+        const messageContent = trimmedInput || `Edit ${fileToUpload.name}`;
         
         // Add user message first
-        if (messageContent && fileToUpload) {
+        if (messageContent) {
           const userMessage: Message = {
             role: 'user',
             content: messageContent,
@@ -1491,12 +1494,10 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
         }
         
         // Call handleChatInput with file - it will detect edit intent and call beginWorkflowWithFile
-        // Pass the query (or empty string) so it can detect intent from file name if needed
         const queryForIntent = trimmedInput || '';
         console.log('[ChatComponent] Calling handleChatInput with file:', fileToUpload.name, 'query:', queryForIntent);
         
         // IMPORTANT: Don't clear file until AFTER handleChatInput completes
-        // This ensures file is available during async operations
         this.editWorkflowService.handleChatInput(queryForIntent, fileToUpload).then(() => {
           // Clear file only after workflow starts successfully
           if (fileToUpload) {
