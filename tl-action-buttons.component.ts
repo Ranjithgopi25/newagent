@@ -14,7 +14,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from pypdf import PdfReader, PdfWriter
-from html import unescape, escape as html_escape
+from html import unescape
 import io
 import logging
 import os
@@ -1255,15 +1255,9 @@ def _format_content_for_pdf(text: str) -> str:
     # Convert markdown links [text](url) to <a href="url" color="blue">text</a>
     text = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', r'<a href="\2" color="blue">\1</a>', text)
     
-    # Convert URLs in brackets [https://...] to clickable links
-    text = re.sub(r'\[(https?://[^\]]+)\]', r'<a href="\1" color="blue">\1</a>', text)
-    
     # Convert plain URLs to clickable links (but not those already inside HTML tags)
     # Match URLs that are not inside href= attributes or already converted
     text = re.sub(r'(?<![="])(?<![a-zA-Z])(?<!href)(https?://[^\s)>\]]+)', r'<a href="\1" color="blue">\1</a>', text)
-    
-    # Convert Unicode superscripts (¹, ², ³, etc.) to <sup> tags for PDF
-    text = re.sub(r'([¹²³⁴⁵⁶⁷⁸⁹⁰]+)', r'<sup>\1</sup>', text)
     
     # Convert **bold** to <b>bold</b>
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
@@ -1352,7 +1346,6 @@ def _split_paragraph_into_sentences(paragraph: str, target_sentences: int = 3) -
 def add_hyperlink(paragraph, url, text=None): #merge conflict resolved
     """
     Create a hyperlink in a Word paragraph with blue color and underline.
-    When url is empty or not http(s), adds url as plain text so citation refs still show (edit content / cloud).
     """
     if not text:
         text = url
@@ -1360,11 +1353,6 @@ def add_hyperlink(paragraph, url, text=None): #merge conflict resolved
     # Sanitize inputs
     text = sanitize_text_for_word(text)
     url = str(url).strip()
-    # Only create clickable link for non-empty http(s) URLs; otherwise append as plain text
-    if not url or not (url.startswith('http://') or url.startswith('https://')):
-        if url:
-            paragraph.add_run(" " + text)
-        return
 
     part = paragraph.part
     r_id = part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
@@ -1813,49 +1801,29 @@ def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
     # Replace all markdown links with placeholders
     text_with_placeholders = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', replace_link, text)
     
-    # Also handle URLs in brackets [https://...] format (not markdown links)
-    bracket_url_placeholders = {}
-    bracket_counter = 0
-    def replace_bracket_url(match):
-        nonlocal bracket_counter
-        url = match.group(1)
-        placeholder = f"__BRACKET_URL_{bracket_counter}__"
-        bracket_url_placeholders[placeholder] = url
-        bracket_counter += 1
-        return placeholder
-    # Replace [https://...] or [http://...] URLs (but not already processed markdown links)
-    text_with_placeholders = re.sub(r'\[(https?://[^\]]+)\]', replace_bracket_url, text_with_placeholders)
-    
     # Now process the text with placeholders
     pos = 0
     while pos < len(text_with_placeholders):
         # Check for placeholder (hyperlink)
         placeholder_match = re.search(r'__LINK_PLACEHOLDER_\d+__', text_with_placeholders[pos:])
-        # Check for bracket URL placeholder
-        bracket_url_match = re.search(r'__BRACKET_URL_\d+__', text_with_placeholders[pos:])
         # Check for bold
         bold_match = re.search(r'\*\*(.+?)\*\*', text_with_placeholders[pos:])
         # Check for italic
         italic_match = re.search(r'(?<!\*)\*([^\*]+?)\*(?!\*)', text_with_placeholders[pos:])
-        # Check for plain URL (that wasn't converted to markdown or brackets)
-        url_match = re.search(r'https?://\S+?(?=[\s,.);\]"]|$)', text_with_placeholders[pos:])
-        # Check for Unicode superscripts (¹, ², ³, ⁴, ⁵, ⁶, ⁷, ⁸, ⁹, ⁰)
-        superscript_match = re.search(r'[¹²³⁴⁵⁶⁷⁸⁹⁰]+', text_with_placeholders[pos:])
+        # Check for plain URL (that wasn't converted to markdown)
+        # Match full URL including dots (e.g. https://www.pwc.com/...) so link doesn't break after dot
+        url_match = re.search(r'https?://[^\s)]+', text_with_placeholders[pos:])
         
         # Collect matches with positions
         matches = []
         if placeholder_match:
             matches.append(('placeholder', pos + placeholder_match.start(), placeholder_match))
-        if bracket_url_match:
-            matches.append(('bracket_url', pos + bracket_url_match.start(), bracket_url_match))
         if allow_bold and bold_match:
             matches.append(('bold', pos + bold_match.start(), bold_match))
         if italic_match:
             matches.append(('italic', pos + italic_match.start(), italic_match))
         if url_match:
             matches.append(('url', pos + url_match.start(), url_match))
-        if superscript_match:
-            matches.append(('superscript', pos + superscript_match.start(), superscript_match))
         
         if not matches:
             # No more patterns, add remaining text
@@ -1887,13 +1855,6 @@ def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
                     add_hyperlink(paragraph, link_url, link_text)
             pos = match_pos + len(placeholder_text)
         
-        elif match_type == 'bracket_url':
-            bracket_text = match.group(0)
-            if bracket_text in bracket_url_placeholders:
-                url = bracket_url_placeholders[bracket_text]
-                add_hyperlink(paragraph, url, url)
-            pos = match_pos + len(bracket_text)
-        
         elif match_type == 'bold':
             bold_text = match.group(1)
             run = paragraph.add_run(sanitize_text_for_word(bold_text))
@@ -1908,14 +1869,9 @@ def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
         
         elif match_type == 'url':
             url = match.group(0).rstrip('.,;:')
+            # Full URL (regex captures including dots) so entire link is clickable like PDF
             add_hyperlink(paragraph, url, url)
             pos = match_pos + len(url)
-        
-        elif match_type == 'superscript':
-            superscript_text = match.group(0)
-            run = paragraph.add_run(sanitize_text_for_word(superscript_text))
-            run.font.superscript = True
-            pos = match_pos + len(superscript_text)
 
 
 def _add_numbered_paragraph(doc: Document, text: str):
@@ -2007,82 +1963,6 @@ def _add_references_section(doc: Document, references: list[dict]):
             add_hyperlink(para, url, url)
             
             para.add_run(")")
-
-
-def _is_citation_block(block: str) -> bool:
-    """
-    Detect if a block is a citation/reference block (numbered items with URLs).
-    Used to format citations as numbered paragraphs with hyperlinks instead of bullet lists.
-    Supports: "1. Title [https://...]", "1. Title (URL: https://...)", "[1] Title", "1. Title\\nhttps://..."
-    Cloud may send [1] style or HTML-derived "1. Title (URL: ...)".
-    """
-    if not block or not block.strip():
-        return False
-    lines = block.split('\n')
-    # URL patterns: (URL: )https://..., [https://...], or plain https://...
-    url_pattern = r'(URL:\s*)?https?://|\[https?://[^\]]+\]'
-    if any(re.search(url_pattern, line) for line in lines):
-        return True
-    # Numbered style: "1. " or bracket "[1] " (cloud edit content)
-    citation_pattern_dot = r'^\s*\d+\.\s+'
-    citation_pattern_bracket = r'^\s*\[\d+\]\s+'
-    citation_count = sum(
-        1 for line in lines
-        if re.match(citation_pattern_dot, line.strip()) or re.match(citation_pattern_bracket, line.strip())
-    )
-    return citation_count >= 2
-
-
-def _parse_citation_entries(block: str) -> list[dict]:
-    """
-    Parse a citation/reference block into list of {number, title, url}.
-    Supports: "1. Title (URL: https://...)", "1. Title [https://...]", "[1] Title (URL: ...)", "1. Title\\nhttps://..."
-    Cloud edit content may use [1] style or HTML-derived "1. Title (URL: ...)".
-    """
-    entries = []
-    lines = block.split('\n')
-    for line in lines:
-        line_stripped = line.strip()
-        if not line_stripped:
-            continue
-        # Match: "1. Title (URL: https://...)" or "1. Title [https://...]"
-        title_match = re.match(r'^(\d+)\.\s+(.*?)(?:\s*\(URL:\s*(https?://[^\)]+)\))?$', line_stripped)
-        if title_match:
-            original_number = title_match.group(1)
-            title_text = title_match.group(2).strip()
-            url_text = title_match.group(3).strip() if title_match.group(3) else None
-            # Also extract URL from [https://...] in title_text
-            if not url_text and title_text:
-                bracket_url = re.search(r'\[(https?://[^\]]+)\]', title_text)
-                if bracket_url:
-                    url_text = bracket_url.group(1).strip()
-                    title_text = re.sub(r'\s*\[https?://[^\]]+\]\s*', '', title_text).strip()
-            entries.append({'number': original_number, 'title': title_text, 'url': url_text})
-            continue
-        # Match: "[1] Title (URL: https://...)" or "[1] Title" (cloud citation format)
-        bracket_match = re.match(r'^\[(\d+)\]\s+(.*?)(?:\s*\(URL:\s*(https?://[^\)]+)\))?$', line_stripped)
-        if bracket_match:
-            original_number = bracket_match.group(1)
-            title_text = bracket_match.group(2).strip()
-            url_text = bracket_match.group(3).strip() if bracket_match.group(3) else None
-            if not url_text and title_text:
-                bracket_url = re.search(r'\[(https?://[^\]]+)\]', title_text)
-                if bracket_url:
-                    url_text = bracket_url.group(1).strip()
-                    title_text = re.sub(r'\s*\[https?://[^\]]+\]\s*', '', title_text).strip()
-            entries.append({'number': original_number, 'title': title_text, 'url': url_text})
-            continue
-        # URL continuation line: attach to previous entry
-        if re.match(r'^\s*(?:URL:\s*)?(https?://[^\s\)]+)', line_stripped):
-            url_match = re.search(r'(?:URL:\s*)?(https?://[^\s\)]+)', line_stripped)
-            if url_match and entries:
-                entries[-1]['url'] = url_match.group(1).strip()
-    return entries
-
-
-# Pattern for "1. " or "[1] " at start of line (edit-content citation line detection)
-_citation_line_pattern_word = re.compile(r'^\s*(\d+\.|\[\d+\])\s+')
-
 
 def _add_formatted_content(doc: Document, content: str, references: list[dict] | None = None):
     """Parse and add content to document with appropriate styles"""
@@ -2532,51 +2412,30 @@ def _add_text_with_formatting(para, text):
     # Replace all markdown links with placeholders
     text_with_placeholders = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', replace_link, text)
     
-    # Also handle URLs in brackets [https://...] format (not markdown links)
-    bracket_url_placeholders = {}
-    bracket_counter = 0
-    def replace_bracket_url(match):
-        nonlocal bracket_counter
-        url = match.group(1)
-        placeholder = f"__BRACKET_URL_{bracket_counter}__"
-        bracket_url_placeholders[placeholder] = url
-        bracket_counter += 1
-        return placeholder
-    # Replace [https://...] or [http://...] URLs (but not already processed markdown links)
-    text_with_placeholders = re.sub(r'\[(https?://[^\]]+)\]', replace_bracket_url, text_with_placeholders)
-    
     # Now process the text with placeholders
     pos = 0
     while pos < len(text_with_placeholders):
         # Check for placeholder (hyperlink)
         placeholder_match = re.search(r'__LINK_PLACEHOLDER_\d+__', text_with_placeholders[pos:])
-        # Check for bracket URL placeholder
-        bracket_url_match = re.search(r'__BRACKET_URL_\d+__', text_with_placeholders[pos:])
         # Check for bold
         bold_match = re.search(r'\*\*(.+?)\*\*', text_with_placeholders[pos:])
         # Check for italic
         italic_match = re.search(r'(?<!\*)\*([^\*]+?)\*(?!\*)', text_with_placeholders[pos:])
-        # Check for plain URL (that wasn't converted to markdown or brackets)
+        # Check for plain URL (that wasn't converted to markdown)
         # Match https?:// followed by non-whitespace characters, but stop at closing parens or end of string
         # Note: NOT stopping at dots since dots are normal in URLs
         url_match = re.search(r'https?://[^\s)]+(?=[)\s]|$)', text_with_placeholders[pos:])
-        # Check for Unicode superscripts (¹, ², ³, ⁴, ⁵, ⁶, ⁷, ⁸, ⁹, ⁰)
-        superscript_match = re.search(r'[¹²³⁴⁵⁶⁷⁸⁹⁰]+', text_with_placeholders[pos:])
         
         # Collect matches with positions
         matches = []
         if placeholder_match:
             matches.append(('placeholder', pos + placeholder_match.start(), placeholder_match))
-        if bracket_url_match:
-            matches.append(('bracket_url', pos + bracket_url_match.start(), bracket_url_match))
         if bold_match:
             matches.append(('bold', pos + bold_match.start(), bold_match))
         if italic_match:
             matches.append(('italic', pos + italic_match.start(), italic_match))
         if url_match:
             matches.append(('url', pos + url_match.start(), url_match))
-        if superscript_match:
-            matches.append(('superscript', pos + superscript_match.start(), superscript_match))
         
         if not matches:
             # No more patterns, add remaining text
@@ -2604,13 +2463,6 @@ def _add_text_with_formatting(para, text):
                 add_hyperlink(para, link_url, link_text)
             pos = match_pos + len(placeholder_text)
         
-        elif match_type == 'bracket_url':
-            bracket_text = match.group(0)
-            if bracket_text in bracket_url_placeholders:
-                url = bracket_url_placeholders[bracket_text]
-                add_hyperlink(para, url, url)
-            pos = match_pos + len(bracket_text)
-        
         elif match_type == 'bold':
             bold_text = match.group(1)
             run = para.add_run(sanitize_text_for_word(bold_text))
@@ -2627,12 +2479,6 @@ def _add_text_with_formatting(para, text):
             url = match.group(0).rstrip('.,;:')
             add_hyperlink(para, url, url)
             pos = match_pos + len(url)
-        
-        elif match_type == 'superscript':
-            superscript_text = match.group(0)
-            run = para.add_run(sanitize_text_for_word(superscript_text))
-            run.font.superscript = True
-            pos = match_pos + len(superscript_text)
 
 
 def export_to_word_with_metadata(content: str, title: str, subtitle: Optional[str] = None, 
@@ -3662,35 +3508,8 @@ def html_to_marked_text(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
 
-    # Normalize newlines so block/line parsing is consistent (local and cloud)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-
     # Decode entities (&amp;, &nbsp; ...)
     text = unescape(text)
-
-    # Preserve citation/reference URLs: <a href="...">...</a> -> "inner (URL: url)" before stripping tags.
-    # Cloud sends HTML with links; stripping tags otherwise loses the URL so citation hyperlinks fail.
-    def _replace_anchor(m):
-        url = (m.group(1) or "").strip()
-        inner = (m.group(2) or "").strip()
-        if not url or not url.startswith(("http://", "https://")):
-            return m.group(0)
-        return f"{inner} (URL: {url})"
-    text = re.sub(
-        r'<a\s+[^>]*href\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</a>',
-        _replace_anchor,
-        text,
-        flags=re.IGNORECASE | re.DOTALL
-    )
-
-    # Preserve citation numbers from <ol><li value="N"> so "1. Title" is kept (cloud edit content).
-    # Do this before generic <li> -> "- " so numbered references are not turned into bullets.
-    text = re.sub(
-        r'<li\s+[^>]*value\s*=\s*["\']?(\d+)["\']?[^>]*>(.*?)</li>',
-        lambda m: f"\n{m.group(1)}. {m.group(2).strip()}",
-        text,
-        flags=re.IGNORECASE | re.DOTALL
-    )
 
     # Convert headings to markdown: <h1>Text</h1> -> # Text
     text = re.sub(r"<h1[^>]*>([^<]+)</h1>", r"# \1", text, flags=re.IGNORECASE)
@@ -3807,28 +3626,16 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
                     p = doc.add_paragraph(style="Heading 1")
                     p.add_run(sanitize_text_for_word(m.group(1))).bold = True
             else:
-                # Citations: numbered paragraphs with hyperlinks
-                if _is_citation_block(block):
-                    _entries = _parse_citation_entries(block)
-                    for entry in _entries:
-                        title_text = (entry.get('title') or '').replace('**', '')
-                        para = doc.add_paragraph(style='Body Text')
-                        _add_text_with_formatting(para, f"{entry['number']}. {title_text}")
-                        if entry.get('url'):
-                            para.add_run(" (URL: ")
-                            add_hyperlink(para, entry['url'], entry['url'])
-                            para.add_run(")")
+                lines = block.split("\n")
+                if all(is_bullet_line(l) for l in lines):
+                    for line in lines:
+                        clean = re.sub(r'^\s*[-•]\s+', '', line).strip()
+                        if clean:
+                            para = doc.add_paragraph(style="List Bullet")
+                            _add_markdown_text_runs(para, clean)
                 else:
-                    lines = block.split("\n")
-                    if all(is_bullet_line(l) for l in lines):
-                        for line in lines:
-                            clean = re.sub(r'^\s*[-•]\s+', '', line).strip()
-                            if clean:
-                                para = doc.add_paragraph(style="List Bullet")
-                                _add_markdown_text_runs(para, clean)
-                    else:
-                        para = doc.add_paragraph(style="Body Text")
-                        _add_markdown_text_runs(para, block)
+                    para = doc.add_paragraph(style="Body Text")
+                    _add_markdown_text_runs(para, block)
         return
     
     # Use split_blocks() - same as final article processing
@@ -3844,6 +3651,9 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
         map_key = bt.get("index") if bt.get("index") is not None else i
         block_type_map[map_key] = bt
     
+    # Citation line pattern (e.g. "1. ", "2. ") for splitting citation/reference blocks
+    _citation_line_pattern_word = re.compile(r'^\s*\d+\.\s+')
+
     # First pass: process each paragraph with block type formatting
     formatted_blocks = []
     for idx, block in enumerate(paragraphs):
@@ -3883,16 +3693,6 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
         
         # Skip title blocks - title is already on cover page, don't duplicate in content
         if block_type == "title":
-            continue
-        
-        # Citations/references: numbered paragraphs with hyperlinks (not bullet lists)
-        if _is_citation_block(block):
-            formatted_blocks.append({
-                'type': 'citation_block',
-                'content': block,
-                'level': level,
-                'raw_content': block
-            })
             continue
         
         # Process list items: detect type and preserve original order
@@ -3937,26 +3737,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
         level = block_info.get('level', 0)
         next_block = formatted_blocks[i + 1] if i + 1 < len(formatted_blocks) else None
         
-        if block_type == 'citation_block':
-            # Close any open list before citations
-            if current_list:
-                ordered_list = _order_list_items(current_list)
-                _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=False, force_bullet_style=use_bullet_icons_only)
-                current_list = []
-                prev_list_type = None
-            # Add citations as numbered paragraphs with hyperlinks (not bullets).
-            # Preserve document order (same as frontend <li value="N">) - do not sort.
-            citation_entries = _parse_citation_entries(content)
-            for entry in citation_entries:
-                title_text = (entry.get('title') or '').replace('**', '')
-                para = doc.add_paragraph(style='Body Text')
-                _add_text_with_formatting(para, f"{entry['number']}. {title_text}")
-                if entry.get('url'):
-                    para.add_run(" (URL: ")
-                    add_hyperlink(para, entry['url'], entry['url'])
-                    para.add_run(")")
-            prev_block_type = 'citation_block'
-        elif block_type == 'list_item' or block_type == 'bullet_item':
+        if block_type == 'list_item' or block_type == 'bullet_item':
             list_type = block_info.get('list_type', 'bullet')
             
             # Reset numbering if previous block was a heading
@@ -3965,7 +3746,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
             # If previous block was heading, close current list (if any) and start new one with reset
             if reset_numbering and current_list:
                 ordered_list = _order_list_items(current_list)
-                _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=False, force_bullet_style=use_bullet_icons_only)
+                _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=False)
                 current_list = []
             
             # Check if we should start a new list (different type or level)
@@ -3977,7 +3758,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
                     ordered_list = _order_list_items(current_list)
                     # Check if this list should reset numbering
                     should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
-                    _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=should_reset, force_bullet_style=use_bullet_icons_only)
+                    _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=should_reset)
                     current_list = []
             
             # Add to current list
@@ -3992,7 +3773,7 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
             if current_list:
                 # Order list if needed (for numbered/alphabetical)
                 ordered_list = _order_list_items(current_list)
-                _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=False, force_bullet_style=use_bullet_icons_only)
+                _add_list_to_document(doc, ordered_list, prev_list_type, reset_numbering=False)
                 current_list = []
                 prev_list_type = None
             
@@ -4142,15 +3923,14 @@ def export_to_word_edit_content(
         if not references_heading_added:
             doc.add_paragraph("References", style="Heading 2")
 
-        for ref in references:
-            para = _add_numbered_paragraph(
-                doc,
-                sanitize_text_for_word(ref.get("title", ""))
-            )
+        for idx, ref in enumerate(references, start=1):
+            title_text = sanitize_text_for_word(ref.get("title", ""))
+            para = doc.add_paragraph(style="Body Text")
+            para.add_run(f"{idx}. {title_text}")
             if ref.get("url"):
-                para.add_run(" (URL: ")
-                add_hyperlink(para, ref["url"], ref["url"])
-                para.add_run(")")
+                para.add_run(" ")
+                url_norm = _normalize_citation_url_for_word(ref["url"])
+                add_hyperlink(para, url_norm, url_norm)
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -4229,24 +4009,6 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                 text = block.replace('#', '').strip()
                 text = _format_content_for_pdf(text)
                 story.append(Paragraph(text, heading_style))
-            elif _is_citation_block(block):
-                # Citations: numbered paragraphs with clickable hyperlinks (edit content PDF fallback).
-                # Preserve document order (same as frontend). Explicit <a> so URL is clickable in PDF.
-                citation_style = ParagraphStyle(
-                    'PWCCitation',
-                    parent=body_style,
-                    alignment=TA_LEFT,
-                    spaceAfter=6,
-                )
-                _entries = _parse_citation_entries(block)
-                for entry in _entries:
-                    title_text = (entry.get('title') or '').replace('**', '')
-                    title_markup = _format_content_for_pdf(title_text)
-                    line = f"{entry['number']}. {title_markup}"
-                    if entry.get('url'):
-                        u = html_escape(entry['url']).replace('"', '&quot;')
-                        line += f' (URL: <a href="{u}" color="blue">{u}</a>)'
-                    story.append(Paragraph(line, citation_style))
             elif _is_bullet_list_block(block):
                 bullet_items = _parse_bullet_items(block)
                 list_items = [ListItem(Paragraph(_format_content_for_pdf(text), body_style)) for indent, text in bullet_items]
@@ -4277,13 +4039,30 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
         map_key = bt.get("index") if bt.get("index") is not None else i
         block_type_map[map_key] = bt
     
+    # Citation pattern: line starts with number and period (e.g. "1. ", "2. ")
+    _citation_line_pattern = re.compile(r'^\s*\d+\.\s+')
+
     # First pass: process each paragraph with block type formatting
     formatted_blocks = []
     for idx, block in enumerate(paragraphs):
         block = block.strip()
         if not block:
             continue
-        
+
+        # If block has multiple lines that look like citations (1., 2., 3., ...),
+        # split into one paragraph per line so each citation starts on its own line in PDF
+        lines_in_block = [ln.strip() for ln in block.split('\n') if ln.strip()]
+        citation_line_count = sum(1 for ln in lines_in_block if _citation_line_pattern.match(ln))
+        if len(lines_in_block) >= 2 and citation_line_count >= 2:
+            for line in lines_in_block:
+                formatted_blocks.append({
+                    'type': 'paragraph',
+                    'content': line,
+                    'level': 0,
+                    'raw_content': line
+                })
+            continue
+
         # Get block_info - use index from enumerate to match block_types indices
         # block_types indices are sequential (0, 1, 2, ...) matching paragraph positions
         block_info = block_type_map.get(idx)
@@ -4298,16 +4077,6 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
         
         # Skip title blocks - title is already on cover page, don't duplicate in content
         if block_type == "title":
-            continue
-        
-        # Citations/references: numbered paragraphs with hyperlinks (not bullet lists)
-        if _is_citation_block(block):
-            formatted_blocks.append({
-                'type': 'citation_block',
-                'content': block,
-                'level': level,
-                'raw_content': block
-            })
             continue
         
         # Process list items: detect type and preserve original order (same as Word)
@@ -4340,14 +4109,6 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                 'raw_content': block
             })
     
-    # Citation style for PDF (numbered paragraphs with links)
-    citation_style_pdf = ParagraphStyle(
-        'PWCCitationBlock',
-        parent=body_style,
-        alignment=TA_LEFT,
-        spaceAfter=6,
-    )
-    
     # Second pass: group consecutive list items and apply formatting (same as Word)
     current_list = []
     prev_list_type = None
@@ -4359,29 +4120,7 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
         level = block_info.get('level', 0)
         next_block = formatted_blocks[i + 1] if i + 1 < len(formatted_blocks) else None
         
-        if block_type == 'citation_block':
-            # Close any open list before citations
-            if current_list:
-                should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
-                start_from_val = 1 if should_reset else 1
-                ordered_list = _order_list_items(current_list, start_from=start_from_val)
-                _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=start_from_val)
-                current_list = []
-                prev_list_type = None
-            # Add citations as numbered paragraphs with clickable hyperlinks.
-            # Preserve document order (same as frontend <li value="N">) - do not sort.
-            # Explicit <a> for URL so it is clickable in PDF (matches frontend).
-            citation_entries = _parse_citation_entries(content)
-            for entry in citation_entries:
-                title_text = (entry.get('title') or '').replace('**', '')
-                title_markup = _format_content_for_pdf(title_text)
-                line = f"{entry['number']}. {title_markup}"
-                if entry.get('url'):
-                    u = html_escape(entry['url']).replace('"', '&quot;')
-                    line += f' (URL: <a href="{u}" color="blue">{u}</a>)'
-                story.append(Paragraph(line, citation_style_pdf))
-            prev_block_type = 'citation_block'
-        elif block_type == 'list_item' or block_type == 'bullet_item':
+        if block_type == 'list_item' or block_type == 'bullet_item':
             list_type = block_info.get('list_type', 'bullet')
             
             # Reset numbering if previous block was a heading (same as Word)
@@ -4602,11 +4341,12 @@ def export_to_pdf_edit_content(
     story = []
     _format_content_with_block_types_pdf(story, content, block_types, body_style, heading_style)
     
-    # Remove footers and add page numbers only
-    # _set_footer_with_page_numbers_only(doc)
-    
-    # Build the content PDF
-    doc.build(story)
+    # Build the content PDF with page numbers at bottom (edit content only)
+    doc.build(
+        story,
+        onFirstPage=_add_page_number_edit_content_pdf,
+        onLaterPages=_add_page_number_edit_content_pdf
+    )
     content_buffer.seek(0)
     
     # ===== STEP 3: Merge cover + content =====
