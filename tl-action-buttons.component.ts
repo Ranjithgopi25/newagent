@@ -1334,6 +1334,7 @@ def _split_paragraph_into_sentences(paragraph: str, target_sentences: int = 3) -
 def add_hyperlink(paragraph, url, text=None): #merge conflict resolved
     """
     Create a hyperlink in a Word paragraph with blue color and underline.
+    When url is empty or not http(s), adds url as plain text so citation refs still show (edit content / cloud).
     """
     if not text:
         text = url
@@ -1341,6 +1342,11 @@ def add_hyperlink(paragraph, url, text=None): #merge conflict resolved
     # Sanitize inputs
     text = sanitize_text_for_word(text)
     url = str(url).strip()
+    # Only create clickable link for non-empty http(s) URLs; otherwise append as plain text
+    if not url or not (url.startswith('http://') or url.startswith('https://')):
+        if url:
+            paragraph.add_run(" " + text)
+        return
 
     part = paragraph.part
     r_id = part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
@@ -1883,7 +1889,8 @@ def _is_citation_block(block: str) -> bool:
     """
     Detect if a block is a citation/reference block (numbered items with URLs).
     Used to format citations as numbered paragraphs with hyperlinks instead of bullet lists.
-    Supports: "1. Title [https://...]", "1. Title (URL: https://...)", "1. Title\\nhttps://..."
+    Supports: "1. Title [https://...]", "1. Title (URL: https://...)", "[1] Title", "1. Title\\nhttps://..."
+    Cloud may send [1] style or HTML-derived "1. Title (URL: ...)".
     """
     if not block or not block.strip():
         return False
@@ -1892,16 +1899,21 @@ def _is_citation_block(block: str) -> bool:
     url_pattern = r'(URL:\s*)?https?://|\[https?://[^\]]+\]'
     if any(re.search(url_pattern, line) for line in lines):
         return True
-    # PDF-style: at least 2 lines starting with number followed by period
-    citation_pattern = r'^\s*\d+\.\s+'
-    citation_count = sum(1 for line in lines if re.match(citation_pattern, line.strip()))
+    # Numbered style: "1. " or bracket "[1] " (cloud edit content)
+    citation_pattern_dot = r'^\s*\d+\.\s+'
+    citation_pattern_bracket = r'^\s*\[\d+\]\s+'
+    citation_count = sum(
+        1 for line in lines
+        if re.match(citation_pattern_dot, line.strip()) or re.match(citation_pattern_bracket, line.strip())
+    )
     return citation_count >= 2
 
 
 def _parse_citation_entries(block: str) -> list[dict]:
     """
     Parse a citation/reference block into list of {number, title, url}.
-    Supports: "1. Title (URL: https://...)", "1. Title [https://...]", "1. Title\\nhttps://..."
+    Supports: "1. Title (URL: https://...)", "1. Title [https://...]", "[1] Title (URL: ...)", "1. Title\\nhttps://..."
+    Cloud edit content may use [1] style or HTML-derived "1. Title (URL: ...)".
     """
     entries = []
     lines = block.split('\n')
@@ -1922,7 +1934,22 @@ def _parse_citation_entries(block: str) -> list[dict]:
                     url_text = bracket_url.group(1).strip()
                     title_text = re.sub(r'\s*\[https?://[^\]]+\]\s*', '', title_text).strip()
             entries.append({'number': original_number, 'title': title_text, 'url': url_text})
-        elif re.match(r'^\s*(?:URL:\s*)?(https?://[^\s\)]+)', line_stripped):
+            continue
+        # Match: "[1] Title (URL: https://...)" or "[1] Title" (cloud citation format)
+        bracket_match = re.match(r'^\[(\d+)\]\s+(.*?)(?:\s*\(URL:\s*(https?://[^\)]+)\))?$', line_stripped)
+        if bracket_match:
+            original_number = bracket_match.group(1)
+            title_text = bracket_match.group(2).strip()
+            url_text = bracket_match.group(3).strip() if bracket_match.group(3) else None
+            if not url_text and title_text:
+                bracket_url = re.search(r'\[(https?://[^\]]+)\]', title_text)
+                if bracket_url:
+                    url_text = bracket_url.group(1).strip()
+                    title_text = re.sub(r'\s*\[https?://[^\]]+\]\s*', '', title_text).strip()
+            entries.append({'number': original_number, 'title': title_text, 'url': url_text})
+            continue
+        # URL continuation line: attach to previous entry
+        if re.match(r'^\s*(?:URL:\s*)?(https?://[^\s\)]+)', line_stripped):
             url_match = re.search(r'(?:URL:\s*)?(https?://[^\s\)]+)', line_stripped)
             if url_match and entries:
                 entries[-1]['url'] = url_match.group(1).strip()
@@ -3289,8 +3316,35 @@ def html_to_marked_text(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
 
+    # Normalize newlines so block/line parsing is consistent (local and cloud)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
     # Decode entities (&amp;, &nbsp; ...)
     text = unescape(text)
+
+    # Preserve citation/reference URLs: <a href="...">...</a> -> "inner (URL: url)" before stripping tags.
+    # Cloud sends HTML with links; stripping tags otherwise loses the URL so citation hyperlinks fail.
+    def _replace_anchor(m):
+        url = (m.group(1) or "").strip()
+        inner = (m.group(2) or "").strip()
+        if not url or not url.startswith(("http://", "https://")):
+            return m.group(0)
+        return f"{inner} (URL: {url})"
+    text = re.sub(
+        r'<a\s+[^>]*href\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+        _replace_anchor,
+        text,
+        flags=re.IGNORECASE | re.DOTALL
+    )
+
+    # Preserve citation numbers from <ol><li value="N"> so "1. Title" is kept (cloud edit content).
+    # Do this before generic <li> -> "- " so numbered references are not turned into bullets.
+    text = re.sub(
+        r'<li\s+[^>]*value\s*=\s*["\']?(\d+)["\']?[^>]*>(.*?)</li>',
+        lambda m: f"\n{m.group(1)}. {m.group(2).strip()}",
+        text,
+        flags=re.IGNORECASE | re.DOTALL
+    )
 
     # Convert headings to markdown: <h1>Text</h1> -> # Text
     text = re.sub(r"<h1[^>]*>([^<]+)</h1>", r"# \1", text, flags=re.IGNORECASE)
@@ -3409,7 +3463,9 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
             else:
                 # Citations: numbered paragraphs with hyperlinks
                 if _is_citation_block(block):
-                    for entry in _parse_citation_entries(block):
+                    _entries = _parse_citation_entries(block)
+                    _entries = sorted(_entries, key=lambda e: int((e.get('number') or '0').strip()) if str(e.get('number') or '').strip().isdigit() else 0)
+                    for entry in _entries:
                         title_text = (entry.get('title') or '').replace('**', '')
                         para = doc.add_paragraph(style='Body Text')
                         _add_text_with_formatting(para, f"{entry['number']}. {title_text}")
@@ -3526,7 +3582,9 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
                 current_list = []
                 prev_list_type = None
             # Add citations as numbered paragraphs with hyperlinks (not bullets)
+            # Sort by citation number so order is always 1, 2, 3... (edit content)
             citation_entries = _parse_citation_entries(content)
+            citation_entries = sorted(citation_entries, key=lambda e: int((e.get('number') or '0').strip()) if str(e.get('number') or '').strip().isdigit() else 0)
             for entry in citation_entries:
                 title_text = (entry.get('title') or '').replace('**', '')
                 para = doc.add_paragraph(style='Body Text')
@@ -3807,14 +3865,16 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                 text = _format_content_for_pdf(text)
                 story.append(Paragraph(text, heading_style))
             elif _is_citation_block(block):
-                # Citations: numbered paragraphs with clickable hyperlinks
+                # Citations: numbered paragraphs with clickable hyperlinks (edit content PDF fallback)
                 citation_style = ParagraphStyle(
                     'PWCCitation',
                     parent=body_style,
                     alignment=TA_LEFT,
                     spaceAfter=6,
                 )
-                for entry in _parse_citation_entries(block):
+                _entries = _parse_citation_entries(block)
+                _entries = sorted(_entries, key=lambda e: int((e.get('number') or '0').strip()) if str(e.get('number') or '').strip().isdigit() else 0)
+                for entry in _entries:
                     title_text = (entry.get('title') or '').replace('**', '')
                     line = f"{entry['number']}. {title_text}"
                     if entry.get('url'):
@@ -3942,12 +4002,15 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                 current_list = []
                 prev_list_type = None
             # Add citations as numbered paragraphs with clickable hyperlinks
+            # Sort by citation number so order is always 1, 2, 3... (edit content)
             citation_entries = _parse_citation_entries(content)
+            citation_entries = sorted(citation_entries, key=lambda e: int((e.get('number') or '0').strip()) if str(e.get('number') or '').strip().isdigit() else 0)
             for entry in citation_entries:
                 title_text = (entry.get('title') or '').replace('**', '')
                 line = f"{entry['number']}. {title_text}"
                 if entry.get('url'):
                     line += f" {entry['url']}"
+                # _format_content_for_pdf turns plain URLs into <a href="..."> for clickable PDF links
                 story.append(Paragraph(_format_content_for_pdf(line), citation_style_pdf))
             prev_block_type = 'citation_block'
         elif block_type == 'list_item' or block_type == 'bullet_item':
