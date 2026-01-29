@@ -225,13 +225,16 @@ export function convertMarkdownToHtml(markdown: string): string {
     return `<a href="${escAttr(hrefRaw)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
   });
 
-  // Plain URLs (e.g. in References: "8. Title. https://example.com") -> clickable links (same as PDF/Word)
-  // Match only in text: URL at start or after whitespace, >, ., ); stop at whitespace, <, or "
+  // Spacing: ensure one space before (https:// when preceded by ), ], or superscript (e.g. )²(https:// -> )² (https://)
+  html = html.replace(/([)\]⁰¹²³⁴⁵⁶⁷⁸⁹])(\s*)(\()(https?:\/\/)/g, '$1 $3$4');
+
+  // Plain URLs: in References "8. Title. https://...", in-paragraph "(https://...)" or "[https://...]" -> clickable links
+  // Preceding char: start, whitespace, >, ., ), (, [ so (https:// and [https:// are matched; URL stops at whitespace, <, ", or ]
   const escAttr = (s: string) =>
     s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const escHtml = (s: string) =>
     s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  html = html.replace(/(^|[\s>.)])(https?:\/\/[^\s<"]+)/g, (_match, before, url) => {
+  html = html.replace(/(^|[\s>.)(\[])(https?:\/\/[^\s<"\]]+)/g, (_match, before, url) => {
     return before + `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer">${escHtml(url)}</a>`;
   });
 
