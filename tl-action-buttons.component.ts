@@ -3370,13 +3370,33 @@ def _format_content_with_block_types_word(doc: Document, content: str, block_typ
         map_key = bt.get("index") if bt.get("index") is not None else i
         block_type_map[map_key] = bt
     
+    # Citation line pattern (e.g. "1. ", "2. ") for splitting citation/reference blocks
+    _citation_line_pattern_word = re.compile(r'^\s*\d+\.\s+')
+
     # First pass: process each paragraph with block type formatting
     formatted_blocks = []
     for idx, block in enumerate(paragraphs):
         block = block.strip()
         if not block:
             continue
-        
+
+        # Citation/reference block: split into one paragraph per line so each has its own line,
+        # and merge split URLs ("https:\n//" -> "https://") so links are full and clickable (like PDF)
+        lines_in_block = [ln.strip() for ln in block.split('\n') if ln.strip()]
+        citation_line_count = sum(1 for ln in lines_in_block if _citation_line_pattern_word.match(ln))
+        if len(lines_in_block) >= 2 and citation_line_count >= 2:
+            # Merge URL continuations so "https:" on one line + "//url" on next -> "https://url"
+            block_merged = re.sub(r'https:\s*\n\s*//', 'https://', block)
+            lines_merged = [ln.strip() for ln in block_merged.split('\n') if ln.strip()]
+            for line in lines_merged:
+                formatted_blocks.append({
+                    'type': 'paragraph',
+                    'content': line,
+                    'level': 0,
+                    'raw_content': line
+                })
+            continue
+
         # Get block_info - use index from enumerate to match block_types indices
         # block_types indices are sequential (0, 1, 2, ...) matching paragraph positions
         block_info = block_type_map.get(idx)
