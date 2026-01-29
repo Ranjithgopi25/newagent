@@ -701,8 +701,23 @@ export class ChatEditWorkflowService {
     const selectedNames = this.getSelectedEditorNames(selectedIds);
 
     try {
+      // Show "Processing your content" UI immediately (before file extraction) so user sees feedback as soon as they proceed
+      this.updateState({
+        ...this.currentState,
+        step: 'processing'
+      });
+      const processingMessage: Message = {
+        role: 'assistant',
+        content: `Processing your content with: **${selectedNames}**\n\nPlease wait while I analyze and edit your content...`,
+        timestamp: new Date(),
+        editWorkflow: {
+          step: 'processing',
+          showCancelButton: false
+        }
+      };
+      this.messageSubject.next({ type: 'prompt', message: processingMessage });
+
       let contentText = this.currentState.originalContent;
-      
       if (this.currentState.uploadedFile && !contentText) {
         contentText = await extractFileText(this.currentState.uploadedFile);
         contentText = normalizeContent(contentText);
@@ -715,26 +730,6 @@ export class ChatEditWorkflowService {
       if (!contentText || !contentText.trim()) {
         throw new Error('No content to process');
       }
-
-      this.updateState({
-        ...this.currentState,
-        step: 'processing'
-      });
-
-      const processingMessage: Message = {
-        role: 'assistant',
-        content: `Processing your content with: **${selectedNames}**\n\nPlease wait while I analyze and edit your content...`,
-        timestamp: new Date(),
-      editWorkflow: {
-        step: 'processing',
-        showCancelButton: false
-      }
-      };
-
-      this.messageSubject.next({
-        type: 'prompt',
-        message: processingMessage
-      });
 
       await this.processContent(contentText, selectedIds, selectedNames);
     } catch (error) {
