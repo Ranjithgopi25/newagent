@@ -171,12 +171,17 @@ export class ChatEditWorkflowService {
   /** Detect edit intent using LLM agent via backend API */
   async detectEditIntent(input: string): Promise<{hasEditIntent: boolean, detectedEditors?: string[]}> {
     if (!input || !input.trim()) {
+      console.log('[ChatEditWorkflowService] detectEditIntent called with empty input');
       return { hasEditIntent: false };
     }
 
+    // Ensure we only send the trimmed current input (not conversation history)
+    const trimmedInput = input.trim();
+    console.log('[ChatEditWorkflowService] detectEditIntent called with input:', trimmedInput.substring(0, 100) + (trimmedInput.length > 100 ? '...' : ''), `(length: ${trimmedInput.length})`);
+
     try {
       const result = await firstValueFrom(
-        this.chatService.detectEditIntent(input.trim())
+        this.chatService.detectEditIntent(trimmedInput)
       );
       
       const hasEditIntent = result.is_edit_intent && result.confidence >= 0.7;
@@ -184,12 +189,19 @@ export class ChatEditWorkflowService {
         ? result.detected_editors 
         : undefined;
       
+      console.log('[ChatEditWorkflowService] detectEditIntent result:', {
+        hasEditIntent,
+        detectedEditors,
+        confidence: result.confidence,
+        reasoning: result.reasoning
+      });
+      
       return { 
         hasEditIntent, 
         detectedEditors 
       };
     } catch (error) {
-      console.error('Error in LLM intent detection:', error);
+      console.error('[ChatEditWorkflowService] Error in LLM intent detection:', error);
       return { hasEditIntent: false };
     }
   }
