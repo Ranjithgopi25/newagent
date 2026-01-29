@@ -1456,67 +1456,13 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
 
     // Check for edit intent asynchronously (hybrid approach: keyword + LLM)
     if (isThoughtLeadershipFlow && (workflowActive || hasEditWorkflowFile)) {
-      // Workflow already active or file uploaded - proceed with file if available
-      const fileToUpload = this.uploadedEditDocumentFile || undefined;
-      
-      // CRITICAL: Always pass file if it exists, even if workflow is active
-      // This ensures beginWorkflowWithFile is called instead of showing upload UI
-      if (fileToUpload) {
-        console.log('[ChatComponent] File exists, passing to handleChatInput:', fileToUpload.name, 'query:', trimmedInput);
-      }
-      
-      this.editWorkflowService.handleChatInput(trimmedInput, fileToUpload).catch(error => {
-        console.error('Error in edit workflow:', error);
-      });
+      // Workflow already active or file uploaded - proceed
+      this.editWorkflowService.handleChatInput(trimmedInput);
       return;
     }
 
     // Check for edit intent if not already in workflow
-    if (isThoughtLeadershipFlow && !workflowActive && (trimmedInput || hasEditWorkflowFile)) {
-      // If file is uploaded (with or without query), detect edit intent and start workflow directly
-      if (hasEditWorkflowFile) {
-        const fileToUpload = this.uploadedEditDocumentFile ?? undefined;
-        if (!fileToUpload) {
-          return;
-        }
-        // Use user query if provided, otherwise create a message about the file
-        const messageContent = trimmedInput || `Edit ${fileToUpload.name}`;
-        
-        // Add user message first
-        if (messageContent) {
-          const userMessage: Message = {
-            role: 'user',
-            content: messageContent,
-            timestamp: new Date()
-          };
-          this.messages.push(userMessage);
-          this.triggerScrollToBottom();
-        }
-        
-        // Call handleChatInput with file - it will detect edit intent and call beginWorkflowWithFile
-        const queryForIntent = trimmedInput || '';
-        console.log('[ChatComponent] Calling handleChatInput with file:', fileToUpload.name, 'query:', queryForIntent);
-        
-        // IMPORTANT: Don't clear file until AFTER handleChatInput completes
-        this.editWorkflowService.handleChatInput(queryForIntent, fileToUpload).then(() => {
-          // Clear file only after workflow starts successfully
-          if (fileToUpload) {
-            this.uploadedEditDocumentFile = null;
-          }
-        }).catch(error => {
-          console.error('Error in edit workflow:', error);
-          // Clear file even on error
-          if (fileToUpload) {
-            this.uploadedEditDocumentFile = null;
-          }
-        });
-        
-        this.userInput = '';
-        this.resetComposerHeight();
-        this.saveCurrentSession();
-        return;
-      }
-      
+    if (isThoughtLeadershipFlow && !workflowActive && trimmedInput) {
       // Quick check for draft intent keywords to avoid unnecessary edit detection
       // const tlDraftKeywords = ['create', 'draft', 'write', 'generate content', 'draft content', 'create content', 'article', 'whitepaper', 'white paper', 'blog', 'executive brief'];
       // const draftExclusionKeywords = ['refine', 'edit'];
@@ -1530,34 +1476,6 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
       //   await this.proceedWithNormalChat(trimmedInput);
       //   return;
       // }
-      
-      // Check if file was uploaded before query was typed
-      // If file exists, use it instead of text-only flow
-      const fileToUpload = this.uploadedEditDocumentFile || undefined;
-      if (fileToUpload) {
-        console.log('[ChatComponent] File found after query typed, using file + query flow');
-        // Add user message first
-        const userMessage: Message = {
-          role: 'user',
-          content: trimmedInput,
-          timestamp: new Date()
-        };
-        this.messages.push(userMessage);
-        this.triggerScrollToBottom();
-        
-        // Call handleChatInput with file - it will use beginWorkflowWithFile
-        this.editWorkflowService.handleChatInput(trimmedInput, fileToUpload).then(() => {
-          this.uploadedEditDocumentFile = null;
-        }).catch(error => {
-          console.error('Error in edit workflow:', error);
-          this.uploadedEditDocumentFile = null;
-        });
-        
-        this.userInput = '';
-        this.resetComposerHeight();
-        this.saveCurrentSession();
-        return;
-      }
       
       // Add user message first
       const userMessage: Message = {
@@ -2019,11 +1937,11 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
               // Trigger edit workflow with the detected data
               console.log('[ChatComponent] Starting edit workflow with response data');
               
-              // Start workflow with detected editors if available
+              const file = this.uploadedEditDocumentFile ?? undefined;
               if (response.detected_editors && response.detected_editors.length > 0) {
-                this.editWorkflowService.beginWorkflowWithEditors(response.detected_editors);
+                this.editWorkflowService.beginWorkflowWithEditors(response.detected_editors, file);
               } else {
-                this.editWorkflowService.beginWorkflow();
+                this.editWorkflowService.beginWorkflow(file);
               }
               
               // Store the response for potential later use by workflow
@@ -3610,9 +3528,13 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
       this.uploadedEditDocumentFile = file;
       console.log('[ChatComponent] Edit document selected:', file.name);
       
-      // DON'T auto-trigger workflow - wait for user to type query
-      // This prevents showing upload UI again when user types query after uploading file
-      // The workflow will start when user sends a message with the file
+      // Auto-trigger workflow if in Thought Leadership mode
+      if (this.selectedFlow === 'thought-leadership') {
+        // Small delay to ensure file is set before sendMessage processes it
+        setTimeout(() => {
+          this.sendMessage();
+        }, 100);
+      }
     }
   }
 
@@ -3880,41 +3802,10 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
     }
 
     if (this.editWorkflowService.currentState.step === 'awaiting_content') {
-      // Store the file
+      // Store the file so it can be displayed in the upload component
       this.uploadedEditDocumentFile = file;
-      
-      // Check if there's a previous user query in messages (user typed query before uploading file)
-      // Look for the most recent user message that contains edit-related keywords
-      const userMessages = this.messages.filter(m => m.role === 'user');
-      let userQuery = '';
-      
-      // Find the last user message that might contain the edit query
-      // Skip messages that are just "Uploaded document: filename"
-      for (let i = userMessages.length - 1; i >= 0; i--) {
-        const msg = userMessages[i];
-        const content = msg?.content || '';
-        // Skip generic upload messages
-        if (!content.toLowerCase().includes('uploaded document') && content.trim().length > 0) {
-          userQuery = content.trim();
-          break;
-        }
-      }
-      
-      // If there's a user query with edit intent, restart workflow with file + query using beginWorkflowWithFile
-      // This prevents showing upload UI again
-      if (userQuery && userQuery.trim()) {
-        console.log('[ChatComponent] File uploaded after query "' + userQuery + '", restarting workflow with file + query');
-        // Cancel current workflow and restart with file
-        this.editWorkflowService.cancelWorkflow();
-        // Call handleChatInput with file + query to use beginWorkflowWithFile
-        this.editWorkflowService.handleChatInput(userQuery, file).catch(error => {
-          console.error('Error restarting workflow with file:', error);
-        });
-      } else {
-        // No query found, use standard file upload flow
-        console.log('[ChatComponent] File uploaded without query, using standard upload flow');
-        this.editWorkflowService.handleFileUpload(file);
-      }
+      // Handle the file upload through the workflow service
+      this.editWorkflowService.handleFileUpload(file);
     }
     
     // Also handle draft workflow file uploads
