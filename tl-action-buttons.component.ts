@@ -57,7 +57,7 @@ def _get_existing_pwc_pdf_template_path() -> str:
         os.path.join(base_dir, "app", "features", "thought_leadership", "template", "pwc_pdf_template_2025.pdf"),
         # If the module is under site-packages/app/, the templates may sit alongside the package
         os.path.join(base_dir, "features", "thought_leadership", "template", "pwc_pdf_template_2025.pdf"),
-        # Fallback to the current working directory (useful in packaged container layouts)
+        # Fallback to current working directory (useful in packaged container layouts)
         os.path.join(os.getcwd(), "app", "features", "thought_leadership", "template", "pwc_pdf_template_2025.pdf"),
     ]
 
@@ -2865,6 +2865,42 @@ def normalize_broken_markdown(text: str) -> str:
     text = re.sub(r'\*{3,}', '**', text)
     return text
 
+def _remove_bullets_from_block(text: str) -> str:
+    """
+    Removes bullet lines from a block of text and returns remaining paragraphs.
+    Handles -, –, •, *, and numbered bullets.
+    """
+    lines = text.splitlines()
+    cleaned = []
+
+    bullet_pattern = re.compile(r'^\s*(?:[-–•*]|\d+[.)])\s+')
+
+    for line in lines:
+        if bullet_pattern.match(line):
+            continue
+        cleaned.append(line)
+
+    return "\n".join(cleaned).strip()
+
+def add_superscript_hyperlink(paragraph, text, url):
+    run = paragraph.add_run(text)
+    run.font.superscript = True
+    run.bold = False
+
+    r = run._r
+    rPr = r.get_or_add_rPr()
+
+    # Hyperlink XML
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(qn('r:id'), paragraph.part.relate_to(
+        url,
+        docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK,
+        is_external=True
+    ))
+
+    hyperlink.append(r)
+    paragraph._p.append(hyperlink)
+
 def export_to_pdf_with_pwc_template_with_bullets(
     content: str,
     title: str,
@@ -4612,6 +4648,16 @@ def _format_content_for_pdf_mi(text: str) -> str:
     """
     if not text:
         return text
+    # text = re.sub(
+    #     r'\[(\d+)\]\((https?://[^)]+)\)',
+    #     r'<super><a href="\2">\1</a></super>',
+    #     text
+    # )
+    text = re.sub(
+    r'\[(\d+)\]\((https?://[^)]+)\)',
+    r'<a href="\2"><super>[\1]</super></a>',
+    text
+)
 
     # First, handle special quotation marks and other problematic characters BEFORE processing HTML
     # This ensures they are replaced before being wrapped in HTML tags
@@ -4686,19 +4732,21 @@ def _format_content_for_pdf_mi(text: str) -> str:
 
     for dash in dash_variants:
         text = text.replace(dash, '-')
-    
+    # =====SUPERSCRIPTS =====
+    text = re.sub(r"\^(\d+)", r"<super>\1</super>", text)
+    # ===== END SUPERSCRIPTS =====
     # Convert markdown links [text](url) to <a href="url" color="blue">text</a>
     text = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', r'<a href="\2" color="blue">\1</a>', text)
     
     # Convert plain URLs to clickable links (but not those already inside HTML tags)
     # Match URLs that are not inside href= attributes or already converted
     # text = re.sub(r'(?<![="])(?<![a-zA-Z])(?<!href)(https?://[^\s)>\]]+)', r'<a href="\1" color="blue">\1</a>', text)
-    if '<a ' not in text:
-        text = re.sub(
-            r'(https?://[^\s)>\]]+)',
-            r'<a href="\1" color="blue">\1</a>',
-            text
-        )
+    text = re.sub(
+    r'(?<!href=")(https?://[^\s)>\]]+)',
+    r'<a href="\1" color="blue">\1</a>',
+    text
+    )
+
     # Convert **bold** to <b>bold</b>
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     
@@ -4781,12 +4829,90 @@ def export_to_word_pwc_no_toc(
     # End cover section cleanly
 
     # 3. Render generated content properly
-    for raw_line in content.split("\n"):
+    # for raw_line in content.split("\n"):
+    for raw_line  in re.split(r"\n\s*\n", content):
+    # for raw_line in content.split("\n\n"):
         # raw_line = re.sub(r"\*\*", "", raw_line)   # REMOVE **
         # raw_line = raw_line.replace("*", "")       # REMOVE *
         # raw_line = re.sub(r"^#+\s*", "", raw_line) # REMOVE ###
         original_line = raw_line
+        raw_line = re.sub(r"\*+", "", raw_line)
         line = raw_line.strip()
+        # if "|" in raw_line and raw_line.count("\n") >= 1:
+        #     rows = [
+        #         r.strip() for r in raw_line.split("\n")
+        #         if "|" in r and not re.match(r'^\s*\|?\s*-{3,}', r)
+        #     ]
+
+        #     table_data = [
+        #         [cell.strip() for cell in row.strip("|").split("|")]
+        #         for row in rows
+        #     ]
+        if "|" in raw_line and "\n" in raw_line:
+            rows = [
+                r.strip()
+                for r in raw_line.splitlines()
+                if "|" in r and not re.match(r'^\s*\|?\s*-{3,}', r)
+            ]
+
+            if len(rows) < 2:
+                continue
+            table_data = [
+                [re.sub(r"\*+", "", cell).strip()
+                for cell in row.strip("|").split("|")]
+                for row in rows
+            ]
+
+            table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
+            # table.style = "Table Grid"
+            table.autofit = True
+
+            for i, row in enumerate(table_data):
+                for j, cell in enumerate(row):
+                    table.cell(i, j).text = cell
+
+            doc.add_paragraph("", style="Body Text")
+            continue
+            # table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
+            # # table.style = doc.styles['Table Normal']
+
+            # for i, row in enumerate(table_data):
+            #     for j, cell in enumerate(row):
+            #         # table.cell(i, j).text = cell
+            #         table.cell(i, j).text = re.sub(r"[*#]+", "", cell).strip()
+            # p=doc.add_paragraph("", style="Body Text")
+            # p.add_run("").bold = False
+
+            # p.paragraph_format.space_after = DocxPt(6)
+            # continue
+        # doc.add_paragraph("", style="Body Text")
+            # table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
+            # table.style = "Table Grid"
+            # table.autofit = True
+
+            # for i, row in enumerate(table_data):
+            #     for j, cell in enumerate(row):
+            #         clean_cell = re.sub(r"[*#]+", "", cell).strip()
+
+            #         tc = table.cell(i, j)
+            #         tc.text = ""  # IMPORTANT: clear default paragraph
+
+            #         p_cell = tc.paragraphs[0]
+            #         run = p_cell.add_run(clean_cell)
+            #         run.bold = False
+
+            #         p_cell.paragraph_format.space_before = DocxPt(2)
+            #         p_cell.paragraph_format.space_after = DocxPt(2)
+            #         p_cell.paragraph_format.keep_together = True
+
+            # # small spacing after table
+            # p = doc.add_paragraph("", style="Body Text")
+            # p.paragraph_format.space_after = DocxPt(6)
+            # continue
+
+        if re.match(r'^\s*\|?\s*-{3,}\s*\|?\s*$', raw_line):
+            continue
+
         if (
             "style:" in line.lower()
             or line.lower().endswith("style")
@@ -4795,20 +4921,44 @@ def export_to_word_pwc_no_toc(
             continue
         if re.fullmatch(r"\s*-{3,}\s*", raw_line):
             continue
+        if raw_line.strip().startswith("|---"):
+            continue
+
         # ---------- Headings ----------
-        if original_line.lstrip().startswith("###"):
-            text = re.sub(r"^#+\s*", "", original_line)
+        first_line = original_line.lstrip().splitlines()[0]
+        if first_line.lstrip().startswith("###"):
+        # if original_line.lstrip().startswith("###"):
+        
+            # text = re.sub(r"^#+\s*", "", original_line)
+            text = re.sub(r"^#+\s*", "", first_line)
+
             p = doc.add_heading(text.strip(), level=3)
-            continue
+            for run in p.runs:
+                run.bold = True
 
-        elif original_line.lstrip().startswith("##"):
-            text = re.sub(r"^#+\s*", "", original_line)
+
+            continue
+        elif first_line.startswith("##"):
+        # elif original_line.lstrip().startswith("##"):
+            # text = re.sub(r"^#+\s*", "", original_line)
+            text = re.sub(r"^#+\s*", "", first_line)
+
             p = doc.add_heading(text.strip(), level=2)
-            continue
+            for run in p.runs:
+                run.bold = True
 
-        elif original_line.lstrip().startswith("#"):
-            text = re.sub(r"^#+\s*", "", original_line)
+            continue
+        elif first_line.startswith("#"):
+
+        # elif original_line.lstrip().startswith("#"):
+            # text = re.sub(r"^#+\s*", "", original_line)
+            text = re.sub(r"^#+\s*", "", first_line)
+
             p = doc.add_heading(text.strip(), level=1)
+            for run in p.runs:
+                run.bold = True
+
+
             continue
 
         # ---------- THEN clean markdown ----------
@@ -4846,81 +4996,74 @@ def export_to_word_pwc_no_toc(
         if not line:
             continue  # avoid empty paragraphs → extra pages
         line = re.sub(r"^#+\s*", "", line)
-        # ---------- Headings ----------
-        # if line.startswith("### "):
-        #     p = doc.add_heading(line[4:].strip(), level=3)
-
-        # elif line.startswith("## "):
-        #     p = doc.add_heading(line[3:].strip(), level=2)
-
-        # elif line.startswith("# "):
-        #     p = doc.add_heading(line[2:].strip(), level=1)
-        # ------------------------------------
-        # if raw_line.lstrip().startswith("###"):
-        #     p = doc.add_heading(line, level=3)
-        #     for run in p.runs:
-        #         run.bold = True
-
-        # elif raw_line.lstrip().startswith("##"):
-        #     p = doc.add_heading(line, level=2)
-        #     for run in p.runs:
-        #         run.bold = True
-
-        # elif raw_line.lstrip().startswith("#"):
-        #     p = doc.add_heading(line, level=1)
-        #     for run in p.runs:
-        #         run.bold = True
-
-        # ---------- Bullets ----------
-        # elif line.startswith("- ") or line.startswith("* "):
-        #     text = line[2:].strip()
-        #     p = doc.add_paragraph(style="List Bullet")
-
-        #     # Bold bullet heading if present
-        #     if "**" in text:
-        #         parts = re.split(r"\*\*(.*?)\*\*", text)
-        #         for i, part in enumerate(parts):
-        #             run = p.add_run(part)
-        #             if i % 2 == 1:
-        #                 run.bold = True
-        #     else:
-        #         p.add_run(text)
-        # elif raw_line.strip().startswith(("- ", "* ")):
-        #     text = raw_line.strip()[2:].strip()
-        #     p = doc.add_paragraph(style="List Bullet")
-
-        #     parts = re.split(r"\*\*(.*?)\*\*", text)
-        #     for i, part in enumerate(parts):
-        #         run = p.add_run(part)
-        #         if i % 2 == 1:
-        #             run.bold = True
-
+       
         # elif raw_line.lstrip().startswith(("-", "*")):
-        if raw_line.lstrip().startswith(("- ", "* ")):
-            text = raw_line.lstrip()[1:].strip()
-            p = doc.add_paragraph(style="List Bullet")
-            p.paragraph_format.left_indent = DocxInches(0.25)
-            indent = len(raw_line) - len(raw_line.lstrip())
-            p.paragraph_format.left_indent = DocxInches(0.25 + indent * 0.15)
+        handled_bullet = False
+        for bl in raw_line.splitlines():
+            if bl.lstrip().startswith(("- ", "* ")):
+                handled_bullet = True
+                text = bl.lstrip()[2:].strip()
 
-            # if ":" in text:
-            #     head, rest = text.split(":", 1)
-            #     r1 = p.add_run(head.strip() + ": ")
-            #     r1.bold = True
-            #     p.add_run(rest.strip())
-            # else:
-            #     r1 = p.add_run(text)
-            #     r1.bold = True
-            parts = re.split(r"(\*\*.*?\*\*)", text)
+                p = doc.add_paragraph(style="List Bullet")
+                p.paragraph_format.keep_together = True
 
-            for part in parts:
-                if part.startswith("**") and part.endswith("**"):
-                    run = p.add_run(part[2:-2])
-                    run.bold = True
+                indent = len(bl) - len(bl.lstrip())
+                p.paragraph_format.left_indent = DocxInches(0.25 + indent * 0.15)
+
+                clean = re.sub(r"\*+", "", text)
+
+                if ":" in clean:
+                    head, rest = clean.split(":", 1)
+                    r1 = p.add_run(head.strip() + ": ")
+                    r1.bold = True
+                    p.add_run(rest.strip())
                 else:
-                    p.add_run(part)
+                    p.add_run(clean)
+
+        if handled_bullet:
             continue
 
+        # if raw_line.lstrip().startswith(("- ", "* ")):
+        # for bl in raw_line.splitlines():
+        #     if bl.lstrip().startswith(("- ", "* ")):
+        #         text = bl.lstrip()[2:].strip()
+
+        #     text = raw_line.lstrip()[2:].strip()
+        #     # text = raw_line.lstrip()[1:].strip()
+        #     p = doc.add_paragraph(style="List Bullet")
+        #     p.paragraph_format.keep_together = True
+        #     p.paragraph_format.left_indent = DocxInches(0.25)
+        #     indent = len(raw_line) - len(raw_line.lstrip())
+        #     p.paragraph_format.left_indent = DocxInches(0.25 + indent * 0.15)
+        #     clean = re.sub(r"\*+", "", text)
+        #     # if ":" in text:
+        #     if ":" in clean:
+        #         head, rest = clean.split(":", 1)
+        #         r1 = p.add_run(head.strip() + ": ")
+        #         r1.bold = True
+        #         p.add_run("").bold = False
+        #         p.add_run(rest.strip())
+        #     else:
+        #         p.add_run(clean)
+            #     r1 = p.add_run(text)
+            #     r1.bold = True
+            # parts = re.split(r"(\*\*.*?\*\*)", text)
+            # parts = [re.sub(r"\*+", "", text)]
+            # clean = re.sub(r"\*+", "", text)
+            # run = p.add_run(clean)
+            # # run.bold = True
+            # run.bold = False
+
+            # for part in parts:
+            #     if part.startswith("**") and part.endswith("**"):
+            #         run = p.add_run(part[2:-2])
+            #         run.bold = True
+            #         run.font.size = None
+            #     # else:
+            #     #     p.add_run(part)
+            #     else:
+            #         p.add_run(re.sub(r"\*+", "", part))
+            # continue
         # ---------- Bold paragraphs ----------
         # elif line.startswith("**") and line.endswith("**"):
         #     p = doc.add_paragraph()
@@ -4934,28 +5077,66 @@ def export_to_word_pwc_no_toc(
             # p = doc.add_paragraph(clean)
             # p.style = "Body Text"
             # remove_paragraph_borders(p)
-            p = doc.add_paragraph(style="Body Text")
-            tokens = re.split(r'(https?://[^\s]+)', line)
+            p = doc.add_paragraph("", style="Body Text")
+            # is_reference = bool(re.match(r'^(\[\d+\]|\d+\.)', line.strip()))
+            is_reference = bool(
+                re.match(r'^(\[\d+\]|\d+\.)', line.strip())
+                or line.strip().startswith("http")
+            )
+
+            # tokens = re.split(r'(https?://[^\s]+)', line)
+            tokens = re.split(r'(https?://[^\s]+)', line + " ")
+
             for token in tokens:
-                if token.startswith("http://") or token.startswith("https://"):
-                    add_hyperlink(p, token, token)
+                # if token.startswith("http://") or token.startswith("https://"):
+                # if re.match(r"https?://", token):
+                if token.startswith("http"):
+                    add_hyperlink_mi(p, token, token,bold=not is_reference)
                 else:
                     # run = p.add_run(token)
-                    subparts = re.split(r"(\*\*.*?\*\*)", token)
+                    # subparts = re.split(r"(\*\*.*?\*\*)", token)
+                    # subparts = re.split(r"(\*\*.*?\*\*|\*[^*]+\*)", token)
+                    
+                    # subparts = re.split(r"(\*\*.*?\*\*|\*[^*]+\*)", token) if "**" in token or "*" in token else [token]
+                    
+                    # subparts = [s if s.startswith("*") and s.endswith("*") else re.sub(r"\*+", "", s) for s in subparts]
+                    # subparts = [re.sub(r"\*+", "", s) for s in subparts]
+                    # subparts = [re.sub(r"\*+", "", token)]
+                    # subparts = [re.sub(r"\*+", "", token)]
+                    subparts = [token]
+
+
+                    # is_reference = bool(re.match(r'^(\[\d+\]|\d+\.)', line.strip())) or line.strip().startswith("http")
                     for sub in subparts:
-                        if sub.startswith("**") and sub.endswith("**"):
-                            r = p.add_run(sub[2:-2])
-                            r.bold = True
-                        else:
-                            p.add_run(sub)
+                        # if sub.startswith("**") and sub.endswith("**"):
+                        #     r = p.add_run(sub[2:-2])
+                        #     r.bold = not is_reference
+                        # elif sub.startswith("*") and sub.endswith("*"):
+                        #     r = p.add_run(sub[1:-1])
+                        #     r.italic = True
+                        # else:
+                            # p.add_run(sub)
+                        # parts = re.split(r"(\[\d+\])", sub)
+                        # for part in parts:
+                        #     # run = p.add_run(part.replace("^", ""))
+                        #     run = p.add_run(part.strip("[]"))
+                        #     if part.startswith("[") and part.endswith("]"):
+                        #         run.font.superscript = True
+                        parts = re.split(r"(\[\d+\]\([^)]+\))", sub)
+
+                        for part in parts:
+                            m = re.match(r"\[(\d+)\]\(([^)]+)\)", part)
+                            if m:
+                                num, url = m.groups()
+                                add_superscript_hyperlink(p, f"[{num}]", url)
+                            else:
+                                p.add_run(part)
+
             remove_paragraph_borders(p)
-
-
     # 4. Save exactly like before
     buffer = io.BytesIO()
     doc.save(buffer)
     buffer.seek(0)
-
     return _fix_docx_encoding(buffer.getvalue())
 
 # def export_to_word_pwc_no_toc(
