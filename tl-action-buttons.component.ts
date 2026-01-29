@@ -1,1692 +1,6164 @@
-from typing import TypedDict, Optional, List, Literal, AsyncGenerator, Dict
-from httpcore import request
-from langgraph.graph import StateGraph, END
-from app.features.thought_leadership.services.format_translator_service import PlusDocsClient
-from langchain_openai import AzureChatOpenAI
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
-import logging
-from pydantic import BaseModel
-from app.core.config import config
-import json
-import re
-from fastapi.responses import StreamingResponse
 
-logger = logging.getLogger(__name__)
-router = APIRouter()
+import { Component, EventEmitter, OnInit, OnDestroy, HostListener, ViewChild, ElementRef, AfterViewChecked, ChangeDetectorRef, inject, Output } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { ChatService, ThemeService, ThemeMode, TlChatBridgeService, ToastService } from '../../core/services';
+import { ChatEditWorkflowService } from '../../core/services/chat-edit-workflow.service';
+import { ChatDraftWorkflowService } from '../../core/services/chat-draft-workflow.service';
+import { Message, ChatSession, ThoughtLeadershipRequest, ThoughtLeadershipMetadata, MarketIntelligenceMetadata, EditorOption } from '../../core/models';
+import { SourceCitationPipe } from '../../core/pipes';
+import { TlFlowService } from '../../core/services/tl-flow.service';
+import { DdcFlowService } from '../../core/services/ddc-flow.service';
+import { AuthService } from '../../auth/auth.service';
+import { AuthFetchService } from '../../core/services/auth-fetch.service';
+import { MiFlowService } from '../../features/market-intelligence/mi-flow.service';
+import { MiChatBridgeService } from '../../features/market-intelligence/mi-chat-bridge.service';
+import { DDC_WORKFLOWS, MI_WORKFLOWS, DDC_INTRO_TEXT, DDC_SUB_INTRO_TEXT } from '../../core/models/guided-journey.models';
+import { DraftContentFlowComponent } from '../../features/thought-leadership/draft-content-flow/draft-content-flow.component';
+import { ConductResearchFlowComponent } from '../../features/thought-leadership/conduct-research-flow/conduct-research-flow.component';
+import { EditContentFlowComponent } from '../../features/thought-leadership/edit-content-flow/edit-content-flow.component';
+import { RefineContentFlowComponent } from '../../features/thought-leadership/refine-content-flow/refine-content-flow.component';
+import { FormatTranslatorFlowComponent } from '../../features/thought-leadership/format-translator-flow/format-translator-flow.component';
+import { GeneratePodcastFlowComponent } from '../../features/thought-leadership/generate-podcast-flow/generate-podcast-flow.component';
+import { BrandFormatFlowComponent } from '../../features/ddc/brand-format-flow/brand-format-flow.component';
+import { ProfessionalPolishFlowComponent } from '../../features/ddc/professional-polish/professional-polish-flow.component';
+import { SanitizationFlowComponent } from '../../features/ddc/sanitization/sanitization-flow.component';
+import { ClientCustomizationFlowComponent } from '../../features/ddc/client-customization/client-customization-flow.component';
+import { RfpResponseFlowComponent } from '../../features/ddc/rfp-response/rfp-response-flow.component';
+import { FormatTranslatorFlowComponent as DdcFormatTranslatorFlowComponent } from '../../features/ddc/format-translator/format-translator-flow.component';
+import { SlideCreationFlowComponent } from '../../features/ddc/slide-creation/slide-creation-flow.component';
+import { SlideCreationPromptFlowComponent } from '../../features/ddc/slide-creation-prompt/slide-creation-prompt-flow.component';
+import { GuidedDialogComponent } from '../../shared/components/guided-dialog/guided-dialog.component';
+import { QuickDraftDialogComponent, QuickDraftInputs } from '../../shared/components/quick-draft-dialog/quick-draft-dialog.component';
+import { TlActionButtonsComponent } from '../../features/chat/components/message-list/tl-action-buttons/tl-action-buttons.component';
+import { TlRequestFormComponent } from '../../features/phoenix/TL/request-form';
+import { DDCRequestFormComponent } from '../../features/phoenix/ddc/request-form-ddc';
+import { EditorSelectionComponent } from '../../features/chat/components/editor-selection/editor-selection.component';
+import { EditorProgressComponent } from '../../shared/ui/components/editor-progress/editor-progress.component';
+import { ParagraphEditsConsolidatedComponent } from '../../shared/ui/components/paragraph-edits/paragraph-edits-consolidated.component';
+import { CanvasEditorComponent } from '../../features/thought-leadership/canvas-editor/canvas-editor.component';
+import { CanvasStateService } from '../../core/services/canvas-state.service';
+import { VoiceInputComponent } from '../../shared/components/voice-input/voice-input.component';
+import { FileUploadComponent } from '../../shared/components/file-upload/file-upload.component';
+import { MarkdownPipe } from '../../core/pipes/markdown.pipe';
+import { Observable, Subject } from 'rxjs'
+import { takeUntil } from 'rxjs/operators';
+import { marked } from 'marked';
+import { CurrentUserService } from '../../core/services/current-user.service';
+import { User } from '../../core/models/user.model';
+import { environment } from '../../../environments/environment';
+import { extractDocumentTitle, convertMarkdownToHtml, BlockTypeInfo } from '../../core/utils/edit-content.utils';
+import { formatFinalArticleWithBlockTypes } from '../../core/utils/edit-content.utils';
 
-# Define workflow schemas
-WORKFLOW_SCHEMAS = {
-    "detect_edit_intent": {
-        "required": ["user_input"],
-        "optional": [],
-        "description": "Detect if user input indicates edit/improve/review intent and extract editor names"
-    },
-    "draft_content": {
-        "required": ["topic", "content_type", "outline_doc", "audience_tone"],
-        "optional": ["word_limit", "supporting_doc"],
-        "description": "Draft new content like articles, blogs, or executive briefs"
-    },
-    "format_translator": {
-        "required": ["content", "target_format"],
-        "optional": ["source_format", "customization", "word_limit", "num_slides"],
-        "description": "Translate content between formats (Social Media Post, Webpage Ready, Placemat, etc.)"
-    },
-    "conduct_research": {
-        "required": ["research_topic"],
-        "optional": ["research_scope", "specific_sources", "depth_level"],
-        "description": "Conduct extensive research on any topic with citations and source links"
-    },
-    "expand_compress_content": {
-        "required": ["original_content", "service_type", "expected_word_count"],
-        "optional": ["supporting_doc", "expansion_section", "expand_guidelines"],
-        "description": "Expand or compress content to a target word count"
-    },
-    "adjust_tone": {
-        "required": ["original_content", "audience_tone"],
-        "optional": [],
-        "description": "Adjust content tone or target audience"
-    },
-    "provide_suggestions": {
-        "required": ["original_content"],
-        "optional": [],
-        "description": "Get improvement suggestions for content"
+// Market Intelligence imports
+import { MiDraftContentFlowComponent } from '../../features/market-intelligence/draft-content-flow/draft-content-flow.component';
+import { MiConductResearchFlowComponent } from '../../features/market-intelligence/conduct-research-flow/conduct-research-flow.component';
+import { MiEditContentFlowComponent } from '../../features/market-intelligence/edit-content-flow/edit-content-flow.component';
+import { MiFormatTranslatorFlowComponent } from '../../features/market-intelligence/format-translator-flow/format-translator-flow.component';
+import { MiGeneratePodcastFlowComponent } from '../../features/market-intelligence/generate-podcast-flow/generate-podcast-flow.component';
+import { MiRefineContentFlowComponent } from '../../features/market-intelligence/refine-content-flow/refine-content-flow.component';
+import { MiBrandFormatFlowComponent } from '../../features/market-intelligence/brand-format-flow/brand-format-flow.component';
+import { MiProfessionalPolishFlowComponent } from '../../features/market-intelligence/professional-polish-flow/professional-polish-flow.component';
+import { MiActionButtonsComponent } from '../../features/market-intelligence/mi-action-buttons/mi-action-buttons.component';
+import { MiCreatePOVFlowComponent } from '../../features/market-intelligence/create-pov-flow/create-pov-flow.component';
+import { MiPrepareClientMeetingFlowComponent } from '../../features/market-intelligence/prepare-client-meeting-flow/prepare-client-meeting-flow.component';
+import { MiGatherProposalInsightsFlowComponent } from '../../features/market-intelligence/gather-proposal-insights-flow/gather-proposal-insights-flow.component';
+import { MiTargetIndustryInsightsFlowComponent } from '../../features/market-intelligence/target-industry-insights-flow/target-industry-insights-flow.component';
+
+@Component({
+    selector: 'app-chat',
+    imports: [
+        CommonModule,
+        FormsModule,
+        SourceCitationPipe,
+        DraftContentFlowComponent,
+        ConductResearchFlowComponent,
+        EditContentFlowComponent,
+        RefineContentFlowComponent,
+        FormatTranslatorFlowComponent,
+        GeneratePodcastFlowComponent,
+        BrandFormatFlowComponent,
+        ProfessionalPolishFlowComponent,
+        SanitizationFlowComponent,
+        ClientCustomizationFlowComponent,
+        RfpResponseFlowComponent,
+        DdcFormatTranslatorFlowComponent,
+        SlideCreationFlowComponent,
+        SlideCreationPromptFlowComponent,
+        GuidedDialogComponent,
+        QuickDraftDialogComponent,
+        TlActionButtonsComponent,
+        TlRequestFormComponent,
+        DDCRequestFormComponent,
+        EditorSelectionComponent,
+        CanvasEditorComponent,
+        VoiceInputComponent,
+        FileUploadComponent,
+        EditorProgressComponent,
+        ParagraphEditsConsolidatedComponent,
+        MarkdownPipe,
+        // Market Intelligence components
+        MiDraftContentFlowComponent,
+        MiConductResearchFlowComponent,
+        MiEditContentFlowComponent,
+        MiFormatTranslatorFlowComponent,
+        MiGeneratePodcastFlowComponent,
+        MiRefineContentFlowComponent,
+        MiBrandFormatFlowComponent,
+        MiProfessionalPolishFlowComponent,
+        MiActionButtonsComponent,
+        MiCreatePOVFlowComponent,
+        MiPrepareClientMeetingFlowComponent,
+        MiGatherProposalInsightsFlowComponent,
+        MiTargetIndustryInsightsFlowComponent
+    ],
+    templateUrl: './chat.component.html',
+    styleUrls: ['./chat.component.scss']
+})
+export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
+  @ViewChild('messagesContainer') private messagesContainer?: ElementRef;
+  @ViewChild('quickStartBtn') private quickStartBtn?: ElementRef;
+  @ViewChild('composerTextarea') private composerTextarea?: ElementRef<HTMLTextAreaElement>;
+  @ViewChild(VoiceInputComponent) voiceInput?: VoiceInputComponent;
+  @ViewChild(RefineContentFlowComponent) refineContentFlow?: RefineContentFlowComponent;
+  @Output() raisePhoenix = new EventEmitter<void>();
+  private shouldScrollToBottom = false;
+  private destroy$ = new Subject<void>();
+  private sanitizer = inject(DomSanitizer);
+  messages: Message[] = [];
+  userInput: string = '';
+  isLoading: boolean = false;
+  isComposerExpanded: boolean = false;
+  showDraftForm: boolean = false;
+  showGuidedDialog: boolean = false;
+  showPromptSuggestions: boolean = false;
+  showLandingPage: boolean = true;
+  landingPageFadingOut: boolean = false;
+  // Simple in-component notification (toast)
+  isDraftFallback: boolean = false;
+  showNotification: boolean = false;
+  notificationMessage: string = '';
+  notificationType: 'success' | 'error' = 'success';
+  showQuickDraftDialog: boolean = false;
+  quickDraftTopic: string = '';
+  quickDraftContentType: string = '';
+  selectedActionCategory: string = '';
+  selectedFlow: 'ppt' | 'thought-leadership' | 'market-intelligence' | undefined = undefined;
+  selectedTLOperation: string = 'generate';
+  selectedPPTOperation: string = 'draft';
+  originalPPTFile: File | null = null;
+  referencePPTFile: File | null = null;
+  sanitizePPTFile: File | null = null;
+  uploadedPPTFile: File | null = null;
+  uploadedEditDocumentFile: File | null = null; // For Edit Content workflow
+  editDocumentUploadError: string = ''; // Error message for file upload validation
+  MAX_FILE_SIZE_MB = 5; 
+  referenceDocument: File | null = null;
+  editorialDocumentFile: File | null = null;
+  referenceLink: string = '';
+  currentAction: string = '';
+  selectedDownloadFormat: string = 'word';
+  showAttachmentArea: boolean = false;
+  showRequestForm = false; // For DDC Request Form
+  showTLRequestForm = false; // For TL Request Form (MCX Publication Support)
+  // Store extracted text from uploaded documents (for non-workflow analysis) - supports multiple files
+  extractedDocuments: Array<{ fileName: string; extractedText: string }> = [];
+  isExtractingText: boolean = false;
+  
+  // Market Intelligence flow visibility
+  showMIFlow: boolean = false;
+  showTLFlow: boolean = false;
+  showDDCFlow: boolean = false;
+
+  // Profile details
+  profile = '';
+
+  //user details
+  private currentUserService = inject(CurrentUserService);
+  // expose user observable to template
+  user$ = this.currentUserService.user$;
+  // Profile data
+  userProfile: any = null;
+  profileImageUrl: string = '';
+  displayName: string = '';
+  // Dropdown state
+  openDropdown: string | null = null;
+  
+  // LLM Service Provider and Model Selection
+  selectedServiceProvider: 'openai' | 'anthropic' = 'openai';
+  selectedModel: string = 'gpt-5.2';
+  
+  // LLM models by service provider
+  llmModelsByProvider: { [key: string]: string[] } = {
+    openai: ['gpt-5.2', 'gpt-5.1', 'gpt-5'],
+    anthropic: ['claude-3-5-sonnet', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku', 'claude-2.1']
+  };
+  
+  get availableModels(): string[] {
+    return this.llmModelsByProvider[this.selectedServiceProvider] || [];
+  }
+
+  /**
+   * Determine if send button should be enabled
+   * Enabled when user has text input OR has uploaded files OR has extracted documents
+   */
+  get isSendButtonEnabled(): boolean {
+    const hasUserInput = this.userInput.trim().length > 0;
+    const hasUploadedFile = !!this.uploadedPPTFile || !!this.uploadedEditDocumentFile;
+    const hasExtractedDocuments = this.extractedDocuments.length > 0;
+    const isBusy = this.isLoading || this.isExtractingText;
+    
+    return (hasUserInput || hasUploadedFile || hasExtractedDocuments) && !isBusy;
+  }
+  
+  // Chat history persistence
+  currentSessionId: string | null = null;
+  savedSessions: ChatSession[] = [];
+  private readonly STORAGE_KEY = 'pwc_chat_sessions';
+  private readonly MAX_SESSIONS = 20;
+  
+  // Database-driven chat history (new approach)
+  dbChatSessions: ChatSession[] = [];
+  isLoadingDbSessions: boolean = false;
+  isLoadingDbConversation: boolean = false;
+  selectedSourceFilter: string = '';
+  
+  // Search functionality
+  searchQuery: string = '';
+  offeringVisibility = {
+    'ppt': true,
+    'thought-leadership': true,
+    'market-intelligence': true
+  };
+  
+
+  // Mobile menu state
+  mobileMenuOpen: boolean = false;
+  
+  // Pending draft topic (for when user needs to select content type)
+  private pendingDraftTopic: string | null = null;
+
+  // Export dropdown state (per message)
+  showExportDropdown: { [messageIndex: number]: boolean } = {};
+  isExporting: { [messageIndex: number]: boolean } = {};
+  isExported: { [messageIndex: number]: boolean } = {};
+  exportFormat: { [messageIndex: number]: string } = {};
+  
+  // Sidebar collapse state (expanded by default)
+  sidebarExpanded: boolean = true;
+  
+  // Theme dropdown state
+  showThemeDropdown: boolean = false;
+  prefersDark: boolean = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  
+  // History panel state
+  showHistoryPanel: boolean = false;
+
+  
+  // PPT Quick Actions
+  pptQuickActions: string[] = ['Doc Studio', 'Fix Formatting', 'Sanitize Documents', 'Validate Best Practices'];
+  
+  // NEW: Thought Leadership Quick Actions (5 Sections)
+  tlQuickActions: string[] = ['Draft Content', 'Conduct Research', 'Edit Content', 'Refine Content', 'Format Translator'];
+  
+  // Dynamic quick actions based on selected flow
+  get quickActions(): string[] {
+    return this.selectedFlow === 'ppt' ? this.pptQuickActions : this.tlQuickActions;
+  }
+
+  /**
+   * Filter chat sessions based on search query
+   * Searches through title and message content
+   */
+  get filteredChatSessions(): ChatSession[] {
+    if (!this.searchQuery.trim()) {
+      return this.dbChatSessions;
     }
-    # "refine_content": {
-    #     "required": ["original_content", "service_type"],
-    #     "optional": ["expected_word_count", "audience_tone", "supporting_doc", "expansion_section", "expand_guidelines"],
-    #     "description": "Refine content by expanding, compressing, adjusting tone, adding research, or getting improvement suggestions"
-    # }
+
+    const query = this.searchQuery.toLowerCase();
+    
+    return this.dbChatSessions.filter(session => {
+      // Search in session title
+      if (session.title.toLowerCase().includes(query)) {
+        return true;
+      }
+
+      // Search in message content
+      if (session.messages && Array.isArray(session.messages)) {
+        return session.messages.some(message => {
+          const content = message.content ? message.content.toLowerCase() : '';
+          return content.includes(query);
+        });
+      }
+
+      return false;
+    });
+  }
+  
+  promptCategories: any = {
+    // PPT Categories
+    draft: {
+      title: 'Create Draft',
+      prompts: [
+        'Create a presentation on digital transformation strategy',
+        'Draft slides about cloud migration benefits',
+        'Build a deck on AI implementation roadmap',
+        'Create an executive summary presentation'
+      ]
+    },
+    improve: {
+      title: 'Fix Formatting',
+      prompts: [
+        'Fix spelling and grammar in my presentation',
+        'Align all shapes and text boxes',
+        'Rebrand my deck with new colors',
+        'Clean up slide formatting'
+      ]
+    },
+    sanitize: {
+      title: 'Sanitize Documents',
+      prompts: [
+        'Remove all client-specific data from my deck',
+        'Sanitize numbers and metrics',
+        'Clear all metadata and notes',
+        'Remove logos and branding'
+      ]
+    },
+    bestPractices: {
+      title: 'Validate Best Practices',
+      prompts: [
+        'Validate my presentation against PwC best practices',
+        'Check slide design and formatting standards',
+        'Review chart and visual guidelines',
+        'Ensure MECE framework compliance'
+      ]
+    },
+    
+    // NEW: Thought Leadership Categories (5 Sections)
+    draftContent: {
+      title: 'Draft Content',
+      prompts: [
+        'Draft an article on digital transformation trends',
+        'Create a white paper on AI in business',
+        'Write an executive brief on market insights',
+        'Draft a blog post about future of work'
+      ]
+    },
+    conductResearch: {
+      title: 'Conduct Research',
+      prompts: [
+        'Research industry trends with multiple sources',
+        'Analyze competitive landscape with citations',
+        'Gather insights from PwC resources and external data',
+        'Synthesize findings across documents and web sources'
+      ]
+    },
+    editContent: {
+      title: 'Edit Content',
+      prompts: [
+        'Apply brand alignment review to my article',
+        'Perform copy editing on my white paper',
+        'Get line editing suggestions for clarity',
+        'Request content editor feedback on structure'
+      ]
+    },
+    refineContent: {
+      title: 'Refine Content',
+      prompts: [
+        'Expand my article to 2500 words with research',
+        'Compress my white paper to executive brief format',
+        'Adjust tone for C-suite audience',
+        'Get suggestions to improve my content'
+      ]
+    },
+    formatTranslator: {
+      title: 'Format Translator',
+      prompts: [
+        'Convert my article to a blog post',
+        'Transform this white paper into an executive brief',
+        'Translate blog content to formal article',
+        'Convert executive brief to comprehensive white paper'
+      ]
+    },
+    generatePodcast: {
+      title: 'Generate Podcast',
+      prompts: [
+        'Create a podcast episode about digital transformation',
+        'Generate a podcast discussing industry trends',
+        'Convert my article into a podcast script',
+        'Create an audio version of my thought leadership content'
+      ]
+    },
+    
+    // Legacy TL Categories (kept for compatibility)
+    generate: {
+      title: 'Generate Article',
+      prompts: [
+        'Write an article on future of work',
+        'Create thought leadership on sustainability',
+        'Draft insights on digital innovation',
+        'Generate content on industry trends'
+      ]
+    },
+    research: {
+      title: 'Research Assistant',
+      prompts: [
+        'Research trends in digital transformation',
+        'Find competitive insights in my industry',
+        'Analyze market opportunities and challenges',
+        'Gather data on innovation best practices'
+      ]
+    },
+    draftArticle: {
+      title: 'Draft Article',
+      prompts: [
+        'Draft a case study on successful transformation',
+        'Create an executive brief on industry trends',
+        'Write a blog post about innovation',
+        'Generate a white paper on technology adoption'
+      ]
+    },
+    editorial: {
+      title: 'Editorial Support',
+      prompts: [
+        'Review and improve my article structure',
+        'Enhance clarity and readability',
+        'Add professional touches to my draft',
+        'Provide editorial feedback'
+      ]
+    }
+  };
+
+  draftData = {
+    topic: '',
+    objective: '',
+    audience: '',
+    additional_context: '',
+    reference_document: '',
+    reference_link: ''
+  };
+
+  sanitizeData = {
+    clientName: '',
+    products: '',
+    options: {
+      numericData: true,
+      personalInfo: true,
+      financialData: true,
+      locations: true,
+      identifiers: true,
+      names: true,
+      logos: true,
+      metadata: true,
+      llmDetection: true,
+      hyperlinks: true,
+      embeddedObjects: true
+    }
+  };
+
+  thoughtLeadershipData = {
+    topic: '',
+    perspective: '',
+    target_audience: '',
+    document_text: '',
+    target_format: '',
+    additional_context: '',
+    reference_document: '',
+    reference_link: ''
+  };
+
+  researchData = {
+    query: '',
+    focus_areas: '',
+    additional_context: '',
+    links: ['']
+  };
+  researchFiles: File[] = [];
+
+  articleData = {
+    topic: '',
+    content_type: 'Article',
+    desired_length: 1000,
+    tone: 'Professional',
+    outline_text: '',
+    additional_context: ''
+  };
+
+  bestPracticesData = {
+    categories: {
+      structure: true,
+      visuals: true,
+      design: true,
+      charts: true,
+      formatting: true,
+      content: true
+    }
+  };
+
+  outlineFile: File | null = null;
+  supportingDocFiles: File[] = [];
+  bestPracticesPPTFile: File | null = null;
+
+  podcastData = {
+    contentText: '',
+    customization: '',
+    podcastStyle: 'dialogue'
+  };
+  podcastFiles: File[] = [];
+
+  // DDC Guided Journey support
+  ddcWorkflows = DDC_WORKFLOWS;
+  ddcIntroText = DDC_INTRO_TEXT;
+  ddcSubIntroText = DDC_SUB_INTRO_TEXT;
+  showDdcGuidedDialog: boolean = false;
+
+   // MI Guided Journey support
+  miWorkflows = MI_WORKFLOWS;
+  showMiGuidedDialog: boolean = false;
+
+  // Track where the workflow was opened from (quick-action or guided-dialog)
+  workflowOpenedFrom: 'quick-action' | 'guided-dialog' | null = null;
+  
+  // Database chat history tracking
+  private userId: string = '';
+  private dbThreadId: string | null = null;
+  private currentDdcConversationId: string | null = null;
+
+  constructor(
+    private chatService: ChatService,
+    public themeService: ThemeService,
+    private cdr: ChangeDetectorRef,
+    public tlFlowService: TlFlowService,
+    public ddcFlowService: DdcFlowService,
+    public miFlowService: MiFlowService,
+    private tlChatBridge: TlChatBridgeService,
+    private miChatBridge: MiChatBridgeService,
+    private canvasStateService: CanvasStateService,
+    public editWorkflowService: ChatEditWorkflowService,
+    public draftWorkflowService: ChatDraftWorkflowService,
+    private authService: AuthService,
+    private authFetchService: AuthFetchService,
+    private toastService: ToastService
+  ) {}
+
+  /**
+   * Sanitize SVG content to prevent XSS attacks via SVG script elements
+   * Uses DOMPurify to remove dangerous attributes and protocols
+   * @param content SVG content string to sanitize
+   * @returns Sanitized SVG string
+   */
+  sanitizeSvgContent(content: string): string {
+    if (!content) return '';
+    
+    // DOMPurify is already configured globally in main.ts
+    // This function provides an additional layer of sanitization
+    import('dompurify').then((module) => {
+      const DOMPurify = module.default;
+      const config = {
+        ALLOWED_TAGS: ['svg', 'path', 'circle', 'rect', 'line', 'g', 'polyline', 'polygon', 'ellipse', 'text', 'tspan', 'use', 'defs', 'clipPath'],
+        ALLOWED_ATTR: [
+          'viewBox', 'width', 'height', 'd', 'cx', 'cy', 'r', 'x', 'y', 'x1', 'y1', 'x2', 'y2',
+          'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'class',
+          'transform', 'points', 'rx', 'ry', 'text-anchor', 'font-size', 'font-family',
+          'font-weight', 'opacity', 'href', 'id', 'clip-path', 'preserveAspectRatio'
+        ],
+        KEEP_CONTENT: true,
+        RETURN_DOM: false
+      };
+      return DOMPurify.sanitize(content, config);
+    });
+
+    // Synchronous fallback: remove dangerous protocols and event handlers
+    let sanitized = content
+      .replace(/on\w+\s*=/gi, '') // Remove event handlers (onclick, onload, etc.)
+      .replace(/javascript:/gi, '') // Remove javascript: protocol
+      .replace(/xlink:href\s*=\s*["']javascript:/gi, ''); // Remove javascript in xlink:href
+
+    return sanitized;
+  }
+
+  /**
+   * Get safe HTML for rendering dynamic SVG content
+   * Use this when displaying SVG from external or user sources
+   * @param svgContent SVG content to render safely
+   * @returns SafeHtml that can be used with [innerHTML]
+   */
+  getSafeSvg(svgContent: string): SafeHtml {
+    const sanitized = this.sanitizeSvgContent(svgContent);
+    return this.sanitizer.sanitize(4, sanitized) || ''; // SecurityContext.HTML = 4
+  }
+
+  
+  onRaisePhoenix(): void {
+    this.showTLRequestForm = true;
+    this.raisePhoenix.emit();
+  }
+
+  openRequestForm() {
+    this.showRequestForm = true;
+  }
+
+  phoenixRdpLink = '';
+  ticketNumber = '';
+  translatedContent = '';
+
+  onTicketCreated(event: {
+    requestNumber: string;
+    phoenixRdpLink: string;
+  }): void {
+    this.phoenixRdpLink = event.phoenixRdpLink;
+    this.ticketNumber = event.requestNumber;
+    console.log('Ticket created:', event.requestNumber);
+    this.translatedContent = `✅ Request created successfully! Your request number is: <a href="${event.phoenixRdpLink}" target="_blank" rel="noopener noreferrer">${event.requestNumber}</a>`.trim();
+    this.showRequestForm = false;
+    this.showTLRequestForm = false;
+    this.sendPhoenixRequestToChat();
+  }
+
+  sendPhoenixRequestToChat(): void {
+    const topic = `Phoenix Request - ${this.ticketNumber}`;
+    
+    // Create metadata for the message
+    const metadata: ThoughtLeadershipMetadata = {
+      contentType: 'Phoenix_Request',
+      topic: topic,
+      fullContent: this.translatedContent,
+      showActions: false
+    };
+    const chatMessage = this.translatedContent;
+    
+    // Send to chat via bridge
+    console.log('[ChatComponent] Sending Phoenix request to chat with metadata:', metadata);
+    this.tlChatBridge.sendToChat(chatMessage, metadata);
+  }
+  ngOnInit(): void {
+    console.log('[ChatComponent-OLD] ngOnInit() called');
+    
+    // ✅ Wait for Azure AD authentication to complete before loading user
+    console.log('[ChatComponent-OLD] Subscribing to authService.getLoginStatus()...');
+    
+    this.authService.getLoginStatus()
+      .pipe(
+        takeUntil(this.destroy$)
+      )
+      .subscribe(
+        (status: any) => {
+          console.log('[ChatComponent-OLD] ✅ LOGIN STATUS EMITTED:', status, 'Type:', typeof status);
+          
+          // When not in the middle of interaction, try to get user info
+          // InteractionStatus can be 'startup', 'none', or other values (case-sensitive!)
+          const isAuthComplete = status === 'none' || status === 'None' || !status;
+          console.log('[ChatComponent-OLD] Is auth complete (status === "none" || status === "None" || !status)?', isAuthComplete, '| Condition check:', { status, isNone: status === 'none', isNoneCapital: status === 'None', isFalsy: !status });
+          
+          if (isAuthComplete) {
+            console.log('[ChatComponent-OLD] Auth complete, calling getUserInfo()...');
+            const userInfo = this.authService.getUserInfo();
+            console.log('[ChatComponent-OLD] getUserInfo() returned:', userInfo);
+            
+            if (userInfo && userInfo.email) {
+              this.userId = userInfo.email;
+              console.log('✅ [ChatComponent-OLD] Set userId from AuthService:', this.userId);
+              
+              // Set display name
+              this.displayName = userInfo.name || '';
+              
+              // Load user profile
+              this.loadUserProfile(userInfo.email);
+              
+              // Now load sessions from database
+              console.log('[ChatComponent-OLD] Calling loadDbSessions()...');
+              this.loadDbSessions();
+            } else {
+              this.userId = 'anonymous@example.com';
+              console.warn('⚠️ [ChatComponent-OLD] No user logged in from AuthService, using anonymous');
+              this.loadSavedSessions(); // Fall back to localStorage
+            }
+          } else {
+            console.log('[ChatComponent-OLD] Auth NOT complete yet, status:', status, '- waiting for next emission...');
+          }
+        },
+        (error) => {
+          console.error('[ChatComponent-OLD] ❌ Error in authService.getLoginStatus():', error);
+        },
+        () => {
+          console.log('[ChatComponent-OLD] authService.getLoginStatus() completed');
+        }
+      );
+    
+    // Keep existing subscriptions for other features
+    this.subscribeToThoughtLeadership();
+    this.subscribeToMarketIntelligence();
+    this.subscribeToCanvasUpdates();
+    this.subscribeToEditWorkflow();
+    this.subscribeToDdcGuidedDialog();
+    this.subscribeToMiGuidedDialog();
+    this.subscribeToTLGuidedDialog();
+    this.subscribeToDraftWorkflow();
+    let welcomeMessage = '';
+    // this.messages.push({
+    //   role: 'assistant',
+    //   content: "Welcome to PwC Presentation Assistant!",
+    //   timestamp: new Date()
+    // });
+
+    // Initialize sidebar / mobile menu state based on current viewport
+    try {
+      const w = window.innerWidth || 0;
+      // On desktop widths keep sidebar expanded; on mobile (<=768px) keep it closed
+      this.sidebarExpanded = w >= 769;
+      this.mobileMenuOpen = false;
+      console.log('[ChatComponent] Initial sidebarExpanded=', this.sidebarExpanded, 'mobileMenuOpen=', this.mobileMenuOpen);
+    } catch (e) {
+      // ignore in non-browser environments
+    }
+
+    // Focus quick start button after view init
+    setTimeout(() => {
+      this.quickStartBtn?.nativeElement?.focus();
+    }, 100);
+  }
+  
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
+  }
+
+  ngAfterViewChecked(): void {
+    if (this.shouldScrollToBottom) {
+      this.scrollToBottom();
+      this.shouldScrollToBottom = false;
+    }
+  }
+  
+  /**
+   * Load user profile from backend
+   */
+  private loadUserProfile(email: string): void {
+    const cleanEmail = email.replace('@dev365.', '@');
+    console.log('[ChatComponent] Loading profile for email:', cleanEmail);
+    
+    this.chatService.getUserProfile(cleanEmail).subscribe({
+      next: (response: any) => {
+        this.userProfile = response;
+        console.log('[ChatComponent] User Profile loaded:', this.userProfile);
+        
+        // Set profile image URL if available
+        if (this.userProfile?.imageURL) {
+          this.profileImageUrl = this.userProfile.imageURL;
+        }
+        // Store jobTitle in profile variable
+        if (this.userProfile?.jobTitle) {
+          this.profile = this.userProfile.jobTitle;
+        }
+      },
+      error: (error) => {
+        console.error('[ChatComponent] Error loading user profile:', error);
+      }
+    });
+  }
+  
+  private subscribeToThoughtLeadership(): void {
+    this.tlChatBridge.message$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (message) => {
+          console.log('[ChatComponent] Received message from TL bridge:', message);
+          console.log('[ChatComponent] Message has thoughtLeadership metadata:', !!message.thoughtLeadership);
+          if (message.thoughtLeadership) {
+            console.log('[ChatComponent] TL metadata:', message.thoughtLeadership);
+            console.log('[ChatComponent] Content type:', message.thoughtLeadership.contentType);
+            console.log('[ChatComponent] Has podcast audio URL:', !!message.thoughtLeadership.podcastAudioUrl);
+          }
+          console.log('Pushing message to chat');
+          this.messages.push(message);
+          this.saveCurrentSession();
+          this.triggerScrollToBottom();
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in TL subscription:', err);
+        }
+      });
+  }
+
+  private subscribeToMarketIntelligence(): void {
+    console.log('[ChatComponent] Subscribing to Market Intelligence messages');
+    
+    this.miChatBridge.messageToChat$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (data) => {
+          if (data) {
+            console.log('[ChatComponent] Received message from MI bridge:', data);
+            
+            const assistantMessage: Message = {
+              role: 'assistant',
+              content: data.content,
+              timestamp: new Date(),
+              sources: undefined,
+              flowType: 'market-intelligence',
+              marketIntelligence: data.metadata  // Store MI metadata on the message
+            };
+
+            this.messages.push(assistantMessage);
+            this.saveCurrentSession();
+            this.triggerScrollToBottom();
+          }
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in MI subscription:', err);
+        }
+      });
+  }
+  
+  private subscribeToEditWorkflow(): void {
+    console.log('[ChatComponent] Subscribing to Edit Workflow messages');
+    
+    this.editWorkflowService.message$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (workflowMessage) => {
+          console.log('[ChatComponent] Received Edit Workflow message:', workflowMessage);
+          
+          // Handle message updates (e.g., paragraph approval state changes, loading states, next editor content)
+          if (workflowMessage.type === 'update') {
+            // Find existing paragraph edit message to update
+            // Look for message with awaiting_approval step (with or without paragraph edits)
+            const existingIndex = this.messages.findIndex(m => 
+              m.editWorkflow?.step === 'awaiting_approval' && 
+              m.editWorkflow?.threadId === workflowMessage.message.editWorkflow?.threadId
+            );
+            
+            if (existingIndex !== -1) {
+              // Update existing paragraph edit message with new state (create new array reference for change detection)
+              const existingMessage = this.messages[existingIndex];
+              if (workflowMessage.message.editWorkflow && existingMessage.editWorkflow) {
+                // Check if this is a next editor update (new paragraph edits from next editor)
+                const hasNewParagraphEdits = workflowMessage.message.editWorkflow.paragraphEdits && 
+                  workflowMessage.message.editWorkflow.paragraphEdits.length > 0;
+                
+                existingMessage.editWorkflow = {
+                  ...existingMessage.editWorkflow,
+                  ...workflowMessage.message.editWorkflow,
+                  threadId: workflowMessage.message.editWorkflow.threadId ?? existingMessage.editWorkflow.threadId,
+                  currentEditor: workflowMessage.message.editWorkflow.currentEditor ?? existingMessage.editWorkflow.currentEditor,
+                  isSequentialMode: workflowMessage.message.editWorkflow.isSequentialMode ?? existingMessage.editWorkflow.isSequentialMode,
+                  isLastEditor: workflowMessage.message.editWorkflow.isLastEditor ?? existingMessage.editWorkflow.isLastEditor,
+                  currentEditorIndex: workflowMessage.message.editWorkflow.currentEditorIndex ?? existingMessage.editWorkflow.currentEditorIndex,
+                  totalEditors: workflowMessage.message.editWorkflow.totalEditors ?? existingMessage.editWorkflow.totalEditors,
+                  paragraphEdits: workflowMessage.message.editWorkflow.paragraphEdits 
+                    ? [...workflowMessage.message.editWorkflow.paragraphEdits]
+                    : existingMessage.editWorkflow.paragraphEdits
+                };
+                
+                this.saveCurrentSession();
+                this.cdr.detectChanges();
+                
+                // Scroll to paragraph edits after update (especially when next editor content arrives)
+                // Use longer timeout for next editor to ensure DOM is fully updated
+                if (hasNewParagraphEdits && !workflowMessage.message.editWorkflow?.finalOutputGenerated) {
+                  setTimeout(() => {
+                    this.scrollToParagraphEdits(existingIndex);
+                  }, 300); // Longer timeout for next editor to ensure DOM is fully updated
+                }
+              } else {
+                this.saveCurrentSession();
+                this.cdr.detectChanges();
+              }
+              return;
+            }
+          }
+          
+          // If this is a progress message, update the existing one instead of creating new ones
+          if (workflowMessage.message.editWorkflow?.step === 'processing' && 
+              workflowMessage.message.editWorkflow?.editorProgress) {
+            // Find and update existing progress message
+            const existingIndex = this.messages.findIndex(m => 
+              m.editWorkflow?.step === 'processing' && 
+              m.editWorkflow?.editorProgress &&
+              m.content === '' // Progress messages have empty content
+            );
+            
+            if (existingIndex !== -1) {
+              // Update existing progress message
+              this.messages[existingIndex] = workflowMessage.message;
+            } else {
+              // First progress message, add it
+              console.log('[ChatComponent] Adding first progress message');
+              this.messages.push(workflowMessage.message);
+              this.isLoading=false;
+            }
+          } else {
+            // Regular message, add it
+            console.log('[ChatComponent] Adding regular workflow message');
+            this.messages.push(workflowMessage.message);
+            this.isLoading= false;
+            
+            // If this message has paragraph edits, scroll to top of paragraph edits section (instructions area)
+            if (workflowMessage.message.editWorkflow?.paragraphEdits && 
+                workflowMessage.message.editWorkflow.paragraphEdits.length > 0) {
+              this.saveCurrentSession();
+              this.cdr.detectChanges();
+              // Use longer timeout to ensure DOM is fully rendered, then scroll to top of paragraph edits
+              setTimeout(() => {
+                const messageIndex = this.messages.length - 1;
+                this.scrollToParagraphEdits(messageIndex);
+              }, 200);
+              return;
+            }
+            
+            // If this is a final output message (has thoughtLeadership with topic 'Final Revised Article'),
+            // don't scroll - keep user at paragraph edits section
+            if (workflowMessage.message.thoughtLeadership?.topic === 'Final Revised Article') {
+              this.saveCurrentSession();
+              this.cdr.detectChanges();
+              // Don't scroll - keep user's current position at paragraph edits
+              return;
+            }
+          }
+          
+          this.saveCurrentSession();
+          setTimeout(() => {
+            this.triggerScrollToBottom();
+          }, 100);
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in Edit Workflow subscription:', err);
+        }
+      });
+    
+    // Subscribe to workflow completion to clear state
+    this.editWorkflowService.workflowCompleted$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          console.log('[ChatComponent] Workflow completed - clearing state');
+          this.clearWorkflowState();
+        }
+      });
+    
+    // Subscribe to workflow started to clear previous state when new workflow begins
+    this.editWorkflowService.workflowStarted$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          console.log('[ChatComponent] Workflow started - clearing previous state');
+          this.clearWorkflowState();
+        }
+      });
+  }
+
+  private subscribeToDraftWorkflow(): void {
+    console.log('[ChatComponent] Subscribing to Draft Workflow messages');
+
+    this.draftWorkflowService.message$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (workflowMessage) => {
+          console.log('[ChatComponent] Received Draft Workflow message:', workflowMessage);
+          this.messages.push(workflowMessage.message);
+          this.saveCurrentSession();
+          setTimeout(() => {
+            this.scrollToBottom();
+          }, 100);
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in Draft Workflow subscription:', err);
+        }
+      });
+
+    this.draftWorkflowService.workflowCompleted$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          console.log('[ChatComponent] Draft Workflow completed - clearing state');
+          this.userInput = '';
+        }
+      });
+  }
+  
+  private subscribeToCanvasUpdates(): void {
+    this.canvasStateService.contentUpdate$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (update) => {
+          // Find the message by extracting index from messageId
+          const messageIndex = parseInt(update.messageId.replace('msg_', ''));
+          if (messageIndex >= 0 && messageIndex < this.messages.length) {
+            const message = this.messages[messageIndex];
+            // Update message content
+            message.content = update.updatedContent;
+            // Update thoughtLeadership metadata if it exists
+            if (message.thoughtLeadership) {
+              message.thoughtLeadership.fullContent = update.updatedContent;
+            }
+            this.saveCurrentSession();
+            this.cdr.detectChanges();
+          }
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in Canvas update subscription:', err);
+        }
+      });
+  }
+  
+
+  private subscribeToDdcGuidedDialog(): void {
+    this.ddcFlowService.guidedDialog$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (isOpen) => {
+          this.showDdcGuidedDialog = isOpen;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in DDC Guided Dialog subscription:', err);
+        }
+      });
+  }
+
+    private subscribeToMiGuidedDialog(): void {
+    this.miFlowService.guidedDialog$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (isOpen) => {
+          this.showGuidedDialog = isOpen;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in MI Guided Dialog subscription:', err);
+        }
+      });
+  }
+
+  private subscribeToTLGuidedDialog(): void {
+    this.tlFlowService.guidedDialog$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (isOpen) => {
+          this.showGuidedDialog = isOpen;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in TL Guided Dialog subscription:', err);
+        }
+      });
+  }
+
+  private scrollToBottom(): void {
+    try {
+      if (this.messagesContainer) {
+        const element = this.messagesContainer.nativeElement;
+        element.scrollTop = element.scrollHeight;
+      }
+    } catch (err) {
+      console.error('Error scrolling to bottom:', err);
+    }
+  }
+
+  private scrollToParagraphEdits(messageIndex: number): void {
+    // Scroll to paragraph edits instructions section (top of paragraph edits, not bottom buttons)
+    // Use requestAnimationFrame to ensure DOM is fully rendered
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        try {
+          const element = this.messagesContainer?.nativeElement;
+          if (element && messageIndex >= 0 && messageIndex < this.messages.length) {
+            // Find the paragraph edits component in the message
+            const messageElements = element.querySelectorAll('.message');
+            if (messageElements[messageIndex]) {
+              const messageElement = messageElements[messageIndex];
+              const paragraphEditsElement = messageElement.querySelector('app-paragraph-edits');
+              if (paragraphEditsElement) {
+                // Prioritize finding result-title first (topmost element), then paragraph-instructions
+                // This ensures we scroll to the very top of paragraph edits section
+                const titleElement = paragraphEditsElement.querySelector('.result-title');
+                const instructionsElement = paragraphEditsElement.querySelector('.paragraph-instructions');
+                const sectionElement = paragraphEditsElement.querySelector('.result-section');
+                
+                // Use title element if available (topmost), otherwise instructions, then section
+                const targetElement = titleElement || instructionsElement || sectionElement || paragraphEditsElement;
+                
+                // Calculate position relative to scroll container
+                const containerRect = element.getBoundingClientRect();
+                const elementRect = targetElement.getBoundingClientRect();
+                const relativeTop = elementRect.top - containerRect.top + element.scrollTop;
+                
+                // Scroll container to show the top of paragraph edits with small offset
+                // This ensures the title/instructions are visible at the top
+                element.scrollTo({
+                  top: Math.max(0, relativeTop), // Small offset from top
+                  behavior: 'smooth'
+                });
+              } else {
+                // Fallback to scrolling to the message top
+                const containerRect = element.getBoundingClientRect();
+                const elementRect = messageElement.getBoundingClientRect();
+                const relativeTop = elementRect.top - containerRect.top + element.scrollTop;
+                
+                element.scrollTo({
+                  top: Math.max(0, relativeTop - 20),
+                  behavior: 'smooth'
+                });
+              }
+            }
+          }
+        } catch (err) {
+          console.error('Error scrolling to paragraph edits:', err);
+        }
+      }, 150); // Slightly longer delay to ensure DOM is fully ready
+    });
+  }
+  
+  private triggerScrollToBottom(): void {
+    this.shouldScrollToBottom = true;
+    this.cdr.detectChanges();
+  }
+  
+  /** Scroll to the top of a specific message (used for final output to stay at top) */
+  private scrollToMessageTop(messageIndex: number): void {
+    // Scroll to message element (stay at top of the message)
+    // Use requestAnimationFrame to ensure DOM is fully rendered
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        try {
+          const element = this.messagesContainer?.nativeElement;
+          if (element && messageIndex >= 0 && messageIndex < this.messages.length) {
+            // Find the message element
+            const messageElements = element.querySelectorAll('.message');
+            if (messageElements[messageIndex]) {
+              const messageElement = messageElements[messageIndex];
+              
+              // Scroll to the message element (top of message)
+              const containerRect = element.getBoundingClientRect();
+              const elementRect = messageElement.getBoundingClientRect();
+              const relativeTop = elementRect.top - containerRect.top + element.scrollTop;
+              
+              // Scroll container to show the top of message
+              element.scrollTo({
+                top: relativeTop - 20, // Add small offset from top
+                behavior: 'smooth'
+              });
+            }
+          }
+        } catch (err) {
+          console.error('Error scrolling to message top:', err);
+        }
+      }, 100); // Delay to ensure DOM is fully ready
+    });
+  }
+  
+  @HostListener('document:click', ['$event'])
+  onDocumentClick(event: Event): void {
+    // Close dropdown if click is outside
+    const target = event.target as HTMLElement;
+    if (!target.closest('.dropdown-wrapper')) {
+      this.openDropdown = null;
+    }
+    // Close export dropdown if click is outside
+    if (!target.closest('.export-dropdown')) {
+      Object.keys(this.showExportDropdown).forEach(key => {
+        this.showExportDropdown[parseInt(key)] = false;
+      });
+    }
+  }
+  
+  @HostListener('document:keydown', ['$event'])
+  onKeyDown(event: KeyboardEvent): void {
+    // Keyboard shortcuts
+    if (event.metaKey || event.ctrlKey) {
+      switch (event.key) {
+        case 'k':
+          event.preventDefault();
+          this.focusInput();
+          break;
+        case 'n':
+          event.preventDefault();
+          this.goHome();
+          break;
+      }
+    }
+    
+    // Escape to close dialogs
+    if (event.key === 'Escape') {
+      if (this.showGuidedDialog) {
+        this.closeGuidedDialog();
+      }
+      if (this.openDropdown) {
+        this.openDropdown = null;
+      }
+    }
+
+    
+  }
+  
+  private focusInput(): void {
+    setTimeout(() => {
+      const inputElement = document.querySelector('.composer-textarea') as HTMLTextAreaElement;
+      if (inputElement) {
+        inputElement.focus();
+      }
+    }, 50);
+  }
+
+  private handleEditWorkflowFlow(trimmedInput: string): void {
+    // Add user message to chat
+    const messageContent = trimmedInput || (this.uploadedEditDocumentFile ? `Uploaded document: ${this.uploadedEditDocumentFile.name}` : '');
+    if (messageContent) {
+      const workflowUserMessage: Message = {
+        role: 'user',
+        content: messageContent,
+        timestamp: new Date()
+      };
+      this.messages.push(workflowUserMessage);
+      this.triggerScrollToBottom();
+    }
+
+    const fileToUpload = this.uploadedEditDocumentFile || undefined;
+    
+    // Let handleChatInput manage the workflow - it will detect intent and start workflow if needed
+    // This prevents double-triggering and ensures proper flow
+    this.editWorkflowService.handleChatInput(trimmedInput, fileToUpload).catch(error => {
+      console.error('Error in edit workflow:', error);
+    });
+
+    this.userInput = '';
+    // Collapse composer after clearing input when delegating to edit workflow
+    this.resetComposerHeight();
+    if (fileToUpload) {
+      this.uploadedEditDocumentFile = null;
+    }
+    this.saveCurrentSession();
+  }
+
+  async sendMessage(): Promise<void> {
+    const trimmedInput = this.userInput.trim();
+
+    if ((!trimmedInput && !this.uploadedPPTFile && !this.uploadedEditDocumentFile && this.extractedDocuments.length === 0) || this.isLoading) {
+      return;
+    }
+
+    // // ====== HIGHEST PRIORITY: CHECK IF USER IS RESPONDING TO DRAFT SATISFACTION QUESTION ======
+    // const isAwaitingFeedback = this.tlChatBridge.isAwaitingDraftFeedback();
+    // const draftContext = this.tlChatBridge.getDraftContext();
+    // console.log('[ChatComponent] PRIORITY CHECK - isAwaitingDraftFeedback:', isAwaitingFeedback);
+    // console.log('[ChatComponent] PRIORITY CHECK - draftContext:', draftContext);
+    // console.log('[ChatComponent] PRIORITY CHECK - User input:', trimmedInput);
+    
+    // // Check if quick start draft workflow is awaiting satisfaction feedback
+    // const quickStartAwaitingFeedback = this.draftWorkflowService.isAwaitingSatisfactionFeedback;
+    // if (quickStartAwaitingFeedback) {
+    //   console.log('[ChatComponent] *** HANDLING QUICK START DRAFT SATISFACTION FEEDBACK ***');
+      
+    //   // Add user message first
+    //   const userMessage: Message = {
+    //     role: 'user',
+    //     content: trimmedInput,
+    //     timestamp: new Date()
+    //   };
+    //   this.messages.push(userMessage);
+    //   this.userInput = '';
+    //   this.resetComposerHeight();
+    //   this.triggerScrollToBottom();
+    //   this.saveCurrentSession();
+    //   console.log("Transferring to handle satisfaction flow");
+    //   // Route to draft workflow service for satisfaction handling (now async with LLM)
+    //   await this.draftWorkflowService.handleDraftSatisfaction(trimmedInput);
+    //   return;
+    // }
+    
+    // if (isAwaitingFeedback) {
+    //   console.log('[ChatComponent] *** HANDLING DRAFT FEEDBACK - Input: "' + trimmedInput + '" ***');
+    //   const satisfactionResult = await this.analyzeDraftSatisfactionWithLLM(trimmedInput, draftContext);
+    //   console.log('[ChatComponent] Satisfaction analysis result:', satisfactionResult);
+      
+    //   // Add user message first
+    //   const userMessage: Message = {
+    //     role: 'user',
+    //     content: trimmedInput,
+    //     timestamp: new Date()
+    //   };
+    //   this.messages.push(userMessage);
+    //   this.userInput = '';
+    //   this.resetComposerHeight();
+    //   this.triggerScrollToBottom();
+      
+    //   if (satisfactionResult.isPositive) {
+    //     // User is satisfied with the draft
+    //     console.log('[ChatComponent] ✓ User SATISFIED with draft - ending draft flow');
+    //     const acknowledgment: Message = {
+    //       role: 'assistant',
+    //       content: 'Great! I\'m glad you\'re satisfied with the content. You can now use it in your documents or make further edits as needed.',
+    //       timestamp: new Date()
+    //     };
+    //     this.messages.push(acknowledgment);
+    //     this.tlChatBridge.clearDraftContext();
+    //     console.log('[ChatComponent] Context cleared after satisfaction');
+    //     this.saveCurrentSession();
+    //     this.triggerScrollToBottom();
+    //     return;
+    //   } else if (satisfactionResult.hasImprovementRequest) {
+    //     // User wants improvements
+    //     console.log('[ChatComponent] ✗ User wants IMPROVEMENTS - Input:', satisfactionResult.improvementText);
+        
+    //     if (draftContext) {
+    //       console.log('[ChatComponent] Processing improvement request with context');
+    //       this.isLoading = true;
+          
+    //       const assistantMessage: Message = {
+    //         role: 'assistant',
+    //         content: '',
+    //         timestamp: new Date(),
+    //         isStreaming: true
+    //       };
+    //       this.messages.push(assistantMessage);
+          
+    //       // Prepare improvement message for backend
+    //       const improvementMessage = satisfactionResult.improvementText;
+          
+    //       // Send to backend with all preserved parameters
+    //       const draftParams = {
+    //         contentType: draftContext.contentType,
+    //         topic: draftContext.topic,
+    //         wordLimit: draftContext.wordLimit,
+    //         audienceTone: draftContext.audienceTone,
+    //         outlineDoc: draftContext.outlineDoc,
+    //         supportingDoc: draftContext.supportingDoc,
+    //         useFactivaResearch: draftContext.useFactivaResearch
+    //       };
+
+    //       const messages: Message[] = [{
+    //         role: 'user' as const,
+    //         content: improvementMessage,
+    //         timestamp: new Date()
+    //       }];
+          
+    //       this.chatService.streamDraftContent(messages, improvementMessage, draftParams).subscribe({
+    //         next: (chunk: any) => {
+    //           if (typeof chunk === 'string') {
+    //             assistantMessage.content += chunk;
+    //           } else if (chunk && chunk.type === 'content' && chunk.content) {
+    //             assistantMessage.content += chunk.content;
+    //           }
+    //           this.triggerScrollToBottom();
+    //         },
+    //         error: (error) => {
+    //           console.error('[ChatComponent] Error processing draft improvement:', error);
+    //           assistantMessage.isStreaming = false;
+    //           assistantMessage.content = 'I apologize, but I encountered an error while processing your improvement request. Please try again.';
+    //           this.isLoading = false;
+    //           this.tlChatBridge.clearDraftContext();
+    //           this.saveCurrentSession();
+    //         },
+    //         complete: () => {
+    //           console.log('[ChatComponent] Improvement streaming complete');
+    //           assistantMessage.isStreaming = false;
+    //           this.isLoading = false;
+              
+    //           // Ask for satisfaction again
+    //           if (assistantMessage.content && assistantMessage.content.trim()) {
+    //             const newSatisfactionMessage: Message = {
+    //               role: 'system',
+    //               content: 'Are you satisfied with this revised content? If not, let me know what else needs to be improved.',
+    //               timestamp: new Date()
+    //             };
+    //             this.messages.push(newSatisfactionMessage);
+                
+    //             // Update draft context with new content
+    //             draftContext.generatedContent = assistantMessage.content;
+    //             this.tlChatBridge.setDraftContext(draftContext);
+    //             console.log('[ChatComponent] Context updated with new content, still awaiting feedback');
+    //           }
+              
+    //           this.saveCurrentSession();
+    //           this.triggerScrollToBottom();
+    //         }
+    //       });
+          
+    //       this.saveCurrentSession();
+    //       return;
+    //     } else {
+    //       console.warn('[ChatComponent] Draft context not found, clearing and continuing');
+    //       this.tlChatBridge.clearDraftContext();
+    //       return;
+    //     }
+    //   }
+      
+    //   // If we get here, unclear response, just continue
+    //   console.log('[ChatComponent] Unclear satisfaction response, clearing draft context');
+    //   this.tlChatBridge.clearDraftContext();
+    //   this.saveCurrentSession();
+    //   return;
+    // }
+
+    // // ====== END OF DRAFT FEEDBACK HANDLING ======
+
+    // If user is replying to an earlier draft satisfaction prompt (quick-start or guided journey),
+    // continue as a normal chat message but include the draft content so the chat LLM has full context.
+    const quickStartAwaitingFeedback = this.draftWorkflowService.isAwaitingSatisfactionFeedback;
+    const draftContext = this.tlChatBridge?.getDraftContext?.();
+
+    if (quickStartAwaitingFeedback || (draftContext && draftContext.generatedContent)) {
+      console.log('[ChatComponent] Satisfaction reply detected - continuing as normal chat');
+      
+      // Add the user's reply to UI
+      const userMessage: Message = {
+        role: 'user',
+        content: trimmedInput,
+        timestamp: new Date()
+      };
+      this.messages.push(userMessage);
+      this.userInput = '';
+      this.resetComposerHeight();
+      this.triggerScrollToBottom();
+      this.saveCurrentSession();
+
+      // Clear draft workflow state BEFORE proceeding to normal chat
+      // This prevents the workflow from intercepting the message again
+      this.draftWorkflowService.cancelWorkflow();
+      
+      // Send via normal chat flow with just the user's reply (no extra context message)
+      await this.proceedWithNormalChat(trimmedInput);
+
+      // Clear draft context now that we've handled the satisfaction response
+      try { this.tlChatBridge.clearDraftContext?.(); } catch (e) { /* noop */ }
+      return;
+    }
+
+    // If draft workflow already active, route input directly and avoid duplicate user messages
+    if (this.draftWorkflowService.isActive) {
+      const userMessage: Message = {
+        role: 'user',
+        content: trimmedInput,
+        timestamp: new Date()
+      };
+      this.messages.push(userMessage);
+      this.userInput = '';
+      this.triggerScrollToBottom();
+      this.saveCurrentSession();
+      this.draftWorkflowService.handleChatInput(trimmedInput);
+      return;
+    }
+
+    const isThoughtLeadershipFlow = this.selectedFlow === 'thought-leadership';
+
+    // Quick Start Thought Leadership - Edit Content workflow
+    const workflowActive = this.editWorkflowService.isActive;
+    const hasEditWorkflowFile = !!this.uploadedEditDocumentFile;
+    const hasExtractedDocuments = this.extractedDocuments.length > 0; // Document analysis mode
+
+    // If there are extracted documents, skip edit workflow and go to normal chat
+    if (hasExtractedDocuments) {
+      console.log('[ChatComponent] Has extracted documents, proceeding with normal chat (document analysis)');
+      await this.proceedWithNormalChat(trimmedInput);
+      return;
+    }
+
+    // Check for edit intent asynchronously (hybrid approach: keyword + LLM)
+    if (isThoughtLeadershipFlow && (workflowActive || hasEditWorkflowFile)) {
+      // Workflow already active or file uploaded - proceed with file if available
+      const fileToUpload = this.uploadedEditDocumentFile || undefined;
+      this.editWorkflowService.handleChatInput(trimmedInput, fileToUpload).catch(error => {
+        console.error('Error in edit workflow:', error);
+      });
+      return;
+    }
+
+    // Check for edit intent if not already in workflow
+    if (isThoughtLeadershipFlow && !workflowActive && (trimmedInput || hasEditWorkflowFile)) {
+      // If file is uploaded (with or without query), detect edit intent and start workflow directly
+      if (hasEditWorkflowFile) {
+        const fileToUpload = this.uploadedEditDocumentFile || undefined;
+        // Use user query if provided, otherwise create a message about the file
+        const messageContent = trimmedInput || (fileToUpload ? `Edit ${fileToUpload.name}` : '');
+        
+        // Add user message first
+        if (messageContent && fileToUpload) {
+          const userMessage: Message = {
+            role: 'user',
+            content: messageContent,
+            timestamp: new Date()
+          };
+          this.messages.push(userMessage);
+          this.triggerScrollToBottom();
+        }
+        
+        // Call handleChatInput with file - it will detect edit intent and call beginWorkflowWithFile
+        // Pass the query (or empty string) so it can detect intent from file name if needed
+        const queryForIntent = trimmedInput || '';
+        this.editWorkflowService.handleChatInput(queryForIntent, fileToUpload).catch(error => {
+          console.error('Error in edit workflow:', error);
+        });
+        
+        this.userInput = '';
+        this.resetComposerHeight();
+        if (fileToUpload) {
+          this.uploadedEditDocumentFile = null;
+        }
+        this.saveCurrentSession();
+        return;
+      }
+      
+      // Quick check for draft intent keywords to avoid unnecessary edit detection
+      // const tlDraftKeywords = ['create', 'draft', 'write', 'generate content', 'draft content', 'create content', 'article', 'whitepaper', 'white paper', 'blog', 'executive brief'];
+      // const draftExclusionKeywords = ['refine', 'edit'];
+      // const userInputLower = trimmedInput.toLowerCase();
+      // const isExclusionPresent = draftExclusionKeywords.some(keyword => userInputLower.includes(keyword));
+      // const isDraftRequest = tlDraftKeywords.some(keyword => userInputLower.includes(keyword));
+      
+      // // If it's clearly a draft request, skip edit detection and go to draft flow
+      // if (isDraftRequest && !isExclusionPresent) {
+      //   console.log('[ChatComponent] Draft keywords detected, skipping edit intent check');
+      //   await this.proceedWithNormalChat(trimmedInput);
+      //   return;
+      // }
+      
+      // Add user message first
+      const userMessage: Message = {
+        role: 'user',
+        content: trimmedInput,
+        timestamp: new Date()
+      };
+      console.log(`[ChatComponent] Adding user message for edit intent detection ${userMessage.content}`);
+      this.messages.push(userMessage);
+      this.userInput = '';
+      this.resetComposerHeight();
+      this.triggerScrollToBottom();
+
+      // Show typing-dots while analyzing request
+      // const loadingMessage: Message = {
+      //   role: 'assistant',
+      //   content: '',
+      //   timestamp: new Date(),
+      //   isStreaming: true
+      // };
+      // console.log(`[ChatComponent] Showing typing-dots for intent detection`);
+      // this.messages.push(loadingMessage);
+      // this.triggerScrollToBottom();
+
+      // Use async intent detection (LLM-based)
+      // try {
+      //   const intentResult = await this.editWorkflowService.detectEditIntent(trimmedInput);
+      //   // Remove loading message
+      //   const loadingIndex = this.messages.indexOf(loadingMessage);
+      //   if (loadingIndex !== -1) {
+      //     this.messages.splice(loadingIndex, 1);
+      //   }
+
+      //   if (intentResult.hasEditIntent) {
+      //     // Start workflow - workflow service handles Path 1 (direct editor) vs Path 2 (selection)
+      //     this.editWorkflowService.handleChatInput(trimmedInput);
+      //   } else {
+      //     // No edit intent - continue with normal chat flow
+      //     await this.proceedWithNormalChat(trimmedInput);
+      //   }
+      // } catch (error) {
+      //   console.error('Error detecting edit intent:', error);
+      //   // Remove loading message
+      //   const loadingIndex = this.messages.indexOf(loadingMessage);
+      //   if (loadingIndex !== -1) {
+      //     this.messages.splice(loadingIndex, 1);
+      //   }
+      //   // Fallback to normal chat flow on error
+      //   await this.proceedWithNormalChat(trimmedInput);
+      // }
+      //return;
+    }
+
+    // No edit intent detected or not in TL flow - continue with normal chat
+    await this.proceedWithNormalChat(trimmedInput);
+  }
+
+  private async proceedWithNormalChat(trimmedInput: string): Promise<void> {
+    const userInputLower = trimmedInput.toLowerCase();
+    const isThoughtLeadershipFlow = this.selectedFlow === 'thought-leadership';
+    
+    // If draft workflow is active, route input to workflow service
+    // if (this.draftWorkflowService.isActive) {
+    //   // Add user message to chat first
+    //   const userMessage: Message = {
+    //     role: 'user',
+    //     content: trimmedInput,
+    //     timestamp: new Date()
+    //   };
+    //   this.messages.push(userMessage);
+    //   this.userInput = '';
+    //   this.triggerScrollToBottom();
+    //   this.saveCurrentSession();
+      
+    //   // Handle the input in the workflow
+    //   this.draftWorkflowService.handleChatInput(trimmedInput);
+    //   return;
+    // }
+    
+    // Check if user is requesting sanitization
+    const sanitizationKeywords = ['sanitize', 'sanitise', 'sanitization', 'sanitation', 'remove sensitive', 'clean up', 'strip data', 'anonymize', 'anonymise'];
+    const isSanitizationRequest = sanitizationKeywords.some(keyword => userInputLower.includes(keyword));
+
+    // Check if user is requesting draft/create presentation
+    //const draftKeywords = ['create presentation', 'draft presentation', 'create a deck', 'draft a deck', 'build presentation', 'make presentation', 'new presentation', 'create slides'];
+    
+    //const isDraftRequest = draftKeywords.some(keyword => userInputLower.includes(keyword));
+    
+    // Check if user is requesting podcast generation (ONLY in TL mode)
+    // const podcastKeywords = ['podcast', 'generate podcast', 'create podcast', 'make podcast', 'convert to podcast', 'audio version', 'turn into podcast', 'audio narration'];
+    // const isPodcastRequest = isThoughtLeadershipFlow && podcastKeywords.some(keyword => userInputLower.includes(keyword));
+
+    // Check for Rewrite Intent first (before checking draft keywords)
+    // if (this.isRewriteIntent(trimmedInput)) {
+    //   console.log('[ChatComponent-Old] Rewrite intent detected, delegating to draft workflow service');
+    //   // Add user message to chat first
+    //   const userMessage: Message = {
+    //     role: 'user',
+    //     content: trimmedInput,
+    //     timestamp: new Date()
+    //   };
+    //   this.messages.push(userMessage);
+    //   this.userInput = '';
+    //   this.triggerScrollToBottom();
+    //   this.saveCurrentSession();
+      
+    //   this.draftWorkflowService.handleChatInput(trimmedInput);
+    //   return;
+    // }
+
+    // Check if user is requesting draft content creation in TL mode
+    //const tlDraftKeywords = ['draft', 'write', 'generate content', 'draft content', 'create content', 'article', 'whitepaper', 'white paper', 'blog', 'executive brief'];
+    //const isTLDraftRequest = isThoughtLeadershipFlow && tlDraftKeywords.some(keyword => userInputLower.includes(keyword));
+
+    //console.log('[ChatComponent-Old] selectedFlow:', this.selectedFlow, 'isThoughtLeadershipFlow:', isThoughtLeadershipFlow, 'isTLDraftRequest:', isTLDraftRequest);
+    //console.log('[ChatComponent-Old] Input contains draft keywords:', tlDraftKeywords.some(keyword => userInputLower.includes(keyword)));
+
+    // If there's an uploaded PPT file and NOT a sanitization request, process it
+    // if (this.uploadedPPTFile && !isSanitizationRequest) {
+    //   this.processPPTUpload();
+    //   return;
+    // }
+    
+    // If user asks to create/draft content in TL mode, use LLM to detect topic and content type
+    // if (isTLDraftRequest && !this.isDraftFallback) {
+    //   // Add user message to chat immediately
+    //   const userMessage: Message = {
+    //     role: 'user',
+    //     content: trimmedInput,
+    //     timestamp: new Date()
+    //   };
+    //   this.messages.push(userMessage);
+    //   this.userInput = '';
+    //   this.triggerScrollToBottom();
+    //   this.saveCurrentSession();
+      
+    //   try {
+    //     const draftIntent = await this.draftWorkflowService.detectDraftIntent(trimmedInput);
+    //     console.log('[ChatComponent-Old] Draft intent detected:', draftIntent);
+    //     console.log('[ChatComponent-Old] Content type array:', draftIntent.detectedContentType, 'Length:', draftIntent.detectedContentType?.length);
+        
+    //     if (draftIntent.hasDraftIntent) {
+    //       console.log('[ChatComponent-Old] Starting conversational quick draft with topic:', draftIntent.detectedTopic, 'contentType:', draftIntent.detectedContentType?.[0]);
+          
+    //       // If content type is missing, use beginWorkflow to start full input flow
+    //       if (!draftIntent.detectedContentType || draftIntent.detectedContentType.length === 0) {
+    //         console.log('[ChatComponent-Old] Content type missing, starting full workflow with topic:', draftIntent.detectedTopic);
+    //         this.draftWorkflowService.beginWorkflow(draftIntent.detectedTopic || '', '', draftIntent.wordLimit, draftIntent.audienceTone);
+    //       } else {
+    //         console.log('[ChatComponent-Old] Content type found, using startQuickDraftConversation');
+    //         // Start conversational flow with detected content type
+    //         const topic = draftIntent.detectedTopic || '';
+    //         const contentType = this.formatContentType(draftIntent.detectedContentType?.[0] || 'article');
+    //         const wordLimit = draftIntent.wordLimit || undefined;
+    //         const audienceTone = draftIntent.audienceTone || undefined;
+    //         this.draftWorkflowService.startQuickDraftConversation(topic, contentType, trimmedInput, wordLimit, audienceTone);
+    //       }
+    //       return;
+    //     }
+    //   } catch (error) {
+    //     console.error('[ChatComponent-Old] Error detecting draft intent:', error);
+    //   }
+    //   // Fallback: show options without topic if detection fails
+    //   this.isDraftFallback= true;
+    //   await this.proceedWithNormalChat(trimmedInput);
+    //   //this.showDraftContentTypeOptions(trimmedInput);
+    //   return;
+    // }
+    // this.isDraftFallback= false;
+    // If user asks for podcast generation in TL mode, open podcast flow
+    // if (isPodcastRequest) {
+    //   this.openPodcastFlow(trimmedInput);
+    //   return;
+    // }
+
+    // If user asks to sanitize, start conversational workflow
+    // if (isSanitizationRequest) {
+    //   this.startSanitizationConversation();
+    //   return;
+    // }
+
+    // If user asks to create/draft presentation
+    // if (isDraftRequest) {
+    //   const userMessage: Message = {
+    //     role: 'user',
+    //     content: trimmedInput,
+    //     timestamp: new Date()
+    //   };
+    //   console.log(`[ChatComponent] Adding user message for draft request ${userMessage.content}`);
+    //   this.messages.push(userMessage);
+
+    //   const assistantMessage: Message = {
+    //     role: 'assistant',
+    //     content: '📝 I\'d be happy to help you create a presentation! To provide the best draft, please tell me:\n\n1. **Topic**: What is the main subject?\n2. **Objective**: What do you want to achieve?\n3. **Audience**: Who will view this presentation?\n\nYou can describe these in your next message, or click the "Guided Journey" button above for a structured form.',
+    //     timestamp: new Date()
+    //   };
+    //   this.messages.push(assistantMessage);
+    //   this.userInput = '';
+    //   // Collapse composer immediately after clearing input for draft request path
+    //   this.resetComposerHeight();
+    //   this.saveCurrentSession();
+    //   return;
+    // }
+
+    // Prepare user message content with multiple documents support
+    const hasExtractedDocuments = this.extractedDocuments.length > 0;
+    
+    let userMessageContent = this.userInput.trim();
+    
+    // Store extracted text from all documents permanently in message content for context preservation
+    // This ensures follow-up questions maintain document context
+    if (hasExtractedDocuments) {
+      // Build document summary for UI display
+      const documentNames = this.extractedDocuments.map(doc => doc.fileName).join(', ');
+      userMessageContent += `\n\n[${this.extractedDocuments.length} document(s) uploaded: ${documentNames}]`;
+      
+      // Append all extracted texts
+      for (const doc of this.extractedDocuments) {
+        userMessageContent += `\n\nExtracted Text From Document (${doc.fileName}):\n${doc.extractedText}`;
+      }
+    }
+    
+    // If no user input but file uploaded, generate default message
+    if (!userMessageContent && (this.uploadedEditDocumentFile || this.uploadedPPTFile)) {
+      const fileName = this.uploadedEditDocumentFile?.name || this.uploadedPPTFile?.name || 'document';
+      userMessageContent = `Uploaded document: ${fileName}`;
+    }
+    
+    const userMessage: Message = {
+      role: 'user',
+      content: userMessageContent || this.userInput,
+      timestamp: new Date()
+    };
+    
+    const totalExtractedLength = this.extractedDocuments.reduce((sum, doc) => sum + doc.extractedText.length, 0);
+    const estimatedTokens = hasExtractedDocuments ? this.estimateTotalTokens() : 0;
+    console.log(`[ChatComponent] Adding user message with ${hasExtractedDocuments ? `${this.extractedDocuments.length} document(s), total chars: ${totalExtractedLength}, estimated tokens: ${estimatedTokens}` : 'regular input'}`);
+    
+    if (userMessage.content) {
+      this.messages.push(userMessage);
+    }
+    this.triggerScrollToBottom();
+    
+    this.userInput = '';
+    this.resetComposerHeight();
+    this.isLoading = true;
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date()
+    };
+    this.messages.push(assistantMessage);
+    this.triggerScrollToBottom();
+
+    const messagesToSend = this.messages
+      .filter(m => m.role !== 'system')
+      .map(m => ({ role: m.role, content: m.content }));
+
+    // Ensure we have a session ID before sending
+    if (!this.currentSessionId) {
+      this.currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      console.log('[ChatComponent] Generated new session ID:', this.currentSessionId);
+    }
+    if (this.selectedFlow === 'ppt') {
+      console.log("step 1:",this.extractedDocuments);
+      const appendedText = this.extractedDocuments?.map(d => d.extractedText).join("\n\n") || '';
+      let ddcMessage = trimmedInput + (appendedText ? `\n\nSupporting docs:\n${appendedText}` : '');
+      
+      // If user submitted file without message, provide a default message
+      if (!trimmedInput && (this.uploadedPPTFile || this.extractedDocuments.length > 0)) {
+        ddcMessage = `User uploaded a document`;
+        if (appendedText) {
+          ddcMessage += `\n\nSupporting docs:\n${appendedText}`;
+        }
+      }
+
+      // Build FormData path: include PPT file when available
+      const pptFile = this.uploadedPPTFile || undefined;
+      this.uploadedPPTFile = null; // consume file so it isn't reused
+      
+      // Generate session_id if not exists (for chat history persistence only)
+      if (!this.currentSessionId) {
+        this.currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      }
+      
+      // First message should have blank conversation_id, subsequent messages use the one from backend
+      const conversationIdToSend = this.currentDdcConversationId || '';
+
+      this.chatService.ddcChatAgent(
+        ddcMessage, 
+        conversationIdToSend,  // blank string on first message, backend ID on subsequent messages
+        pptFile,
+        this.userId,
+        this.currentSessionId   // Use session_id for chat history persistence
+      ).subscribe({
+        next: (result: any) => {
+          // result may be { blob, conversation_id, summary } or JSON { message, conversation_id }
+          let downloadGenerated = false; // Track if download was generated in this response
+          
+          if (result && result.blob) {
+            assistantMessage.content = `I've processed your presentation${pptFile ? ` "${pptFile.name}"` : ''}. You can download it below.\nIf you’d like to sanitize another PowerPoint file, please upload the new file to continue.`;
+            const url = window.URL.createObjectURL(result.blob);
+            const filename = (pptFile && pptFile.name) ? pptFile.name.replace(/\.pptx?$/, '_ddc_processed.pptx') : 'ddc_processed.pptx';
+            assistantMessage.downloadUrl = url;
+            assistantMessage.downloadFilename = filename;
+            downloadGenerated = true; // Mark that download was generated
+            // Reset conversation_id for next message to start fresh conversation
+            this.currentDdcConversationId = null;
+            if (result.summary) {
+              try {
+                assistantMessage.content += `\n\nSanitization Summary:\n${JSON.stringify(result.summary, null, 2)}`;
+              } catch (e) {
+                assistantMessage.content += `\n\nSanitization Summary: ${result.summary}`;
+              }
+            }
+          } else if (result && result.message) {
+            // Extract download URL from message if present
+            const urlMatch = result.message.match(/href=["']([^"']+)["']/);
+            if (urlMatch && urlMatch[1]) {
+              const downloadUrl = urlMatch[1];
+              assistantMessage.downloadUrl = downloadUrl;
+              assistantMessage.downloadFilename = 'presentation.pptx';
+              downloadGenerated = true; // Mark that download was generated
+              // Reset conversation_id for next message to start fresh conversation
+              this.currentDdcConversationId = null;
+              
+              // Clean the message to show user-friendly text
+              assistantMessage.content += result.message.replace(
+                /Please click <a[^>]*>here<\/a>/gi,
+                'Click below'
+              ).replace(/<[^>]+>/g, ''); // Remove any remaining HTML tags
+            } else {
+              assistantMessage.content += result.message;
+            }
+          } else if (typeof result === 'string') {
+            assistantMessage.content += result;
+          } else if (result && result.content) {
+            assistantMessage.content += result.content;
+          } else {
+            assistantMessage.content += 'The DDC service responded.';
+          }
+
+          // Only update conversation_id from response if download was not generated in this response
+          if (result && result.conversation_id && !downloadGenerated) {
+            this.currentDdcConversationId = result.conversation_id;
+            console.log('[ChatComponent] DDC conversation_id:', result.conversation_id);
+          }
+
+          this.triggerScrollToBottom();
+        },
+        error: (error: any) => {
+          console.error('DDC Chat Agent Error:', error);
+          assistantMessage.content = 'Sorry, I encountered an error while processing your presentation via the DDC service.';
+          this.isLoading = false;
+          this.currentAction = '';
+          this.triggerScrollToBottom();
+        },
+        complete: () => {
+          this.isLoading = false;
+          this.extractedDocuments = [];
+          this.uploadedEditDocumentFile = null;
+          this.saveCurrentSession();
+          this.loadDbSessions();
+          this.triggerScrollToBottom();
+        }
+      });
+
+      // Prevent falling through to the generic chat path
+      return;
+    }
+
+    // For Thought Leadership flow, use the new tl_chat_agent API
+    // which handles both edit intent detection and normal streaming
+    if (isThoughtLeadershipFlow) {
+      this.handleTlChatAgentResponse(
+        messagesToSend,
+        assistantMessage,
+        trimmedInput
+      );
+      return;
+    }
+
+    this.chatService.streamChat(
+      messagesToSend,
+      this.userId,
+      this.currentSessionId,
+      this.dbThreadId || undefined,
+      this.getSourceFromFlow()
+    ).subscribe({
+      next: (content: string) => {
+        assistantMessage.content += content;
+        this.triggerScrollToBottom();
+      },
+      error: (error: any) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Sorry, I encountered an error. Please make sure the AI service is configured correctly.';
+        this.isLoading = false;
+        
+        // Clear extracted documents and file on error
+        this.extractedDocuments = [];
+        this.uploadedEditDocumentFile = null;
+        
+        this.triggerScrollToBottom();
+      },
+      complete: () => {
+        this.isLoading = false;
+        
+        // Clear extracted documents and file after successful send
+        this.extractedDocuments = [];
+        this.uploadedEditDocumentFile = null;
+        
+        this.saveCurrentSession();
+        // Refresh database sessions list to show the new/updated session
+        this.loadDbSessions();
+        this.triggerScrollToBottom();
+      }
+    });
+  }
+
+  /**
+   * Handle tl_chat_agent API response which can return:
+   * 1. JSON response with edit intent workflow data -> trigger edit workflow
+   * 2. JSON response with placemat generation -> display message and continue chat
+   * 3. Streaming response for normal chat -> stream content
+   */
+  private handleTlChatAgentResponse(
+    messagesToSend: Array<{role: string, content: string}>,
+    assistantMessage: Message,
+    trimmedInput: string
+  ): void {
+    try {
+      const subscription = this.chatService.streamTlChatAgent(
+        messagesToSend,
+        this.userId,
+        this.currentSessionId || undefined,
+        this.dbThreadId || undefined,
+        this.getSourceFromFlow()
+      ).subscribe({
+        next: (response: any) => {
+          console.log('[ChatComponent] Received response from tl_chat_agent:', response);
+
+          // Check if response is a JSON object with special metadata (not a string chunk)
+          // Edit intent workflow and placemat responses come as complete JSON objects with isStreamChunk === false
+          if (response && typeof response === 'object' && response.isStreamChunk === false) {
+            
+            // ===== CASE 1: EDIT INTENT WORKFLOW =====
+            if (response.is_edit_intent && response.confidence >= 0.7) {
+              console.log('[ChatComponent] Detected edit intent workflow response:', response);
+
+              // Remove the loading assistant message since workflow will handle its own messaging
+              const messageIndex = this.messages.indexOf(assistantMessage);
+              if (messageIndex !== -1) {
+                this.messages.splice(messageIndex, 1);
+              }
+
+              this.isLoading = false;
+
+              // Trigger edit workflow with the detected data
+              console.log('[ChatComponent] Starting edit workflow with response data');
+              
+              // Start workflow with detected editors if available
+              if (response.detected_editors && response.detected_editors.length > 0) {
+                this.editWorkflowService.beginWorkflowWithEditors(response.detected_editors);
+              } else {
+                this.editWorkflowService.beginWorkflow();
+              }
+              
+              // Store the response for potential later use by workflow
+              (window as any)._editIntentResponse = response;
+
+              this.saveCurrentSession();
+              this.extractedDocuments = [];
+              this.uploadedEditDocumentFile = null;
+              return;
+            }
+            // ===== CASE 2: PLACEMAT FEATURE =====
+            if (response.target_format === 'placemat' && response.status === 'success') {
+              console.log('[ChatComponent] Detected placemat generation response:', response);
+
+              // Extract HTTPS URL ending with .pptx from the message
+              const httpsUrlMatch = response.message.match(/https:\/\/[^\s<>"']+\.pptx/i);
+              if (httpsUrlMatch) {
+                const downloadUrl = httpsUrlMatch[0];
+                assistantMessage.downloadUrl = downloadUrl;
+                assistantMessage.downloadFilename = 'placemat.pptx';
+              }
+              
+              // Keep the full message content as is, just remove HTML tags
+              assistantMessage.content = response.message.replace(/<[^>]+>/g, '').trim();
+              
+              // Mark as HTML so it renders properly if there are any HTML elements
+              assistantMessage.isHtml = true;
+
+              this.isLoading = false;
+              this.saveCurrentSession();
+              this.extractedDocuments = [];
+              this.uploadedEditDocumentFile = null;
+              this.triggerScrollToBottom();
+              return;
+            }
+
+            // ===== CASE 3: OTHER JSON RESPONSES (future features) =====
+            // Log unhandled JSON responses for debugging
+            console.warn('[ChatComponent] Received JSON response but no matching handler:', response);
+          }
+
+          // Otherwise, treat as streaming content for normal chat
+          // Response is a string chunk from the streaming data
+          if (typeof response === 'string') {
+            assistantMessage.content += response;
+            this.triggerScrollToBottom();
+          }
+          // Handle webpage_ready signal
+          else if (response && typeof response === 'object' && response.type === 'webpage_ready' && response.isWebpageReady) {
+            console.log('[ChatComponent] Received webpage_ready signal:', response);
+            assistantMessage.webpageReadyCompleted = true;
+            // If backend provides a URL, store it for direct opening
+            if (response.url) {
+              assistantMessage.webpageReadyUrl = response.url;
+            }
+            this.triggerScrollToBottom();
+          }
+        },
+        error: (error: any) => {
+          console.error('[ChatComponent] Error in tl_chat_agent:', error);
+          assistantMessage.content = 'Sorry, I encountered an error. Please make sure the AI service is configured correctly.';
+          this.isLoading = false;
+          this.extractedDocuments = [];
+          this.uploadedEditDocumentFile = null;
+          this.triggerScrollToBottom();
+        },
+        complete: () => {
+          console.log('[ChatComponent] tl_chat_agent streaming complete');
+          this.isLoading = false;
+          this.extractedDocuments = [];
+          this.uploadedEditDocumentFile = null;
+          this.saveCurrentSession();
+          this.loadDbSessions();
+          this.triggerScrollToBottom();
+        }
+      });
+    } catch (error) {
+      console.error('[ChatComponent] Error handling tl_chat_agent response:', error);
+      assistantMessage.content = 'Sorry, I encountered an error processing your request.';
+      this.isLoading = false;
+      this.extractedDocuments = [];
+      this.uploadedEditDocumentFile = null;
+    }
+  }
+  
+  processPPTUpload(): void {
+    if (!this.uploadedPPTFile) return;
+    
+    const userPrompt = this.userInput.trim() || 'Improve my presentation';
+    const userMessage: Message = {
+      role: 'user',
+      content: `${userPrompt}: ${this.uploadedPPTFile.name}`,
+      timestamp: new Date()
+    };
+    this.messages.push(userMessage);
+    this.triggerScrollToBottom();
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Improving presentation...'
+    };
+    this.messages.push(assistantMessage);
+    this.triggerScrollToBottom();
+  this.userInput = '';
+  // Collapse composer after sending PPT upload prompt
+  this.resetComposerHeight();
+  this.isLoading = true;
+    this.currentAction = 'Improving presentation...';
+
+    const pptFile = this.uploadedPPTFile;
+    this.uploadedPPTFile = null;
+
+    this.chatService.improvePPT(pptFile, null).subscribe({
+      next: (blob) => {
+        assistantMessage.actionInProgress = undefined;
+        assistantMessage.content = `I've successfully improved your presentation "${pptFile.name}". Here's what was done:\n\n• Fixed spelling and grammar errors\n• Aligned text and shapes\n• Applied consistent formatting\n\nYou can download the improved version below.`;
+        
+        // Create download URL from blob
+        const url = window.URL.createObjectURL(blob);
+        const filename = pptFile.name.replace('.pptx', '_improved.pptx');
+        assistantMessage.downloadUrl = url;
+        assistantMessage.downloadFilename = filename;
+        // Reset conversation_id for next message to start fresh conversation
+        this.currentDdcConversationId = null;
+      },
+      error: (error) => {
+        console.error('Error improving PPT:', error);
+        assistantMessage.actionInProgress = undefined;
+        assistantMessage.content = 'Sorry, I encountered an error while improving the presentation. Please try again.';
+        this.isLoading = false;
+        this.currentAction = '';
+      },
+      complete: () => {
+        this.isLoading = false;
+        this.currentAction = '';
+        this.saveCurrentSession();
+        // Refresh database sessions list to show the new/updated session
+        this.loadDbSessions();
+        this.triggerScrollToBottom();
+      }
+    });
+  }
+
+  startSanitizationConversation(): void {
+    const userMessage: Message = {
+      role: 'user',
+      content: this.userInput,
+      timestamp: new Date()
+    };
+    this.messages.push(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      isStreaming: true
+    };
+    this.messages.push(assistantMessage);
+
+  this.userInput = '';
+  // Collapse composer after starting sanitization conversation
+  this.resetComposerHeight();
+  this.isLoading = true;
+  this.triggerScrollToBottom();
+
+    // Include file name if uploaded
+    const fileName = this.uploadedPPTFile ? this.uploadedPPTFile.name : undefined;
+
+    this.chatService.streamSanitizationConversation(
+      this.messages.filter(m => !m.isStreaming),
+      fileName
+    ).subscribe({
+      next: (chunk: string) => {
+        assistantMessage.content += chunk;
+        this.triggerScrollToBottom();
+      },
+      error: (error: any) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Sorry, I encountered an error. Please try again.';
+        assistantMessage.isStreaming = false;
+        this.isLoading = false;
+      },
+      complete: () => {
+        assistantMessage.isStreaming = false;
+        this.isLoading = false;
+        this.saveCurrentSession();
+      }
+    });
+  }
+
+  processSanitizePPT(): void {
+    if (!this.uploadedPPTFile) return;
+    
+    const userPrompt = this.userInput.trim() || 'Sanitize my presentation';
+    const userMessage: Message = {
+      role: 'user',
+      content: `${userPrompt}: ${this.uploadedPPTFile.name}`,
+      timestamp: new Date()
+    };
+    this.messages.push(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Sanitizing presentation...'
+    };
+    this.messages.push(assistantMessage);
+  this.messages.push(assistantMessage);
+
+  this.userInput = '';
+  // Collapse composer after initiating PPT sanitization
+  this.resetComposerHeight();
+  this.isLoading = true;
+    this.currentAction = 'Sanitizing presentation: removing sensitive data, client names, numbers, and metadata...';
+
+    const pptFile = this.uploadedPPTFile;
+    this.uploadedPPTFile = null;
+
+    // Use empty strings for client name and products since we're in free text mode
+    this.chatService.sanitizePPT(pptFile, '', '').subscribe({
+      next: (response) => {
+        const url = window.URL.createObjectURL(response.blob);
+
+        let statsMessage = '';
+        if (response.stats) {
+          statsMessage = `\n\nSanitization Statistics:\n• Numeric replacements: ${response.stats.numeric_replacements}\n• Name replacements: ${response.stats.name_replacements}\n• Hyperlinks removed: ${response.stats.hyperlinks_removed}\n• Notes removed: ${response.stats.notes_removed}\n• Logos removed: ${response.stats.logos_removed}\n• Slides processed: ${response.stats.slides_processed}`;
+          
+          if (response.stats.llm_replacements) {
+            statsMessage += `\n• LLM-detected items: ${response.stats.llm_replacements}`;
+          }
+        }
+
+        assistantMessage.content = `✅ Your presentation has been sanitized!\n\nSanitization complete:\n• All numeric data replaced with X patterns\n• Personal information removed\n• Client/product names replaced with placeholders\n• Logos and watermarks removed\n• Speaker notes cleared\n• Metadata sanitized` + statsMessage + '\n\nYou can download your sanitized presentation below.';
+        assistantMessage.downloadUrl = url;
+        assistantMessage.downloadFilename = 'sanitized_presentation.pptx';
+        assistantMessage.previewUrl = url;
+        assistantMessage.actionInProgress = undefined;
+        // Reset conversation_id for next message to start fresh conversation
+        this.currentDdcConversationId = null;
+        this.isLoading = false;
+        this.currentAction = '';
+      },
+      error: (error: any) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Sorry, I encountered an error while sanitizing your presentation. Please make sure the file is a valid PowerPoint file (.pptx).';
+        assistantMessage.actionInProgress = undefined;
+        this.isLoading = false;
+        this.currentAction = '';
+      },
+      complete: () => {
+        this.saveCurrentSession();
+      }
+    });
+  }
+
+  toggleDraftForm(): void {
+    this.showDraftForm = !this.showDraftForm;
+  }
+
+  selectFlow(flow: 'ppt' | 'thought-leadership' | 'market-intelligence'): void {
+    // Save current session before switching flows to prevent data loss
+    this.saveCurrentSession();
+    
+    this.selectedFlow = flow;
+    
+    // Trigger fade-out animation if on landing page
+    if (this.showLandingPage) {
+      this.landingPageFadingOut = true;
+      // Hide landing page after animation completes (500ms)
+      setTimeout(() => {
+        this.showLandingPage = false;
+        this.landingPageFadingOut = false;
+      }, 500);
+    }
+    
+    // Reset all flow states
+    this.showDraftForm = false;
+    this.showGuidedDialog = false;
+    this.showPromptSuggestions = false;
+    this.isDraftFallback = false;
+    this.closeMobileSidebar();
+    
+    // Clear uploaded files and composer input when switching flows
+    this.uploadedEditDocumentFile = null;
+    this.uploadedPPTFile = null;
+    this.extractedDocuments = []; // Clear extracted documents from triggerDocumentAnalysisUpload
+    this.editDocumentUploadError = ''; // Clear any upload error messages
+    this.userInput = ''; // Clear composer textarea text
+    this.messages = [];
+    
+    // Reset session ID for new flow to ensure fresh session tracking
+    this.currentSessionId = null;
+    this.currentDdcConversationId = null; // Reset DDC conversation_id when switching flows
+    
+    // Update visibility flags based on selected flow
+    this.showMIFlow = flow === 'market-intelligence';
+    this.showTLFlow = flow === 'thought-leadership';
+    this.showDDCFlow = flow === 'ppt';
+    
+    // Reset edit workflow if active
+    if (this.editWorkflowService.isActive) {
+      this.editWorkflowService.cancelWorkflow();
+    }
+    
+    // Reset to initial state - just show welcome with only the initial assistant message
+    if (this.messages.length > 1) {
+      this.messages = this.messages.slice(0, 1);
+    }
+    
+    console.log('[ChatComponent] Flow changed to:', flow);
+  }
+  
+  goHome(): void {
+    // Reset to home state (landing page)
+    this.showLandingPage = true;
+    this.selectedFlow = undefined;
+    this.showDraftForm = false;
+    this.showGuidedDialog = false;
+    this.showPromptSuggestions = false;
+    this.showAttachmentArea = false;
+    this.isDraftFallback = false;
+    this.userInput = '';
+    this.resetComposerHeight();
+    this.referenceDocument = null;
+    this.closeMobileSidebar();
+    
+    // Completely clear all chat messages when going home
+    this.messages = [];
+    
+    // Reset all form data
+    this.draftData = {
+      topic: '',
+      objective: '',
+      audience: '',
+      additional_context: '',
+      reference_document: '',
+      reference_link: ''
+    };
+    
+    this.thoughtLeadershipData = {
+      topic: '',
+      perspective: '',
+      target_audience: '',
+      document_text: '',
+      target_format: '',
+      additional_context: '',
+      reference_document: '',
+      reference_link: ''
+    };
+    
+    this.originalPPTFile = null;
+    this.referencePPTFile = null;
+    this.sanitizePPTFile = null;
+    this.uploadedPPTFile = null;
+    this.uploadedEditDocumentFile = null;
+    this.editorialDocumentFile = null;
+    this.extractedDocuments = []; // Clear extracted documents when going home
+    this.editDocumentUploadError = ''; // Clear any upload error messages
+    // Reset edit workflow if active
+    if (this.editWorkflowService.isActive) {
+      this.editWorkflowService.cancelWorkflow();
+    }
+    this.currentSessionId = null;
+    this.isLoading = false;
+  }
+
+  private getSourceFromFlow(): string {
+    switch (this.selectedFlow) {
+      case 'ppt':
+        return 'DDDC';
+      case 'thought-leadership':
+        return 'Cortex';
+      case 'market-intelligence':
+        return 'Market_Intelligence';
+      default:
+        // Default to Cortex for regular chat (not Chat source)
+        return 'Cortex';
+    }
+  }
+
+  startNewChat(): void {
+    // Reset chat while preserving the current flow selection
+    this.showDraftForm = false;
+    this.showGuidedDialog = false;
+    this.showPromptSuggestions = false;
+    this.showAttachmentArea = false;
+    this.isDraftFallback = false;
+    this.userInput = '';
+    this.resetComposerHeight();
+    this.referenceDocument = null;
+    this.closeMobileSidebar();
+    
+    // Clear chat history but keep the current flow
+    this.messages = [];
+    
+    // Reset all form data
+    this.draftData = {
+      topic: '',
+      objective: '',
+      audience: '',
+      additional_context: '',
+      reference_document: '',
+      reference_link: ''
+    };
+    
+    this.thoughtLeadershipData = {
+      topic: '',
+      perspective: '',
+      target_audience: '',
+      document_text: '',
+      target_format: '',
+      additional_context: '',
+      reference_document: '',
+      reference_link: ''
+    };
+    
+    this.originalPPTFile = null;
+    this.referencePPTFile = null;
+    this.sanitizePPTFile = null;
+    this.uploadedPPTFile = null;
+    this.uploadedEditDocumentFile = null;
+    this.editorialDocumentFile = null;
+    this.extractedDocuments = []; // Clear extracted documents when starting new chat
+    this.editDocumentUploadError = ''; // Clear any upload error messages
+    this.currentDdcConversationId = null; // Reset DDC conversation_id for fresh conversation in Doc Studio
+    
+    // Reset edit workflow if active
+    if (this.editWorkflowService.isActive) {
+      this.editWorkflowService.cancelWorkflow();
+    }
+    
+    this.currentSessionId = null;
+    this.isLoading = false;
+    
+    // Keep the current flow - DO NOT call selectFlow()
+  }
+  
+
+  toggleMobileMenu(): void {
+    this.mobileMenuOpen = !this.mobileMenuOpen;
+  }
+  
+  closeMobileSidebar(): void {
+    this.mobileMenuOpen = false;
+  }
+  
+  toggleSidebar(): void {
+    this.sidebarExpanded = !this.sidebarExpanded;
+  }
+  
+  toggleThemeDropdown(): void {
+    this.showThemeDropdown = !this.showThemeDropdown;
+  }
+  
+  getFeatureName(): string {
+    if (this.selectedFlow === 'ppt') {
+      return 'Edge Doc Studio';
+    } else if (this.selectedFlow === 'thought-leadership') {
+      return 'Edge Cortex';
+    } else if (this.selectedFlow === 'market-intelligence') {
+      return 'Edge Market Intelligence & Insights';
+    }
+    return 'PwC ThinkSpace';
+
+  }
+  
+  openGuidedDialog(): void {
+    // Context-aware: Show DDC workflows for ppt flow, TL workflows for thought-leadership flow
+    // For MI, opening Guided Journey directly opens conduct-research-flow
+    if (this.selectedFlow === 'ppt') {
+      this.showDdcGuidedDialog = true;
+    } else if (this.selectedFlow === 'thought-leadership') {
+      this.showGuidedDialog = true;
+    } else if (this.selectedFlow === 'market-intelligence') {
+      // For Market Intelligence, Guided Journey opens the conduct-research-flow directly
+      //this.miFlowService.openFlow('conduct-research');
+      this.showGuidedDialog = true;
+    }
+  }
+  
+  onWorkflowSelected(workflowId: string): void {
+    console.log('[ChatComponent] DDC Workflow selected:', workflowId);
+    // Set context: opened from guided dialog
+    this.workflowOpenedFrom = 'guided-dialog';
+    this.showDdcGuidedDialog = false;
+    this.ddcFlowService.openFlow(workflowId as any);
+  }
+  
+  closeDdcGuidedDialog(): void {
+    this.showDdcGuidedDialog = false;
+    // Reset workflow context when guided dialog closes
+    this.workflowOpenedFrom = null;
+  }
+  
+  // Chat history methods
+  loadSavedSessions(): void {
+    try {
+      const stored = localStorage.getItem(this.STORAGE_KEY);
+      if (stored) {
+        const sessions = JSON.parse(stored);
+        // Convert string dates back to Date objects
+        this.savedSessions = sessions.map((s: any) => ({
+          ...s,
+          timestamp: new Date(s.timestamp),
+          lastModified: new Date(s.lastModified),
+          messages: s.messages.map((m: any) => ({
+            ...m,
+            timestamp: m.timestamp ? new Date(m.timestamp) : undefined
+          }))
+        }));
+      }
+    } catch (error) {
+      console.error('Error loading saved sessions:', error);
+      this.savedSessions = [];
+    }
+  }
+  
+  saveCurrentSession(): void {
+    // Don't save if we only have the welcome message
+    if (this.messages.length <= 1) {
+      return;
+    }
+    
+    // Generate title from first user message or use default
+    let title = 'New Chat';
+    const firstUserMessage = this.messages.find(m => m.role === 'user');
+    if (firstUserMessage) {
+      title = firstUserMessage.content.slice(0, 50);
+      if (firstUserMessage.content.length > 50) {
+        title += '...';
+      }
+    }
+    
+    const now = new Date();
+    
+    if (this.currentSessionId) {
+      // Check if session exists in array
+      const index = this.savedSessions.findIndex(s => s.id === this.currentSessionId);
+      if (index !== -1) {
+        // Update existing session
+        this.savedSessions[index] = {
+          ...this.savedSessions[index],
+          messages: [...this.messages],
+          lastModified: now
+        };
+      } else {
+        // Session ID exists but not in array - create new session
+        const newSession: ChatSession = {
+          id: this.currentSessionId,
+          title: title,
+          messages: [...this.messages],
+          timestamp: now,
+          lastModified: now
+        };
+        
+        this.savedSessions.unshift(newSession);
+        
+        // Limit number of saved sessions
+        if (this.savedSessions.length > this.MAX_SESSIONS) {
+          this.savedSessions = this.savedSessions.slice(0, this.MAX_SESSIONS);
+        }
+      }
+    } else {
+      // Create new session when no session ID exists
+      this.currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const newSession: ChatSession = {
+        id: this.currentSessionId,
+        title: title,
+        messages: [...this.messages],
+        timestamp: now,
+        lastModified: now
+      };
+      
+      this.savedSessions.unshift(newSession);
+      
+      // Limit number of saved sessions
+      if (this.savedSessions.length > this.MAX_SESSIONS) {
+        this.savedSessions = this.savedSessions.slice(0, this.MAX_SESSIONS);
+      }
+    }
+    
+    // Save to localStorage
+    try {
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.savedSessions));
+    } catch (error) {
+      console.error('Error saving session:', error);
+    }
+  }
+  
+  loadSession(sessionId: string): void {
+    const session = this.savedSessions.find(s => s.id === sessionId);
+    if (session) {
+      this.currentSessionId = sessionId;
+      this.messages = [...session.messages];
+      this.showGuidedDialog = false;
+      this.showDraftForm = false;
+      this.showPromptSuggestions = false;
+    }
+  }
+  
+  deleteSession(sessionId: string, event: Event): void {
+    event.stopPropagation();
+    this.savedSessions = this.savedSessions.filter(s => s.id !== sessionId);
+    
+    try {
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.savedSessions));
+    } catch (error) {
+      console.error('Error deleting session:', error);
+    }
+    
+    // If we deleted the current session, go home
+    if (this.currentSessionId === sessionId) {
+      this.goHome();
+    }
+  }
+  
+  // ============ NEW: Database-driven chat history methods ============
+  
+  /**
+   * Load chat sessions from database (lazy loading - titles only)
+   * Titles load instantly on login, full conversations load on-click
+   */
+  loadDbSessions(): void {
+    console.log('[ChatComponent-OLD] loadDbSessions() CALLED');
+    
+    if (!this.userId || this.userId === 'anonymous@example.com') {
+      console.warn('⚠️ [ChatComponent-OLD] Cannot load DB sessions: no valid user ID, userId:', this.userId);
+      return;
+    }
+    
+    this.isLoadingDbSessions = true;
+    console.log('⏳ [ChatComponent-OLD] Loading database sessions for user:', this.userId);
+    
+    console.log('[ChatComponent-OLD] Calling chatService.getUserSessions() with userId:', this.userId, 'and source:', this.selectedSourceFilter || 'undefined');
+    
+    this.chatService.getUserSessions(this.userId, this.selectedSourceFilter || undefined)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (sessions: any[]) => {
+          console.log('[ChatComponent-OLD] ✅ getUserSessions() returned:', sessions?.length || 0, 'sessions');
+          
+          if (!sessions || sessions.length === 0) {
+            console.log('[ChatComponent-OLD] ℹ️ No sessions found for user');
+            this.dbChatSessions = [];
+            this.isLoadingDbSessions = false;
+            return;
+          }
+          
+          // Convert API response to ChatSession format
+          this.dbChatSessions = (sessions || []).map(s => ({
+            id: s.session_id,
+            title: s.title || s.preview || 'Untitled',
+            messages: [], // Don't load full messages yet (lazy loading)
+            timestamp: new Date(s.created_at),
+            lastModified: new Date(s.updated_at),
+            source: s.source // Track source for filtering
+          }));
+          
+          console.log('✅ [ChatComponent-OLD] Successfully loaded', this.dbChatSessions.length, 'sessions from database');
+          this.isLoadingDbSessions = false;
+        },
+        error: (error) => {
+          console.error('❌ [ChatComponent-OLD] Error loading sessions from database:', error);
+          this.isLoadingDbSessions = false;
+          // Fall back to localStorage if database fails
+          console.log('[ChatComponent-OLD] Falling back to localStorage...');
+          this.loadSavedSessions();
+        }
+      });
+  }
+  
+  /**
+   * Load full conversation for a specific session (on-demand, lazy loading)
+   */
+  loadDbConversation(sessionId: string): void {
+    if (!sessionId) {
+      console.warn('⚠️ Cannot load conversation: no session ID provided');
+      return;
+    }
+    
+    this.isLoadingDbConversation = true;
+    console.log('⏳ Loading conversation for session:', sessionId);
+    
+    this.chatService.getSessionConversation(sessionId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (sessionDetail: any) => {
+          if (!sessionDetail) {
+            console.error('❌ No conversation data received');
+            this.isLoadingDbConversation = false;
+            return;
+          }
+          
+          console.log('📦 Raw session detail received:', sessionDetail);
+          
+          // Extract messages from the conversation data
+          let messagesArray: Message[] = [];
+          
+          // Handle different possible response formats
+          if (sessionDetail.conversation) {
+            if (Array.isArray(sessionDetail.conversation)) {
+              // Format 1: conversation is directly an array of messages
+              messagesArray = sessionDetail.conversation as Message[];
+            } else if (sessionDetail.conversation.messages && Array.isArray(sessionDetail.conversation.messages)) {
+              // Format 2: conversation is an object with messages property
+              messagesArray = sessionDetail.conversation.messages as Message[];
+            } else if (typeof sessionDetail.conversation === 'object') {
+              // Format 3: conversation is an object - try to extract messages if available
+              messagesArray = Object.values(sessionDetail.conversation).flat() as Message[];
+            }
+          }
+          
+          console.log('📨 Extracted', messagesArray.length, 'messages from conversation');
+          console.log('Messages:', messagesArray);
+          
+          // Update the messages for the session
+          const sessionIndex = this.dbChatSessions.findIndex(s => s.id === sessionId);
+          if (sessionIndex !== -1) {
+            this.dbChatSessions[sessionIndex].messages = messagesArray;
+            console.log('✅ Loaded', messagesArray.length, 'messages for session:', sessionId);
+          }
+          
+          // Load this conversation into the main messages display
+          this.currentSessionId = sessionId;
+          this.messages = messagesArray;
+          this.showGuidedDialog = false;
+          this.showDraftForm = false;
+          this.showPromptSuggestions = false;
+          this.showLandingPage = false; // Hide the landing page and show the chat window
+          
+          // Force change detection
+          this.cdr.markForCheck();
+          
+          this.isLoadingDbConversation = false;
+        },
+        error: (error) => {
+          console.error('❌ Error loading conversation from database:', error);
+          console.error('Error details:', error);
+          this.isLoadingDbConversation = false;
+        }
+      });
+  }
+  
+  /**
+   * Delete a session from the database
+   */
+  deleteDbSession(sessionId: string, event: Event): void {
+    event.stopPropagation();
+    
+    console.log('⏳ Deleting session from database:', sessionId);
+    
+    this.chatService.deleteSession(sessionId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          // Remove from local array
+          this.dbChatSessions = this.dbChatSessions.filter(s => s.id !== sessionId);
+          console.log('✅ Session deleted successfully:', sessionId);
+          
+          // If we deleted the current session, go home
+          if (this.currentSessionId === sessionId) {
+            this.goHome();
+          }
+        },
+        error: (error) => {
+          console.error('❌ Error deleting session from database:', error);
+        }
+      });
+  }
+  
+  /**
+   * Filter database sessions by source (PPT, TL, MI, DDC)
+   */
+  filterDbSessionsBySource(source: string): void {
+    this.selectedSourceFilter = source;
+    console.log('🔍 Filtering sessions by source:', source);
+    this.loadDbSessions(); // Reload with filter
+  }
+  
+  // ============ END: Database-driven chat history methods ============
+  
+  
+  // Search/filter methods
+  filterOfferings(): void {
+    const query = this.searchQuery.toLowerCase().trim();
+    
+    if (!query) {
+      this.offeringVisibility['ppt'] = true;
+      this.offeringVisibility['thought-leadership'] = true;
+      return;
+    }
+    
+    // Check if "presentation drafting" or related keywords match
+    const pptKeywords = ['presentation', 'drafting', 'ppt', 'slides', 'deck', 'powerpoint', 'improve', 'sanitize', 'create'];
+    const tlKeywords = ['thought', 'leadership', 'article', 'research', 'insights', 'editorial', 'review', 'generate'];
+    
+    this.offeringVisibility['ppt'] = pptKeywords.some(keyword => keyword.includes(query) || query.includes(keyword));
+    this.offeringVisibility['thought-leadership'] = tlKeywords.some(keyword => keyword.includes(query) || query.includes(keyword));
+  }
+  
+  isOfferingVisible(offering: string): boolean {
+    return this.offeringVisibility[offering as keyof typeof this.offeringVisibility];
+  }
+  
+  getFilteredSessions(): ChatSession[] {
+    const query = this.searchQuery.toLowerCase().trim();
+    
+    if (!query) {
+      return this.savedSessions;
+    }
+    
+    return this.savedSessions.filter(session => 
+      session.title.toLowerCase().includes(query)
+    );
+  }
+  
+  closeGuidedDialog(): void {
+    this.showGuidedDialog = false;
+  }
+  
+  onTLActionCardClick(flowType: string): void {
+    //from Guided journey
+    this.closeGuidedDialog();
+    this.tlFlowService.openFlow(flowType as 'draft-content' | 'conduct-research' | 'edit-content' | 'refine-content' | 'format-translator' | 'generate-podcast');
+  }
+  
+  onMIActionCardClick(flowType: string): void {
+    //console.log("Inside onclickMIAction");
+    this.closeGuidedDialog();
+    this.miFlowService.openFlow(flowType as  'conduct-research' | 'create-pov' | 'prepare-client-meeting' | 'gather-proposal-insights' | 'target-industry-insights');
+  }
+  
+  showActionPrompts(category: string): void {
+    this.selectedActionCategory = category;
+    this.showPromptSuggestions = true;
+  }
+  
+  usePrompt(prompt: string): void {
+    this.showPromptSuggestions = false;
+    this.userInput = prompt;
+    // Auto-send the message
+    this.sendMessage();
+  }
+  
+  triggerFileUpload(type: 'improve' | 'sanitize'): void {
+    // Create a file input element dynamically
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.pptx';
+    fileInput.onchange = (event: any) => {
+      const file = event.target.files[0];
+      if (file) {
+        if (type === 'improve') {
+          this.originalPPTFile = file;
+          this.selectedPPTOperation = 'improve';
+          this.userInput = `Improve my presentation: ${file.name}`;
+        } else {
+          this.sanitizePPTFile = file;
+          this.selectedPPTOperation = 'sanitize';
+          this.userInput = `Sanitize my presentation: ${file.name}`;
+        }
+        // Let the user review and send
+      }
+    };
+    fileInput.click();
+  }
+
+  createThoughtLeadership(): void {
+    this.isLoading = true;
+    this.showDraftForm = false;
+
+    let userMessageContent = '';
+    const tlData = this.thoughtLeadershipData;
+
+    switch (this.selectedTLOperation) {
+      case 'generate':
+        userMessageContent = `Generate thought leadership article:\n\nTopic: ${tlData.topic}\nPerspective: ${tlData.perspective}\nTarget Audience: ${tlData.target_audience}${tlData.additional_context ? '\nAdditional Context: ' + tlData.additional_context : ''}`;
+        if (this.referenceDocument) {
+          userMessageContent += `\n\nReference Document: ${this.referenceDocument.name} (Note: File content integration requires backend support)`;
+        }
+        if (tlData.reference_link) {
+          userMessageContent += `\nReference Link: ${tlData.reference_link}`;
+        }
+        break;
+      case 'research':
+        userMessageContent = `Research additional insights:\n\nTopic: ${tlData.topic}\nCurrent Perspective: ${tlData.perspective}${tlData.additional_context ? '\nAdditional Context: ' + tlData.additional_context : ''}`;
+        break;
+      case 'editorial':
+        if (this.editorialDocumentFile) {
+          userMessageContent = `Provide editorial support:\n\nDocument File: ${this.editorialDocumentFile.name} (Note: File content integration requires backend support)${tlData.additional_context ? '\n\nAdditional Instructions: ' + tlData.additional_context : ''}`;
+        } else if (tlData.document_text) {
+          userMessageContent = `Provide editorial support:\n\nDocument:\n${tlData.document_text}${tlData.additional_context ? '\n\nAdditional Instructions: ' + tlData.additional_context : ''}`;
+        }
+        break;
+      case 'improve':
+        userMessageContent = `Recommend improvements:\n\nDocument:\n${tlData.document_text}${tlData.additional_context ? '\n\nFocus Areas: ' + tlData.additional_context : ''}`;
+        break;
+      case 'translate':
+        userMessageContent = `Translate document format:\n\nOriginal Document:\n${tlData.document_text}\n\nTarget Format: ${tlData.target_format}${tlData.additional_context ? '\nAdditional Requirements: ' + tlData.additional_context : ''}`;
+        break;
+    }
+
+    const userMessage: Message = {
+      role: 'user',
+      content: userMessageContent,
+      timestamp: new Date()
+    };
+    // Only push message if it has content or attached files
+      this.messages.push(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date()
+    };
+    this.messages.push(assistantMessage);
+
+    // Convert reference_link to reference_urls array for backend
+    const requestPayload: ThoughtLeadershipRequest = {
+      operation: this.selectedTLOperation,
+      topic: tlData.topic,
+      perspective: tlData.perspective,
+      target_audience: tlData.target_audience,
+      document_text: tlData.document_text,
+      target_format: tlData.target_format,
+      additional_context: tlData.additional_context,
+      reference_urls: tlData.reference_link ? [tlData.reference_link] : undefined
+    };
+
+    this.chatService.streamThoughtLeadership(requestPayload).subscribe({
+      next: (content: string) => {
+        assistantMessage.content += content;
+      },
+      error: (error: any) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Sorry, I encountered an error. Please make sure the AI service is configured correctly.';
+        this.isLoading = false;
+      },
+      complete: () => {
+        this.isLoading = false;
+        this.thoughtLeadershipData = {
+          topic: '',
+          perspective: '',
+          target_audience: '',
+          document_text: '',
+          target_format: '',
+          additional_context: '',
+          reference_document: '',
+          reference_link: ''
+        };
+        this.referenceDocument = null;
+        this.editorialDocumentFile = null;
+      }
+    });
+  }
+
+  createDraft(): void {
+    if (!this.draftData.topic || !this.draftData.objective || !this.draftData.audience) {
+      return;
+    }
+
+    this.isLoading = true;
+    this.showDraftForm = false;
+
+    // Prepare user message with reference information
+    let messageContent = `Create a presentation draft:\n\nTopic: ${this.draftData.topic}\nObjective: ${this.draftData.objective}\nAudience: ${this.draftData.audience}`;
+    if (this.draftData.additional_context) {
+      messageContent += `\nAdditional Context: ${this.draftData.additional_context}`;
+    }
+    if (this.referenceDocument) {
+      messageContent += `\n\nReference Document: ${this.referenceDocument.name} (Note: File content integration requires backend support)`;
+    }
+    if (this.draftData.reference_link) {
+      messageContent += `\nReference Link: ${this.draftData.reference_link}`;
+    }
+    
+    const userMessage: Message = {
+      role: 'user',
+      content: messageContent,
+      timestamp: new Date()
+    };
+    
+    this.messages.push(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date()
+    };
+    this.messages.push(assistantMessage);
+
+    // TODO: For file upload support, convert to FormData and update backend endpoint
+    this.chatService.streamDraft(this.draftData).subscribe({
+      next: (content: string) => {
+        assistantMessage.content += content;
+      },
+      error: (error) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Sorry, I encountered an error while creating the draft. Please make sure the LLM is configured correctly.';
+        this.isLoading = false;
+      },
+      complete: () => {
+        this.isLoading = false;
+        this.draftData = {
+          topic: '',
+          objective: '',
+          audience: '',
+          additional_context: '',
+          reference_document: '',
+          reference_link: ''
+        };
+        this.referenceDocument = null;
+      }
+    });
+  }
+
+  handleKeyPress(event: KeyboardEvent): void {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      this.sendMessage();
+    }
+  }
+
+  onOriginalFileSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file && file.name.endsWith('.pptx')) {
+      this.originalPPTFile = file;
+    }
+  }
+
+  onReferenceFileSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file && file.name.endsWith('.pptx')) {
+      this.referencePPTFile = file;
+    }
+  }
+
+  formatFileSize(bytes: number): string {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  improvePPT(): void {
+    if (!this.originalPPTFile) {
+      return;
+    }
+
+    this.isLoading = true;
+    this.showDraftForm = false;
+    this.currentAction = 'Improving presentation: correcting spelling, aligning shapes, rebranding colors...';
+
+    const userMessage: Message = {
+      role: 'user',
+      content: `Improve PowerPoint presentation:\n\nOriginal File: ${this.originalPPTFile.name}${this.referencePPTFile ? '\nReference File: ' + this.referencePPTFile.name : ''}\n\nOperations: Correct spelling/grammar, align shapes, rebrand colors${this.referencePPTFile ? ' (using reference PPT)' : ''}`,
+      timestamp: new Date()
+    };
+    this.messages.push(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Processing your presentation...'
+    };
+    this.messages.push(assistantMessage);
+
+    this.chatService.improvePPT(this.originalPPTFile, this.referencePPTFile).subscribe({
+      next: (blob) => {
+        const url = window.URL.createObjectURL(blob);
+        
+        assistantMessage.content = '✅ Your presentation has been improved!\n\nChanges made:\n• Spelling and grammar corrections\n• Text and shape alignment\n' + (this.referencePPTFile ? '• Color rebranding applied\n' : '') + '\nYou can download your presentation below.';
+        assistantMessage.downloadUrl = url;
+        assistantMessage.downloadFilename = 'improved_presentation.pptx';
+        assistantMessage.previewUrl = url; // Preview will trigger download for PPTX files
+        assistantMessage.actionInProgress = undefined;
+        // Reset conversation_id for next message to start fresh conversation
+        this.currentDdcConversationId = null;
+        this.isLoading = false;
+        this.currentAction = '';
+        this.originalPPTFile = null;
+        this.referencePPTFile = null;
+      },
+      error: (error) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Sorry, I encountered an error while improving your presentation. Please make sure both files are valid PowerPoint files (.pptx).';
+        assistantMessage.actionInProgress = undefined;
+        this.isLoading = false;
+        this.currentAction = '';
+      }
+    });
+  }
+
+  onSanitizeFileSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file && file.name.endsWith('.pptx')) {
+      this.sanitizePPTFile = file;
+    }
+  }
+
+  sanitizePPT(): void {
+    if (!this.sanitizePPTFile) {
+      return;
+    }
+
+    this.isLoading = true;
+    this.showDraftForm = false;
+    this.currentAction = 'Sanitizing presentation: removing sensitive data, client names, numbers, and metadata...';
+
+    const userMessage: Message = {
+      role: 'user',
+      content: `Sanitize PowerPoint presentation:\n\nFile: ${this.sanitizePPTFile.name}${this.sanitizeData.clientName ? '\nClient Name: ' + this.sanitizeData.clientName : ''}${this.sanitizeData.products ? '\nProducts: ' + this.sanitizeData.products : ''}\n\nRemoving: All sensitive data, numbers, client names, personal info, logos, and metadata`,
+      timestamp: new Date()
+    };
+    this.messages.push(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Sanitizing your presentation...'
+    };
+    this.messages.push(assistantMessage);
+
+    this.chatService.sanitizePPT(this.sanitizePPTFile, this.sanitizeData.clientName, this.sanitizeData.products, this.sanitizeData.options).subscribe({
+      next: (response) => {
+        const url = window.URL.createObjectURL(response.blob);
+
+        let statsMessage = '';
+        if (response.stats) {
+          statsMessage = `\n\nSanitization Statistics:\n• Numeric replacements: ${response.stats.numeric_replacements}\n• Name replacements: ${response.stats.name_replacements}\n• Hyperlinks removed: ${response.stats.hyperlinks_removed}\n• Notes removed: ${response.stats.notes_removed}\n• Logos removed: ${response.stats.logos_removed}\n• Slides processed: ${response.stats.slides_processed}`;
+          if (response.stats.llm_replacements) {
+            statsMessage += `\n• LLM-detected items: ${response.stats.llm_replacements}`;
+          }
+        }
+
+        assistantMessage.content = '✅ Your presentation has been sanitized!\n\nSanitization complete:\n• All numeric data replaced with X patterns\n• Personal information removed\n• Client/product names replaced with placeholders\n• Logos and watermarks removed\n• Speaker notes cleared\n• Metadata sanitized' + statsMessage + '\n\nYou can download your sanitized presentation below.';
+        assistantMessage.downloadUrl = url;
+        assistantMessage.downloadFilename = 'sanitized_presentation.pptx';
+        assistantMessage.previewUrl = url; // Preview will trigger download for PPTX files
+        assistantMessage.actionInProgress = undefined;
+        // Reset conversation_id for next message to start fresh conversation
+        this.currentDdcConversationId = null;
+        this.isLoading = false;
+        this.currentAction = '';
+        this.sanitizePPTFile = null;
+        this.sanitizeData = { 
+          clientName: '', 
+          products: '',
+          options: {
+            numericData: true,
+            personalInfo: true,
+            financialData: true,
+            locations: true,
+            identifiers: true,
+            names: true,
+            logos: true,
+            metadata: true,
+            llmDetection: true,
+            hyperlinks: true,
+            embeddedObjects: true
+          }
+        };
+      },
+      error: (error: any) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Sorry, I encountered an error while sanitizing your presentation. Please make sure the file is a valid PowerPoint file (.pptx).';
+        assistantMessage.actionInProgress = undefined;
+        this.isLoading = false;
+        this.currentAction = '';
+      }
+    });
+  }
+
+  setTheme(theme: ThemeMode): void {
+    this.themeService.setTheme(theme);
+  }
+
+  showChat(): void {
+    this.showDraftForm = false;
+  }
+
+  startQuickChat(): void {
+    // Quick Start goes directly to chat without showing the form
+    this.showDraftForm = false;
+    this.showAttachmentArea = true;
+    // Add a message from assistant to start the conversation
+    if (this.messages.length === 1) {
+      this.messages.push({
+        role: 'assistant',
+        content: 'I\'m ready to help! What would you like to create today?\n\n💡 **Tip:** Upload a PowerPoint file to improve or sanitize it, or start typing to create new content.',
+        timestamp: new Date()
+      });
+    }
+  }
+  
+
+  quickStart(): void {
+    // Check if Quick Start message has already been shown (avoid duplicates)
+    const hasQuickStartMessage = this.messages.some(msg => 
+      msg.role === 'assistant' && (
+        msg.content.includes('Here\'s what I can help you with in the Doc Studio') ||
+        msg.content.includes('Here\'s what I can help you with in Thought Leadership')
+      )
+    );
+    
+    if (hasQuickStartMessage) {
+      // Already shown, just scroll to bottom
+      this.triggerScrollToBottom();
+      return;
+    }
+    
+    // Create flow-specific welcome message
+    let welcomeMessage = '';
+    
+    if (this.selectedFlow === 'ppt') {
+      welcomeMessage = `👋 Welcome! Here's what I can help you with in the **Doc Studio**:
+
+**📝 Prompt to Draft** • Quickly turn an objective or idea into a starter deck
+**🔧 Outline to Deck** • Transform a detailed outline into a client-ready presentation
+**🔒 Doc Sanitization** • Remove sensitive data to create shareable documents
+
+💡 **Tips:** Upload a PowerPoint file using the attachment button, or simply describe what you need and I'll guide you through the process!`;
+    } else if(this.selectedFlow === 'thought-leadership') {
+      welcomeMessage = `👋 Welcome! Here's what I can help you with in **Cortex**:
+
+✍️ **Draft Content** • Turn preliminary concepts or outlines into well-research, written, and edited drafts
+🔍 **Conduct Research** • Tap into PwC’s full knowledge bank and third-party sources to execute targeted research in minutes
+✏️ **Edit Content** • Deploy development, content, line, copy, and PwC brand alignment editors
+📄 **Refine Drafts** • Expand or compress content, change tone, or enhance with targeted research & insights
+🔄 **Adapt Content** • Transform final outputs into podcasts, social media posts or placements
+
+
+💡 **Tips:** Type your request naturally, or click "Guided Journey" for a step-by-step wizard to create comprehensive content!`;
+    }
+    else{
+      welcomeMessage = `👋 Welcome! Here's what I can help you with in **Market Intelligence & Insights**:
+
+
+🔍 **Conduct Research** • Tap into PwC’s full knowledge bank and third-party sources to execute targeted research in minutes
+🔄 **Generate Industry Insights** • Synthesize PwC expertise and market data to deliver structured industry intelligence
+✨ **Prepare for Client Meeting** • Rapidly ramp-up for senior discussions with structured insights informed by years of experience
+📋 **Create Point of View** • Quickly convert targeted research into well-written, edited, and refined perspectives
+🔀 **Gather Proposal Inputs** • Develop a proposal outline and pull sample frameworks, approaches, and quals with one click
+
+💡 **Tips:** Type your request naturally, or click "Guided Journey" for a step-by-step wizard to create comprehensive content!`;
+
+    }
+    
+    // Add the welcome message to chat
+    this.messages.push({
+      role: 'assistant',
+      content: welcomeMessage,
+      timestamp: new Date()
+    });
+    
+    // Save session and scroll to bottom
+    this.saveCurrentSession();
+    this.triggerScrollToBottom();
+  }
+  
+  toggleDropdown(dropdownId: string, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.openDropdown = this.openDropdown === dropdownId ? null : dropdownId;
+  }
+
+  selectServiceProvider(provider: 'openai' | 'anthropic', event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.selectedServiceProvider = provider;
+    // Reset model selection to first available model for the new provider
+    this.selectedModel = this.availableModels[0];
+    this.openDropdown = null;
+    console.log(`[ChatComponent] Service provider changed to: ${provider}, Model: ${this.selectedModel}`);
+    // Notify backend of the selection change (dummy endpoint)
+    this.sendLLMSelectionToBackend(this.selectedServiceProvider, this.selectedModel)
+      .catch(err => console.warn('[ChatComponent] sendLLMSelectionToBackend error', err));
+  }
+
+  selectModel(model: string, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.selectedModel = model;
+    this.openDropdown = null;
+    console.log(`[ChatComponent] Model changed to: ${model}`);
+    // Notify backend of the selection change (dummy endpoint)
+    this.sendLLMSelectionToBackend(this.selectedServiceProvider, this.selectedModel)
+      .catch(err => console.warn('[ChatComponent] sendLLMSelectionToBackend error', err));
+  }
+
+  /**
+   * Send a dummy POST to backend with selected LLM provider + model.
+   * This uses AuthFetchService to include auth when available.
+   */
+  private async sendLLMSelectionToBackend(provider: 'openai' | 'anthropic', model: string): Promise<void> {
+    try {
+      const apiBase = (environment && (environment as any).apiUrl) ? (environment as any).apiUrl : ''; 
+      const endpoint = `${apiBase}/api/v1/configure-llm`;
+      console.log('[ChatComponent] Sending LLM selection to backend:', endpoint, { provider, model });
+
+      const response = await this.authFetchService.authenticatedFetch(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({ serviceProvider: provider, model }),
+      });
+
+      let bodyText = '';
+      try {
+        bodyText = await response.text();
+      } catch (e) {
+        bodyText = '<no response body>';
+      }
+
+      console.log('[ChatComponent] LLM selection response', response.status, bodyText);
+    } catch (e) {
+      console.warn('[ChatComponent] Failed to send LLM selection to backend', e);
+      throw e;
+    }
+  }
+
+  logout(): void {
+    this.openDropdown = null;
+    this.authService.logout();
+  }
+  
+  selectPrompt(prompt: string, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.userInput = prompt;
+    this.openDropdown = null;
+    // Focus the input after selection
+    setTimeout(() => {
+      const inputElement = document.querySelector('.chat-input-area textarea') as HTMLTextAreaElement;
+      if (inputElement) {
+        inputElement.focus();
+      }
+    }, 100);
+  }
+  
+  getDropdownPrompts(dropdownId: string): string[] {
+    const promptMap: {[key: string]: string[]} = {
+      // PPT prompts
+      'draft': this.promptCategories.draft.prompts,
+      'fix': this.promptCategories.improve.prompts,
+      'sanitize': this.promptCategories.sanitize.prompts,
+      'bestPractices': this.promptCategories.bestPractices.prompts,
+      // NEW: TL Section prompts
+      'draftContent': this.promptCategories.draftContent.prompts,
+      'conductResearch': this.promptCategories.conductResearch.prompts,
+      'editContent': this.promptCategories.editContent.prompts,
+      'refineContent': this.promptCategories.refineContent.prompts,
+      'formatTranslator': this.promptCategories.formatTranslator.prompts,
+      // Legacy TL prompts
+      'generate': this.promptCategories.generate.prompts,
+      'research': this.promptCategories.research.prompts,
+      'draftArticle': this.promptCategories.draftArticle.prompts,
+      'review': this.promptCategories.editorial.prompts
+    };
+    return promptMap[dropdownId] || [];
+  }
+  
+  quickActionClick(action: string): void {
+    // For PPT actions, set prompt in chat
+    if (this.selectedFlow === 'ppt') {
+      const pptPrompts: {[key: string]: string} = {
+        'Digital Document Development Center': 'Help me create a new digital document',
+        'Fix Formatting': 'I need to fix formatting in my presentation',
+        'Sanitize Documents': 'I need to sanitize sensitive data from my presentation',
+        'Validate Best Practices': 'Validate my presentation against PwC best practices'
+      };
+      this.userInput = pptPrompts[action] || action;
+    } else {
+      // For TL and MI actions, open the appropriate guided flow
+      const flowMapping: {[key: string]: any} = {
+        'Draft Content': 'draft-content',
+        'Conduct Research': 'conduct-research',
+        'Edit Content': 'edit-content',
+        'Refine Content': 'refine-content',
+        'Format Translator': 'format-translator',
+        'Create POV': 'create-pov',
+        'Prepare for Client Meeting': 'prepare-client-meeting',
+        'Gather Proposal Insights': 'gather-proposal-insights',
+        'Target Industry Insights': 'target-industry-insights'
+      };
+      
+      const flowType = flowMapping[action];
+      if (flowType) {
+        this.tlFlowService.openFlow(flowType);
+      }
+    }
+  }
+  
+  openDdcWorkflow(workflowId: string): void {
+    console.log('[ChatComponent] Opening DDC workflow:', workflowId);
+    // Set context: opened from quick-action button
+    this.workflowOpenedFrom = 'quick-action';
+    this.ddcFlowService.openFlow(workflowId as any);
+  }
+ 
+
+  
+  onReferenceDocumentSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file) {
+      this.referenceDocument = file;
+    }
+  }
+  
+  onEditorialDocumentSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file && (file.name.endsWith('.pdf') || file.name.endsWith('.docx') || file.name.endsWith('.doc'))) {
+      this.editorialDocumentFile = file;
+    }
+  }
+  
+  triggerReferenceUpload(): void {
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.pptx,.docx,.pdf,.txt,.jpeg,.jpg,.png,.xlsx';
+    fileInput.onchange = (event: any) => {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const fileName = file.name.toLowerCase();
+      
+      // For PPT files, store as uploadedPPTFile (binary will be sent as FormData)
+      if (fileName.endsWith('.pptx')) {
+        this.uploadedPPTFile = file;
+        console.log('[ChatComponent] PPT file selected for upload:', file.name);
+        return;
+      }
+      // if (fileName.endsWith('.xlsx1')) {
+      //   this.uploadedPPTFile = file;
+      //   console.log('[ChatComponent] Excel file selected for upload:', file.name);
+      //   return;
+      // }
+
+      // // For image files (jpeg, png), store as binary FormData (similar to PPT)
+      // if (fileName.endsWith('.jpeg') || fileName.endsWith('.png') || fileName.endsWith('.jpg')) {
+      //   this.uploadedPPTFile = file;
+      //   console.log('[ChatComponent] Image file selected for upload:', file.name);
+      //   return;
+      // }
+
+      // // For xlxs files, store as binary FormData (similar to PPT)
+      // if (fileName.endsWith('.xlsx')) {
+      //   this.uploadedPPTFile = file;
+      //   console.log('[ChatComponent] Excel file selected for upload:', file.name);
+      //   return;
+      // }
+
+      // For non-PPT files (docx, pdf, txt), extract text and store in extractedDocuments
+      if (fileName.endsWith('.docx') || fileName.endsWith('.pdf') || fileName.endsWith('.txt') || fileName.endsWith('.jpeg') || fileName.endsWith('.png') || fileName.endsWith('.jpg') || fileName.endsWith('.xlsx')) {
+        this.extractTextFromReferenceFile(file);
+        return;
+      }
+    };
+    fileInput.click();
+  }
+
+  /**
+   * Extract text from reference document (docx, pdf, txt)
+   * Stores extracted text in this.extractedDocuments for later appending to DDC message
+   */
+  private async extractTextFromReferenceFile(file: File): Promise<void> {
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const endpoint = `${apiUrl}/api/v1/export/extract-text`;
+
+    this.isExtractingText = true;
+    this.currentAction = `Extracting text/details from ${file.name}...`;
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const authHeaders = await (this.authFetchService as any).getAuthHeadersForFormData?.() || {};
+      const headers: Record<string, string> = { ...authHeaders };
+
+      const response = await this.authFetchService.authenticatedFetchFormData(endpoint, {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error(`Extract-text failed: ${response.status}`);
+      }
+
+      const result = await response.json();
+      const extractedText = result.text || result.extracted_text || '';
+
+      if (!extractedText.trim()) {
+        throw new Error('No text extracted from file');
+      }
+
+      // Check if document is already in extractedDocuments (avoid duplicates)
+      const existingIndex = this.extractedDocuments.findIndex(doc => doc.fileName === file.name);
+      
+      if (existingIndex !== -1) {
+        // Update existing document
+        this.extractedDocuments[existingIndex] = {
+          fileName: file.name,
+          extractedText: extractedText,
+          //timestamp: new Date()
+        };
+        console.log('[ChatComponent] Updated extracted text for:', file.name);
+      } else {
+        // Add new document
+        this.extractedDocuments.push({
+          fileName: file.name,
+          extractedText: extractedText,
+          //timestamp: new Date()
+        });
+        console.log('[ChatComponent] Extracted text from reference file:', file.name, 'Length:', extractedText.length);
+      }
+      
+
+      this.isExtractingText = false;
+      this.currentAction = '';
+      this.cdr.detectChanges();
+
+    } catch (error) {
+      console.error('[ChatComponent] Error extracting text from reference file:', error);
+      this.isExtractingText = false;
+      this.currentAction = '';
+      this.showNotificationMessage(`Error extracting text from ${file.name}. Please try again.`, 'error');
+    }
+  }
+  
+  removeUploadedPPT(): void {
+    this.uploadedPPTFile = null;
+  }
+
+  removeExtractedDocument(fileName: string): void {
+    this.extractedDocuments = this.extractedDocuments.filter(doc => doc.fileName !== fileName);
+  }
+
+  onEditDocumentSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file) {
+      this.editDocumentUploadError = '';
+      // Accept Word, PDF, Text, Markdown files
+      const validExtensions = ['.doc', '.docx', '.pdf', '.txt', '.md', '.markdown'];
+      const fileName = file.name.toLowerCase();
+      // const isValid = validExtensions.some(ext => fileName.endsWith(ext));
+            const isValidFormat = validExtensions.some(ext => fileName.endsWith(ext));
+      
+      if (!isValidFormat) {
+        this.editDocumentUploadError = 'Invalid file format. Please upload a Word (.doc, .docx), PDF (.pdf), Text (.txt), or Markdown (.md, .markdown) file.';
+        console.log('[ChatComponent] Invalid format error set:', this.editDocumentUploadError);
+        this.cdr.detectChanges();
+        return;
+      }
+      
+      // Validate file size (5MB limit)
+      const fileSizeMB = file.size / (1024 * 1024);
+      if (fileSizeMB > this.MAX_FILE_SIZE_MB) {
+        this.editDocumentUploadError = `File size exceeds the maximum limit of ${this.MAX_FILE_SIZE_MB}MB. Please upload a smaller file.`;
+        console.log('[ChatComponent] File size error set:', this.editDocumentUploadError);
+        this.cdr.detectChanges();
+        return;
+      }
+
+      
+      // if (isValid) {
+      //   this.uploadedEditDocumentFile = file;
+      //   console.log('[ChatComponent] Edit document selected:', file.name);
+        
+      //   // Auto-trigger workflow if in Thought Leadership mode
+      //   if (this.selectedFlow === 'thought-leadership') {
+      //     // Small delay to ensure file is set before sendMessage processes it
+      //     setTimeout(() => {
+      //       this.sendMessage();
+      //     }, 100);
+      //   }
+      // } else {
+      //   alert('Please upload a Word (.doc, .docx), PDF (.pdf), Text (.txt), or Markdown (.md, .markdown) file.');
+      this.uploadedEditDocumentFile = file;
+      console.log('[ChatComponent] Edit document selected:', file.name);
+      
+      // Auto-trigger workflow if in Thought Leadership mode
+      if (this.selectedFlow === 'thought-leadership') {
+        // Small delay to ensure file is set before sendMessage processes it
+        setTimeout(() => {
+          this.sendMessage();
+        }, 100);
+      }
+    }
+  }
+
+  removeUploadedEditDocument(): void {
+    this.uploadedEditDocumentFile = null;
+    this.editDocumentUploadError = '';
+    // Also clear extracted documents array if present
+    this.extractedDocuments = [];
+  }
+
+  getUploadedDocumentsCount(): number {
+    return this.extractedDocuments.length;
+  }
+
+  /**
+   * Estimate total token count for all extracted documents
+   * Uses approximate calculation: 1 token ≈ 4 characters (conservative estimate for English text)
+   * This is a rough approximation; actual tokenization may vary by model
+   */
+  private estimateTotalTokens(): number {
+    const CHARS_PER_TOKEN = 4; // Conservative estimate (OpenAI typically uses ~4 chars per token)
+    
+    let totalChars = 0;
+    for (const doc of this.extractedDocuments) {
+      totalChars += doc.extractedText.length;
+    }
+    
+    return Math.ceil(totalChars / CHARS_PER_TOKEN);
+  }
+
+  triggerEditDocumentUpload(): void {
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.doc,.docx,.pdf,.txt,.md,.markdown';
+    fileInput.onchange = (event: any) => {
+      this.onEditDocumentSelected(event);
+    };
+    fileInput.click();
+  }
+
+  /**
+   * Trigger document upload for analysis (non-workflow scenario)
+   * This extracts text and continues with normal chat flow - supports multiple files
+   */
+  triggerDocumentAnalysisUpload(): void {
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.doc,.docx,.pdf,.txt,.md,.markdown,.pptx';
+    fileInput.multiple = true; // Enable multiple file selection
+    fileInput.onchange = (event: any) => {
+      this.onDocumentAnalysisSelected(event);
+    };
+    fileInput.click();
+  }
+
+  /**
+   * Handle document selection for analysis (non-workflow) - supports multiple files
+   * Extracts text from all documents and stores them for later use when user sends message
+   */
+  async onDocumentAnalysisSelected(event: any): Promise<void> {
+    const files: FileList = event.target.files;
+    if (!files || files.length === 0) return;
+
+    // Validate all file types
+    const validExtensions = ['.doc', '.docx', '.pdf', '.txt', '.md', '.markdown','.pptx'];
+    const invalidFiles: string[] = [];
+    
+    for (let i = 0; i < files.length; i++) {
+      const fileName = files[i].name.toLowerCase();
+      const isValid = validExtensions.some(ext => fileName.endsWith(ext));
+      if (!isValid) {
+        invalidFiles.push(files[i].name);
+      }
+    }
+
+    if (invalidFiles.length > 0) {
+      const msg = `Please upload only Word (.doc, .docx), PDF (.pdf), Text (.txt), PPT(.pptx) or Markdown (.md, .markdown) files.\n\nInvalid files: ${invalidFiles.join(', ')}`;
+      this.showDocumentUploadError(msg);
+      return;
+    }
+
+    // Validate total file size (50 MB limit)
+    const MAX_TOTAL_SIZE_MB = 50;
+    const MAX_TOTAL_SIZE_BYTES = MAX_TOTAL_SIZE_MB * 1024 * 1024;
+    let totalSize = 0;
+    
+    for (let i = 0; i < files.length; i++) {
+      totalSize += files[i].size;
+    }
+    
+    if (totalSize > MAX_TOTAL_SIZE_BYTES) {
+      const totalSizeMB = (totalSize / (1024 * 1024)).toFixed(2);
+      const msg = `Total file size (${totalSizeMB} MB) exceeds the maximum allowed size of ${MAX_TOTAL_SIZE_MB} MB.\n\nPlease select fewer or smaller files.`;
+      this.showDocumentUploadError(msg);
+      return;
+    }
+
+    console.log(`[ChatComponent] ${files.length} document(s) selected for analysis, total size: ${(totalSize / (1024 * 1024)).toFixed(2)} MB`);
+
+    // Show loading state with specific message
+    this.isExtractingText = true;
+    this.currentAction = files.length === 1 
+      ? `Extracting text from ${files[0].name}...`
+      : `Extracting text from ${files.length} documents...`;
+
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const endpoint = `${apiUrl}/api/v1/export/extract-text`;
+
+    try {
+      // Process all files sequentially
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        
+        // Update progress message
+        if (files.length > 1) {
+          this.currentAction = `Extracting text from ${file.name} (${i + 1}/${files.length})...`;
+        }
+
+        // Build FormData for extract-text API call
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await this.authFetchService.authenticatedFetchFormData(endpoint, {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`[ChatComponent] Extract-text failed for ${file.name}:`, response.status, errorText);
+          const msg = `Failed to extract text from "${file.name}". This file will be skipped.`;
+          this.showDocumentUploadError(msg);
+          continue; // Skip this file and continue with others
+        }
+
+        const data = await response.json();
+        const extractedText = data?.text || '';
+
+        if (!extractedText) {
+          console.warn(`[ChatComponent] Extract-text returned empty text for ${file.name}`);
+          const msg = `No text could be extracted from "${file.name}". This file will be skipped.`;
+          this.showDocumentUploadError(msg);
+          continue; // Skip this file and continue with others
+        }
+
+        console.log(`[ChatComponent] Text extracted from ${file.name}, length:`, extractedText.length, 'chars');
+
+        // Store extracted text and file name
+        this.extractedDocuments.push({
+          fileName: file.name,
+          extractedText: extractedText
+        });
+
+        // Also store in uploadedEditDocumentFile for UI display (use last file)
+        this.uploadedEditDocumentFile = file;
+      }
+
+      if (this.extractedDocuments.length === 0) {
+        const msg = 'No text could be extracted from any of the uploaded documents.';
+        this.showDocumentUploadError(msg);
+        this.isExtractingText = false;
+        this.currentAction = '';
+        return;
+      }
+
+      // Validate total token count (10,000 tokens limit)
+      const MAX_TOKENS = 10000;
+      const totalTokens = this.estimateTotalTokens();
+      
+      if (totalTokens > MAX_TOKENS) {
+        const tokenCountFormatted = totalTokens.toLocaleString();
+        const msg = `The extracted text from all documents is approximately ${tokenCountFormatted} tokens, which exceeds the maximum limit of ${MAX_TOKENS.toLocaleString()} tokens.\n\nPlease upload fewer documents or documents with less content.`;
+        this.showDocumentUploadError(msg);
+
+        // Clear the extracted documents as they exceed limit
+        this.extractedDocuments = [];
+        this.uploadedEditDocumentFile = null;
+        this.isExtractingText = false;
+        this.currentAction = '';
+        return;
+      }
+
+      console.log(`[ChatComponent] Successfully extracted text from ${this.extractedDocuments.length} document(s), estimated tokens: ${totalTokens}`);
+
+      this.isExtractingText = false;
+      this.currentAction = '';
+      
+      // Focus on the text input so user can type their instruction
+      setTimeout(() => {
+        this.composerTextarea?.nativeElement?.focus();
+      }, 100);
+
+    } catch (error) {
+      console.error('[ChatComponent] Error extracting text:', error);
+      const msg = 'An error occurred while extracting text from the documents. Please try again.';
+      this.showDocumentUploadError(msg);
+      this.isExtractingText = false;
+      this.currentAction = '';
+    }
+  }
+
+  onWorkflowEditorsSubmitted(selectedIds: string[]): void {
+    this.editWorkflowService.handleEditorSelection(selectedIds);
+  }
+
+  onWorkflowEditorsSelectionChanged(message: Message, editors: EditorOption[]): void {
+    if (message.editWorkflow?.editorOptions) {
+      message.editWorkflow.editorOptions = editors;
+    }
+  }
+
+  onWorkflowCancelled(): void {
+    this.editWorkflowService.cancelWorkflow();
+  }
+
+  /**
+   * Show a simple toast notification inside this component.
+   * Auto-hides after 4 seconds.
+   */
+  private showNotificationMessage(message: string, type: 'success' | 'error' = 'success'): void {
+    this.notificationMessage = message;
+    this.notificationType = type;
+    this.showNotification = true;
+    this.cdr.detectChanges();
+
+    // Auto-hide after timeout
+    setTimeout(() => {
+      this.showNotification = false;
+      this.cdr.detectChanges();
+    }, 4000);
+  }
+
+  /**
+   * Show inline error message for document upload validation.
+   * Auto-hides after 5 seconds.
+   */
+  private showDocumentUploadError(message: string): void {
+    console.log('[ChatComponent] Showing document upload error:', message);
+    this.editDocumentUploadError = message;
+    this.cdr.detectChanges();
+
+    // Auto-hide after 5 seconds
+    setTimeout(() => {
+      this.editDocumentUploadError = '';
+      this.cdr.detectChanges();
+    }, 5000);
+  }
+
+  onWorkflowFileSelected(file: File): void {
+        // Validate file format
+    const validExtensions = ['.doc', '.docx', '.pdf', '.txt', '.md', '.markdown'];
+    const fileName = file.name.toLowerCase();
+    const isValidFormat = validExtensions.some(ext => fileName.endsWith(ext));
+    
+    if (!isValidFormat) {
+      this.editDocumentUploadError = 'Invalid file format. Please upload a Word (.doc, .docx), PDF (.pdf), Text (.txt), or Markdown (.md, .markdown) file.';
+      return; // Stop here - don't process invalid files
+    }
+    
+    // Validate file size (5MB limit)
+    const fileSizeMB = file.size / (1024 * 1024);
+    if (fileSizeMB > this.MAX_FILE_SIZE_MB) {
+      this.editDocumentUploadError = `File size exceeds the maximum limit of ${this.MAX_FILE_SIZE_MB}MB. Please upload a smaller file.`;
+      return; // Stop here - don't process oversized files
+    }
+
+    if (this.editWorkflowService.currentState.step === 'awaiting_content') {
+      // Store the file so it can be displayed in the upload component
+      this.uploadedEditDocumentFile = file;
+      // Handle the file upload through the workflow service
+      this.editWorkflowService.handleFileUpload(file);
+    }
+    
+    // Also handle draft workflow file uploads
+    if (this.draftWorkflowService.isActive) {
+      this.draftWorkflowService.handleFileUpload(file);
+    }
+  }
+
+  onWorkflowFileRemoved(): void {
+    // File removed - clear the uploaded file
+    this.uploadedEditDocumentFile = null;
+    this.editDocumentUploadError = '';
+    // Note: Workflow continues even if file is removed - user can upload again
+  }
+
+  getUploadedFileForMessage(message: Message): File | null {
+    // Only return the uploaded file if we're in awaiting_content step AND workflow is active
+    // This prevents showing old files when workflow is idle or starting new workflow
+    if (message.editWorkflow?.step === 'awaiting_content' && 
+        this.editWorkflowService.isActive && 
+        this.uploadedEditDocumentFile) {
+      return this.uploadedEditDocumentFile;
+    }
+    return null;
+  }
+
+  onParagraphApproved(message: Message, index: number): void {
+    if (!message.editWorkflow?.paragraphEdits) {
+      return;
+    }
+    
+    const paragraph = message.editWorkflow.paragraphEdits.find(p => p.index === index);
+    if (!paragraph) {
+      return;
+    }
+    
+    // Update the paragraph directly (like Guided Journey)
+    paragraph.approved = true;
+    
+    // Also sync with service state for final article generation
+    this.editWorkflowService.syncParagraphEditsFromMessage(message.editWorkflow.paragraphEdits);
+    
+    // Save session and trigger change detection
+    this.saveCurrentSession();
+    this.cdr.detectChanges();
+  }
+
+  onParagraphDeclined(message: Message, index: number): void {
+    if (!message.editWorkflow?.paragraphEdits) {
+      return;
+    }
+    
+    const paragraph = message.editWorkflow.paragraphEdits.find(p => p.index === index);
+    if (!paragraph) {
+      return;
+    }
+    
+    // Update the paragraph directly (like Guided Journey)
+    paragraph.approved = false;
+    
+    // Also sync with service state for final article generation
+    this.editWorkflowService.syncParagraphEditsFromMessage(message.editWorkflow.paragraphEdits);
+    
+    // Save session and trigger change detection
+    this.saveCurrentSession();
+    this.cdr.detectChanges();
+  }
+
+  onGenerateFinalArticle(message: Message): void {
+    if (message.editWorkflow?.paragraphEdits && message.editWorkflow.paragraphEdits.length > 0) {
+      this.editWorkflowService.syncParagraphEditsFromMessage(message.editWorkflow.paragraphEdits);
+    }
+    
+    if (message.editWorkflow?.threadId) {
+      this.editWorkflowService.syncThreadIdFromMessage(message.editWorkflow.threadId);
+    }
+    
+    this.editWorkflowService.generateFinalArticle();
+  }
+
+  onNextEditor(message: Message): void {
+    // Sync paragraphEdits from message to service before calling next editor
+    if (message.editWorkflow?.paragraphEdits && message.editWorkflow.paragraphEdits.length > 0) {
+      this.editWorkflowService.syncParagraphEditsFromMessage(message.editWorkflow.paragraphEdits);
+    }
+    
+    // Sync threadId from message to service (same as Guided Journey stores it in component)
+    if (message.editWorkflow?.threadId) {
+      this.editWorkflowService.syncThreadIdFromMessage(message.editWorkflow.threadId);
+    }
+    
+    // Call the service to proceed to next editor
+    const paragraphEdits = message.editWorkflow?.paragraphEdits || [];
+    this.editWorkflowService.nextEditor(paragraphEdits, message.editWorkflow?.threadId);
+  }
+
+  getParagraphEditsGeneratingState(message: Message): boolean {
+    // Return only final output generating state (for Generate Final Output button)
+    return this.editWorkflowService.isGeneratingFinal;
+  }
+
+  getParagraphEditsNextEditorGeneratingState(message: Message): boolean {
+    // Return only next editor generating state (for Next Editor button)
+    return this.editWorkflowService.isGeneratingNextEditor;
+  }
+
+  hasFinalOutputBeenGenerated(message: Message, messageIndex: number): boolean {
+    if (message.editWorkflow?.finalOutputGenerated === true) {
+      return true;
+    }
+    // Check if final output has been generated by looking for a message after this one
+    // with thoughtLeadership topic 'Final Revised Article'
+    if (messageIndex < 0 || messageIndex >= this.messages.length - 1) {
+      return false;
+    }
+    
+    // Check messages after this one for final output
+    for (let i = messageIndex + 1; i < this.messages.length; i++) {
+      const nextMessage = this.messages[i];
+      if (nextMessage.thoughtLeadership?.topic === 'Final Revised Article' ||
+          (nextMessage.content && nextMessage.content.includes('Final Revised Article'))) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  private clearWorkflowState(): void {
+    this.userInput = '';
+    this.resetComposerHeight();
+    this.uploadedEditDocumentFile = null;
+    // Clear file input elements in workflow file upload components
+    setTimeout(() => {
+      const workflowFileInputs = document.querySelectorAll('.workflow-file-upload input[type="file"]');
+      workflowFileInputs.forEach((input: any) => {
+        if (input.value) {
+          input.value = '';
+        }
+      });
+      // Also clear any file inputs in chat input area
+      const chatFileInputs = document.querySelectorAll('.chat-composer input[type="file"]');
+      chatFileInputs.forEach((input: any) => {
+        if (input.value) {
+          input.value = '';
+        }
+      });
+    }, 0);
+    // Trigger change detection to update FileUploadComponent bindings
+    this.cdr.detectChanges();
+  }
+
+  // Check if we're in step 2 (awaiting_content) - now optional since we show upload component
+  get isAwaitingContent(): boolean {
+    return this.editWorkflowService.isActive && 
+           this.editWorkflowService.currentState.step === 'awaiting_content';
+  }
+
+  isEditWorkflowResult(message: Message): boolean {
+    // Show action buttons for thought leadership and market intelligence content results
+    // Check either thoughtLeadership or marketIntelligence metadata with showActions flag
+    const hasShowActions =
+      (message.thoughtLeadership && message.thoughtLeadership.showActions) ||
+      (message.marketIntelligence && message.marketIntelligence.showActions);
+   
+    console.log('[Chat Component] isEditWorkflowResult Check:', {
+      messageContent: message.content?.substring(0, 50),
+      hasTLMetadata: !!message.thoughtLeadership,
+      tlShowActions: message.thoughtLeadership?.showActions,
+      hasMIMetadata: !!message.marketIntelligence,
+      miShowActions: message.marketIntelligence?.showActions,
+      hasShowActions: hasShowActions,
+      result: hasShowActions === true,
+      timestamp: new Date().toISOString()
+    });
+    
+    if (!hasShowActions) {
+      return false;
+    }
+    
+    // Check if content indicates it's a result (Editorial Feedback, Revised Article, Draft Content, etc.)
+    const content = message.content.toLowerCase();
+    // return content.includes('editorial feedback') || 
+    //        content.includes('revised article') || 
+    //        content.includes('quick start thought leadership') ||
+    //        content.includes('generated content') || content.includes('formated content');
+    return true
+  }
+
+
+  shouldHideEditorialFeedback(message: Message, messageIndex: number): boolean {
+    // Check if this message is editorial feedback
+    const isEditorialFeedback = message.thoughtLeadership?.topic === 'Editorial Feedback' ||
+                                (message.content && message.content.toLowerCase().includes('editorial feedback'));
+    
+    if (!isEditorialFeedback) {
+      return false;
+    }
+    
+    // Only hide editorial feedback if it's in the SAME message as paragraph edits
+    // (Separate messages should both be shown - editorial feedback first, then paragraph edits)
+    if (message.editWorkflow?.paragraphEdits && message.editWorkflow.paragraphEdits.length > 0) {
+      return true;
+    }
+    
+    return false;
+  }
+  
+  downloadGeneratedDocument(format: string, content: string, filename: string): void {
+    if (format === 'txt') {
+      const blob = new Blob([content], { type: 'text/plain' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${filename}.txt`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+    } else if (format === 'pdf' || format === 'word') {
+      this.chatService.exportDocument(content, filename, format).subscribe({
+        next: (blob: Blob) => {
+          const url = window.URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${filename}.${format === 'word' ? 'docx' : 'pdf'}`;
+          link.click();
+          window.URL.revokeObjectURL(url);
+        },
+        error: (error: any) => {
+          console.error(`Error downloading ${format}:`, error);
+          this.toastService.error(`Failed to download ${format === 'word' ? 'Word document' : 'PDF'}. Please try again.`);
+        }
+      });
+    }
+  }
+
+  copiedButtonId: string | null = null;
+
+  copyToClipboard(content: string, buttonId?: string): void {
+    // Convert markdown to plain text for better readability when pasted
+    const plainText = this.convertMarkdownToPlainText(content);
+    
+    navigator.clipboard.writeText(plainText).then(() => {
+      // Trigger animation on the button
+      if (buttonId) {
+        this.copiedButtonId = buttonId;
+        this.cdr.detectChanges();
+        
+        // Remove animation after 2 seconds
+        setTimeout(() => {
+          this.copiedButtonId = null;
+          this.cdr.detectChanges();
+        }, 2000);
+      }
+    }).catch(err => {
+      console.error('Failed to copy:', err);
+      // No animation on error - just log it
+    });
+  }
+
+  private convertMarkdownToPlainText(markdown: string): string {
+    let text = markdown;
+    
+    // Remove markdown links [text](url) -> text
+    text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
+    
+    // Remove markdown images ![alt](url) -> alt
+    text = text.replace(/!\[([^\]]*)\]\([^\)]+\)/g, '$1');
+    
+    // Convert bold **text** -> text
+    text = text.replace(/\*\*([^\*]+)\*\*/g, '$1');
+    
+    // Convert italic *text* -> text
+    text = text.replace(/\*([^\*]+)\*/g, '$1');
+    
+    // Convert italic _text_ -> text
+    text = text.replace(/_([^_]+)_/g, '$1');
+    
+    // Convert strikethrough ~~text~~ -> text
+    text = text.replace(/~~([^~]+)~~/g, '$1');
+    
+    // Convert headers # text -> text
+    text = text.replace(/^#+\s+/gm, '');
+    
+    // Convert horizontal rules
+    text = text.replace(/^[-*_]{3,}$/gm, '');
+    
+    // Convert code blocks ``` -> remove backticks
+    text = text.replace(/```[\s\S]*?```/g, (match) => {
+      return match.replace(/```/g, '').trim();
+    });
+    
+    // Convert inline code `text` -> text
+    text = text.replace(/`([^`]+)`/g, '$1');
+    
+    // Convert blockquotes > text -> text
+    text = text.replace(/^>\s+/gm, '');
+    
+    // Convert unordered lists - * text -> text
+    text = text.replace(/^[\s]*[-*+]\s+/gm, '');
+    
+    // Convert ordered lists 1. text -> text
+    text = text.replace(/^[\s]*\d+\.\s+/gm, '');
+    
+    // Remove extra blank lines (more than 2 consecutive)
+    text = text.replace(/\n\n\n+/g, '\n\n');
+    
+    // Trim leading and trailing whitespace
+    text = text.trim();
+    
+    return text;
+  }
+
+  regenerateMessage(messageIndex: number): void {
+    const message = this.messages[messageIndex];
+    if (!message || message.role !== 'assistant') {
+      return;
+    }
+
+    console.log(`[ChatComponent] Regenerating message at index ${messageIndex}`);
+    
+    // Get the previous user message
+    let userMessageIndex = messageIndex - 1;
+    while (userMessageIndex >= 0 && this.messages[userMessageIndex].role !== 'user') {
+      userMessageIndex--;
+    }
+
+    if (userMessageIndex < 0) {
+      console.error('[ChatComponent] No user message found to regenerate from');
+      this.toastService.error('Cannot regenerate: no user message found');
+      return;
+    }
+
+    const userMessage = this.messages[userMessageIndex];
+    const userInput = userMessage.content;
+
+    // Clear the assistant message and prepare for regeneration
+    message.content = '';
+    message.isStreaming = true;
+    this.isLoading = true;
+    this.triggerScrollToBottom();
+
+    // Prepare messages for API call (exclude current and subsequent messages)
+    const messagesToSend = this.messages
+      .slice(0, messageIndex)
+      .filter(m => m.role !== 'system')
+      .map(m => ({ role: m.role, content: m.content }));
+
+    console.log(`[ChatComponent] Regenerating with ${messagesToSend.length} context messages`);
+
+    // Ensure we have a session ID before sending
+    if (!this.currentSessionId) {
+      this.currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      console.log('[ChatComponent] Generated new session ID:', this.currentSessionId);
+    }
+
+    // Call the chat service to regenerate
+    this.chatService.streamChat(
+      messagesToSend,
+      this.userId,
+      this.currentSessionId,
+      this.dbThreadId || undefined,
+      this.getSourceFromFlow()
+    ).subscribe({
+      next: (content: string) => {
+        message.content += content;
+        this.triggerScrollToBottom();
+      },
+      error: (error: any) => {
+        console.error('[ChatComponent] Error regenerating message:', error);
+        message.content = 'Sorry, I encountered an error while regenerating the response. Please try again.';
+        message.isStreaming = false;
+        this.isLoading = false;
+        this.triggerScrollToBottom();
+      },
+      complete: () => {
+        message.isStreaming = false;
+        this.isLoading = false;
+        this.saveCurrentSession();
+        this.triggerScrollToBottom();
+        console.log('[ChatComponent] Message regeneration complete');
+      }
+    });
+  }
+
+  downloadAsWord(content: string): void {
+    // Extract title from content (first line or "Refined Content")
+    const lines = content.split('\n');
+    let title = 'Refined Content';
+    
+    // Try to extract title from markdown heading or first line
+    const titleMatch = content.match(/\*\*(.+?)\*\*/);
+    if (titleMatch) {
+      title = titleMatch[1].trim();
+    } else if (lines[0] && lines[0].trim()) {
+      title = lines[0].trim().replace(/^#+\s*/, '').substring(0, 50);
+    }
+    
+    // Clean title for filename
+    const filename = title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'refined_content';
+    
+    this.downloadGeneratedDocument('word', content, filename);
+  }
+
+  downloadAsPDF(content: string): void {
+    // Extract title from content (first line or "Refined Content")
+    const lines = content.split('\n');
+    let title = 'Refined Content';
+    
+    // Try to extract title from markdown heading or first line
+    const titleMatch = content.match(/\*\*(.+?)\*\*/);
+    if (titleMatch) {
+      title = titleMatch[1].trim();
+    } else if (lines[0] && lines[0].trim()) {
+      title = lines[0].trim().replace(/^#+\s*/, '').substring(0, 50);
+    }
+    
+    // Clean title for filename
+    const filename = title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'refined_content';
+    
+    this.downloadGeneratedDocument('pdf', content, filename);
+  }
+  
+  // Helper method to get TL or MI metadata for any assistant message
+  getTLMetadata(message: Message): ThoughtLeadershipMetadata | MarketIntelligenceMetadata | undefined {
+    // If message already has TL metadata, return it
+    if (message.thoughtLeadership) {
+      // console.log('[Chat Component] getTLMetadata: Found TL metadata', {
+      //   contentType: message.thoughtLeadership.contentType,
+      //   showActions: message.thoughtLeadership.showActions,
+      //   hasPodcastUrl: !!message.thoughtLeadership.podcastAudioUrl
+      // });
+      return message.thoughtLeadership;
+    }
+   
+    // If message already has MI metadata, return it
+    if (message.marketIntelligence) {
+      // console.log('[Chat Component] getTLMetadata: Found MI metadata', {
+      //   contentType: message.marketIntelligence.contentType,
+      //   showActions: message.marketIntelligence.showActions
+      // });
+      return message.marketIntelligence;
+    }
+    
+    // If we're in TL mode and this is an assistant message with content, create default metadata
+    if (this.selectedFlow === 'thought-leadership' && message.role === 'assistant' && message.content) {
+      // console.log('[Chat Component] getTLMetadata: Creating default TL metadata');
+      return {
+        contentType: 'article', // Default type
+        topic: 'Generated Content',
+        fullContent: message.content,
+        showActions: true
+      };
+    }
+    
+    // console.log('[Chat Component] getTLMetadata: No metadata found or conditions not met', {
+    //   hasThoughtLeadership: !!message.thoughtLeadership,
+    //   hasMarketIntelligence: !!message.marketIntelligence,
+    //   selectedFlow: this.selectedFlow,
+    //   messageRole: message.role,
+    //   hasContent: !!message.content
+    // });
+    
+    return undefined;
+  }
+  
+  // Helper to detect if message is a welcome/instructional message (not actual generated content)
+  private isWelcomeMessage(message: Message): boolean {
+    if (!message.content || message.role !== 'assistant') return false;
+    
+    const content = message.content.toLowerCase();
+    const welcomePatterns = [
+      'welcome to',
+      'how can i assist',
+      'how can i help',
+      'i\'ll help you',
+      'please provide:',
+      'you can also use'
+    ];
+    
+    // Check if content starts with or contains welcome patterns
+    return welcomePatterns.some(pattern => content.includes(pattern));
+  }
+  
+  // Check if message should show TL action buttons
+  shouldShowTLActions(message: Message): boolean {
+    // Don't show action buttons for welcome/instructional messages
+    // if (this.isWelcomeMessage(message)) {
+    //   console.log('[Chat Component] shouldShowTLActions: FALSE - Is welcome message');
+    //   return false;
+    // }
+    
+    const hasTLShowActions = !!(message.thoughtLeadership && message.thoughtLeadership.showActions);
+    const hasMIShowActions = !!(message.marketIntelligence && message.marketIntelligence.showActions);
+    const shouldShow = hasTLShowActions || hasMIShowActions;
+    
+    // console.log('[Chat Component] shouldShowTLActions Check:', {
+    //   messageContent: message.content?.substring(0, 50),
+    //   hasTLMetadata: !!message.thoughtLeadership,
+    //   tlShowActions: message.thoughtLeadership?.showActions,
+    //   hasMIMetadata: !!message.marketIntelligence,
+    //   miShowActions: message.marketIntelligence?.showActions,
+    //   result: shouldShow,
+    //   timestamp: new Date().toISOString()
+    // });
+    
+    // Show action buttons for messages with thoughtLeadership OR marketIntelligence metadata with showActions flag
+    return shouldShow;
+  }
+  
+  openPodcastFlow(userQuery: string): void {
+    // Add user message
+    const userMessage: Message = {
+      role: 'user',
+      content: userQuery,
+      timestamp: new Date()
+    };
+    this.messages.push(userMessage);
+    
+    // Add assistant response suggesting podcast generation
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: `I'll help you generate a podcast! Please provide:\n\n1. **Topic or Content**: What should the podcast be about?\n2. **Style**: Dialogue (2 hosts) or Monologue (1 narrator)?\n3. **Additional Context** (optional): Any specific points or customization?\n\nYou can also use the **Guided Journey** button above to open the full podcast creation wizard, or type your requirements here and I'll generate it for you.`,
+      timestamp: new Date()
+    };
+    this.messages.push(assistantMessage);
+    
+    this.userInput = '';
+    this.resetComposerHeight();
+    this.saveCurrentSession();
+    this.triggerScrollToBottom();
+    
+    // Optionally, open the guided dialog directly to the podcast workflow
+    this.selectedTLOperation = 'generate-podcast';
+    this.showGuidedDialog = true;
+  }
+
+  showDraftContentTypeOptions(userQuery: string, detectedTopic?: string): void {
+    // Store the detected topic for later use
+    this.pendingDraftTopic = detectedTopic || null;
+    console.log('[ChatComponent] Storing pending draft topic:', this.pendingDraftTopic);
+    
+    // Add user message
+    const userMessage: Message = {
+      role: 'user',
+      content: userQuery,
+      timestamp: new Date()
+    };
+    this.messages.push(userMessage);
+    
+    // Add assistant response with four content type options
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: `Great! I can help you create thought leadership content. Please select the type of content you want to create:
+
+📄 **Article** (2,000-3,000 words)
+📝 **Blog** (800-1,500 words)
+📋 **Executive Brief** (500-1,000 words)
+📑 **White Paper** (5,000+ words)
+
+Click one of the buttons below to get started, or you can type your selection.`,
+      timestamp: new Date(),
+      actionButtons: [
+        { label: 'Article', action: 'draft-article' },
+        { label: 'Blog', action: 'draft-blog' },
+        { label: 'Executive Brief', action: 'draft-executive-brief' },
+        { label: 'White Paper', action: 'draft-white-paper' }
+      ]
+    };
+    this.messages.push(assistantMessage);
+    
+    this.userInput = '';
+    this.resetComposerHeight();
+    this.saveCurrentSession();
+    this.triggerScrollToBottom();
+  }
+
+  onActionButtonClick(action: string): void {
+    // Handle action button clicks (e.g., content type selection)
+    switch (action) {
+      case 'draft-article':
+      case 'draft-blog':
+      case 'draft-executive-brief':
+      case 'draft-white-paper':
+        this.handleDraftContentTypeSelection(action);
+        break;
+      default:
+        console.warn('Unknown action:', action);
+    }
+  }
+
+  handleDraftContentTypeSelection(action: string): void {
+    // Map action to content type
+    const contentTypeMap: { [key: string]: string } = {
+      'draft-article': 'Article',
+      'draft-blog': 'Blog',
+      'draft-executive-brief': 'Executive Brief',
+      'draft-white-paper': 'White Paper'
+    };
+
+    const contentType = contentTypeMap[action];
+    
+    // Add user message showing selection
+    const userMessage: Message = {
+      role: 'user',
+      content: contentType,
+      timestamp: new Date()
+    };
+    this.messages.push(userMessage);
+
+    // Open the draft content flow with the selected content type and pending topic
+    console.log('[ChatComponent] Opening flow with contentType:', contentType, 'topic:', this.pendingDraftTopic);
+    this.tlFlowService.openFlow('draft-content', contentType, this.pendingDraftTopic || undefined);
+    
+    // Clear the pending topic after using it
+    this.pendingDraftTopic = null;
+    
+    this.saveCurrentSession();
+    this.triggerScrollToBottom();
+  }
+
+   
+  isProfilePresent(profile: string): boolean {
+    return environment.profileList.includes(profile.toLocaleLowerCase());
+  }
+
+  startGuidedJourney(): void {
+    // Guided Journey shows the form first, then goes to chat after submission
+    this.showDraftForm = true;
+    this.selectedPPTOperation = 'draft'; // Default to draft operation
+    this.selectedTLOperation = 'generate'; // Default to generate operation
+  }
+
+  selectAction(action: string): void {
+    if (this.selectedFlow === 'ppt') {
+      this.selectedPPTOperation = action;
+    } else {
+      this.selectedTLOperation = action;
+    }
+    this.showDraftForm = true;
+  }
+
+  getFormTitle(): string {
+    if (this.selectedFlow === 'ppt') {
+      switch (this.selectedPPTOperation) {
+        case 'draft': return 'Digital Document Development Center';
+        case 'improve': return 'Improve Existing Presentation';
+        case 'sanitize': return 'Sanitize Presentation';
+        default: return 'Document Development Operations';
+      }
+    } else {
+      switch (this.selectedTLOperation) {
+        case 'generate': return 'Generate Thought Leadership Article';
+        case 'research': return 'Research Additional Insights';
+        case 'editorial': return 'Editorial Support';
+        case 'improve': return 'Improve Document';
+        case 'translate': return 'Translate Document Format';
+        default: return 'Thought Leadership Operations';
+      }
+    }
+  }
+
+  downloadFile(url: string, filename: string): void {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    window.URL.revokeObjectURL(url);
+  }
+
+  openWebpageReady(message: Message): void {
+    if (!message.webpageReadyUrl && !message.content) {
+      console.warn('[ChatComponent] No webpage ready content available');
+      return;
+    }
+
+    // If we have a direct URL, open it
+    if (message.webpageReadyUrl) {
+      window.open(message.webpageReadyUrl, '_blank');
+      console.log('[ChatComponent] Opened webpage ready URL in new tab:', message.webpageReadyUrl);
+      return;
+    }
+
+    // Fallback: wrap message content into an HTML blob and open
+    const htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Webpage Ready Content</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      line-height: 1.6;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 40px 20px;
+      color: #333;
+    }
+    h1, h2, h3 { color: #0066cc; margin-top: 1.5em; }
+    h1 { border-bottom: 2px solid #0066cc; padding-bottom: 0.5em; }
+    p { margin-bottom: 1em; }
+    a { color: #0066cc; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code {
+      background-color: #f5f5f5;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+    blockquote {
+      border-left: 4px solid #0066cc;
+      padding-left: 1em;
+      margin-left: 0;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+${message.content}
+</body>
+</html>`;
+
+    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    console.log('[ChatComponent] Webpage ready HTML opened in new tab (blob fallback)');
+  }
+
+  downloadPodcastFromBlob(message: Message): void {
+    if (message.thoughtLeadership?.contentType === 'podcast' && message.thoughtLeadership.podcastAudioUrl && message.thoughtLeadership.podcastFilename) {
+      const link = document.createElement('a');
+      link.href = message.thoughtLeadership.podcastAudioUrl;
+      link.download = message.thoughtLeadership.podcastFilename;
+      link.click();
+    }
+  }
+ 
+  previewFile(url: string): void {
+    // For PPTX files, browsers will trigger download since they cannot preview natively
+    // For true preview, we would need to convert PPTX to PDF or images on the backend
+    window.open(url, '_blank');
+  }
+  
+  getPromptKeys(): string[] {
+    if (this.selectedFlow === 'ppt') {
+      return ['draft', 'improve', 'sanitize'];
+    } else {
+      return ['generate', 'editorial'];
+    }
+  }
+  
+  onEnterPress(event: Event): void {
+    const keyboardEvent = event as KeyboardEvent;
+    
+    // Note: Step 2 now shows file upload component, so text input can be enabled
+    // But we can still optionally prevent sending if needed
+    
+    if (!keyboardEvent.shiftKey) {
+      event.preventDefault();
+      this.sendMessage();
+    }
+  }
+
+  onComposerInput(event: Event): void {
+    // Prevent input during awaiting_content state
+    if (this.isAwaitingContent) {
+      this.userInput = '';
+      this.resetComposerHeight();
+      return;
+    }
+
+    // Auto-expand textarea based on content
+    const textarea = this.composerTextarea?.nativeElement;
+    if (textarea) {
+      // Reset height to auto to get the scrollHeight
+      textarea.style.height = 'auto';
+      // Set height to scrollHeight (content height)
+      const newHeight = Math.min(textarea.scrollHeight, 200); // Max height of 200px (~6 lines)
+      textarea.style.height = `${newHeight}px`;
+      
+      // Update expanded state and overflow class
+      this.isComposerExpanded = textarea.scrollHeight > 45; // Original max-height was 45px
+      
+      // Add/remove overflow class when content exceeds one line (min-height is 24px)
+      const minHeight = 24;
+      if (textarea.scrollHeight > minHeight) {
+        textarea.classList.add('has-overflow');
+      } else {
+        textarea.classList.remove('has-overflow');
+      }
+    }
+  }
+
+  onComposerFocus(): void {
+    // Optional: Expand on focus if already has content
+    const textarea = this.composerTextarea?.nativeElement;
+    if (textarea && this.userInput.length > 0) {
+      textarea.style.height = 'auto';
+      const newHeight = Math.min(textarea.scrollHeight, 200);
+      textarea.style.height = `${newHeight}px`;
+      this.isComposerExpanded = textarea.scrollHeight > 45;
+      
+      // Add overflow class if content exceeds one line
+      const minHeight = 24;
+      if (textarea.scrollHeight > minHeight) {
+        textarea.classList.add('has-overflow');
+      } else {
+        textarea.classList.remove('has-overflow');
+      }
+    }
+  }
+
+  collapseComposer(): void {
+    const textarea = this.composerTextarea?.nativeElement;
+    if (textarea) {
+      // Reset to default height
+      textarea.style.height = 'auto';
+      textarea.style.height = '24px'; // Match min-height
+      textarea.classList.remove('has-overflow');
+      this.isComposerExpanded = false;
+    }
+  }
+
+  private resetComposerHeight(): void {
+    const textarea = this.composerTextarea?.nativeElement;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = '24px'; // Match min-height
+      textarea.classList.remove('has-overflow');
+      this.isComposerExpanded = false;
+    }
+  }
+
+  private showStep2ErrorNotification(): void {
+    // Show error message via the workflow service
+    const errorMessage: Message = {
+      role: 'assistant',
+      content: '⚠️ **Please upload a document file** (Word, PDF, Text, or Markdown). Text input is disabled in this step - only file uploads are accepted.',
+      timestamp: new Date(),
+      editWorkflow: {
+        step: 'awaiting_content',
+        showCancelButton: false,
+        showSimpleCancelButton: true
+      }
+    };
+    this.messages.push(errorMessage);
+    this.saveCurrentSession();
+    this.triggerScrollToBottom();
+  }
+
+  submitResearchForm(): void {
+    if (!this.researchData.query.trim() || this.isLoading) {
+      return;
+    }
+
+    this.isLoading = true;
+    this.showGuidedDialog = false;
+
+    const validLinks = this.researchData.links.filter(link => link.trim().length > 0);
+    const userMessage: Message = {
+      role: 'user',
+      content: `Research Assistant: ${this.researchData.query}\n${this.researchFiles.length > 0 ? 'Files: ' + this.researchFiles.map(f => f.name).join(', ') + '\n' : ''}${validLinks.length > 0 ? 'Links: ' + validLinks.join(', ') + '\n' : ''}${this.researchData.focus_areas ? 'Focus Areas: ' + this.researchData.focus_areas + '\n' : ''}${this.researchData.additional_context ? 'Additional Context: ' + this.researchData.additional_context : ''}`,
+      timestamp: new Date()
+    };
+    this.messages.push(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Analyzing materials and researching...'
+    };
+    this.messages.push(assistantMessage);
+    this.saveCurrentSession();
+
+    this.chatService.streamResearchWithMaterials(
+      this.researchFiles.length > 0 ? this.researchFiles : null,
+      validLinks.length > 0 ? validLinks : null,
+      this.researchData.query,
+      this.researchData.focus_areas ? this.researchData.focus_areas.split(',').map(a => a.trim()) : [],
+      this.researchData.additional_context
+    ).subscribe({
+      next: (data) => {
+        if (data.type === 'progress') {
+          assistantMessage.actionInProgress = data.message;
+          this.saveCurrentSession();
+        } else if (data.type === 'content') {
+          assistantMessage.content += data.content;
+          this.saveCurrentSession();
+        } else if (data.type === 'sources') {
+          // Store source metadata for rendering clickable citations
+          assistantMessage.sources = data.sources;
+          this.saveCurrentSession();
+        } else if (data.type === 'complete') {
+          assistantMessage.actionInProgress = undefined;
+          this.isLoading = false;
+          this.saveCurrentSession();
+          this.resetResearchForm();
+        } else if (data.type === 'error') {
+          assistantMessage.content = `❌ Error: ${data.message}`;
+          assistantMessage.actionInProgress = undefined;
+          this.isLoading = false;
+          this.saveCurrentSession();
+        }
+      },
+      error: (error) => {
+        console.error('Error:', error);
+        assistantMessage.actionInProgress = undefined;
+        assistantMessage.content = 'Sorry, I encountered an error while researching. Please try again.';
+        this.isLoading = false;
+        this.saveCurrentSession();
+      },
+      complete: () => {
+        assistantMessage.actionInProgress = undefined;
+        this.isLoading = false;
+        this.saveCurrentSession();
+      }
+    });
+  }
+
+  submitArticleForm(): void {
+    if (!this.articleData.topic.trim() || this.isLoading) {
+      return;
+    }
+
+    this.isLoading = true;
+    this.showGuidedDialog = false;
+
+    const userMessage: Message = {
+      role: 'user',
+      content: `Draft Article: ${this.articleData.topic}\nType: ${this.articleData.content_type}\nLength: ${this.articleData.desired_length} words\nTone: ${this.articleData.tone}${this.articleData.outline_text ? '\nOutline: ' + this.articleData.outline_text : ''}${this.outlineFile ? '\nOutline File: ' + this.outlineFile.name : ''}${this.supportingDocFiles.length > 0 ? '\nSupporting Documents: ' + this.supportingDocFiles.map(f => f.name).join(', ') : ''}${this.articleData.additional_context ? '\nAdditional Context: ' + this.articleData.additional_context : ''}`,
+      timestamp: new Date()
+    };
+    this.messages.push(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Drafting article...'
+    };
+    this.messages.push(assistantMessage);
+
+    this.chatService.draftArticle(this.articleData, this.outlineFile || undefined, this.supportingDocFiles.length > 0 ? this.supportingDocFiles : undefined).subscribe({
+      next: (content: string) => {
+        assistantMessage.content += content;
+      },
+      error: (error) => {
+        console.error('Error:', error);
+        assistantMessage.actionInProgress = undefined;
+        assistantMessage.content = 'Sorry, I encountered an error while drafting the article. Please try again.';
+        this.isLoading = false;
+      },
+      complete: () => {
+        assistantMessage.actionInProgress = undefined;
+        assistantMessage.downloadUrl = 'generated';
+        this.isLoading = false;
+        this.saveCurrentSession();
+        this.resetArticleForm();
+      }
+    });
+  }
+
+  submitBestPracticesForm(): void {
+    if (!this.bestPracticesPPTFile || this.isLoading) {
+      return;
+    }
+
+    this.isLoading = true;
+    this.showGuidedDialog = false;
+
+    const selectedCategories = Object.keys(this.bestPracticesData.categories)
+      .filter(key => this.bestPracticesData.categories[key as keyof typeof this.bestPracticesData.categories]);
+
+    const userMessage: Message = {
+      role: 'user',
+      content: `Validate Best Practices: ${this.bestPracticesPPTFile.name}\nCategories: ${selectedCategories.join(', ')}`,
+      timestamp: new Date()
+    };
+    this.messages.push(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Analyzing presentation against best practices...'
+    };
+    this.messages.push(assistantMessage);
+
+    this.chatService.streamBestPractices(this.bestPracticesPPTFile, selectedCategories).subscribe({
+      next: (content: string) => {
+        assistantMessage.content += content;
+      },
+      error: (error) => {
+        console.error('Error:', error);
+        assistantMessage.actionInProgress = undefined;
+        assistantMessage.content = 'Sorry, I encountered an error while validating best practices. Please try again.';
+        this.isLoading = false;
+      },
+      complete: () => {
+        assistantMessage.actionInProgress = undefined;
+        this.isLoading = false;
+        this.saveCurrentSession();
+        this.resetBestPracticesForm();
+      }
+    });
+  }
+
+  onOutlineFileSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file) {
+      this.outlineFile = file;
+    }
+  }
+
+  onSupportingDocsSelected(event: any): void {
+    const files = Array.from(event.target.files) as File[];
+    this.supportingDocFiles = files;
+  }
+
+  onBestPracticesFileSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file && file.name.endsWith('.pptx')) {
+      this.bestPracticesPPTFile = file;
+    }
+  }
+
+  resetResearchForm(): void {
+    this.researchData = {
+      query: '',
+      focus_areas: '',
+      additional_context: '',
+      links: ['']
+    };
+    this.researchFiles = [];
+  }
+  
+  onResearchFilesSelected(event: any): void {
+    const files = Array.from(event.target.files) as File[];
+    this.researchFiles = files.filter(file => {
+      const name = file.name.toLowerCase();
+      return name.endsWith('.pdf') || name.endsWith('.docx') || name.endsWith('.txt') || name.endsWith('.md');
+    });
+  }
+  
+  addResearchLink(): void {
+    this.researchData.links.push('');
+  }
+  
+  removeResearchLink(index: number): void {
+    if (this.researchData.links.length > 1) {
+      this.researchData.links.splice(index, 1);
+    }
+  }
+
+  resetArticleForm(): void {
+    this.articleData = {
+      topic: '',
+      content_type: 'Article',
+      desired_length: 1000,
+      tone: 'Professional',
+      outline_text: '',
+      additional_context: ''
+    };
+    this.outlineFile = null;
+    this.supportingDocFiles = [];
+  }
+
+  resetBestPracticesForm(): void {
+    this.bestPracticesData = {
+      categories: {
+        structure: true,
+        visuals: true,
+        design: true,
+        charts: true,
+        formatting: true,
+        content: true
+      }
+    };
+    this.bestPracticesPPTFile = null;
+  }
+
+  submitPodcastForm(): void {
+    if ((this.podcastFiles.length === 0 && !this.podcastData.contentText.trim()) || this.isLoading) {
+      return;
+    }
+
+    this.isLoading = true;
+
+    const userMessage: Message = {
+      role: 'user',
+      content: `Generate Podcast (${this.podcastData.podcastStyle === 'dialogue' ? 'Dialogue' : 'Monologue'})\n\nFiles: ${this.podcastFiles.map(f => f.name).join(', ') || 'None'}\nContent: ${this.podcastData.contentText ? 'Provided' : 'None'}\nCustomization: ${this.podcastData.customization || 'None'}`,
+      timestamp: new Date()
+    };
+    this.messages.push(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Generating podcast...'
+    };
+    this.messages.push(assistantMessage);
+    this.saveCurrentSession();
+    
+    // Close the guided dialog
+    this.showGuidedDialog = false;
+
+    let scriptContent = '';
+    let audioBase64 = '';
+
+    this.chatService.generatePodcast(
+      this.podcastFiles.length > 0 ? this.podcastFiles : null,
+      this.podcastData.contentText || null,
+      this.podcastData.customization || null,
+      this.podcastData.podcastStyle || 'dialogue'
+    ).subscribe({
+      next: (data) => {
+        if (data.type === 'progress') {
+          assistantMessage.actionInProgress = data.message;
+          this.saveCurrentSession();
+        } else if (data.type === 'script') {
+          scriptContent = data.content;
+          assistantMessage.content = `📻 **Podcast Generated Successfully!**\n\n**Script:**\n\n${scriptContent}\n\n`;
+          this.saveCurrentSession();
+        } else if (data.type === 'complete') {
+          audioBase64 = data.audio;
+          assistantMessage.content += `\n🎧 **Audio Ready!** Listen to your podcast below or download it as an MP3 file.\n\n`;
+          
+          // Convert base64 to blob and create download URL
+          console.log('Audio base64 length:', audioBase64.length);
+          const audioBlob = this.base64ToBlob(audioBase64, 'audio/mpeg');
+          console.log('Audio blob size:', audioBlob.size, 'bytes');
+          const audioUrl = URL.createObjectURL(audioBlob);
+          console.log('Audio URL created:', audioUrl);
+          
+          assistantMessage.downloadUrl = audioUrl;
+          assistantMessage.downloadFilename = 'podcast.mp3';
+          
+          assistantMessage.actionInProgress = undefined;
+          this.isLoading = false;
+          this.saveCurrentSession();
+          this.resetPodcastForm();
+        } else if (data.type === 'error') {
+          assistantMessage.content = `❌ Error generating podcast: ${data.message}`;
+          assistantMessage.actionInProgress = undefined;
+          this.isLoading = false;
+          this.saveCurrentSession();
+        }
+      },
+      error: (error) => {
+        console.error('Error generating podcast:', error);
+        assistantMessage.content = `❌ Error generating podcast: ${error.message || 'Unknown error occurred'}`;
+        assistantMessage.actionInProgress = undefined;
+        this.isLoading = false;
+        this.saveCurrentSession();
+        this.resetPodcastForm();
+      }
+    });
+  }
+
+  onPodcastFilesSelected(event: any): void {
+    const files = Array.from(event.target.files) as File[];
+    this.podcastFiles = files.filter(file => {
+      const name = file.name.toLowerCase();
+      return name.endsWith('.pdf') || name.endsWith('.docx') || name.endsWith('.txt') || name.endsWith('.md');
+    });
+  }
+
+  resetPodcastForm(): void {
+    this.podcastData = {
+      contentText: '',
+      customization: '',
+      podcastStyle: 'dialogue'
+    };
+    this.podcastFiles = [];
+  }
+
+  private base64ToBlob(base64: string, contentType: string = ''): Blob {
+    const byteCharacters = atob(base64);
+    const byteArrays = [];
+
+    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+      const slice = byteCharacters.slice(offset, offset + 512);
+      const byteNumbers = new Array(slice.length);
+      for (let i = 0; i < slice.length; i++) {
+        byteNumbers[i] = slice.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      byteArrays.push(byteArray);
+    }
+
+    return new Blob(byteArrays, { type: contentType });
+  }
+
+  // Voice input methods
+  startVoiceInput(): void {
+    setTimeout(() => {
+      this.voiceInput?.startListening();
+    }, 100);
+  }
+
+  onVoiceTranscriptChange(transcript: string): void {
+    this.userInput = transcript;
+    // Force change detection since transcript updates come from browser API callbacks
+    // outside Angular's zone, preventing automatic view updates
+    this.cdr.detectChanges();
+  }
+
+  onVoiceListeningChange(isListening: boolean): void {
+    // Optional: Handle listening state changes if needed
+  }
+
+  onRefinedContentGenerated(content: string): void {
+    // Populate the chat input textarea with the refined content
+    this.userInput = content;
+    console.log('[ChatComponent] Refined content populated in chat input');
+  }
+
+  // onRefineContentStreamToChat(event: {userMessage: string, streamObservable: any}): void {
+  //   // Add user message
+  //   const userMessage: Message = {
+  //     role: 'user',
+  //     content: event.userMessage,
+  //     timestamp: new Date()
+  //   };
+  //   this.messages.push(userMessage);
+  //   this.triggerScrollToBottom();
+
+  //   // Create assistant message for streaming
+  //   const assistantMessage: Message = {
+  //     role: 'assistant',
+  //     content: '',
+  //     timestamp: new Date(),
+  //     isStreaming: true
+  //   };
+  //   this.messages.push(assistantMessage);
+  //   this.triggerScrollToBottom();
+
+  //   this.isLoading = true;
+
+  //   // Subscribe to the stream
+  //   event.streamObservable.subscribe({
+  //     next: (chunk: string) => {
+  //       assistantMessage.content += chunk;
+  //       this.triggerScrollToBottom();
+  //     },
+  //     error: (error: any) => {
+  //       console.error('Error streaming refine content:', error);
+  //       assistantMessage.content = 'Sorry, I encountered an error while refining content. Please try again.';
+  //       assistantMessage.isStreaming = false;
+  //       this.isLoading = false;
+  //       this.triggerScrollToBottom();
+  //     },
+  //     complete: () => {
+  //       assistantMessage.isStreaming = false;
+  //       this.isLoading = false;
+  //       this.saveCurrentSession();
+  //       this.triggerScrollToBottom();
+  //     }
+  //   });
+  // }
+    onRefineContentStreamToChat(event: {userMessage: string, streamObservable: any, fileName?: string}): void {
+      // Add user message
+      const userMessage: Message = {
+        role: 'user',
+        content: event.userMessage,
+        timestamp: new Date()
+      };
+      this.messages.push(userMessage);
+      this.triggerScrollToBottom();
+
+      // Create assistant message for streaming
+      const assistantMessage: Message = {
+        role: 'assistant',
+        content: '',
+        timestamp: new Date(),
+        isStreaming: true
+      };
+      this.messages.push(assistantMessage);
+      this.triggerScrollToBottom();
+
+      this.isLoading = true;
+
+      // Subscribe to the stream
+      event.streamObservable.subscribe({
+        next: (chunk: any) => {
+          if (chunk.type === 'content') {
+            assistantMessage.content += chunk.content;
+            this.triggerScrollToBottom();
+          }
+        },
+        error: (error: any) => {
+          console.error('Error streaming refine content:', error);
+          assistantMessage.content = 'Sorry, I encountered an error while refining content. Please try again.';
+          assistantMessage.isStreaming = false;
+          this.isLoading = false;
+          this.triggerScrollToBottom();
+        },
+        complete: () => {
+          assistantMessage.isStreaming = false;
+          this.isLoading = false;
+          
+          // Add thoughtLeadership metadata with showActions flag to enable Canvas, Copy, and Export buttons
+          if (assistantMessage.content && assistantMessage.content.trim()) {
+            const metadata: ThoughtLeadershipMetadata = {
+              contentType: 'refine-content',
+              topic: event.fileName || 'Refined Content',
+              fullContent: assistantMessage.content,
+              showActions: true
+            };
+            assistantMessage.thoughtLeadership = metadata;
+            console.log('[ChatComponent] Added TL metadata to refined content:', metadata);
+          }
+          
+          this.saveCurrentSession();
+          this.triggerScrollToBottom();
+        }
+      });
+    }
+
+  /**
+   * Format simple text for display (convert newlines to <br> tags)
+   * Used for messages that are not already HTML formatted
+   */
+  formatSimpleText(text: string): string {
+    if (!text) return '';
+    // Escape HTML first to prevent XSS, then convert newlines to <br>
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML.replace(/\n/g, '<br>');
+  }
+
+  /**
+   * Get formatted content for display
+   * If message is HTML, return as-is. Otherwise, format as simple text.
+   */
+  getFormattedContent(message: Message): string | SafeHtml {
+      if (message.isHtml) {
+        return this.sanitizer.bypassSecurityTrustHtml(message.content);
+      }
+      
+      // For assistant messages, render as markdown
+      if (message.role === 'assistant') {
+        let html = marked.parse(message.content) as string;
+
+        // Fix bullet list formatting: add proper indentation and remove spacing between items
+        html = html.replace(/<ul>\n?/g, '<ul style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+        html = html.replace(/<ol>\n?/g, '<ol style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+        html = html.replace(/<li>/g, '<li style="margin: 0; padding: 0; line-height: 1.4;">');
+        html = html.replace(/<\/li>\n?/g, '</li>');
+
+        // Ensure links open in a new tab and use noopener for security.
+        // We add target and rel only when they are not already present.
+        // console.log("Reached HTML Part");
+        html = html.replace(/<a\s+([^>]*?)href=(["'])(.*?)\2([^>]*)>/gi, (match: string, pre: string, quote: string, url: string, post: string) => {
+          const attrs = (pre + ' ' + post).toLowerCase();
+          if (/\btarget\s*=/.test(attrs) || /\brel\s*=/.test(attrs)) {
+            return match; // already has target or rel
+          }
+          // Preserve existing attributes order, append target and rel
+          return `<a ${pre}href=${quote}${url}${quote}${post} target="_blank" rel="noopener noreferrer">`;
+        });
+
+        // IMPORTANT: Return plain HTML string instead of SafeHtml
+        // Angular's [innerHTML] binding will sanitize it, but will preserve target="_blank"
+        // bypassSecurityTrustHtml was actually causing Angular to strip the attributes!
+        // console.log('[ChatComponent] Returning markdown HTML with target="_blank" links');
+        
+        // Debug: Check if links have target="_blank"
+        const linkMatches = html.match(/<a[^>]*>/gi);
+        if (linkMatches && linkMatches.length > 0) {
+          //console.log('[ChatComponent] Links in HTML:', linkMatches.length);
+          //console.log('[ChatComponent] First link:', linkMatches[0]);
+          const hasTargetBlank = linkMatches[0].includes('target="_blank"');
+          //console.log('[ChatComponent] Has target="_blank":', hasTargetBlank);
+        }
+        
+        return html;
+      }
+      
+      // For user messages, strip out extracted document text for display (keep for API context)
+      let displayContent = message.content;
+      
+      // Remove all "Extracted Text From Document (filename):" sections if present
+      // This regex matches both single and multiple document patterns
+      const extractedTextPattern = /\n\nExtracted Text From Document[^:]*:\n[\s\S]*$/;
+      if (extractedTextPattern.test(displayContent)) {
+        displayContent = displayContent.replace(extractedTextPattern, '');
+      }
+      
+      return this.formatSimpleText(displayContent);
+    }
+  // getFormattedContent(message: Message): string | SafeHtml {
+  //   if (message.isHtml) {
+  //     // Use DomSanitizer to bypass security for trusted HTML (allows buttons and interactive elements)
+  //     return this.sanitizer.bypassSecurityTrustHtml(message.content);
+  //   }
+  //   if (message.role === 'assistant' && message.sources) {
+  //     // Use source citation pipe logic inline
+  //     return this.formatSimpleText(message.content);
+  //   }
+  //   return this.formatSimpleText(message.content);
+  // }
+  // onRefineContentStreamToChat(event: {userMessage: string, streamObservable: any}): void {
+  //   // Add user message to chat
+  //   const userMessage: Message = {
+  //     role: 'user',
+  //     content: event.userMessage,
+  //     timestamp: new Date()
+  //   };
+  //   this.messages.push(userMessage);
+
+  //   // Create assistant message for streaming
+  //   const assistantMessage: Message = {
+  //     role: 'assistant',
+  //     content: '',
+  //     timestamp: new Date(),
+  //     isStreaming: true
+  //   };
+  //   this.messages.push(assistantMessage);
+
+  //   // Set loading state
+  //   this.isLoading = true;
+  //   this.triggerScrollToBottom();
+
+  //   // Subscribe to stream and update assistant message
+  //   event.streamObservable.subscribe({
+  //     next: (data: any) => {
+  //       if (typeof data === 'string') {
+  //         assistantMessage.content += data;
+  //       } else if (data.type === 'content' && data.content) {
+  //         assistantMessage.content += data.content;
+  //       }
+  //       this.triggerScrollToBottom();
+  //     },
+  //     error: (error: Error) => {
+  //       console.error('[ChatComponent] Refine content stream error:', error);
+  //       assistantMessage.isStreaming = false;
+  //       assistantMessage.content = 'I apologize, but I encountered an error refining your content. Please try again.';
+  //       this.isLoading = false;
+  //       this.triggerScrollToBottom();
+  //     },
+  //     complete: () => {
+  //       console.log('[ChatComponent] Refine content stream complete');
+  //       assistantMessage.isStreaming = false;
+  //       this.isLoading = false;
+  //       this.saveCurrentSession();
+  //       this.triggerScrollToBottom();
+  //     }
+  //   });
+  // }
+
+  /**
+   * Close the quick draft dialog
+   */
+  closeQuickDraftDialog(): void {
+    this.showQuickDraftDialog = false;
+    this.quickDraftTopic = '';
+    this.quickDraftContentType = '';
+  }
+
+  /**
+   * Handle quick draft dialog submission
+   * NOTE: This is deprecated - now using conversational flow instead
+   */
+  async onQuickDraftSubmit(inputs: QuickDraftInputs): Promise<void> {
+    console.log('[ChatComponent] Quick draft submitted (deprecated):', inputs);
+    
+    // Close the dialog
+    this.closeQuickDraftDialog();
+
+    // Start conversational flow instead
+    this.draftWorkflowService.startQuickDraftConversation(
+      this.quickDraftTopic,
+      this.quickDraftContentType
+    );
+  }
+
+  /**
+   * Detect if user input is a rewrite/regenerate intent
+   */
+  private isRewriteIntent(input: string): boolean {
+    const lowerInput = input.toLowerCase();
+    const rewriteKeywords = ['rewrite', 'regenerate', 'again', 'try again', 'different', 'change it', 'redo', 'remake', 'rethink'];
+    return rewriteKeywords.some(keyword => lowerInput.includes(keyword));
+  }
+
+  /**
+   * Format content type to proper case (e.g., 'article' -> 'Article')
+   */
+  private formatContentType(type: string): string {
+    if (!type) return 'Article';
+    
+    // Map lowercase to proper names
+    const typeMap: { [key: string]: string } = {
+      'article': 'Article',
+      'blog': 'Blog',
+      'white paper': 'White Paper',
+      'white_paper': 'White Paper',
+      'executive brief': 'Executive Brief',
+      'executive_brief': 'Executive Brief'
+    };
+
+    return typeMap[type.toLowerCase()] || type.charAt(0).toUpperCase() + type.slice(1);
+  }
+
+  /**
+   * Show upload button during draft workflow when collecting outline/supporting docs
+   * Only show on the most recent message to avoid duplication on earlier messages
+   */
+  isDraftWorkflowFileUploadVisible(message?: Message): boolean {
+    const step = this.draftWorkflowService.currentState.step;
+    const shouldShow = step === 'awaiting_outline_doc' || step === 'awaiting_supporting_doc';
+    
+    // If message provided, only show on the most recent assistant message
+    if (message && shouldShow && this.messages.length > 0) {
+      const lastAssistantMsg = [...this.messages].reverse().find(m => m.role === 'assistant');
+      return lastAssistantMsg === message;
+    }
+    
+    return shouldShow;
+  }
+
+  /**
+   * Handle file selection from the draft upload button
+   */
+  onDraftUploadSelected(files: FileList | null): void {
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    this.onWorkflowFileSelected(file);
+  }
+
+  /**
+   * Analyze user response to draft satisfaction question
+   * Returns: { isPositive: boolean, hasImprovementRequest: boolean, improvementText: string }
+  /**
+   * Analyze user response to draft satisfaction question using LLM
+   * Returns: { isPositive: boolean, hasImprovementRequest: boolean, improvementText: string }
+   */
+  private async analyzeDraftSatisfactionWithLLM(
+    input: string,
+    draftContext: any
+  ): Promise<{ isPositive: boolean, hasImprovementRequest: boolean, improvementText: string, confidence?: number }> {
+    try {
+      // Call backend endpoint to analyze satisfaction
+      const response = await this.chatService.analyzeSatisfaction({
+        user_input: input,
+        generated_content: draftContext.generatedContent || '',
+        content_type: draftContext.contentType,
+        topic: draftContext.topic
+      }).toPromise();
+      
+      // Check if response exists
+      if (!response) {
+        console.error('[ChatComponent] LLM Response is null, using keyword fallback');
+        return this.analyzeDraftSatisfactionResponseKeywordFallback(input);
+      }
+      
+      // If confidence is high enough, trust the LLM (> 0.6)
+      if (response.confidence > 0.6) {
+        return {
+          isPositive: response.is_satisfied,
+          hasImprovementRequest: !response.is_satisfied,
+          improvementText: input,
+          confidence: response.confidence
+        };
+      }
+      
+      // If confidence is in middle range (0.3-0.6), show clarification request
+      if (response.confidence >= 0.3 && response.confidence <= 0.6) {
+        const clarification: Message = {
+          role: 'assistant',
+          content: `I want to make sure I understand correctly. You said: "${input}"\n\nAre you satisfied with the content and ready to use it, or would you like me to make improvements?`,
+          timestamp: new Date()
+        };
+        this.messages.push(clarification);
+        this.triggerScrollToBottom();
+        // Return false to indicate we're still waiting for clarity
+        return { isPositive: false, hasImprovementRequest: false, improvementText: '' };
+      }
+      
+      // Very low confidence - treat as improvement request to be safe
+      return {
+        isPositive: false,
+        hasImprovementRequest: true,
+        improvementText: input,
+        confidence: response.confidence
+      };
+      
+    } catch (error) {
+      console.error('[ChatComponent] Error calling LLM satisfaction endpoint:', (error as any)?.message);
+      const result = this.analyzeDraftSatisfactionResponseKeywordFallback(input);
+      return result;
+    }
+  }
+
+  /**
+   * Fallback keyword-based satisfaction analysis (used when LLM fails)
+   */
+  private analyzeDraftSatisfactionResponseKeywordFallback(input: string): { isPositive: boolean, hasImprovementRequest: boolean, improvementText: string } {
+    const lowerInput = input.toLowerCase().trim();
+    
+    // EXPLICIT SATISFACTION - must be confident positive responses
+    const satisfactionKeywords = [
+      'yes', 'yeah', 'yep', 'looks good', 'looks perfect', 'perfect', 'great', 'exactly', 
+      'excellent', 'love it', 'love this', 'satisfied', 'happy', 'approved', 'accepted'
+    ];
+    
+    // EXPLICIT IMPROVEMENT INDICATORS - these are clear change requests
+    const improvementIndicators = [
+      // Pattern 1: "can you X" - explicit request for action
+      /can you/i,
+      // Pattern 2: Action verbs followed by object
+      /make it/, /make them/, /make the/,
+      /add /, /remove /, /change /, /update /,
+      /shorten/, /shorter/, /concise/, /concisely/,
+      /longer/, /expand/, /expand /, /enhance /,
+      /simplify/, /simpler/, /clearer/, /clarity/,
+      /improve/, /fix/, /revise/, /rewrite/, /regenerate/,
+      /redo/, /try again/
+    ];
+    
+    // Check for explicit satisfaction
+    const hasSatisfactionKeyword = satisfactionKeywords.some(keyword => lowerInput.includes(keyword));
+    
+    // Check for improvement indicators
+    const hasImprovementIndicator = improvementIndicators.some(pattern => pattern.test(lowerInput));
+    
+    // Check for explicit negatives
+    const hasNegative = /\b(no|nope|don't|doesn't|not happy|not satisfied|hate|bad)\b/i.test(lowerInput);
+    
+    // If has improvement indicator (like "can you"), it's a clear improvement request
+    if (hasImprovementIndicator) {
+      return {
+        isPositive: false,
+        hasImprovementRequest: true,
+        improvementText: input
+      };
+    }
+    
+    // If has explicit satisfaction keyword and no negative, it's satisfied
+    if (hasSatisfactionKeyword && !hasNegative) {
+      return {
+        isPositive: true,
+        hasImprovementRequest: false,
+        improvementText: ''
+      };
+    }
+    
+    // If has negative indicator, it's an improvement request
+    if (hasNegative) {
+      return {
+        isPositive: false,
+        hasImprovementRequest: true,
+        improvementText: input
+      };
+    }
+    
+    // Ambiguous responses - treat as improvement request to be safe
+    return {
+      isPositive: false,
+      hasImprovementRequest: true,
+      improvementText: input
+    };
+  }
+
+  // Export dropdown methods
+  toggleExportDropdown(messageIndex: number): void {
+    // Close all other export dropdowns
+    Object.keys(this.showExportDropdown).forEach(key => {
+      if (parseInt(key) !== messageIndex) {
+        this.showExportDropdown[parseInt(key)] = false;
+      }
+    });
+    this.showExportDropdown[messageIndex] = !this.showExportDropdown[messageIndex];
+  }
+
+  exportSelected(messageIndex: number, format: 'word' | 'pdf' | 'ppt'): void {
+    this.showExportDropdown[messageIndex] = false;
+    this.isExporting[messageIndex] = true;
+    this.isExported[messageIndex] = false;
+    this.exportFormat[messageIndex] = format.toUpperCase();
+
+    const message = this.messages[messageIndex];
+    if (!message || !message.content) {
+      this.toastService.error('Content is not available.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    if (format === 'word') {
+      console.log("Word Download here");
+      this.downloadWord(messageIndex, message);
+    } else if (format === 'pdf') {
+      console.log("PDF Dwonload here");
+      this.downloadPDF(messageIndex, message);
+    } else if (format === 'ppt') {
+      this.downloadPPT(messageIndex, message);
+    }
+  }
+
+  private downloadWord(messageIndex: number, message: Message): void {
+    const metadata = this.getTLMetadata(message);
+    const contentType = metadata?.contentType;
+    console.log("meta Data:", metadata);
+
+    // Check if this is edit content first (same logic as tl-action-buttons)
+    if (contentType === 'edit-content') {
+      this.exportEditContentWord(messageIndex, message, metadata);
+      return;
+    }
+
+    console.log(">>>>>contentType>>>>>", contentType);
+
+    // If metadata explicitly flags socialMedia OR metadata missing but content looks like social media (has hashtags near the end), export via UI Word
+    if (contentType === 'socialMedia' || (this.isProbablySocialMedia(message))) {
+      this.exportUIWord(messageIndex, message, metadata);
+    } else if (this.selectedFlow === 'market-intelligence') {
+      // If message explicitly starts with POV marker, route to POV export endpoint
+      const trimmedContent = (message.content || '').trim();
+      if (trimmedContent.startsWith('Point of View on')) {
+        // Use POV-specific export endpoint
+        console.log('>>>>>POV Export>>>>>');
+        this.exportDocument(messageIndex, message, metadata, '/api/v1/export/word', 'docx');
+        return;
+      } else {
+        this.exportDocument(messageIndex, message, metadata, '/api/v1/export/word-pwc-mi-module', 'docx');
+      }
+    } else {
+      this.exportDocument(messageIndex, message, metadata, '/api/v1/export/word-pwc-mi-module', 'docx');
+    }
+  }
+
+  /**
+   * Heuristic to detect likely social-media posts when metadata.contentType is not present.
+   * Heuristic: look at the last ~80 characters for one or more hashtags (#word). Many social posts
+   * append hashtags at the end; the user sample includes hashtags in the final ~30-40 chars.
+   */
+  private isProbablySocialMedia(message: Message): boolean {
+    if (!message || !message.content) return false;
+    const content = (message.content || '').toString();
+    const trimmed = content.trim();
+    if (!trimmed) return false;
+
+    // Inspect the tail of the content (last N characters) where hashtags typically live
+    const TAIL_CHARS = 80; // user suggested 30-40; choose a slightly larger window for robustness
+    const tail = trimmed.length <= TAIL_CHARS ? trimmed : trimmed.slice(-TAIL_CHARS);
+
+    // Simple hashtag regex: # followed by letters/numbers/underscore/hyphen (common patterns)
+    const hashtagRegex = /#[A-Za-z0-9_\-]+/g;
+    const matches = tail.match(hashtagRegex);
+
+    // If we find at least one hashtag in the tail, treat it as social media
+    console.log("No of hashtags>>>>", matches?.length);
+    return !!(matches && matches.length >= 1);
+  }
+
+  private downloadPDF(messageIndex: number, message: Message): void {
+    const metadata = this.getTLMetadata(message);
+    const contentType = String(metadata?.contentType || '');
+    
+    // Check if this is edit content first (same logic as tl-action-buttons)
+    // if (contentType === 'edit-content') {
+    //   this.exportEditContentPDF(messageIndex, message, metadata);
+    //   return;
+    // }
+    
+    // Consider message as 'market module' when contentType is conduct-research or selectedFlow is market-intelligence
+    // const isMarketModule = contentType === 'conduct-research'
+    //  || this.selectedFlow === 'market-intelligence';
+    console.log("Export pdf 1 ", contentType);
+    // console.log("Is Market Module: ", isMarketModule);
+    // const endpoint = isMarketModule
+    //   ? '/api/v1/export/pdf-pwc-bullets'
+    //   : '/api/v1/export/pdf-pwc';
+    if (contentType === 'edit-article'){
+    this.exportDocument(messageIndex, message, metadata, '/api/v1/export/edit-content/pdf', 'pdf');
+  }
+  else if (this.selectedFlow === 'market-intelligence') {
+      // If message explicitly starts with POV marker, route to POV export endpoint
+      const trimmedContent = (message.content || '').trim();
+      if (trimmedContent.startsWith('Point of View on')) {
+        // Use POV-specific export endpoint
+        console.log('>>>>>POV Export>>>>>');
+        this.exportDocument(messageIndex, message, metadata, '/api/v1/export/pdf-pwc', 'pdf');
+        return;
+      } else {
+        this.exportDocument(messageIndex, message, metadata, '/api/v1/export/pdf-pwc-mi-module', 'pdf');
+      }
+    }
+    else{
+    this.exportDocument(messageIndex, message, metadata, '/api/v1/export/pdf-pwc-mi-module', 'pdf');
+  }}
+
+  private downloadPPT(messageIndex: number, message: Message): void {
+    const metadata = this.getTLMetadata(message);
+    this.exportPPT(messageIndex, message, metadata, '/api/v1/export/ppt');
+  }
+
+  private exportWordNewLogic(messageIndex: number, message: Message, metadata: any): void {
+    const content = metadata?.fullContent || message.content;
+    if (!content || !content.trim()) {
+      this.toastService.error('Content is not available yet.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    const plainText = content.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    const title = metadata?.topic?.trim() || 'Generated Document';
+
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const endpoint = `${apiUrl}/api/v1/export/word-standalone`;
+
+    this.authFetchService.authenticatedFetch(endpoint, {
+      method: 'POST',
+      body: JSON.stringify({
+        content: plainText,
+        title,
+        content_type: metadata?.contentType
+      })
+    })
+    .then(response => {
+      if (!response.ok) throw new Error('Failed to generate Word document');
+      return response.blob();
+    })
+    .then(blob => {
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${this.sanitizeFilename(title)}.docx`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+      this.resetExportState(messageIndex);
+    })
+    .catch(err => {
+      console.error('New Word export error:', err);
+      this.toastService.error('Failed to generate Word document. Please try again.');
+      this.isExporting[messageIndex] = false;
+    });
+  }
+
+  private exportUIWord(messageIndex: number, message: Message, metadata: any): void {
+    const content = metadata?.fullContent || message.content;
+    if (!content || !content.trim()) {
+      this.toastService.error('Content is not available yet.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const endpoint = `${apiUrl}/api/v1/export/word-ui`;
+    const title = metadata?.topic?.trim() || 'Generated Document';
+
+    this.authFetchService.authenticatedFetch(endpoint, {
+      method: 'POST',
+      body: JSON.stringify({
+        content: content,
+        title
+      })
+    })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to generate Word document');
+      }
+      return response.blob();
+    })
+    .then(blob => {
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${this.sanitizeFilename(title)}.docx`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+      this.resetExportState(messageIndex);
+    })
+    .catch(error => {
+      console.error('UI Word export failed:', error);
+      this.toastService.error('Failed to generate Word file.');
+      this.isExporting[messageIndex] = false;
+    });
+  }
+
+  /**
+   * Get block types using the same logic as final article generation
+   * This ensures consistency between display and export
+   * Uses exact same logic as ChatEditWorkflowService.generateFinalArticle()
+   */
+
+  private async exportEditContentWord(messageIndex: number, message: Message, metadata: any): Promise<void> {
+    console.log("print 2")
+    const content = metadata?.fullContent || message.content;
+    if (!content || !content.trim()) {
+      alert('Content is not available yet.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    this.isExporting[messageIndex] = true;
+    
+    try {
+      console.log("print 2")
+      // REUSE generateFinalArticle: Call /final endpoint to get properly formatted content and block_types
+      // Sync paragraphEdits from message to service state if needed
+      if (message.editWorkflow?.paragraphEdits && message.editWorkflow.paragraphEdits.length > 0) {
+        this.editWorkflowService.syncParagraphEditsFromMessage(message.editWorkflow.paragraphEdits);
+      }
+      
+      const paragraphEdits = this.editWorkflowService.currentState.paragraphEdits;
+      
+      // Get originalContent - use service state if available, otherwise reconstruct
+      let originalContent = this.editWorkflowService.currentState.originalContent;
+      if (!originalContent || !originalContent.trim()) {
+        if (paragraphEdits && paragraphEdits.length > 0) {
+          originalContent = this.editWorkflowService.reconstructOriginalContent(paragraphEdits);
+        }
+      }
+      
+      if (!paragraphEdits || paragraphEdits.length === 0 || !originalContent) {
+        // Fallback: Use metadata content and block_types if paragraph_edits not available
+        const finalContent = metadata?.fullContent || content || '';
+        const metadataBlockTypes = metadata?.block_types;
+        let blockTypes: BlockTypeInfo[] = [];
+        
+        if (metadataBlockTypes && Array.isArray(metadataBlockTypes) && metadataBlockTypes.length > 0) {
+          blockTypes = metadataBlockTypes.map((bt: any) => ({
+            index: bt.index !== undefined && bt.index !== null ? bt.index : 0,
+            type: (bt.type !== undefined && bt.type !== null && bt.type !== '') ? bt.type : 'paragraph',
+            level: bt.level !== undefined && bt.level !== null ? bt.level : 0
+          }));
+        } else {
+          console.log("print 2")
+          // Default: create paragraph block types
+          const paragraphs = finalContent.split(/\n\n+/).filter((p: string) => p.trim());
+          blockTypes = paragraphs.map((_: string, idx: number) => ({
+            index: idx,
+            type: 'paragraph',
+            level: 0
+          }));
+        }
+        
+        const exportTitle = extractDocumentTitle(finalContent, metadata?.topic);
+        const finalTitle = exportTitle;
+        
+        this.chatService.exportEditContentToWord({
+          content: finalContent,
+          title: exportTitle,
+          block_types: blockTypes
+        }).subscribe({
+          next: (blob: Blob) => {
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${this.sanitizeFilename(finalTitle)}.docx`;
+            link.click();
+            window.URL.revokeObjectURL(url);
+            this.resetExportState(messageIndex);
+          },
+          error: (error) => {
+            console.error('Edit Content Word export error:', error);
+            alert('Failed to generate Word document. Please try again.');
+            this.isExporting[messageIndex] = false;
+          }
+        });
+        return;
+      }
+      
+      // Collect decisions with feedback decisions (same as generateFinalArticle)
+      const decisions = paragraphEdits.map(p => ({
+        index: p.index,
+        approved: p.approved === true,
+        editorial_feedback_decisions: this.editWorkflowService.collectFeedbackDecisions(p)
+      }));
+      
+      // Call /final endpoint to get formatted content and block_types
+      const authHeaders = await this.editWorkflowService.getAuthHeaders();
+      const apiUrl = (window as any)._env?.apiUrl || '';
+      
+      const response = await fetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          original_content: originalContent,
+          paragraph_edits: paragraphEdits.map(p => ({
+            index: p.index,
+            original: p.original,
+            edited: p.edited,
+            tags: p.tags,
+            block_type: p.block_type || 'paragraph',
+            level: p.level || 0,
+            editorial_feedback: p.editorial_feedback || {}
+          })),
+          decisions: decisions,
+          accept_all: false,
+          reject_all: false
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to generate final article: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      const finalArticle = data.final_article || '';
+      const blockTypes: BlockTypeInfo[] = (data.block_types || []).map((bt: any) => ({
+        index: bt.index !== undefined && bt.index !== null ? bt.index : 0,
+        type: (bt.type !== undefined && bt.type !== null && bt.type !== '') ? bt.type : 'paragraph',
+        level: bt.level !== undefined && bt.level !== null ? bt.level : 0
+      }));
+      
+      if (!finalArticle) {
+        throw new Error('No final article returned from server');
+      }
+      
+      const exportTitle = extractDocumentTitle(finalArticle, metadata?.topic);
+      const finalTitle = exportTitle;
+      
+      // Send formatted content and block_types directly to export endpoint
+      this.chatService.exportEditContentToWord({
+        content: finalArticle,
+        title: exportTitle,
+        block_types: blockTypes
+      }).subscribe({
+        next: (blob: Blob) => {
+          const url = window.URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${this.sanitizeFilename(finalTitle)}.docx`;
+          link.click();
+          window.URL.revokeObjectURL(url);
+          this.resetExportState(messageIndex);
+        },
+        error: (error) => {
+          console.log("print 2")
+          console.error('Edit Content Word export error:', error);
+          alert('Failed to generate Word document. Please try again.');
+          this.isExporting[messageIndex] = false;
+        }
+      });
+    } catch (error) {
+      console.error('Error generating final article for export:', error);
+      alert('Failed to generate final article. Please try again.');
+      this.isExporting[messageIndex] = false;
+    }
+  }
+
+  private async exportEditContentPDF(messageIndex: number, message: Message, metadata: any): Promise<void> {
+    const content = metadata?.fullContent || message.content;
+    if (!content || !content.trim()) {
+      alert('Content is not available yet.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    this.isExporting[messageIndex] = true;
+    
+    try {
+      // REUSE generateFinalArticle: Call /final endpoint to get properly formatted content and block_types
+      // Sync paragraphEdits from message to service state if needed
+      if (message.editWorkflow?.paragraphEdits && message.editWorkflow.paragraphEdits.length > 0) {
+        this.editWorkflowService.syncParagraphEditsFromMessage(message.editWorkflow.paragraphEdits);
+      }
+      
+      const paragraphEdits = this.editWorkflowService.currentState.paragraphEdits;
+      
+      // Get originalContent - use service state if available, otherwise reconstruct
+      let originalContent = this.editWorkflowService.currentState.originalContent;
+      if (!originalContent || !originalContent.trim()) {
+        if (paragraphEdits && paragraphEdits.length > 0) {
+          originalContent = this.editWorkflowService.reconstructOriginalContent(paragraphEdits);
+        }
+      }
+      
+      if (!paragraphEdits || paragraphEdits.length === 0 || !originalContent) {
+        // Fallback: Use metadata content and block_types if paragraph_edits not available
+        const finalContent = metadata?.fullContent || content || '';
+        const metadataBlockTypes = metadata?.block_types;
+        let blockTypes: BlockTypeInfo[] = [];
+        
+        if (metadataBlockTypes && Array.isArray(metadataBlockTypes) && metadataBlockTypes.length > 0) {
+          blockTypes = metadataBlockTypes.map((bt: any) => ({
+            index: bt.index !== undefined && bt.index !== null ? bt.index : 0,
+            type: (bt.type !== undefined && bt.type !== null && bt.type !== '') ? bt.type : 'paragraph',
+            level: bt.level !== undefined && bt.level !== null ? bt.level : 0
+          }));
+        } else {
+          // Default: create paragraph block types
+          const paragraphs = finalContent.split(/\n\n+/).filter((p: string) => p.trim());
+          blockTypes = paragraphs.map((_: string, idx: number) => ({
+            index: idx,
+            type: 'paragraph',
+            level: 0
+          }));
+        }
+        
+        const exportTitle = extractDocumentTitle(finalContent, metadata?.topic);
+        const finalTitle = exportTitle;
+        
+        this.chatService.exportEditContentToPDF({
+          content: finalContent,
+          title: exportTitle,
+          block_types: blockTypes
+        }).subscribe({
+          next: (blob: Blob) => {
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${this.sanitizeFilename(finalTitle)}.pdf`;
+            link.click();
+            window.URL.revokeObjectURL(url);
+            this.resetExportState(messageIndex);
+          },
+          error: (error) => {
+            console.error('Edit Content PDF export error:', error);
+            alert('Failed to generate PDF document. Please try again.');
+            this.isExporting[messageIndex] = false;
+          }
+        });
+        return;
+      }
+      
+      // Collect decisions with feedback decisions (same as generateFinalArticle)
+      const decisions = paragraphEdits.map(p => ({
+        index: p.index,
+        approved: p.approved === true,
+        editorial_feedback_decisions: this.editWorkflowService.collectFeedbackDecisions(p)
+      }));
+      
+      // Call /final endpoint to get formatted content and block_types
+      const authHeaders = await this.editWorkflowService.getAuthHeaders();
+      const apiUrl = (window as any)._env?.apiUrl || '';
+      
+      const response = await fetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          original_content: originalContent,
+          paragraph_edits: paragraphEdits.map(p => ({
+            index: p.index,
+            original: p.original,
+            edited: p.edited,
+            tags: p.tags,
+            block_type: p.block_type || 'paragraph',
+            level: p.level || 0,
+            editorial_feedback: p.editorial_feedback || {}
+          })),
+          decisions: decisions,
+          accept_all: false,
+          reject_all: false
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to generate final article: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      const finalArticle = data.final_article || '';
+      const blockTypes: BlockTypeInfo[] = (data.block_types || []).map((bt: any) => ({
+        index: bt.index !== undefined && bt.index !== null ? bt.index : 0,
+        type: (bt.type !== undefined && bt.type !== null && bt.type !== '') ? bt.type : 'paragraph',
+        level: bt.level !== undefined && bt.level !== null ? bt.level : 0
+      }));
+      
+      if (!finalArticle) {
+        throw new Error('No final article returned from server');
+      }
+      
+      const exportTitle = extractDocumentTitle(finalArticle, metadata?.topic);
+      const finalTitle = exportTitle;
+      
+      // Send formatted content and block_types directly to export endpoint
+      this.chatService.exportEditContentToPDF({
+        content: finalArticle,
+        title: exportTitle,
+        block_types: blockTypes
+      }).subscribe({
+        next: (blob: Blob) => {
+          const url = window.URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${this.sanitizeFilename(finalTitle)}.pdf`;
+          link.click();
+          window.URL.revokeObjectURL(url);
+          this.resetExportState(messageIndex);
+        },
+        error: (error) => {
+          console.error('Edit Content PDF export error:', error);
+          alert('Failed to generate PDF document. Please try again.');
+          this.isExporting[messageIndex] = false;
+        }
+      });
+    } catch (error) {
+      console.error('Error generating final article for export:', error);
+      alert('Failed to generate final article. Please try again.');
+      this.isExporting[messageIndex] = false;
+    }
+  }
+
+  private exportPPT(messageIndex: number, message: Message, metadata: any, endpoint: string): void {
+    const content = metadata?.fullContent || message.content;
+    if (!content || !content.trim()) {
+      this.toastService.error('Content is not available yet.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    const plainText = content.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    const title = metadata?.topic?.trim() || 'Generated Presentation';
+
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const fullEndpoint = `${apiUrl}${endpoint}`;
+
+    this.authFetchService.authenticatedFetch(fullEndpoint, {
+      method: 'POST',
+      body: JSON.stringify({
+        content: plainText,
+        title
+      })
+    })
+    .then(response => {
+      if (!response.ok) throw new Error("Failed to start PPT generation");
+      return response.json();
+    })
+    .then(data => {
+      console.log("PPT download URL:", data.download_url);
+
+      const downloadUrl = data.download_url;
+      if (!downloadUrl) throw new Error("No download URL returned");
+
+      return fetch(downloadUrl, {
+        method: "GET",
+        headers: {
+          "Accept": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        }
+      });
+    })
+    .then(response => {
+      if (!response.ok) throw new Error("Failed to retrieve PPT file");
+      return response.blob();
+    })
+    .then(blob => {
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${this.sanitizeFilename(title)}.pptx`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      this.resetExportState(messageIndex);
+    })
+    .catch(err => {
+      console.error(err);
+      this.toastService.error("Failed to generate PPT file.");
+      this.isExporting[messageIndex] = false;
+    });
+  }
+
+  private exportDocument(messageIndex: number, message: Message, metadata: any, endpoint: string, extension: string): void {
+    const content = metadata?.fullContent || message.content;
+    if (!content || !content.trim()) {
+      this.toastService.error('Content is not available yet.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    const plainText = content.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    const lines = plainText.split('\n').filter((line: string) => line.trim());
+    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : 'Generated Document';
+    const title = subtitle;
+
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const fullEndpoint = `${apiUrl}${endpoint}`;
+
+    this.authFetchService.authenticatedFetch(fullEndpoint, {
+      method: 'POST',
+      body: JSON.stringify({
+        content: plainText,
+        title,
+        subtitle: '',
+        content_type: metadata?.contentType
+      })
+    })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
+      }
+      return response.blob();
+    })
+    .then(blob => {
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${this.sanitizeFilename(title)}.${extension}`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+      this.resetExportState(messageIndex);
+    })
+    .catch(error => {
+      console.error(`Error generating ${extension.toUpperCase()}:`, error);
+      this.toastService.error(`Failed to generate ${extension.toUpperCase()} file. Please try again.`);
+      this.isExporting[messageIndex] = false;
+    });
+  }
+
+  private resetExportState(messageIndex: number): void {
+    setTimeout(() => {
+      this.isExporting[messageIndex] = false;
+    }, 500);
+
+    this.isExported[messageIndex] = true;
+    setTimeout(() => {
+      this.isExported[messageIndex] = false;
+    }, 3000);
+  }
+
+  private sanitizeFilename(filename: string): string {
+    return filename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  }
 }
-
-class AgentState(TypedDict):
-    messages: List[dict]
-    current_workflow: Optional[str]
-    collected_params: dict
-    missing_params: List[str]
-    user_intent: str
-    conversation_history: List[dict]
-    execution_result: Optional[dict]
-
-class EditAgentRequest(BaseModel):
-    messages: List[dict]
-
-class IntentDetectionResponse(BaseModel):
-    is_edit_intent: bool
-    confidence: float
-    detected_editors: List[str]
-
-class TLAgent:
-    """LangGraph agent for orchestrating edit workflows with conversational parameter collection"""
-    
-    def __init__(self):
-        logger.info("t1----------------------------------")
-        self.llm = AzureChatOpenAI(
-            azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
-            api_key=config.AZURE_OPENAI_API_KEY,
-            api_version=config.AZURE_OPENAI_API_VERSION,
-            deployment_name=config.AZURE_OPENAI_DEPLOYMENT,
-            temperature=0.3
-        )
-        self.graph = self._build_graph()
-    
-    def _build_graph(self) -> StateGraph:
-        """Build the LangGraph workflow"""
-        workflow = StateGraph(AgentState)
-        
-        # Add nodes
-        workflow.add_node("identify_intent", self._identify_intent)
-        workflow.add_node("extract_parameters", self._extract_parameters)
-        workflow.add_node("check_completeness", self._check_completeness)
-        workflow.add_node("execute_workflow", self._execute_workflow)
-        
-        # Define edges
-        workflow.set_entry_point("identify_intent")
-        workflow.add_edge("identify_intent", "extract_parameters")
-        workflow.add_edge("extract_parameters", "check_completeness")
-        
-        # Conditional routing
-        workflow.add_conditional_edges(
-            "check_completeness",
-            self._should_execute,
-            {
-                "execute": "execute_workflow",
-                "ask": END
-            }
-        )
-        
-        workflow.add_edge("execute_workflow", END)
-
-        return workflow.compile()
-    
-    def _identify_intent(self, state: AgentState) -> AgentState:
-        """Identify user's workflow intent based on keywords"""
-        user_message = state["messages"]
-        
-        intent_prompt = f"""Analyze the user's request and identify which workflow they need:
-
-    Available workflows:
-    {self._format_workflow_descriptions()}
-
-    User message: {user_message}
-
-    Previous workflow: {state.get('current_workflow', 'None')}
-
-    IMPORTANT DISTINCTIONS:
-    - If user input contains the words "change", "edit", "editing", "editor", "edits", "revision" or "edited" (case-insensitive), return "detect_edit_intent"
-    - If user input contains words like "reformat", "adapt", "repurpose", "social post", "deck", "slide", "slides", "presentation", "placemat", "webpage", "web article", "web", "podcast", return "format_translator"
-    - If user input contains words like "whitepaper", "thoughtpaper", "thought leadership article/blog/paper/brief","compose", "author", "produce content", "new article/blog/brief", "draft article/blog/paper/brief", "create article/blog/paper/brief", "write article/blog/paper/brief", "generate article/blog/paper/brief" , return "draft_content"
-    - If user says "I want to expand my content", "lengthen", "shorten", "extend", "reduce", "condense", "expand", "compress", "make longer", "make shorter", "shrink"→ return "expand_compress_content"
-    - If user says "rephrase", "rewrite for", "tailor to", "audience shift", "adjust tone", "change tone", "different audience" → return "adjust_tone"
-    - If user says "guidance", "critique", "recommendations", "what can be improved", "advice", "suggestions", "feedback", "improvements", "review" → return "provide_suggestions"
-    - If user says "refine content" or "refine" WITHOUT specifics → return "unclear"
-
-    - If user input contains words like "refine", "improve", "enhance", "polish", "review", "rewrite", "optimize", "update", "fix", "adjust" WITHOUT "edit", return "unclear"
-    - If user is having casual conversation, greetings, or small talk, return "unclear"
-    - If user input contains words like "reformat", "adapt", "repurpose", "social post", "Adapt content", "translate", "convert", "transform", "change format", "social media post", "webpage", "LinkedIn", "X.com", "Twitter", return "format_translator"
-    - If user asks factual questions, requests information, data, statistics, or wants to know about anything (e.g., "what is temp of goa today", "what were sales of maruti 800 in 2008", "tell me about X"), return "conduct_research"
-    Examples requiring conduct_research: "find information", "look up", "search for", "gather data", "investigate", "what is temperature in goa", "sales data for maruti 800", "climate change information", "latest AI trends", "what happened yesterday", "tell me about quantum computing"
-    Return ONLY the workflow name (e.g., "draft_content") or "unclear" if uncertain.
-    If the user is providing information for an ongoing workflow, return the current workflow name.
-    """
-        
-        response = self.llm.invoke([{"role": "user", "content": intent_prompt}])
-        identified_workflow = response.content.strip().lower()
-        
-        if identified_workflow in WORKFLOW_SCHEMAS:
-            if state.get("current_workflow") != identified_workflow:
-                logger.info(f"Workflow changed: {state.get('current_workflow')} -> {identified_workflow}")
-                state["current_workflow"] = identified_workflow
-                state["collected_params"] = {}
-            else:
-                state["current_workflow"] = identified_workflow
-        
-        state["user_intent"] = identified_workflow
-        return state
-
-    async def _detect_follow_up_request(self, state: AgentState) -> dict:
-            """
-            Use LLM to detect if the current request is referring to previous content
-            
-            Returns:
-                dict with keys:
-                    - is_follow_up: bool
-                    - confidence: float (0.0-1.0)
-                    - reasoning: str
-                    - needs_previous_content: bool
-            """
-            current_message = state["messages"][-1] if state["messages"] else {}
-            current_content = current_message.get("content", "")
-            
-            # Get last few messages for context (exclude current)
-            recent_history = state["messages"][-5:-1] if len(state["messages"]) > 1 else []
-            
-            detection_prompt = f"""Analyze if the user's current request is referring to previously generated content.
-
-        **Current user message:**
-        {current_content}
-
-        **Recent conversation history:**
-        {json.dumps(recent_history, indent=2)}
-
-        **Detection Criteria:**
-
-        A request is a FOLLOW-UP if:
-        1. User uses referential language like "this", "that", "it", "the article", "the content" without providing new content
-        2. User asks to transform/convert/modify something without specifying what
-        3. User requests a different format/version of something previously generated
-        4. Context clearly indicates they're referring to prior output
-
-        Examples of FOLLOW-UP requests:
-        - "write a linkedin post for this"
-        - "convert it to a webpage"
-        - "make this shorter"
-        - "expand on that"
-        - "create a social media version"
-        - "compress the article"
-
-        Examples of NON-FOLLOW-UP requests:
-        - "write a linkedin post about crypto" (new request)
-        - "convert [pasted content] to webpage" (content provided)
-        - User uploads a new document
-        - User starts a completely new topic
-
-        **RESPONSE FORMAT (JSON ONLY):**
-        {{
-            "is_follow_up": true/false,
-            "confidence": 0.0-1.0,
-            "reasoning": "brief explanation",
-            "needs_previous_content": true/false
-        }}
-
-        **CRITICAL:** Set "needs_previous_content" to true ONLY if:
-        - is_follow_up is true AND
-        - User has NOT provided new content in their current message
-        """
-            
-            try:
-                response_text = await self.llm.ainvoke([{"role": "user", "content": detection_prompt}])
-                response_content = response_text.content.strip()
-                
-                # Extract JSON from response
-                json_start = response_content.find('{')
-                json_end = response_content.rfind('}') + 1
-                
-                if json_start != -1 and json_end > json_start:
-                    json_text = response_content[json_start:json_end]
-                    result = json.loads(json_text)
-                    
-                    logger.info(f"[FOLLOW_UP_DETECTION] is_follow_up={result.get('is_follow_up')}, confidence={result.get('confidence')}, needs_content={result.get('needs_previous_content')}")
-                    return result
-                else:
-                    raise ValueError("No valid JSON found in response")
-                    
-            except Exception as e:
-                logger.error(f"[FOLLOW_UP_DETECTION] Error: {e}", exc_info=True)
-                # Fallback to safe default
-                return {
-                    "is_follow_up": False,
-                    "confidence": 0.0,
-                    "reasoning": "Detection failed, defaulting to non-follow-up",
-                    "needs_previous_content": False
-                }
-    def _extract_previous_content(self, messages: List[dict], min_length: int = 500) -> str:
-        """
-        Extract the most recent substantial content from assistant messages
-        
-        Args:
-            messages: Conversation history
-            min_length: Minimum character length to consider as substantial content
-            
-        Returns:
-            Previous content string or empty string if not found
-        """
-        # Iterate backwards through messages (excluding the last user message)
-        for msg in reversed(messages[:-1]):
-            if msg.get("role") == "assistant":
-                content = msg.get("content", "")
-                
-                # Skip metadata/streaming responses
-                if content.startswith("data:") or content.startswith("{"):
-                    continue
-                
-                # Check for substantial content
-                if len(content) > min_length:
-                    logger.info(f"[EXTRACT_PREVIOUS] Found content: {len(content)} chars from assistant message")
-                    return content
-        
-        logger.warning(f"[EXTRACT_PREVIOUS] No substantial previous content found (min_length={min_length})")
-        return ""
-    async def _extract_parameters(self, state: AgentState) -> AgentState:
-        """Extract parameters from user message"""
-        if not state.get("current_workflow") or state["current_workflow"] not in WORKFLOW_SCHEMAS:
-            return state
-        
-        workflow_name = state["current_workflow"]
-        schema = WORKFLOW_SCHEMAS[workflow_name]
-        user_message = state["messages"]
-        last_message = user_message[-1] if isinstance(user_message, list) else user_message
-        message_content = last_message.get("content", "") if isinstance(last_message, dict) else str(user_message)
-        
-
-        follow_up_detection = await self._detect_follow_up_request(state)
-        if follow_up_detection.get("is_follow_up") and follow_up_detection.get("needs_previous_content"):
-            # Check if we need content for this workflow
-            workflow_needs_content = self._workflow_needs_content_param(workflow_name)
-            
-            if workflow_needs_content:
-                previous_content = self._extract_previous_content(state.get("messages", []))
-                
-                if previous_content:
-                    if not state.get("collected_params"):
-                        state["collected_params"] = {}
-                    
-                    # Map to appropriate parameter name based on workflow
-                    content_param_name = self._get_content_param_name(workflow_name)
-                    
-                    if content_param_name not in state["collected_params"]:
-                        state["collected_params"][content_param_name] = previous_content
-                        logger.info(f"[{workflow_name}] Auto-injected previous content ({len(previous_content)} chars) into '{content_param_name}' parameter")
-                else:
-                    logger.warning(f"[{workflow_name}] Follow-up detected but no previous content found")
-
-        extracted_doc_content = None
-        doc_pattern = re.compile(
-            r'(?:'
-            r'extracted\s+text\s+from\s+document|'
-            r'document\s+uploaded|'
-            r'uploaded\s+document|'
-            r'extracted\s+text|'
-            r'file\s+uploaded|'
-            r'\[\d+\s+document\(s\)\s+uploaded'
-            r')'
-            r'[:\s]*(?:\([^)]+\))?[:\s]*',  # Optional: (filename.pdf)
-            re.IGNORECASE | re.DOTALL
-        )
-
-        match = doc_pattern.search(message_content)
-
-        if match:
-            # Get content after the matched pattern
-            content_after_marker = message_content[match.end():]
-            extracted_doc_content = content_after_marker.strip()
-            
-            if extracted_doc_content:
-                logger.info(f"[DOCUMENT_EXTRACTION] Extracted {len(extracted_doc_content)} chars using regex")
-
-        # if "Extracted Text From Document" in message_content:
-        #     # Extract everything after the document marker
-        #     parts = message_content.split("Extracted Text From Document")
-        #     if len(parts) > 1:
-        #         # Get text after the filename line
-        #         doc_text = parts[1].split("\n", 1)
-        #         if len(doc_text) > 1:
-        #             extracted_doc_content = doc_text[1].strip()
-
-        if extracted_doc_content:
-            if not state.get("collected_params"):
-                state["collected_params"] = {}
-            
-            if workflow_name == "format_translator":
-                state["collected_params"]["content"] = extracted_doc_content
-                # logger.info(f"Auto-extracted document content for format_translator ({len(extracted_doc_content)} chars)")
-            
-            elif workflow_name == "draft_content":
-                # For draft_content, document could be outline_doc or supporting_doc
-                # Check what's already collected to determine which one to use
-                if "outline_doc" not in state["collected_params"] and "supporting_doc" not in state["collected_params"]:
-                    # First document becomes supporting_doc by default
-                    state["collected_params"]["supporting_doc"] = extracted_doc_content
-                    # logger.info(f"Auto-extracted document as supporting_doc for draft_content ({len(extracted_doc_content)} chars)")
-                elif "outline_doc" not in state["collected_params"]:
-                    state["collected_params"]["outline_doc"] = extracted_doc_content
-                    # logger.info(f"Auto-extracted document as outline_doc for draft_content ({len(extracted_doc_content)} chars)")
-                elif workflow_name == "refine_content":
-                # Document becomes original_content or supportingDoc
-                    if "original_content" not in state["collected_params"]:
-                        state["collected_params"]["original_content"] = extracted_doc_content
-                        logger.info(f"Auto-extracted document as original_content for refine_content ({len(extracted_doc_content)} chars)")
-                    else:
-                        # Add as supportingDoc to expand service
-                        if "services" not in state["collected_params"]:
-                            state["collected_params"]["services"] = []
-                        # Find or create expand service
-                        expand_service = next((s for s in state["collected_params"]["services"] if s.get("type") == "expand"), None)
-                        if expand_service:
-                            expand_service["supportingDoc"] = extracted_doc_content
-                            logger.info(f"Auto-extracted document as supportingDoc for expand service")
-
-        if workflow_name == "detect_edit_intent":
-            extraction_prompt = f"""Extract parameters from the user's message for the detect_edit_intent workflow.
-
-            Required parameters: {', '.join(schema['required'])}
-
-            User message: {user_message}
-
-            Already collected: {state.get('collected_params', {})}
-
-            For detect_edit_intent workflow:
-            - user_input: The complete user message text
-
-            Return a JSON object with the user_input parameter.
-            Example: {{"user_input": "Please edit this document with line editor"}}
-            """
-        elif workflow_name == "conduct_research":
-            extraction_prompt = f"""Extract parameters from the user's message for the conduct_research workflow.
-
-            Required parameters: {', '.join(schema['required'])}
-            Optional parameters: {', '.join(schema['optional'])}
-
-            User message: {user_message}
-
-            Already collected: {state.get('collected_params', {})}
-
-            For conduct_research workflow:
-            - research_topic: The main subject/topic to research (be specific and comprehensive)
-            - research_scope: Scope of research (e.g., "comprehensive", "specific aspect", "comparative analysis")
-            - specific_sources: Any specific sources or databases the user wants to focus on
-            - depth_level: Level of detail needed (e.g., "overview", "detailed", "expert-level")
-
-            Return a JSON object with any NEW parameters found. Extract as much context as possible from the user's request.
-            Example: {{"research_topic": "Impact of AI on healthcare industry", "research_scope": "comprehensive", "depth_level": "detailed"}}
-
-            If no new parameters found, return {{}}.
-            """
-        elif workflow_name == "draft_content":
-            extraction_prompt = f"""Extract parameters from the user's message for the draft_content workflow.
-
-            Required parameters: {', '.join(schema['required'])}
-            Optional parameters: {', '.join(schema['optional'])}
-
-            User message: {user_message}
-
-            Already collected: {state.get('collected_params', {})}
-
-            For draft_content workflow:
-            - topic: The main topic or subject for the content
-            - content_type: Hard requirement and must be one of: "Article", "Blog", "Executive Brief" only, do not invent or ask for any other content type.
-            - outline_doc: Any outline, brief, or structure mentioned
-            - audience_tone: Target audience or tone
-            - word_limit: Target word count if specified (optional)
-            - supporting_doc: Any reference documents mentioned (optional)
-
-            Return a JSON object with any NEW parameters found. Only include parameters that are explicitly mentioned.
-            Example: {{"topic": "AI in healthcare", "content_type": "Article", "outline_doc": "Introduction, Benefits, Challenges"}}
-
-            If no new parameters found, return {{}}.
-            """
-        elif workflow_name == "format_translator":
-            extraction_prompt = f"""Extract parameters from the user's message for the format_translator workflow.
-
-            Required parameters: {', '.join(schema['required'])}
-            Optional parameters: {', '.join(schema['optional'])}
-
-            User message: {user_message}
-
-            Already collected: {state.get('collected_params', {})}
-
-            For format_translator workflow:
-            - content: The content to translate (could be from uploaded document or mentioned in text)
-            - target_format: One of: "Social Media Post", "Webpage Ready", "Podcast", "Placemat"
-            - source_format: Original format of content (optional)
-            - customization: Platform specification (e.g., "LinkedIn", "X.com", "Twitter") for Social Media Post
-            - word_limit: Target word count if specified (optional, defaults: 30 for X.com, 200-350 for LinkedIn)
-            - num_slides: Number of slides for Placemat format (only for Placemat)
-
-            **SPECIAL KEYWORD DETECTION FOR TARGET_FORMAT:**
-            - If user message contains "deck", "slide", "slides", "presentation", "placemat" → set target_format to "Placemat"
-            - If user message contains "linkedin" → set target_format to "Social Media Post" and customization to "LinkedIn"
-            - If user message contains "x.com", "twitter", "tweet" → set target_format to "Social Media Post" and customization to "X.com"
-            - If user message contains "webpage", "web page", "html", "website" → set target_format to "Webpage Ready"
-
-            **CRITICAL: DO NOT extract 'content' parameter unless:**
-            1. The user has explicitly pasted/provided content in their message, OR
-            2. A document was uploaded (indicated by "Extracted Text From Document" in the message)
-            
-            If the user ONLY mentions they want to convert to a format (e.g., "convert to webpage ready", "make a webpage"), 
-            DO NOT extract any content parameter. The content must be explicitly provided or uploaded.
-
-            Return a JSON object with any NEW parameters found. Only include parameters that are explicitly mentioned or can be inferred from keywords.
-            Example: {{"target_format": "Webpage Ready"}}
-            Example with content: {{"target_format": "Social Media Post", "customization": "LinkedIn", "content": "actual content text here"}}
-            Example for Placemat: {{"target_format": "Placemat", "num_slides": "5"}}
-            Example for deck inference: If user says "create a deck", return {{"target_format": "Placemat"}}
-
-            If no new parameters found, return {{}}.
-            """
-        elif workflow_name == "expand_compress_content" or workflow_name == "adjust_tone" or workflow_name == "provide_suggestions":
-            extraction_prompt = f"""Extract parameters from the user's message for the {workflow_name} workflow.
-            Required parameters: {', '.join(schema['required'])}
-            Optional parameters: {', '.join(schema['optional'])}
-
-            User message: {user_message}
-
-            Already collected: {state.get('collected_params', {})}
-
-            For {workflow_name} workflow:
-            - original_content: The content to be refined (from uploaded document or user text)
-            - service_type: The type of refinement requested. Must be ONE of:
-                * "expand" - make content longer
-                * "compress" - make content shorter
-                * "adjust_audience_tone" - change the tone/audience
-                * "enhanced_with_research" - add research and data
-                * "edit_content" - polish and improve writing
-                * "improvement_suggestions" - get suggestions only
-            - expected_word_count: Target word count (REQUIRED for expand/compress)
-            - audience_tone: The desired tone (REQUIRED for adjust_audience_tone)
-            - supporting_doc: Supporting document content (REQUIRED for expand)
-            - expansion_section: Which section to use for expansion (REQUIRED for expand)
-            Common sections: "overview", "key insights", "business implications", "recommended actions", "all sections"
-            - expand_guidelines: Instructions for expansion (optional for expand)
-
-            **SERVICE TYPE DETECTION:**
-            - "expand", "expand content", "make longer", "add more", "lengthen", "extend" → service_type: "expand"
-            - "compress", "shorten", "reduce length", "make shorter", "condense" → service_type: "compress"
-            - "tone", "adjust tone", "change tone", "audience", "rephrase for" → service_type: "adjust_audience_tone"
-            - "research", "add research", "enhance with data" → service_type: "enhanced_with_research"
-            - "edit", "improve", "polish" → service_type: "edit_content"
-            - "suggestions", "feedback", "recommendations" → service_type: "improvement_suggestions"
-
-            **IMPORTANT**: If the user input contains "expand" or "expand content" or "make longer", ALWAYS extract service_type as "expand"
-
-            **WORD COUNT EXTRACTION:**
-            - Look for phrases like "to 500 words", "500 words", "around 1000 words", etc.
-            - If user says "expand" without word count, DO NOT extract expected_word_count yet
-
-            Return a JSON object with extracted parameters. ALWAYS include service_type if it can be detected.
-            Example for expand: {{"service_type": "expand"}}
-            Example for tone: {{"service_type": "adjust_audience_tone"}}
-
-            If no new parameters found, return {{}}.
-            """
-        else:
-            extraction_prompt = f"""Extract parameters from the user's message for the {workflow_name} workflow.
-
-    Required parameters: {', '.join(schema['required'])}
-    Optional parameters: {', '.join(schema['optional'])}
-
-    User message: {user_message}
-
-    Already collected: {state.get('collected_params', {})}
-
-    Return a JSON object with any NEW parameters found. Only include parameters that are explicitly mentioned.
-
-    If no new parameters found, return {{}}.
-    """
-        
-        response = self.llm.invoke([{"role": "user", "content": extraction_prompt}])
-        
-        try:
-            new_params = json.loads(response.content.strip())
-            if not state.get("collected_params"):
-                state["collected_params"] = {}
-            
-            if new_params:
-                logger.info(f"[{workflow_name}] Extracted new params: {new_params}")
-            else:
-                logger.warning(f"[{workflow_name}] No new params extracted from user message")
-            
-            state["collected_params"].update(new_params)
-            logger.info(f"Total: {state['collected_params']}")
-        except Exception as e:
-            logger.error(f"Error parsing extracted params: {e}")
-        
-        return state
-    
-    def _workflow_needs_content_param(self, workflow_name: str) -> bool:
-        """
-        Determine if a workflow requires content as input
-        
-        Args:
-            workflow_name: Name of the workflow
-            
-        Returns:
-            True if workflow needs content parameter
-        """
-        content_workflows = {
-            "format_translator",      # needs 'content'
-            "expand_compress_content", # needs 'original_content'
-            "adjust_tone",            # needs 'original_content'
-            "provide_suggestions",    # needs 'original_content'
-            "refine_content"          # needs 'original_content'
-        }
-        
-        return workflow_name in content_workflows
-
-    def _get_content_param_name(self, workflow_name: str) -> str:
-        """
-        Get the correct content parameter name for a workflow
-        
-        Args:
-            workflow_name: Name of the workflow
-            
-        Returns:
-            Parameter name for content (e.g., 'content', 'original_content')
-        """
-        param_mapping = {
-            "format_translator": "content",
-            "expand_compress_content": "original_content",
-            "adjust_tone": "original_content",
-            "provide_suggestions": "original_content",
-            "refine_content": "original_content"
-        }
-        
-        return param_mapping.get(workflow_name, "content")
-    
-    def _check_completeness(self, state: AgentState) -> AgentState:
-        """Check if all required parameters are collected"""
-        if not state.get("current_workflow") or state["current_workflow"] not in WORKFLOW_SCHEMAS:
-            state["missing_params"] = ["workflow_identification"]
-            return state
-        
-        workflow_name = state["current_workflow"]
-        schema = WORKFLOW_SCHEMAS[workflow_name]
-        collected = state.get("collected_params", {})
-        
-        # missing = [param for param in schema["required"] if param not in collected or not collected[param]]
-        missing = set()
-        for param in schema["required"]:
-            if param not in collected or not collected[param]:
-                missing.add(param)
-        # Special case: for format_translator with Social Media Post, customization is required
-        if workflow_name == "format_translator":
-            target_format = collected.get("target_format", "").lower()
-            # Only add customization if target is Social Media Post
-            if "social media" in target_format and ("customization" not in collected or not collected.get("customization")):
-                missing.add("customization")
-            # Only add num_slides if target is Placemat AND num_slides is missing
-            if "placemat" in target_format and ("num_slides" not in collected or not collected.get("num_slides")):
-                missing.add("num_slides")
-
-            # Cap num_slides to max 20 if provided
-            if "placemat" in target_format and "num_slides" in collected:
-                try:
-                    num_slides = int(collected.get("num_slides", 1))
-                    if num_slides > 10:
-                        collected["num_slides"] = 10
-                        logger.info(f"[Placemat] num_slides capped from {num_slides} to 20")
-                except (ValueError, TypeError):
-                    pass
-
-        if workflow_name == "refine_content":
-            service_type = collected.get("service_type", "")
-            
-            # For expand/compress, expected_word_count is required
-            if service_type in ["expand", "compress"]:
-                if "expected_word_count" not in collected or not collected.get("expected_word_count"):
-                    if "expected_word_count" not in missing:  # ← FIX: Check before adding
-                        missing.add("expected_word_count")
-            
-            # For adjust_audience_tone, audience_tone is required
-            elif service_type == "adjust_audience_tone":
-                if "audience_tone" not in collected or not collected.get("audience_tone"):
-                    missing.add("audience_tone")
-        
-        state["missing_params"] = list(missing)
-        
-        logger.info(f"Completeness check - Missing: {missing}")
-        return state
-    
-    def _should_execute(self, state: AgentState) -> Literal["execute", "ask"]:
-        """Decide whether to execute workflow or ask for more params"""
-        if state.get("user_intent") == "unclear":
-            return "ask"
-        if not state.get("missing_params"):
-            return "execute"
-        return "ask"
-
-
-    async def _ask_missing_params_stream(self, state: AgentState) -> AsyncGenerator[str, None]:
-
-        """Generate and stream a conversational request for missing parameters"""
-        formatted_workflows = []
-        for name, schema in WORKFLOW_SCHEMAS.items():
-                display_name = name.replace('_', ' ').title()
-                formatted_workflows.append(f"- {display_name}: {schema['description']}")
-        workflows_text = "\n".join(formatted_workflows)
-        user_message_text = str(state["messages"])
-        if state.get("user_intent") == "unclear":
-            if "refine" in user_message_text.lower():
-                unclear_prompt = f"""The user wants to refine content but hasn't specified how. Generate a friendly response that:
-                1. Acknowledges their request
-                2. Explains the 3 available refinement options:
-                - Expand/Compress: Make content longer or shorter
-                - Adjust Tone: Change the tone or target audience
-                - Provide Suggestions: Get improvement recommendations
-                3. Asks which option they'd like
-
-                Keep it conversational (2-3 sentences)."""
-            else:
-                unclear_prompt = f"""The user's intent is unclear. Generate a friendly, helpful response that:
-                    1. Acknowledges their message
-                    2. Lists available workflows naturally in conversation
-                    3. Asks what they'd like to do
-
-                    Available workflows:
-                    {workflows_text}
-
-                    User message: {state["messages"] if state["messages"] else ""}
-
-                    Keep it conversational and concise (2-3 sentences)."""
-
-            messages = [{"role": "user", "content": unclear_prompt}]
-                
-            full_content = ""
-            async for chunk in self.llm.astream(messages):
-                if hasattr(chunk, 'content') and chunk.content:
-                    full_content += chunk.content
-                    yield f"data: {json.dumps({'type': 'content', 'content': chunk.content})}\n\n"
-            
-            yield f"data: {json.dumps({'type': 'metadata', 'workflow': None, 'collected_params': {}, 'missing_params': ['workflow_identification'], 'ready_to_execute': False})}\n\n"
-            yield f"data: {json.dumps({'type': 'done', 'done': True})}\n\n"
-            
-            state["messages"].append({
-                "role": "assistant",
-                "content": full_content
-            })
-        
-
-        else:
-            workflow_name = state.get("current_workflow")
-            missing = state.get("missing_params", [])
-            formatted_missing = [param.replace('_', ' ').title() for param in missing]
-            # Define valid options for each workflow parameter
-            parameter_options = {
-                "format_translator": {
-                    "target_format": ["Social Media Post", "Webpage Ready", "Placemat"],
-                    "customization": ["LinkedIn", "X.com (Twitter)", "content"]
-                },
-                "draft_content": {
-                    "content_type": ["Article", "Blog", "Executive Brief"]
-                }
-            }
-            
-            options_context = ""
-            if workflow_name in parameter_options:
-                for param in missing:
-                    if param in parameter_options[workflow_name]:
-                        valid_options = parameter_options[workflow_name][param]
-                        options_context += f"\nValid options for {param}: {', '.join(valid_options)}"
-            
-            if workflow_name == "format_translator" and "num_slides" in missing:
-                options_context += "\nNote: Maximum 10 slides allowed for Placemat format"
-            
-            # Separate prompt handling for draft_content workflow
-            if workflow_name == "draft_content":
-                ask_prompt = f"""Generate a natural, conversational message asking for the missing parameters.
-
-                Workflow: {workflow_name}
-                Missing parameters: {formatted_missing}
-                Already provided: {state.get('collected_params', {})}
-                {options_context}
-
-                CRITICAL CONSTRAINT FOR CONTENT_TYPE:
-                When asking for content_type, ONLY suggest these three options:
-                1. Article
-                2. Blog
-                3. Executive Brief
-                
-                DO NOT suggest, mention, or ask about any other content types such as:
-                - Email
-                - Social media post
-                - LinkedIn post
-                - Newsletter
-                - Whitepaper
-                - White Paper
-                - Case study
-                - Report
-                - Or any other alternative content types
-                
-                These three options (Article, Blog, Executive Brief) MUST be presented as the ONLY available choices.
-                
-                Be friendly and specific. When asking for parameters with specific valid options, ONLY mention those valid options.
-                Ask for the most important missing parameter first.
-                Keep it concise (1-2 sentences max).
-                """
-            if workflow_name == "refine_content":
-                collected = state.get("collected_params", {})
-                
-                if "original_content" in missing:
-                    ask_prompt = """Generate a friendly message asking the user to provide the content they want to refine.
-            Instructions:
-                    Keep it natural and conversational (2-3 sentences).
-                    Example: "Could you paste the content you want me to refine? I can help you expand it, compress it, adjust the tone, add research, polish the writing, or provide improvement suggestions."
-                    """
-
-                elif "service_type" in missing:
-                    ask_prompt = """Generate a friendly message asking what kind of refinement they want.
-
-            Available options:
-            - Expand (make content longer)
-            - Compress (make content shorter)
-            - Adjust tone (change the audience/tone)
-            - Provide suggestions (improvement ideas)
-            - Edit (polish the writing)
-            - Get suggestions (improvement ideas)
-
-            Keep it friendly (2-3 sentences max).
-            Example: "What would you like me to do with your content? I can expand it, compress it, adjust the tone, add research, polish the writing, or provide improvement suggestions."
-            """
-                
-                elif "audience_tone" in missing:
-                    ask_prompt = """Generate a friendly message asking for the desired tone or audience.
-
-            Instructions:
-            - Use natural language
-            - Ask about tone or target audience
-
-            Keep it conversational (1 sentence).
-            Example: "What tone or audience should I target (e.g., formal executive, casual blog reader, technical experts)?"
-            """
-                
-                elif "expected_word_count" in missing:
-                    service_type = collected.get("service_type", "")
-                    
-                    # Calculate current word count if we have content
-                    current_wc = 0
-                    if collected.get("original_content"):
-                        current_wc = len(collected["original_content"].split())
-                    
-                    ask_prompt = f"""Generate a friendly message asking for the target word count.
-
-            Context:
-            - Service type: {service_type.replace('_', ' ') if service_type else 'refinement'}
-            - Current word count: approximately {current_wc} words
-
-            Instructions:
-            - Use natural, conversational language
-            - For expand: ask "How many words would you like the expanded version to be?"
-            - For compress: ask "How many words should I aim for in the compressed version?"
-
-            Keep it brief and friendly (1-2 sentences max).
-            """
-            else:
-                # Standard prompt for other workflows
-                ask_prompt = f"""Generate a natural, conversational message asking for the missing parameters.
-
-                Workflow: {workflow_name}
-                Missing parameters: {formatted_missing}
-                Already provided: {state.get('collected_params', {})}
-                {options_context}
-
-                Be friendly and specific. When asking for parameters with specific valid options, ONLY mention those valid options.
-                Ask for the most important missing parameter first.
-                Keep it concise (1-2 sentences max).
-                """
-                
-            messages = [{"role": "user", "content": ask_prompt}]
-            
-            full_content = ""
-            async for chunk in self.llm.astream(messages):
-                if hasattr(chunk, 'content') and chunk.content:
-                    full_content += chunk.content
-                    yield f"data: {json.dumps({'type': 'content', 'content': chunk.content})}\n\n"
-            
-            yield f"data: {json.dumps({'type': 'metadata', 'workflow': workflow_name, 'collected_params': state.get('collected_params', {}), 'missing_params': missing, 'ready_to_execute': False})}\n\n"
-            yield f"data: {json.dumps({'type': 'done', 'done': True})}\n\n"
-            
-            state["messages"].append({
-                "role": "assistant",
-                "content": full_content
-            })
-    
-    async def _execute_workflow(self, state: AgentState) -> AgentState:
-        """Execute the identified workflow with collected parameters"""
-        workflow_name = state["current_workflow"]
-        params = state["collected_params"]
-        
-        # logger.info(f"Executing workflow: {workflow_name} with params: {params}")
-        
-        if workflow_name == "detect_edit_intent":
-            result = await self._execute_detect_edit_intent(params)
-            state["execution_result"] = result
-        elif workflow_name == "draft_content":
-            result = await self._execute_draft_content(params)
-            state["execution_result"] = result
-        elif workflow_name == "format_translator":
-            result = await self._execute_format_translator(params)
-            state["execution_result"] = result
-        elif workflow_name == "conduct_research":
-            result = await self._execute_conduct_research(params)
-            state["execution_result"] = result
-        elif workflow_name == "expand_compress_content":
-            result = await self._execute_expand_compress_content(params)
-            state["execution_result"] = result
-        elif workflow_name == "adjust_tone":
-            result = await self._execute_adjust_tone(params)
-            state["execution_result"] = result
-        elif workflow_name == "provide_suggestions":
-            result = await self._execute_provide_suggestions(params)
-            state["execution_result"] = result
-        else:
-            result = {"error": f"Workflow {workflow_name} not yet implemented"}
-            state["execution_result"] = result
-        
-        return state
-    async def _execute_expand_compress_content(self, params: dict) -> dict:
-        """Execute expand/compress content workflow"""
-        from app.features.thought_leadership.services.refine_content_service import RefineContentService
-        from app.infrastructure.llm.llm_service import LLMService
-        
-        try:
-            logger.info(f"[ExpandCompress] Starting content expansion/compression")
-            
-            llm_service = LLMService()
-            refine_service = RefineContentService(llm_service=llm_service)
-
-            original_content = params.get('original_content', '')
-            service_type = params.get('service_type', '')  # "expand" or "compress"
-            expected_word_count = params.get('expected_word_count')
-            supporting_doc = params.get('supporting_doc')
-            expansion_section = params.get('expansion_section')
-            expand_guidelines = params.get('expand_guidelines')
-
-            # Validate
-            if not original_content or not original_content.strip():
-                return {
-                    "status": "error",
-                    "workflow": "expand_compress_content",
-                    "error": "Original content is required"
-                }
-            
-            if not service_type or service_type not in ["expand", "compress"]:
-                return {
-                    "status": "error",
-                    "workflow": "expand_compress_content",
-                    "error": "Service type must be either 'expand' or 'compress'"
-                }
-            
-            if not expected_word_count:
-                return {
-                    "status": "error",
-                    "workflow": "expand_compress_content",
-                    "error": f"{service_type.title()} requires a target word count"
-                }
-            
-            original_word_count = len(original_content.split())
-            services = []
-            
-            # Build services array
-            if service_type == "expand":
-                services.append({
-                    "isSelected": True,
-                    "type": "expand",
-                    "original_word_count": original_word_count,
-                    "expected_word_count": int(expected_word_count),
-                    "supportingDoc": supporting_doc,
-                    "expansion_section": expansion_section,
-                    "expand_guidelines": expand_guidelines
-                })
-                services.append({"isSelected": False, "type": "compress"})
-            else:  # compress
-                services.append({"isSelected": False, "type": "expand"})
-                services.append({
-                    "isSelected": True,
-                    "type": "compress",
-                    "original_word_count": original_word_count,
-                    "expected_word_count": int(expected_word_count)
-                })
-            
-            # Add unselected services
-            services.extend([
-                {"isSelected": False, "type": "adjust_audience_tone"},
-                {"isSelected": False, "type": "improvement_suggestions"},
-                {"isSelected": False, "type": "enhanced_with_research"},
-                {"isSelected": False, "type": "edit_content", "editors": []}
-            ])
-            
-            request_data = {
-                "original_content": original_content,
-                "services": services,
-                "stream": True
-            }
-            
-            logger.info(f'Data passed to refine content service: {request_data}')
-            return {
-                "status": "success",
-                "workflow": "expand_compress_content",
-                "streaming_response": StreamingResponse(
-                    refine_service.refine_content(request_data),
-                    media_type="text/event-stream"
-                )
-            }
-            
-        except Exception as e:
-            logger.error(f"Error executing expand_compress_content: {e}", exc_info=True)
-            return {
-                "status": "error",
-                "workflow": "expand_compress_content",
-                "error": str(e)
-            }
-
-
-    async def _execute_adjust_tone(self, params: dict) -> dict:
-        """Execute adjust tone workflow"""
-        from app.features.thought_leadership.services.refine_content_service import RefineContentService
-        from app.infrastructure.llm.llm_service import LLMService
-        
-        try:
-            logger.info(f"[AdjustTone] Starting tone adjustment")
-            
-            llm_service = LLMService()
-            refine_service = RefineContentService(llm_service=llm_service)
-
-            original_content = params.get('original_content', '')
-            audience_tone = params.get('audience_tone', '')
-
-            # Validate
-            if not original_content or not original_content.strip():
-                return {
-                    "status": "error",
-                    "workflow": "adjust_tone",
-                    "error": "Original content is required"
-                }
-            
-            if not audience_tone:
-                return {
-                    "status": "error",
-                    "workflow": "adjust_tone",
-                    "error": "Target audience or tone is required"
-                }
-            
-            original_word_count = len(original_content.split())
-            
-            # Build services array with only adjust_audience_tone selected
-            services = [
-                {"isSelected": False, "type": "expand"},
-                {"isSelected": False, "type": "compress"},
-                {
-                    "isSelected": True,
-                    "type": "adjust_audience_tone",
-                    "audience_tone": audience_tone
-                },
-                {"isSelected": False, "type": "improvement_suggestions"},
-                {"isSelected": False, "type": "enhanced_with_research"},
-                {"isSelected": False, "type": "edit_content", "editors": []}
-            ]
-            
-            request_data = {
-                "original_content": original_content,
-                "services": services,
-                "stream": True
-            }
-            
-            logger.info(f'Data passed to refine content service: {request_data}')
-            return {
-                "status": "success",
-                "workflow": "adjust_tone",
-                "streaming_response": StreamingResponse(
-                    refine_service.refine_content(request_data),
-                    media_type="text/event-stream"
-                )
-            }
-            
-        except Exception as e:
-            logger.error(f"Error executing adjust_tone: {e}", exc_info=True)
-            return {
-                "status": "error",
-                "workflow": "adjust_tone",
-                "error": str(e)
-            }
-
-
-    async def _execute_provide_suggestions(self, params: dict) -> dict:
-        """Execute provide suggestions workflow"""
-        from app.features.thought_leadership.services.refine_content_service import RefineContentService
-        from app.infrastructure.llm.llm_service import LLMService
-        
-        try:
-            logger.info(f"[ProvideSuggestions] Starting suggestion generation")
-            
-            llm_service = LLMService()
-            refine_service = RefineContentService(llm_service=llm_service)
-
-            original_content = params.get('original_content', '')
-
-            # Validate
-            if not original_content or not original_content.strip():
-                return {
-                    "status": "error",
-                    "workflow": "provide_suggestions",
-                    "error": "Original content is required"
-                }
-            
-            original_word_count = len(original_content.split())
-            
-            # Build services array with only improvement_suggestions selected
-            services = [
-                {"isSelected": False, "type": "expand"},
-                {"isSelected": False, "type": "compress"},
-                {"isSelected": False, "type": "adjust_audience_tone"},
-                {
-                    "isSelected": True,
-                    "type": "improvement_suggestions",
-                    "suggestion_type": "general"
-                },
-                {"isSelected": False, "type": "enhanced_with_research"},
-                {"isSelected": False, "type": "edit_content", "editors": []}
-            ]
-            
-            request_data = {
-                "original_content": original_content,
-                "services": services,
-                "stream": True
-            }
-            
-            logger.info(f'Data passed to refine content service: {request_data}')
-            return {
-                "status": "success",
-                "workflow": "provide_suggestions",
-                "streaming_response": StreamingResponse(
-                    refine_service.refine_content(request_data),
-                    media_type="text/event-stream"
-                )
-            }
-            
-        except Exception as e:
-            logger.error(f"Error executing provide_suggestions: {e}", exc_info=True)
-            return {
-                "status": "error",
-                "workflow": "provide_suggestions",
-                "error": str(e)
-            }
-    async def _execute_conduct_research(self, params: dict) -> dict:  # Renamed method
-        """Execute conduct research workflow and bypass through LLM for streaming"""
-        from app.features.chat.services.data_source_agent import create_data_source_agent
-        from app.core.config import config
-        
-        try:
-            logger.info(f"[ConductResearch] Starting research on: {params.get('research_topic')}")
-            
-            agent = create_data_source_agent(
-                azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
-                api_key=config.AZURE_OPENAI_API_KEY,
-                api_version=config.AZURE_OPENAI_API_VERSION,
-                deployment_name=config.AZURE_OPENAI_DEPLOYMENT
-            )
-            
-            research_scope = params.get('research_scope', 'comprehensive')
-            specific_sources = params.get('specific_sources', '')
-            depth_level = params.get('depth_level', 'detailed')
-            
-            research_prompt = f"""Conduct extensive research on the following topic and provide comprehensive information with all citations and source links.
-
-    **Research Topic:** {params.get('research_topic')}
-
-    **Research Scope:** {research_scope}
-
-    **Depth Level:** {depth_level}
-
-    {f"**Specific Sources to Focus On:** {specific_sources}" if specific_sources else ""}
-
-    **Research Instructions:**
-    1. If required: Use ALL available data sources to gather comprehensive information
-    2. Provide detailed findings with specific data points, statistics, and facts
-    4. ALWAYS cite sources with proper attribution
-    5. Organize findings in a clear, structured format
-    """
-            
-            agent_messages = [{"role": "user", "content": research_prompt}]
-            logger.info(f"[ConductResearch] Calling data_source_agent")
-            
-            research_results = await agent.process_query(agent_messages)
-            
-            if research_results:
-                logger.info(f"[ConductResearch] Research completed - bypassing through LLM")
-                
-                # Bypass through LLM for streaming
-                async def stream_bypassed_results():
-                    import json
-                    
-                    # Create LLM prompt to process research results
-                    bypass_prompt = f"""You are a helpful research assistant. Based on the following research data, provide a clear, well-structured response to the user's question: "{params.get('research_topic')}"
-
-    Research Data:
-    {research_results}
-
-    STRICT INSTRUCTIONS - FOLLOW EXACTLY:
-    1. Format your ENTIRE response in Markdown
-    2. Present information in a natural, conversational manner
-    3. Organize the response logically with clear sections using Markdown headers (##)
-    4. Place ALL citations and sources at the end under a "## Sources" section with proper attribution
-    5. NEVER mention which data sources failed, how many API calls were made, or any technical details about data fetching
-    6. NEVER include phrases like "data source failed", "unable to fetch", "API call", "sources checked", etc.
-    7. Focus ONLY on delivering the answer with relevant information
-    8. Use Markdown formatting: **bold** for emphasis, bullet points with -, numbered lists with 1., etc.
-"""
-                    
-                    messages = [{"role": "user", "content": bypass_prompt}]
-                    
-                    # Stream LLM response
-                    async for chunk in self.llm.astream(messages):
-                        if hasattr(chunk, 'content') and chunk.content:
-                            yield f"data: {json.dumps({'type': 'content', 'content': chunk.content})}\n\n"
-                    
-                    yield f"data: {json.dumps({'type': 'metadata', 'workflow': 'conduct_research', 'topic': params.get('research_topic'), 'ready_to_execute': True})}\n\n"
-                    yield f"data: {json.dumps({'type': 'done', 'done': True})}\n\n"
-                
-                agent.close()
-                
-                return {
-                    "status": "success",
-                    "workflow": "conduct_research",
-                    "streaming_response": StreamingResponse(stream_bypassed_results(), media_type="text/event-stream")
-                }
-            else:
-                logger.warning(f"[ConductResearch] No results returned from agent")
-                agent.close()
-                return {
-                    "status": "error",
-                    "workflow": "conduct_research",
-                    "error": "No research results found"
-                }
-                    
-        except Exception as e:
-            logger.error(f"Error executing conduct_research: {e}", exc_info=True)
-            return {
-                "status": "error",
-                "workflow": "conduct_research",
-                "error": str(e)
-            }
-    async def _execute_format_translator(self, params: dict) -> dict:
-        """Execute format translator workflow and return streaming response"""
-        from app.features.thought_leadership.services.format_translator_service import FormatTranslatorService
-        from app.infrastructure.llm.llm_service import LLMService
-        from app.features.ddc.utils.text_refiner import refine_text_for_placemat
-        from app.core.config import get_settings
-        
-        try:
-            logger.info(f"[FormatTranslator] Starting format translation")
-            target_format = params.get('target_format', '')
-            if target_format.lower() == "placemat":
-                try:
-                    content = params.get('content', '')
-                    num_slides = int(params.get('num_slides', 1))
-                    
-                    logger.info(f"[Placemat] Refining content for {num_slides} slides")
-                    refined_text = refine_text_for_placemat(content, num_slides)
-                    
-                    prompt_parts = []
-                    prompt_parts.append("User wants to create a placemat. [IMPORTANT] Create the placemat such that it has data and an image on either left or right side of the slide(s).")
-                    prompt_parts.append(f"Make sure to use this content {refined_text} for preparing the placemat slide(s)")
-                    prompt_parts.append(f"""Follow these guidelines while creating the placemat:
-                                    Distills the content's key arguments, insights, and takeaways. 
-                                    Organizes content into a visually appealing layout that prioritizes charts, diagrams, and images. 
-                                    Refines language to be concise, ensuring quick and effective communication of main ideas. 
-                                    """)
-                    
-                    prompt = "\n\n".join(prompt_parts).strip()
-                    settings = get_settings()
-                    
-                    template_id = settings.PLUSDOCS_TEMPLATE_ID
-                    API_TOKEN = settings.PLUSDOCS_API_TOKEN
-                    
-                    client = PlusDocsClient(API_TOKEN)
-                    logger.info(f"[Placemat] Calling PlusDocsClient.create_and_wait with {num_slides} slides")
-                    
-                    download_url = client.create_and_wait(
-                        prompt=prompt,
-                        numberOfSlides=num_slides,
-                        template_id=template_id,
-                        poll_interval=5,
-                        max_attempts=60
-                    )
-                    
-                    if not download_url:
-                        raise Exception("Placemat generation failed - no download URL returned")
-                    
-                    logger.info(f"[Placemat] Successfully generated: {download_url}")
-                    
-                    return {
-                        "status": "success",
-                        "workflow": "format_translator",
-                        "return_json": True,
-                        "result": {
-                            "target_format": "placemat",
-                            "status": "success",
-                            "message": f"Please click <a href={download_url} target=\"_blank\" rel=\"noopener noreferrer\">here</a> to download your placemat.",
-                        }
-                    }
-                    
-                except Exception as e:
-                    logger.error(f"[Placemat] Error: {e}", exc_info=True)
-                    return {
-                        "status": "error",
-                        "workflow": "format_translator",
-                        "error": f"Placemat generation failed: {str(e)}"
-                    }
-            llm_service = LLMService()
-            format_service = FormatTranslatorService(llm_service=llm_service)
-            
-            content = params.get('content', '')
-            target_format = params.get('target_format', '')
-            source_format = params.get('source_format', 'Document')
-            customization = params.get('customization', '')
-            word_limit = params.get('word_limit', '')
-            
-            # Set default word limits based on platform
-            if target_format.lower() in ["social media post", "social media"]:
-                if customization and "linkedin" in customization.lower():
-                    if not word_limit:
-                        word_limit = "300"
-                elif customization and ("x.com" in customization.lower() or "twitter" in customization.lower()):
-                    if not word_limit:
-                        word_limit = "30"
-            
-            if target_format.lower() not in ["social media post", "social media", "webpage ready"]:
-                return {
-                    "status": "error",
-                    "workflow": "format_translator",
-                    "error": f"Format '{target_format}' not supported. Only 'Social Media Post' and 'Webpage Ready' are available."
-                }
-            
-            async def format_stream():
-                if target_format.lower() == "webpage ready":
-                    logger.info("Webpage Ready format translation completed.")
-                    yield f"data: {json.dumps({'type': 'webpage_ready', 'content': 'completed'})}\n\n"
-                async for chunk in format_service.translate_format(
-                    content=content,
-                    source_format=source_format,
-                    target_format=target_format,
-                    customization=customization,
-                    podcast_style=None,
-                    speaker1_name=None,
-                    speaker1_voice=None,
-                    speaker1_accent=None,
-                    speaker2_name=None,
-                    speaker2_voice=None,
-                    speaker2_accent=None,
-                    word_limit=word_limit
-                ):
-                    yield chunk
-                # if target_format.lower() == "webpage ready":
-                #     logger.info("Webpage Ready format translation completed.")
-                #     yield f"data: {json.dumps({'type': 'webpage_ready', 'content': 'completed'})}\n\n"
-
-            return {
-                "status": "success",
-                "workflow": "format_translator",
-                "streaming_response": StreamingResponse(format_stream(), media_type="text/event-stream")
-            }
-            
-        except Exception as e:
-            logger.error(f"Error executing format_translator: {e}", exc_info=True)
-            return {
-                "status": "error",
-                "workflow": "format_translator",
-                "error": str(e)
-            }
-    async def _execute_draft_content(self, params: dict) -> dict:
-        """Execute draft content workflow and return streaming response"""
-        from app.features.thought_leadership.workflows.draft_content_class import DraftContentResearchService
-        from app.features.thought_leadership.services.draft_content_service import DraftContentService
-        from app.infrastructure.llm.llm_service import LLMService
-        from app.core.config import config
-        
-        try:
-            logger.info(f"[DraftContent] Starting draft content generation")
-            
-            llm_service = LLMService()
-            draft_service = DraftContentService(llm_service=llm_service)
-            
-            research_service = DraftContentResearchService(
-                draft_service=draft_service,
-                azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
-                api_key=config.AZURE_OPENAI_API_KEY,
-                api_version=config.AZURE_OPENAI_API_VERSION,
-                deployment_name=config.AZURE_OPENAI_DEPLOYMENT
-            )
-            # Build user prompt from collected params
-            content_type = params.get('content_type', '')
-            topic = params.get('topic', '')
-            word_limit = params.get('word_limit', '')
-            audience_tone = params.get('audience_tone', '')
-            outline_doc = params.get('outline_doc', '')
-            supporting_doc = params.get('supporting_doc', '')
-            
-            user_prompt = f"""Content Type: {content_type}
-            Topic: {topic}
-            Word Limit: {word_limit}
-            Audience/Tone: {audience_tone}
-            Initial Outline/Concept: {outline_doc}
-            Supporting Documents: {supporting_doc}"""
-                    
-            logger.info(f"[_execute_draft_content] user prompt:\n{user_prompt}")
-                    
-                    # Create request object
-            from app.features.thought_leadership.workflows.draft_content_class import DraftContentRequest
-            request = DraftContentRequest(
-                messages=[{"role": "user", "content": user_prompt}],
-                content_type=params.get('content_type'),
-                topic=params.get('topic'),
-                word_limit=str(params.get('word_limit', '')),
-                audience_tone=params.get('audience_tone', ''),
-                outline_doc=params.get('outline_doc', ''),
-                supporting_doc=params.get('supporting_doc', ''),
-                use_factiva_research=False
-            )
-            
-            
-            streaming_response = await research_service.generate_draft_content(
-                request=request,
-                user_prompt=user_prompt,
-                is_improvement=False
-            )
-            
-            return {
-                "status": "success",
-                "workflow": "draft_content",
-                "streaming_response": streaming_response
-            }
-            
-        except Exception as e:
-            logger.error(f"Error executing draft_content: {e}", exc_info=True)
-            return {
-                "status": "error",
-                "workflow": "draft_content",
-                "error": str(e)
-            }
-    async def _execute_detect_edit_intent(self, params: dict) -> dict:
-        """Execute detect edit intent workflow - returns JSON without streaming"""
-        try:
-            user_input = params.get("user_input", "")
-            system_prompt = """YOU ARE AN INTENT CLASSIFICATION AGENT.
-
-YOUR TASK:
-Detect **EDIT INTENT ONLY WHEN THE USER INPUT LITERALLY CONTAINS**
-ONE OR MORE OF THE FOLLOWING WORDS:
-
-- "edit"
-- "editing"
-- "edited"
-- "editor"
-
-Matching is:
-- case-insensitive
-- based on literal string presence
-- valid anywhere in the input text
-
-━━━━━━━━━━━━━━━━━━━━
-DETECTION RULES (STRICT, NON-NEGOTIABLE)
-━━━━━━━━━━━━━━━━━━━━
-
-1. IF the input text contains "edit", "editing", "edited", or "editor"
-   → set `"is_edit_intent": true`
-
-2. IF NONE of these words appear
-   → set `"is_edit_intent": false`
-
-3. DO NOT infer meaning, intent, or user goals.
-4. DO NOT use semantic similarity.
-5. DO NOT treat related or synonymous words as edit.
-6. ONLY literal string matching is allowed.
-
-━━━━━━━━━━━━━━━━━━━━
-WORDS THAT MUST NOT TRIGGER EDIT INTENT
-━━━━━━━━━━━━━━━━━━━━
-
-The following words or phrases MUST NEVER trigger edit intent
-UNLESS the word "edit", "editing", "editor" or "edited" is ALSO present:
-
-- refine
-- improve
-- enhance
-- polish
-- review
-- rewrite
-- optimize
-- update
-- fix
-- adjust
-- draft
-- drafting
-- create
-- write
-
-If the input contains ONLY these terms
-and does NOT contain "edit", "editing", "editor" or "edited"
-→ `"is_edit_intent": false`
-
-━━━━━━━━━━━━━━━━━━━━
-EDITOR DETECTION (SECONDARY RULE)
-━━━━━━━━━━━━━━━━━━━━
-
-ONLY IF `"is_edit_intent": true`:
-
-Check whether the user EXPLICITLY mentions any of the following editors:
-
-- "line" (line editor)
-- "copy" (copy editor)
-- "development" (development editor)
-- "content" (content editor)
-- "brand" or "brand-alignment" (brand alignment editor)
-
-            Add ONLY the editors that appear verbatim in the input text.
-            DO NOT infer, assume, or default editors.
-
-            ━━━━━━━━━━━━━━━━━━━━
-            OUTPUT FORMAT (STRICT)
-            ━━━━━━━━━━━━━━━━━━━━
-
-            RESPOND WITH ONLY VALID JSON:
-
-            {
-            "is_edit_intent": true/false,
-            "confidence": 0.0-1.0,
-            "reasoning": "short literal explanation",
-            "detected_editors": []
-            }
-
-━━━━━━━━━━━━━━━━━━━━
-ABSOLUTE PROHIBITIONS
-━━━━━━━━━━━━━━━━━━━━
-
-- NEVER infer intent
-- NEVER guess user goals
-- NEVER use semantic interpretation
-- NEVER expand the edit trigger list
-- NEVER add text outside the JSON response
-
-
-        """
-            
-
-            user_prompt = f"Analyze this user input and determine if it indicates edit/improve/review intent:\n\n\"{user_input}\""
-
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-            
-            response = self.llm.invoke(messages)
-            response_text = response.content.strip()
-            
-            # Extract JSON from response
-            json_start = response_text.find('{')
-            json_end = response_text.rfind('}') + 1
-            
-            if json_start != -1 and json_end > json_start:
-                json_text = response_text[json_start:json_end]
-                result = json.loads(json_text)
-                
-                # Validate result structure
-                if not isinstance(result, dict):
-                    raise ValueError("Invalid response format: not a dictionary")
-                
-                is_edit_intent = result.get("is_edit_intent", False)
-                confidence = float(result.get("confidence", 0.5))
-                reasoning = result.get("reasoning", "No reasoning provided")
-                detected_editors_raw = result.get("detected_editors", [])
-                
-                # Clamp confidence to valid range
-                confidence = max(0.0, min(1.0, confidence))
-                
-                # Validate and map detected editors to valid IDs
-                valid_editor_ids = ["line", "copy", "development", "content", "brand-alignment"]
-                detected_editors = []
-                
-                if isinstance(detected_editors_raw, list):
-                    for editor in detected_editors_raw:
-                        editor_lower = str(editor).lower().strip()
-                        for valid_id in valid_editor_ids:
-                            if editor_lower == valid_id or editor_lower.replace(" ", "-") == valid_id:
-                                if valid_id not in detected_editors:
-                                    detected_editors.append(valid_id)
-                                break
-                
-                # Deterministic override: literal presence of edit/editor etc. always means edit intent
-                # (LLM can incorrectly return false e.g. for "can you use line editor")
-                input_lower = (user_input or "").lower()
-                edit_trigger_words = ["edit", "editing", "edited", "editor"]
-                has_edit_trigger = any(w in input_lower for w in edit_trigger_words)
-                if has_edit_trigger:
-                    is_edit_intent = True
-                    reasoning = f"Override: input literally contains one of {edit_trigger_words}."
-                    # Deterministic editor detection when edit intent
-                    for sub, eid in [
-                        ("line", "line"),
-                        ("copy", "copy"),
-                        ("development", "development"),
-                        ("content", "content"),
-                        ("brand-alignment", "brand-alignment"),
-                        ("brand alignment", "brand-alignment"),
-                        ("brand", "brand-alignment"),
-                    ]:
-                        if sub in input_lower and eid not in detected_editors:
-                            detected_editors.append(eid)
-                
-                logger.info(f"Intent detection result: is_edit_intent={is_edit_intent}, confidence={confidence:.2f}, reasoning={reasoning}, detected_editors={detected_editors}")
-                
-                return {
-                    "status": "success",
-                    "workflow": "detect_edit_intent",
-                    "return_json": True,
-                    "result": {
-                        "is_edit_intent": bool(is_edit_intent),
-                        "confidence": confidence,
-                        "detected_editors": detected_editors
-                    }
-                }
-            else:
-                raise ValueError("No valid JSON found in response")
-                
-        except Exception as e:
-            logger.error(f"Error executing detect_edit_intent: {e}", exc_info=True)
-            return {
-                "status": "error",
-                "workflow": "detect_edit_intent",
-                "error": str(e)
-            }
-    
-    def _format_workflow_descriptions(self) -> str:
-        """Format workflow descriptions for display"""
-        descriptions = []
-        for name, schema in WORKFLOW_SCHEMAS.items():
-            desc = f"• {name}: {schema['description']}"
-            descriptions.append(desc)
-        return "\n".join(descriptions)
-    
-    async def process(self, messages: List[dict]) -> dict:
-        """Process user request through the agent"""
-        initial_state = {
-            "messages": messages,
-            "current_workflow": None,
-            "collected_params": {},
-            "missing_params": [],
-            "user_intent": "",
-            "conversation_history": []
-        }
-        
-        result = await self.graph.ainvoke(initial_state)
-        return result
-
-# Global agent instance
-agent_instance = None
-
-def get_agent():
-    global agent_instance
-    if agent_instance is None:
-        agent_instance = TLAgent()
-    return agent_instance
-
-@router.post("")
-async def tl_agent_endpoint(request: EditAgentRequest):
-    """
-    Conversational edit agent that identifies intent and collects parameters
-    """
-    try:
-        agent = get_agent()
-        # Remove welcome message if it's the first message from assistant
-        if (request.messages and 
-            len(request.messages) > 0 and 
-            request.messages[0].get("role") == "assistant" and 
-            request.messages[0].get("content", "").startswith("👋 Welcome! Here's what I can help you with in")):
-            request.messages.pop(0)
-            logger.info("Removed welcome message from messages array")
-        # Process through the graph
-        initial_state = {
-            "messages": request.messages,
-            "current_workflow": None,
-            "collected_params": {},
-            "missing_params": [],
-            "user_intent": "",
-            "conversation_history": []
-        }
-        
-        result = await agent.graph.ainvoke(initial_state)
-        
-        # If workflow execution returns JSON (detect_edit_intent case)
-        if result.get("execution_result") and result["execution_result"].get("return_json"):
-            workflow_name = result["execution_result"].get("workflow")
-            if workflow_name == "detect_edit_intent":
-                return IntentDetectionResponse(
-                    is_edit_intent=result["execution_result"]["result"].get("is_edit_intent", False),
-                    confidence=result["execution_result"]["result"].get("confidence", 0.0),
-                    detected_editors=result["execution_result"]["result"].get("detected_editors", [])
-                )
-            elif workflow_name == "format_translator":
-                return JSONResponse(result["execution_result"]["result"])
-        
-        # If workflow is ready to execute and has streaming response
-        elif result.get("execution_result") and result["execution_result"].get("streaming_response"):
-            return result["execution_result"]["streaming_response"]
-        
-        # If we need to ask for parameters, stream that
-        elif result.get("missing_params"):
-            async def stream_ask_params():
-                async for chunk in agent._ask_missing_params_stream(result):
-                    yield chunk
-            
-            return StreamingResponse(stream_ask_params(), media_type="text/event-stream")
-        
-        # Fallback
-        else:
-            async def stream_fallback():
-                yield f"data: {json.dumps({'type': 'content', 'content': 'I am ready to help. What would you like to do?'})}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'done': True})}\n\n"
-            
-            return StreamingResponse(stream_fallback(), media_type="text/event-stream")
-        
-    except Exception as e:
-        logger.error(f"Edit Agent error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
