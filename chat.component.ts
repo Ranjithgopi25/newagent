@@ -229,17 +229,21 @@ export function convertMarkdownToHtml(markdown: string): string {
   html = html.replace(/([)\]⁰¹²³⁴⁵⁶⁷⁸⁹])(\s*)(\()(https?:\/\/)/g, '$1 $3$4');
 
   // Plain URLs: in References "8. Title. https://...", in-paragraph "(https://...)" or "[https://...]" -> clickable links
-  // Preceding char: start, whitespace, >, ., ), (, [ so (https:// and [https:// are matched; URL stops at whitespace, <, ", or ]
+  // Preceding char: start, whitespace, >, ., ), (, [ so (https:// and [https:// are matched.
+  // URL can span newlines (allow \n in middle) so long citation URLs that wrap are not cut off.
   const escAttr = (s: string) =>
     s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const escHtml = (s: string) =>
     s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  html = html.replace(/(^|[\s>.)(\[])(https?:\/\/[^\s<"\]]+)/g, (_match, before, url) => {
-    return before + `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer">${escHtml(url)}</a>`;
+  // Match URL: allow newlines inside so wrapped URLs are captured in full (stops at space, <, ", ])
+  html = html.replace(/(^|[\s>.)(\[])(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)/g, (_match, before, url) => {
+    const urlTrimmed = url.replace(/\n/g, ' ').trim();
+    return before + `<a href="${escAttr(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${escHtml(urlTrimmed)}</a>`;
   });
 
   // List styles: match paragraph/export (11pt, Helvetica/Arial, line-height 1.5), tight spacing between list items (citations)
   const listBlockStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.25em; margin-bottom: 0.5em;";
+  const listBlockStyleAfterHeading = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.2em; margin-bottom: 0.5em;";
   const listItemStyle = "display: list-item; margin: 0.05em 0 0.2em 0;";
 
   const lines = html.split('\n');
@@ -247,6 +251,15 @@ export function convertMarkdownToHtml(markdown: string): string {
   let inUnorderedList = false;
   let inOrderedList = false;
   let lastOrderedNumber = 0; // Track last number to detect gaps
+
+  const lastProcessedLineIsHeading = () => {
+    for (let j = processedLines.length - 1; j >= 0; j--) {
+      const s = processedLines[j].trim();
+      if (!s) continue;
+      return /<\/h[1-6]>$/i.test(s) || /^<h[1-6]\b/i.test(s);
+    }
+    return false;
+  };
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -281,7 +294,8 @@ export function convertMarkdownToHtml(markdown: string): string {
         if (inOrderedList) {
           processedLines.push('</ol>');
         }
-        processedLines.push(`<ol style="${listBlockStyle}">`);
+        const olStyle = lastProcessedLineIsHeading() ? listBlockStyleAfterHeading : listBlockStyle;
+        processedLines.push(`<ol style="${olStyle}">`);
         inOrderedList = true;
         lastOrderedNumber = 0; // Reset counter for new list
       }
@@ -688,8 +702,8 @@ export function formatFinalArticleWithBlockTypes(
     } else {
       // Close any open list before processing non-list item
       if (currentList.length > 0) {
-        // Determine spacing: matches backend export (0.25em/3pt if following paragraph, 0.5em/6pt otherwise)
-        const listMarginTop = prevBlockType === 'paragraph' ? '0.25em' : '0.5em';
+        // Determine spacing: tighter after heading (Citations & References), then paragraph, else 0.5em
+        const listMarginTop = prevBlockType === 'heading' ? '0.2em' : (prevBlockType === 'paragraph' ? '0.25em' : '0.5em');
         const listMarginBottom = nextPara && nextPara.type === 'paragraph' ? '0.25em' : '0.5em';
         
         // All lists use bullet icons (matches backend export - all lists rendered as bullets)
@@ -725,8 +739,8 @@ export function formatFinalArticleWithBlockTypes(
 
   // Close any remaining open list
   if (currentList.length > 0) {
-    // Determine spacing: matches backend export
-    const listMarginTop = prevBlockType === 'paragraph' ? '0.25em' : '0.5em';
+    // Determine spacing: tighter after heading (Citations & References)
+    const listMarginTop = prevBlockType === 'heading' ? '0.2em' : (prevBlockType === 'paragraph' ? '0.25em' : '0.5em');
     
     // All lists use bullet icons (matches backend export - all lists rendered as bullets)
     // Since we always add bullet icons to content, use list-style-type: none
