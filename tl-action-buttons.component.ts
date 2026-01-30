@@ -394,17 +394,18 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
             _add_markdown_text_runs(para, clean_content)
 
 def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_style: ParagraphStyle, 
-                     prev_block_type: str = None, next_block: dict = None, start_from: int = 1):
+                     prev_block_type: str = None, next_block: dict = None, start_from: int = 1, use_bullet_icons_only: bool = True):
     """
-    Add a list of items to PDF story with bullet icons only (no numbering).
-    All lists (numbered, alphabetical, or bullet) are rendered with bullet icons.
+    Add a list of items to PDF story.
+    If use_bullet_icons_only is True (default), all lists use bullet icons (legacy behavior).
+    If use_bullet_icons_only is False, numbered/alpha lists use numbers/letters; bullet lists use bullet icons (edit content export).
     """
     if not list_items:
         return
     
     from reportlab.platypus import ListFlowable, ListItem
     
-    # Create list items - all use bullet icons, remove any number/letter prefixes
+    # Create list items; remove number/letter/bullet prefix (list styling adds numbers/bullets)
     pdf_list_items = []
     
     url_pattern = re.compile(r'(https?://\S+)')
@@ -412,7 +413,7 @@ def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_s
         content = item.get('content', '')
         level = item.get('level', 0)
         parsed = item.get('parsed', parse_bullet(content))
-        # Remove any existing number/letter/bullet prefix (all lists use bullet icons)
+        # Remove any existing number/letter/bullet prefix
         clean_content = content
         if list_type == 'number':
             clean_content = re.sub(r'^\d+\.\s+', '', content.strip())
@@ -444,13 +445,24 @@ def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_s
     space_before = 3 if prev_block_type == 'paragraph' else 6
     space_after = 3 if next_block and next_block.get('type') == 'paragraph' else 6
     
-    # Always use 'bullet' type - all lists show bullet icons
+    # Use numbers/letters when use_bullet_icons_only is False (edit content); otherwise bullets for all
+    if use_bullet_icons_only:
+        pdf_bullet_type = 'bullet'
+    else:
+        if list_type == 'number':
+            pdf_bullet_type = '1'
+        elif list_type == 'alpha_upper':
+            pdf_bullet_type = 'A'
+        elif list_type == 'alpha_lower':
+            pdf_bullet_type = 'a'
+        else:
+            pdf_bullet_type = 'bullet'
     left_indent = 24  # 2em equivalent
     
     story.append(
         ListFlowable(
             pdf_list_items,
-            bulletType='bullet',  # Always use bullet icons for all list types
+            bulletType=pdf_bullet_type,
             bulletFontName='Helvetica',
             bulletFontSize=11,
             leftIndent=left_indent,
@@ -3832,7 +3844,7 @@ def export_to_word_edit_content(
     """
     PwC Word export specifically for Edit Content workflow.
     Uses block type information for proper formatting (title, heading, bullet_item, paragraph).
-    All lists (numbered, alphabetical, or bullet) are rendered with bullet icons (same as PDF).
+    Numbered and alphabetical lists (e.g. Citations and references) are rendered with numbers/letters; bullet lists use bullet icons.
     No Table of Contents is generated for edit content export.
     
     Content should be final_article format: plain text with "\n\n" separators (same as final article generation).
@@ -3900,15 +3912,15 @@ def export_to_word_edit_content(
         parts = re.split(r'\n\n(?:references|references:)\s*\n\n', content, flags=re.IGNORECASE)
         main_content = parts[0] if parts else content
         
-        _format_content_with_block_types_word(doc, main_content, block_types, use_bullet_icons_only=True)
+        _format_content_with_block_types_word(doc, main_content, block_types, use_bullet_icons_only=False)
         
         if len(parts) > 1:
             doc.add_paragraph("References", style="Heading 2")
             references_heading_added = True
             # Format references section
-            _format_content_with_block_types_word(doc, parts[1], None, use_bullet_icons_only=True)
+            _format_content_with_block_types_word(doc, parts[1], None, use_bullet_icons_only=False)
     else:
-        _format_content_with_block_types_word(doc, content, block_types, use_bullet_icons_only=True)
+        _format_content_with_block_types_word(doc, content, block_types, use_bullet_icons_only=False)
 
     # ---------- References ----------
     if references:
@@ -3931,7 +3943,8 @@ def export_to_word_edit_content(
     return _fix_docx_encoding(buffer.getvalue())
 
 def _format_content_with_block_types_pdf(story: list, content: str, block_types: list[dict] | None = None, 
-                                         body_style: ParagraphStyle = None, heading_style: ParagraphStyle = None):
+                                         body_style: ParagraphStyle = None, heading_style: ParagraphStyle = None,
+                                         use_bullet_icons_only: bool = True):
     """
     Format content for PDF using block type information.
     Applies formatting similar to frontend formatFinalArticleWithBlockTypes.
@@ -3940,6 +3953,8 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
     Content should be final_article format: plain text with "\n\n" separators.
     Uses split_blocks() to split content (same as final article processing).
     block_types should match final article generation structure with sequential indices.
+    
+    If use_bullet_icons_only is False (edit content export), numbered/alpha lists use numbers/letters; bullet lists use bullets.
     """
     from reportlab.lib.styles import getSampleStyleSheet
     styles = getSampleStyleSheet()
@@ -4122,7 +4137,7 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
             # If previous block was heading, close current list (if any) and start new one with reset
             if reset_numbering and current_list:
                 ordered_list = _order_list_items(current_list, start_from=1)
-                _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=1)
+                _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=1, use_bullet_icons_only=use_bullet_icons_only)
                 current_list = []
             
             # Check if we should start a new list (different type or level)
@@ -4135,7 +4150,7 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                     should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
                     start_from_val = 1 if should_reset else 1
                     ordered_list = _order_list_items(current_list, start_from=start_from_val)
-                    _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=start_from_val)
+                    _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=start_from_val, use_bullet_icons_only=use_bullet_icons_only)
                     current_list = []
             
             # Add to current list
@@ -4153,7 +4168,7 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                 should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
                 start_from_val = 1 if should_reset or prev_block_type == 'heading' else 1
                 ordered_list = _order_list_items(current_list, start_from=start_from_val)
-                _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=start_from_val)
+                _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=start_from_val, use_bullet_icons_only=use_bullet_icons_only)
                 current_list = []
                 prev_list_type = None
             
@@ -4202,7 +4217,7 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
     if current_list:
         # Order list if needed (for numbered/alphabetical)
         ordered_list = _order_list_items(current_list, start_from=1)
-        _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, None, start_from=1)
+        _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, None, start_from=1, use_bullet_icons_only=use_bullet_icons_only)
 
 def export_to_pdf_edit_content(
     content: str,
@@ -4213,7 +4228,7 @@ def export_to_pdf_edit_content(
     """
     PwC PDF export specifically for Edit Content workflow.
     Uses block type information for proper formatting (title, heading, bullet_item, paragraph).
-    All lists (numbered, alphabetical, or bullet) are rendered with bullet icons.
+    Numbered and alphabetical lists (e.g. Citations and references) are rendered with numbers/letters; bullet lists use bullet icons.
     No Table of Contents is generated for edit content export.
     
     Content should be final_article format: plain text with "\n\n" separators (same as final article generation).
@@ -4332,7 +4347,7 @@ def export_to_pdf_edit_content(
     )
     
     story = []
-    _format_content_with_block_types_pdf(story, content, block_types, body_style, heading_style)
+    _format_content_with_block_types_pdf(story, content, block_types, body_style, heading_style, use_bullet_icons_only=False)
     
     # Build the content PDF with page numbers at bottom (edit content only)
     doc.build(
