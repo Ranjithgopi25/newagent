@@ -174,7 +174,9 @@ export function convertMarkdownToHtml(markdown: string): string {
     return '';
   }
 
-  let html = markdown;
+  // Preprocess: ensure each numbered citation starts a new paragraph/list item
+  // Insert a double newline before lines that look like a new citation (e.g., '2. ...')
+  let html = markdown.replace(/(\n|^)(\d+\.) /g, '\n\n$2. ');
 
   html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
   html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
@@ -213,7 +215,7 @@ export function convertMarkdownToHtml(markdown: string): string {
     // Handle "(URL: https://...)" (case-insensitive). URL can wrap across newlines so long citation URLs are fully clickable.
     const citationUrlMatch = hrefRaw.match(/^url:\s*(https?:\/\/[^\s)]*(?:\n[^\s)]*)*)\s*$/i);
     if (citationUrlMatch && citationUrlMatch[1]) {
-      const url = citationUrlMatch[1].replace(/\n/g, ' ').trim();
+      const url = citationUrlMatch[1].replace(/\n/g, '').trim();
       const urlAttr = escAttr(url);
       const urlText = escHtml(url);
       // Show both the title and the URL (common expectation for citation blocks)
@@ -244,7 +246,7 @@ export function convertMarkdownToHtml(markdown: string): string {
   // List styles: match paragraph/export (11pt, Helvetica/Arial, line-height 1.5), tight spacing between list items (citations)
   const listBlockStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.25em; margin-bottom: 0.5em;";
   const listBlockStyleAfterHeading = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.2em; margin-bottom: 0.5em;";
-  const listItemStyle = "display: list-item; margin: 0.05em 0 0.2em 0;";
+  const listItemStyle = "display: list-item; margin: -3.95em 0 0.2em 0;";
 
   const lines = html.split('\n');
   const processedLines: string[] = [];
