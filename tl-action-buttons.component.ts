@@ -384,9 +384,12 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
             if before_url:
                 para.add_run(sanitize_text_for_word(before_url) + " ")
             url_norm = _normalize_citation_url_for_word(url)
-            add_hyperlink(para, url_norm, sanitize_text_for_word(url) or url, no_break=True)
+            add_hyperlink(para, url_norm, sanitize_text_for_word(url) or url, no_break=True, doc=doc)
+            # Ensure there is a run after the hyperlink (Word/Word Online often need this for link to be clickable)
             if after_url:
                 para.add_run(" " + sanitize_text_for_word(after_url))
+            else:
+                para.add_run(" ")
         elif parsed.get('label') and parsed.get('body'):
             run = para.add_run(sanitize_text_for_word(parsed['label']))
             run.bold = True
@@ -1349,10 +1352,11 @@ def _split_paragraph_into_sentences(paragraph: str, target_sentences: int = 3) -
     
     return paragraphs
 
-def add_hyperlink(paragraph, url, text=None, no_break=False): #merge conflict resolved
+def add_hyperlink(paragraph, url, text=None, no_break=False, doc=None): #merge conflict resolved
     """
-    Create a hyperlink in a Word paragraph with blue color and underline.
+    Create a hyperlink in a Word paragraph with blue color and underline (same idea as PDF <a href>).
     If no_break is True, add w:noBreak so the URL does not break across lines (e.g. in citation list items).
+    If doc is provided (e.g. from edit content list), use doc.part for the relationship so the link is clickable in Word/Word Online.
     """
     if not text:
         text = url
@@ -1361,11 +1365,14 @@ def add_hyperlink(paragraph, url, text=None, no_break=False): #merge conflict re
     text = sanitize_text_for_word(text)
     url = str(url).strip()
 
-    part = paragraph.part
+    # Use document part when provided (edit content list) so relationship is on main document part - ensures clickable in Word/Word Online
+    part = doc.part if doc is not None else paragraph.part
     r_id = part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
 
     hyperlink = OxmlElement('w:hyperlink')
     hyperlink.set(qn('r:id'), r_id)
+    # w:history="1" helps Word/Word Online treat the link as clickable (add to history when followed)
+    hyperlink.set(qn('w:history'), '1')
 
     run = OxmlElement('w:r')
     rPr = OxmlElement('w:rPr')
