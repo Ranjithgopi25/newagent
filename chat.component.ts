@@ -489,9 +489,8 @@ def format_final_article_with_llm(final_article: str, block_types: List[dict] = 
         # Create block type metadata if provided
         block_type_info = ""
         if block_types:
-            block_type_info = "\n\nBLOCK TYPE INFORMATION:\n"
-            block_type_info += json.dumps(block_types, indent=2)
-            block_type_info += "\n\nUse this block type information to properly format the article. Apply appropriate formatting for headings, lists, and paragraphs based on their type and level.\n"
+            block_type_info = "\n\nBlock Type Information: {}\n".format(json.dumps(block_types))
+            block_type_info += "Use the block type metadata (index, type, level) to apply proper formatting for each paragraph. DO NOT add, remove, split, or merge paragraphs - maintain exact paragraph structure to keep block types aligned.\n"
         
         # Prepare messages with system role and user content
         messages = [
