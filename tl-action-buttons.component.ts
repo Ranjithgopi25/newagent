@@ -375,7 +375,7 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
             clean_content = re.sub(r'^[A-Za-z]\.\s+', '', content.strip())
         elif list_type == 'bullet':
             clean_content = re.sub(r'^[•\-\*]\s+', '', content.strip())
-        # If the content contains a URL, add as hyperlink
+        # If the content contains a URL, add as hyperlink (use add_hyperlink for clickable links)
         match = url_pattern.search(clean_content)
         if match:
             url = match.group(1)
@@ -383,7 +383,8 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
             after_url = clean_content.split(url)[1].strip() if len(clean_content.split(url)) > 1 else ""
             if before_url:
                 para.add_run(sanitize_text_for_word(before_url) + " ")
-            add_hyperlink_edit_content_citation(para, url)
+            url_norm = _normalize_citation_url_for_word(url)
+            add_hyperlink(para, url_norm, sanitize_text_for_word(url) or url, no_break=True)
             if after_url:
                 para.add_run(" " + sanitize_text_for_word(after_url))
         elif parsed.get('label') and parsed.get('body'):
@@ -1348,9 +1349,10 @@ def _split_paragraph_into_sentences(paragraph: str, target_sentences: int = 3) -
     
     return paragraphs
 
-def add_hyperlink(paragraph, url, text=None): #merge conflict resolved
+def add_hyperlink(paragraph, url, text=None, no_break=False): #merge conflict resolved
     """
     Create a hyperlink in a Word paragraph with blue color and underline.
+    If no_break is True, add w:noBreak so the URL does not break across lines (e.g. in citation list items).
     """
     if not text:
         text = url
@@ -1381,6 +1383,10 @@ def add_hyperlink(paragraph, url, text=None): #merge conflict resolved
     color = OxmlElement('w:color')
     color.set(qn('w:val'), '0000FF')
     rPr.append(color)
+
+    if no_break:
+        no_break_elem = OxmlElement('w:noBreak')
+        rPr.append(no_break_elem)
 
     run.append(rPr)
     
