@@ -334,7 +334,8 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
     if reset_numbering and list_type in ['number', 'alpha_upper', 'alpha_lower']:
         num_id = _create_new_numbering_instance(doc, list_type, 0)
     
-    url_pattern = re.compile(r'(https?://\S+)')
+    # Match URL with or without brackets: stop at ] or whitespace so [https://...] works as clickable link
+    url_pattern = re.compile(r'(https?://[^\s\]]+)')
     for item in list_items:
         content = item.get('content', '')
         level = item.get('level', 0)
@@ -1824,18 +1825,22 @@ def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
     while pos < len(text_with_placeholders):
         # Check for placeholder (hyperlink)
         placeholder_match = re.search(r'__LINK_PLACEHOLDER_\d+__', text_with_placeholders[pos:])
+        # Check for bracketed URL [https://...] so it becomes clickable in Word
+        bracketed_url_match = re.search(r'\[(https?://[^\]]+)\]', text_with_placeholders[pos:])
         # Check for bold
         bold_match = re.search(r'\*\*(.+?)\*\*', text_with_placeholders[pos:])
         # Check for italic
         italic_match = re.search(r'(?<!\*)\*([^\*]+?)\*(?!\*)', text_with_placeholders[pos:])
-        # Check for plain URL (that wasn't converted to markdown)
+        # Check for plain URL (that wasn't converted to markdown); stop at ] so [https://...] is handled above
         # Match full URL including dots (e.g. https://www.pwc.com/...) so link doesn't break after dot
-        url_match = re.search(r'https?://[^\s)]+', text_with_placeholders[pos:])
+        url_match = re.search(r'https?://[^\s)\]]+', text_with_placeholders[pos:])
         
         # Collect matches with positions
         matches = []
         if placeholder_match:
             matches.append(('placeholder', pos + placeholder_match.start(), placeholder_match))
+        if bracketed_url_match:
+            matches.append(('bracketed_url', pos + bracketed_url_match.start(), bracketed_url_match))
         if allow_bold and bold_match:
             matches.append(('bold', pos + bold_match.start(), bold_match))
         if italic_match:
@@ -1872,6 +1877,11 @@ def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
                 else:
                     add_hyperlink(paragraph, link_url, link_text)
             pos = match_pos + len(placeholder_text)
+        
+        elif match_type == 'bracketed_url':
+            url = match.group(1).strip()
+            add_hyperlink(paragraph, url, url)
+            pos = match_pos + len(match.group(0))
         
         elif match_type == 'bold':
             bold_text = match.group(1)
@@ -2152,22 +2162,28 @@ def _add_formatted_content(doc: Document, content: str, references: list[dict] |
                         continue
                     
                     # Extract complete citation entry (number + title + optional URL all on one line)
-                    # Format examples: "1. Title", "1. Title (URL: https://...)", "1. Title\nhttps://url"
+                    # Format examples: "1. Title", "1. Title (URL: https://...)", "1. Title [https://...]", "1. Title\nhttps://url"
                     title_match = re.match(r'^(\d+)\.\s+(.*?)(?:\s*\(URL:\s*(https?://[^\)]+)\))?$', line_stripped)
                     if title_match:
                         original_number = title_match.group(1)
                         title_text = title_match.group(2).strip()
                         url_text = title_match.group(3).strip() if title_match.group(3) else None
+                        # Also extract URL from square brackets: "Title [https://...]"
+                        if not url_text:
+                            bracketed_url = re.search(r'\[(https?://[^\]]+)\]', title_text)
+                            if bracketed_url:
+                                url_text = bracketed_url.group(1).strip()
+                                title_text = re.sub(r'\s*\[https?://[^\]]+\]\s*$', '', title_text).strip()
                         logger.debug(f"[_add_formatted_content] Parsed citation: {original_number}. {title_text[:40]}... URL: {url_text[:40] if url_text else 'None'}...")
                         citation_entries.append({
                             'number': original_number,
                             'title': title_text,
                             'url': url_text
                         })
-                    # Check if this line is a URL continuation from previous title
-                    elif re.match(r'^\s*(?:URL:\s*)?(https?://[^\s\)]+)', line_stripped):
+                    # Check if this line is a URL continuation from previous title (plain or in brackets)
+                    elif re.match(r'^\s*(?:URL:\s*)?(?:\[)?(https?://[^\s\)\]]+)(?:\])?', line_stripped):
                         # This is a URL line - try to attach to the last entry
-                        url_match = re.search(r'(?:URL:\s*)?(https?://[^\s\)]+)', line_stripped)
+                        url_match = re.search(r'(?:URL:\s*)?(?:\[)?(https?://[^\s\)\]]+)(?:\])?', line_stripped)
                         if url_match and citation_entries:
                             citation_entries[-1]['url'] = url_match.group(1).strip()
                             logger.debug(f"[_add_formatted_content] Attached URL to previous citation: {citation_entries[-1]['url'][:40]}...")
@@ -2435,19 +2451,23 @@ def _add_text_with_formatting(para, text):
     while pos < len(text_with_placeholders):
         # Check for placeholder (hyperlink)
         placeholder_match = re.search(r'__LINK_PLACEHOLDER_\d+__', text_with_placeholders[pos:])
+        # Check for bracketed URL [https://...] so it becomes clickable in Word
+        bracketed_url_match = re.search(r'\[(https?://[^\]]+)\]', text_with_placeholders[pos:])
         # Check for bold
         bold_match = re.search(r'\*\*(.+?)\*\*', text_with_placeholders[pos:])
         # Check for italic
         italic_match = re.search(r'(?<!\*)\*([^\*]+?)\*(?!\*)', text_with_placeholders[pos:])
         # Check for plain URL (that wasn't converted to markdown)
-        # Match https?:// followed by non-whitespace characters, but stop at closing parens or end of string
+        # Match https?:// followed by non-whitespace characters, but stop at closing parens/brackets or end of string
         # Note: NOT stopping at dots since dots are normal in URLs
-        url_match = re.search(r'https?://[^\s)]+(?=[)\s]|$)', text_with_placeholders[pos:])
+        url_match = re.search(r'https?://[^\s)\]]+(?=[)\]\s]|$)', text_with_placeholders[pos:])
         
         # Collect matches with positions
         matches = []
         if placeholder_match:
             matches.append(('placeholder', pos + placeholder_match.start(), placeholder_match))
+        if bracketed_url_match:
+            matches.append(('bracketed_url', pos + bracketed_url_match.start(), bracketed_url_match))
         if bold_match:
             matches.append(('bold', pos + bold_match.start(), bold_match))
         if italic_match:
@@ -2480,6 +2500,11 @@ def _add_text_with_formatting(para, text):
                 link_text, link_url = link_placeholders[placeholder_text]
                 add_hyperlink(para, link_url, link_text)
             pos = match_pos + len(placeholder_text)
+        
+        elif match_type == 'bracketed_url':
+            url = match.group(1).strip()
+            add_hyperlink(para, url, url)
+            pos = match_pos + len(match.group(0))
         
         elif match_type == 'bold':
             bold_text = match.group(1)
