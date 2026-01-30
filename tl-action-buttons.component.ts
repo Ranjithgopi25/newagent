@@ -334,43 +334,26 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
     if reset_numbering and list_type in ['number', 'alpha_upper', 'alpha_lower']:
         num_id = _create_new_numbering_instance(doc, list_type, 0)
     
+    url_pattern = re.compile(r'(https?://\S+)')
     for item in list_items:
         content = item.get('content', '')
         level = item.get('level', 0)
         parsed = item.get('parsed', parse_bullet(content))
-        
         # Determine style based on list type and level
         if list_type == 'bullet':
-            if level >= 1:
-                style_name = "List Bullet 2"
-            else:
-                style_name = "List Bullet"
+            style_name = "List Bullet 2" if level >= 1 else "List Bullet"
         elif list_type == 'number':
-            if level >= 1:
-                style_name = "List Number 2"
-            else:
-                style_name = "List Number"
+            style_name = "List Number 2" if level >= 1 else "List Number"
         elif list_type == 'alpha_upper':
-            if level >= 1:
-                style_name = "List Alpha 2"
-            else:
-                style_name = "List Alpha"
+            style_name = "List Alpha 2" if level >= 1 else "List Alpha"
         elif list_type == 'alpha_lower':
-            if level >= 1:
-                style_name = "List Alpha 2"
-            else:
-                style_name = "List Alpha"
+            style_name = "List Alpha 2" if level >= 1 else "List Alpha"
         else:
-            # Default to List Bullet
             style_name = "List Bullet" if level == 0 else "List Bullet 2"
-        
         try:
             para = doc.add_paragraph(style=style_name)
         except:
-            # Fallback if style doesn't exist
             para = doc.add_paragraph(style="List Bullet")
-        
-        # Apply custom numbering if reset_numbering is True
         if num_id is not None:
             pPr = para._p.get_or_add_pPr()
             numPr = OxmlElement("w:numPr")
@@ -380,15 +363,9 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
             numId_elem.set(qn("w:val"), str(num_id))
             numPr.extend([ilvl, numId_elem])
             pPr.append(numPr)
-        
-        # Apply Body Text style configuration
         _apply_body_text_style_word(para)
-        
-        # Remove number/letter/bullet prefix if present
-        # If force_bullet_style is True, remove all prefixes (numbered/alphabetical/bullet) to show only bullet icons
         clean_content = content
         if force_bullet_style:
-            # Remove any number, letter, or bullet prefix when forcing bullet style
             clean_content = re.sub(r'^\d+\.\s+', '', content.strip())
             clean_content = re.sub(r'^[A-Za-z]\.\s+', '', clean_content.strip())
             clean_content = re.sub(r'^[•\-\*]\s+', '', clean_content.strip())
@@ -398,15 +375,22 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
             clean_content = re.sub(r'^[A-Za-z]\.\s+', '', content.strip())
         elif list_type == 'bullet':
             clean_content = re.sub(r'^[•\-\*]\s+', '', content.strip())
-        
-        # Reconstruct with consistent formatting
-        if parsed.get('label') and parsed.get('body'):
-            # Format: "Label: Body" with label bold
+        # If the content contains a URL, add as hyperlink
+        match = url_pattern.search(clean_content)
+        if match:
+            url = match.group(1)
+            before_url = clean_content.split(url)[0].strip()
+            after_url = clean_content.split(url)[1].strip() if len(clean_content.split(url)) > 1 else ""
+            if before_url:
+                para.add_run(sanitize_text_for_word(before_url) + " ")
+            add_hyperlink_edit_content_citation(para, url)
+            if after_url:
+                para.add_run(" " + sanitize_text_for_word(after_url))
+        elif parsed.get('label') and parsed.get('body'):
             run = para.add_run(sanitize_text_for_word(parsed['label']))
             run.bold = True
             para.add_run(f": {sanitize_text_for_word(parsed['body'])}")
         else:
-            # No colon, add as-is
             _add_markdown_text_runs(para, clean_content)
 
 def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_style: ParagraphStyle, 
@@ -423,11 +407,11 @@ def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_s
     # Create list items - all use bullet icons, remove any number/letter prefixes
     pdf_list_items = []
     
+    url_pattern = re.compile(r'(https?://\S+)')
     for item in list_items:
         content = item.get('content', '')
         level = item.get('level', 0)
         parsed = item.get('parsed', parse_bullet(content))
-        
         # Remove any existing number/letter/bullet prefix (all lists use bullet icons)
         clean_content = content
         if list_type == 'number':
@@ -436,15 +420,24 @@ def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_s
             clean_content = re.sub(r'^[A-Za-z]\.\s+', '', content.strip())
         elif list_type == 'bullet':
             clean_content = re.sub(r'^[•\-\*]\s+', '', content.strip())
-        
-        # Reconstruct with consistent formatting
-        if parsed.get('label') and parsed.get('body'):
+
+        # If the content is a citation with a URL, make it clickable
+        # Detect if the content is just a URL or ends with a URL
+        match = url_pattern.search(clean_content)
+        if match:
+            url = match.group(1)
+            # If the whole content is just the URL, use it as the link text
+            if clean_content.strip() == url:
+                formatted_text = f'<a href="{url}">{url}</a>'
+            else:
+                # Replace the URL in the text with a clickable link
+                formatted_text = _format_content_for_pdf(clean_content).replace(url, f'<a href="{url}">{url}</a>')
+        elif parsed.get('label') and parsed.get('body'):
             # Format: "Label: Body" with label bold
             formatted_text = f"<b>{_format_content_for_pdf(parsed['label'])}</b>: {_format_content_for_pdf(parsed['body'])}"
         else:
             # No colon, add as-is
             formatted_text = _format_content_for_pdf(clean_content)
-        
         pdf_list_items.append(ListItem(Paragraph(formatted_text, body_style)))
     
     # Determine spacing (same as PDF current logic)
