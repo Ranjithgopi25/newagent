@@ -243,9 +243,9 @@ export function convertMarkdownToHtml(markdown: string): string {
     return before + `<a href="${escAttr(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${escHtml(urlTrimmed)}</a>`;
   });
 
-  // List styles: match paragraph/export (11pt, Helvetica/Arial, line-height 1.5), tight spacing between list items (citations)
+  // List styles: match Word/PDF export (11pt, Helvetica, line-height 1.5); citation list below heading uses same spacing as export
   const listBlockStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.25em; margin-bottom: 0.5em;";
-  const listBlockStyleAfterHeading = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.2em; margin-bottom: 0.5em;";
+  const listBlockStyleAfterHeading = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.2em; margin-bottom: 0.5em;"; // matches export heading spaceAfter + list spacing
   const listItemStyle = "display: list-item; margin: -3.95em 0 0.2em 0;";
 
   const lines = html.split('\n');
