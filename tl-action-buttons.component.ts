@@ -238,9 +238,9 @@ export function convertMarkdownToHtml(markdown: string): string {
     return before + `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer">${escHtml(url)}</a>`;
   });
 
-  // List styles: match paragraph/export (11pt, Helvetica/Arial, line-height 1.5, spacing)
+  // List styles: match paragraph/export (11pt, Helvetica/Arial, line-height 1.5), tight spacing between list items (citations)
   const listBlockStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.25em; margin-bottom: 0.5em;";
-  const listItemStyle = "display: list-item; margin: 0.15em 0 0.5em 0;";
+  const listItemStyle = "display: list-item; margin: 0.05em 0 0.2em 0;";
 
   const lines = html.split('\n');
   const processedLines: string[] = [];
