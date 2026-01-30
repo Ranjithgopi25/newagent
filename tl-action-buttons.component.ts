@@ -210,19 +210,22 @@ export function convertMarkdownToHtml(markdown: string): string {
     const escAttr = (s: string) => escHtml(s).replace(/"/g, '&quot;');
     const text = escHtml(textRaw);
 
+    // Citation-style link: add class for blue, underlined styling (PDF-like)
+    const isCitationStyle = /^url:\s*https?:\/\//i.test(hrefRaw) || /^\d+$/.test(textRaw.trim());
+
     // Handle "(URL: https://...)" (case-insensitive)
     const citationUrlMatch = hrefRaw.match(/^url:\s*(https?:\/\/\S+)\s*$/i);
     if (citationUrlMatch && citationUrlMatch[1]) {
       const url = citationUrlMatch[1];
       const urlAttr = escAttr(url);
       const urlText = escHtml(url);
-      // Show both the title and the URL (common expectation for citation blocks)
-      // return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(${urlText})</span>`;
-      return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${urlText}</a>)</span>`;
+      const linkClass = ' class="citation-link"';
+      return `<a href="${urlAttr}"${linkClass} target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(<a href="${urlAttr}"${linkClass} target="_blank" rel="noopener noreferrer">${urlText}</a>)</span>`;
     }
 
-    // Standard markdown link
-    return `<a href="${escAttr(hrefRaw)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+    // Standard markdown link (citation if link text is a digit, e.g. [1](url))
+    const linkClass = isCitationStyle ? ' class="citation-link"' : '';
+    return `<a href="${escAttr(hrefRaw)}"${linkClass} target="_blank" rel="noopener noreferrer">${text}</a>`;
   });
 
   // Spacing: ensure one space before (https:// when preceded by ), ], or superscript (e.g. )²(https:// -> )² (https://)
@@ -552,13 +555,13 @@ export function formatFinalArticleWithBlockTypes(
       } else {
         const headingLevel = blockInfo.level || 1;
         const headingTag = `h${Math.min(Math.max(headingLevel, 1), 6)}`;
-        output.push(`<${headingTag} style="font-size: 14pt; font-weight: 700; font-family: 'Helvetica-Bold', 'Arial Bold', sans-serif; display: block; margin-top: 0.9em; margin-bottom: 0.2em; color: #000000;">${formatted}</${headingTag}>`);
+        output.push(`<${headingTag} style="font-size: 14pt; font-weight: 700; font-family: 'Helvetica-Bold', 'Arial Bold', sans-serif; display: block; margin-top: 0.9em; margin-bottom: 0.2em; color: #000000; text-align: left;">${formatted}</${headingTag}>`);
       }
     } else {
       // Remaining blocks: show as-is from backend (raw text, no markdown → HTML)
       const safe = escapeHtml(trimmedPara);
       const withBreaks = safe.replace(/\n/g, '<br>');
-      output.push(`<p style="white-space: pre-wrap;">${withBreaks}</p>`);
+      output.push(`<p style="white-space: pre-wrap; font-weight: normal; text-align: left;">${withBreaks}</p>`);
     }
   }
 
