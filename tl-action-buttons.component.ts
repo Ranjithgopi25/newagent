@@ -375,21 +375,15 @@ def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str,
             clean_content = re.sub(r'^[A-Za-z]\.\s+', '', content.strip())
         elif list_type == 'bullet':
             clean_content = re.sub(r'^[•\-\*]\s+', '', content.strip())
-        # If the content contains a URL, add as hyperlink (use add_hyperlink for clickable links)
+        # If the content contains a URL, use same path as paragraph middle so link is clickable (via _add_markdown_text_runs -> add_hyperlink)
         match = url_pattern.search(clean_content)
         if match:
             url = match.group(1)
             before_url = clean_content.split(url)[0].strip()
             after_url = clean_content.split(url)[1].strip() if len(clean_content.split(url)) > 1 else ""
-            if before_url:
-                para.add_run(sanitize_text_for_word(before_url) + " ")
             url_norm = _normalize_citation_url_for_word(url)
-            add_hyperlink(para, url_norm, sanitize_text_for_word(url) or url, no_break=True, doc=doc)
-            # Ensure there is a run after the hyperlink (Word/Word Online often need this for link to be clickable)
-            if after_url:
-                para.add_run(" " + sanitize_text_for_word(after_url))
-            else:
-                para.add_run(" ")
+            content_for_runs = (before_url + " " + url_norm + (" " + after_url if after_url else "")).strip()
+            _add_markdown_text_runs(para, content_for_runs)
         elif parsed.get('label') and parsed.get('body'):
             run = para.add_run(sanitize_text_for_word(parsed['label']))
             run.bold = True
