@@ -3011,45 +3011,50 @@
     }
   }
   
-  // Citations section at the end - match paragraph font and size
+  // Citations section - match edit-content.utils / PDF-Word export: 11pt, Helvetica/Arial, line-height 1.5
   .citations-section {
     margin-top: 2rem;
     padding-top: 1.5rem;
     border-top: 1px solid var(--border-color);
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-    font-size: 1rem;
+    font-family: 'Helvetica', 'Arial', sans-serif;
+    font-size: 11pt;
+    line-height: 1.5;
 
     h4 {
-      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      font-size: 1.25rem;
+      font-family: 'Helvetica', 'Arial', sans-serif;
+      font-size: 11pt;
       font-weight: 600;
       color: var(--text-secondary);
-      margin-bottom: 0.5rem;
+      margin-top: 0;
+      margin-bottom: 0.2em;
+      line-height: 1.5;
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
 
     .citation-item {
-      margin-bottom: 0.375rem;
+      margin-top: 0;
+      margin-bottom: 0.5em;
       padding-left: 0.5rem;
-      line-height: 1.6;
-      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      font-size: 1rem;
+      line-height: 1.5;
+      font-family: 'Helvetica', 'Arial', sans-serif;
+      font-size: 11pt;
 
       .citation-number {
-        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-        font-size: 1rem;
+        font-family: 'Helvetica', 'Arial', sans-serif;
+        font-size: 11pt;
         font-weight: 600;
         color: var(--pwc-orange);
       }
 
       .citation-url {
-        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-        font-size: 1rem;
+        font-family: 'Helvetica', 'Arial', sans-serif;
+        font-size: 11pt;
+        line-height: 1.5;
         color: var(--text-secondary);
         word-break: break-all;
         display: block;
-        margin-top: 0.25rem;
+        margin-top: 0.15em;
       }
     }
   }
