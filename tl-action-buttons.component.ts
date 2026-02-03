@@ -1,2541 +1,779 @@
-from typing import List, Dict
+/**
+ * Shared utility functions for Edit Content workflow
+ * Ensures deterministic results across Quick Start and Guided Journey flows
+ * 
+ * NOTE: EDITOR_ORDER and EDITOR_NAME_MAP must match backend constants in
+ * edit_content_service.py for consistent behavior between frontend and backend
+ */
+import { environment } from "../../../environments/environment";
+// Editor processing order (must match backend EDITOR_ORDER in edit_content_service.py)
+export const EDITOR_ORDER = ['development', 'content', 'line', 'copy', 'brand-alignment'] as const;
 
-BASE_OUTPUT_FORMAT = """
-### BASE OUTPUT FORMAT (MANDATORY)
+export type EditorType = 'development' | 'content' | 'line' | 'copy' | 'brand-alignment';
 
-You MUST return EXACTLY one JSON object for EVERY block in the input `document_json`.
+/**
+ * Normalize editor IDs to ensure consistent ordering for deterministic results.
+ * Ensures brand-alignment is always included and editors are in the correct order.
+ * 
+ * @param editorIds - Array of editor IDs to normalize
+ * @returns Normalized array of editor IDs in EDITOR_ORDER sequence
+ */
+export function normalizeEditorOrder(editorIds: string[]): string[] {
+  // Create a copy to avoid mutating the input
+  let normalized = [...editorIds];
+  
+  // Ensure brand-alignment is always included
+  if (!normalized.includes('brand-alignment')) {
+    normalized.push('brand-alignment');
+  }
+  
+  // Filter and order according to EDITOR_ORDER for deterministic results
+  return EDITOR_ORDER.filter(editor => normalized.includes(editor));
+}
 
-This rule is absolute.  
-You must NOT skip, omit, exclude, or collapse any block — even if no edits are required.
+/**
+ * Normalize content text to ensure consistent processing.
+ * Trims whitespace and normalizes line endings.
+ * 
+ * @param content - Content text to normalize
+ * @returns Normalized content text
+ */
+export function normalizeContent(content: string): string {
+  if (!content) {
+    return '';
+  }
+  
+  // Trim leading/trailing whitespace
+  let normalized = content.trim();
+  
+  // Normalize line endings to \n (Unix-style)
+  normalized = normalized.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  
+  // Remove trailing whitespace from each line (but preserve structure)
+  // This ensures consistent processing without changing content meaning
+  normalized = normalized.split('\n')
+    .map(line => line.trimEnd())
+    .join('\n');
+  
+  return normalized;
+}
 
-------------------------------------------------------------
-REQUIRED STRUCTURE FOR EACH BLOCK
-------------------------------------------------------------
+/**
+ * Compute a simple hash of content for verification purposes.
+ * Used to verify identical inputs are being processed.
+ * 
+ * @param content - Content to hash
+ * @returns Hash string
+ */
+export function hashContent(content: string): string {
+  if (!content) {
+    return 'empty';
+  }
+  
+  // Simple hash function for verification
+  let hash = 0;
+  for (let i = 0; i < content.length; i++) {
+    const char = content.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  
+  return Math.abs(hash).toString(36);
+}
 
-Each output item MUST have this structure:
+/**
+ * Extract document title from content.
+ * Checks for H1 heading first, then first line if it looks like a title,
+ * otherwise falls back to filename.
+ * 
+ * @param content - Document content text
+ * @param filename - Optional filename to use as fallback
+ * @returns Extracted title
+ */
+export function extractDocumentTitle(content: string, filename?: string): string {
+  if (!content || !content.trim()) {
+    // Fallback to filename if no content
+    if (filename) {
+      return filename.replace(/\.[^/.]+$/, '').trim();
+    }
+    return 'Revised Article';
+  }
 
-{
-  "id": "b3",
-  "suggested_text": "FULL rewritten text for this block, or the original if unchanged",
-  "feedback_edit": {
-      "<editor_key>": [
-          {
-              "issue": "\"exact substring from original\"",
-              "fix": "\"exact replacement used\"",
-              "impact": "Short explanation of importance",
-              "rule_used": "[Editor Name] - <Rule Name>",
-              "priority": "Critical | Important | Enhancement"
+  const normalizedContent = normalizeContent(content);
+  const lines = normalizedContent.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+
+  if (lines.length === 0) {
+    // Fallback to filename if no content lines
+    if (filename) {
+      return filename.replace(/\.[^/.]+$/, '').trim();
+    }
+    return 'Revised Article';
+  }
+
+  // Check for H1 heading at the start (# Title)
+  const firstLine = lines[0];
+  const h1Match = firstLine.match(/^#\s+(.+)$/);
+  if (h1Match && h1Match[1]) {
+    return h1Match[1].trim();
+  }
+
+  // Check if first line looks like a title
+  // Criteria: short (less than 100 chars), starts with capital, no ending punctuation (except ? or !)
+  if (firstLine.length > 0 && firstLine.length < 100) {
+    const firstChar = firstLine[0];
+    const lastChar = firstLine[firstLine.length - 1];
+    
+    // Check if starts with capital letter or number
+    const startsWithCapital = /^[A-Z0-9]/.test(firstChar);
+    
+    // Check if doesn't end with period, comma, or semicolon (but allow ? or !)
+    const endsWithPunctuation = /[.,;]$/.test(lastChar);
+    
+    // Check if it's not a list item or code block
+    const isListItem = /^[-*+\d.]\s/.test(firstLine);
+    const isCodeBlock = firstLine.startsWith('```') || firstLine.startsWith('`');
+    
+    if (startsWithCapital && !endsWithPunctuation && !isListItem && !isCodeBlock) {
+      return firstLine;
+    }
+  }
+
+  // Fallback to filename
+  if (filename) {
+    return filename.replace(/\.[^/.]+$/, '').trim();
+  }
+
+  return 'Revised Article';
+}
+
+/** Editor name mapping (must match backend EDITOR_NAMES in edit_content_service.py) */
+const EDITOR_NAME_MAP: { [key: string]: string } = {
+  'development': 'Development Editor',
+  'content': 'Content Editor',
+  'line': 'Line Editor',
+  'copy': 'Copy Editor',
+  'brand-alignment': 'PwC Brand Alignment Editor'
+};
+
+/** Get editor display name by ID */
+export function getEditorDisplayName(editorId: string): string {
+  return EDITOR_NAME_MAP[editorId] || editorId;
+}
+
+/** Format markdown text to HTML for basic formatting (bold, italic, line breaks) */
+export function formatMarkdown(text: string): string {
+  let formatted = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  formatted = formatted.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  formatted = formatted.replace(/\n/g, '<br>');
+  return formatted;
+}
+
+/** Convert markdown text to HTML with proper formatting for headings, lists, paragraphs, etc. */
+export function convertMarkdownToHtml(markdown: string): string {
+  if (!markdown || !markdown.trim()) {
+    return '';
+  }
+
+  let html = markdown;
+
+  // Style guide: Body Text 11pt, 1.25 line spacing; Heading 1–4 differentiated; List Bullet/Number/Alpha same as Body Text
+  const bodyFont = '11pt';
+  const bodyLineHeight = '1.25';
+  const fontFamily = "'Helvetica', 'Arial', sans-serif";
+  const bodyColor = '#000000';
+
+  const titleStyle = `font-size: 20pt; font-weight: 700; font-family: ${fontFamily}; text-align: center; color: ${bodyColor}; margin: 0.25em 0 0.5em; line-height: 1.2;`;
+  const h2Style = `font-size: 18pt; font-weight: 700; font-family: ${fontFamily}; color: ${bodyColor}; margin: 0.9em 0 0.2em; line-height: 1.2;`;
+  const h3Style = `font-size: 14pt; font-weight: 700; font-family: ${fontFamily}; color: ${bodyColor}; margin: 0.7em 0 0.2em; line-height: 1.2;`;
+  const h4Style = `font-size: 12pt; font-weight: 700; font-family: ${fontFamily}; color: ${bodyColor}; margin: 0.5em 0 0.2em; line-height: 1.2;`;
+  const h5Style = `font-size: ${bodyFont}; font-weight: 700; font-family: ${fontFamily}; color: ${bodyColor}; margin: 0.4em 0 0.2em; line-height: ${bodyLineHeight};`;
+  const h6Style = `font-size: ${bodyFont}; font-weight: 600; font-family: ${fontFamily}; color: ${bodyColor}; margin: 0.35em 0 0.2em; line-height: ${bodyLineHeight};`;
+
+  html = html.replace(/^######\s+(.+)$/gm, `<h6 style="${h6Style}">$1</h6>`);
+  html = html.replace(/^#####\s+(.+)$/gm, `<h5 style="${h5Style}">$1</h5>`);
+  html = html.replace(/^####\s+(.+)$/gm, `<h4 style="${h4Style}">$1</h4>`);
+  html = html.replace(/^###\s+(.+)$/gm, `<h3 style="${h3Style}">$1</h3>`);
+  html = html.replace(/^##\s+(.+)$/gm, `<h2 style="${h2Style}">$1</h2>`);
+  html = html.replace(/^#\s+(.+)$/gm, `<h1 style="${titleStyle}">$1</h1>`);
+
+  html = html.replace(/^---$/gm, '<hr>');
+  html = html.replace(/^\*\*\*$/gm, '<hr>');
+
+  // Bold: only convert when content does not span a newline (avoid whole-paragraph bold from LLM)
+  html = html.replace(/\*\*([^*]+)\*\*/g, (_m, inner) => inner.includes('\n') ? inner : `<strong>${inner}</strong>`);
+  html = html.replace(/__([^_]+)__/g, (_m, inner) => inner.includes('\n') ? inner : `<strong>${inner}</strong>`);
+
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Links:
+  // - Standard markdown: [text](https://example.com)
+  // - Backend citation variant: [Title](URL: https://example.com)
+  //   If we don't strip "URL:", the href becomes invalid ("URL: https://...").
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, linkText, rawHref) => {
+    const textRaw = String(linkText ?? '');
+    const hrefRaw = String(rawHref ?? '').trim();
+
+    // Minimal escaping to avoid breaking attributes / HTML structure.
+    // Note: this utility already does simplistic markdown->HTML transforms elsewhere.
+    const escHtml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escAttr = (s: string) => escHtml(s).replace(/"/g, '&quot;');
+    const text = escHtml(textRaw);
+
+    // Handle "(URL: https://...)" (case-insensitive). URL can wrap across newlines so long citation URLs are fully clickable.
+    const citationUrlMatch = hrefRaw.match(/^url:\s*(https?:\/\/[^\s)]*(?:\n[^\s)]*)*)\s*$/i);
+    if (citationUrlMatch && citationUrlMatch[1]) {
+      const url = citationUrlMatch[1].replace(/\n/g, '').trim();
+      const urlAttr = escAttr(url);
+      const urlText = escHtml(url);
+      // Show both the title and the URL (common expectation for citation blocks)
+      // return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(${urlText})</span>`;
+      return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${urlText}</a>)</span>`;
+    }
+
+    // Standard markdown link
+    return `<a href="${escAttr(hrefRaw)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+  });
+
+  // Spacing: ensure one space before (https:// when preceded by ), ], or superscript (e.g. )²(https:// -> )² (https://)
+  html = html.replace(/([)\]⁰¹²³⁴⁵⁶⁷⁸⁹])(\s*)(\()(https?:\/\/)/g, '$1 $3$4');
+
+  // Plain URLs: in References "8. Title. https://...", in-paragraph "(https://...)" or "[https://...]" -> clickable links
+  // Preceding char: start, whitespace, >, ., ), (, [ so (https:// and [https:// are matched.
+  // URL can span newlines (allow \n in middle) so long citation URLs that wrap are not cut off.
+  const escAttr = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const escHtml = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Match URL: allow newlines inside so wrapped URLs are captured in full (stops at space, <, ", ])
+  html = html.replace(/(^|[\s>.)(\[])(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)/g, (_match, before, url) => {
+    const urlTrimmed = url.replace(/\n/g, ' ').trim();
+    return before + `<a href="${escAttr(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${escHtml(urlTrimmed)}</a>`;
+  });
+
+  // List styles: Body Text 11pt, 1.25 line spacing (List Bullet / List Number / List Alpha style)
+  const listBlockStyle = `font-size: ${bodyFont}; font-family: ${fontFamily}; line-height: ${bodyLineHeight}; margin-top: 0.25em; margin-bottom: 0.5em; padding-left: 1.5rem;`;
+  const listBlockStyleAfterHeading = `font-size: ${bodyFont}; font-family: ${fontFamily}; line-height: ${bodyLineHeight}; margin-top: 0.2em; margin-bottom: 0.5em; padding-left: 1.5rem;`;
+  const ulStyle = listBlockStyle + ' list-style-type: disc;';
+  const ulStyleAfterHeading = listBlockStyleAfterHeading + ' list-style-type: disc;';
+  const olStyle = listBlockStyle + ' list-style-type: decimal;';
+  const olStyleAfterHeading = listBlockStyleAfterHeading + ' list-style-type: decimal;';
+  const listItemStyle = `font-size: ${bodyFont}; font-family: ${fontFamily}; line-height: ${bodyLineHeight}; display: list-item; margin: 0.05em 0 0.2em 0;`;
+  const paragraphStyle = `font-size: ${bodyFont}; font-family: ${fontFamily}; line-height: ${bodyLineHeight}; margin: 0 0 0.75em; color: ${bodyColor};`;
+
+  const lines = html.split('\n');
+  const processedLines: string[] = [];
+  let inUnorderedList = false;
+  let inOrderedList = false;
+  let lastOrderedNumber = 0; // Track last number to detect gaps
+
+  const lastProcessedLineIsHeading = () => {
+    for (let j = processedLines.length - 1; j >= 0; j--) {
+      const s = processedLines[j].trim();
+      if (!s) continue;
+      return /<\/h[1-6]>$/i.test(s) || /^<h[1-6]\b/i.test(s);
+    }
+    return false;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmedLine = line.trim();
+
+    const unorderedMatch = trimmedLine.match(/^[-*]\s+(.+)$/);
+    const orderedMatch = trimmedLine.match(/^(\d+)\.\s+(.+)$/);
+
+    if (unorderedMatch) {
+      if (!inUnorderedList) {
+        if (inOrderedList) {
+          processedLines.push('</ol>');
+          inOrderedList = false;
+          lastOrderedNumber = 0; // Reset counter when closing ordered list
+        }
+        const ulListStyle = lastProcessedLineIsHeading() ? ulStyleAfterHeading : ulStyle;
+        processedLines.push(`<ul style="${ulListStyle}">`);
+        inUnorderedList = true;
+      }
+      processedLines.push(`<li style="${listItemStyle}">${unorderedMatch[1]}</li>`);
+    } else if (orderedMatch) {
+      const originalNumber = parseInt(orderedMatch[1], 10);
+      const itemText = orderedMatch[2];
+      
+      // Check if this is a new ordered list (gap in numbering or first item)
+      const isNewList = !inOrderedList || (lastOrderedNumber > 0 && originalNumber < lastOrderedNumber);
+      
+      if (isNewList) {
+        if (inUnorderedList) {
+          processedLines.push('</ul>');
+          inUnorderedList = false;
+        }
+        if (inOrderedList) {
+          processedLines.push('</ol>');
+        }
+        const olListStyle = lastProcessedLineIsHeading() ? olStyleAfterHeading : olStyle;
+        processedLines.push(`<ol style="${olListStyle}">`);
+        inOrderedList = true;
+        lastOrderedNumber = 0; // Reset counter for new list
+      }
+      
+      // Preserve original number using value attribute to maintain correct citation order
+      // This is critical for citations which must maintain their original numbering (1, 2, 3...)
+      processedLines.push(`<li value="${originalNumber}" style="${listItemStyle}">${itemText}</li>`);
+      lastOrderedNumber = originalNumber;
+    } else {
+      if (inUnorderedList) {
+        processedLines.push('</ul>');
+        inUnorderedList = false;
+      }
+      if (inOrderedList) {
+        processedLines.push('</ol>');
+        inOrderedList = false;
+        lastOrderedNumber = 0; // Reset counter when closing ordered list
+      }
+
+      if (trimmedLine) {
+        if (trimmedLine.startsWith('<')) {
+          processedLines.push(line);
+        } else {
+          processedLines.push(`<p style="${paragraphStyle}">${trimmedLine}</p>`);
+        }
+      } else {
+        processedLines.push('');
+      }
+    }
+  }
+
+  if (inUnorderedList) {
+    processedLines.push('</ul>');
+  }
+  if (inOrderedList) {
+    processedLines.push('</ol>');
+    lastOrderedNumber = 0; // Reset counter when closing ordered list
+  }
+
+  html = processedLines.join('\n');
+  html = html.replace(/(<p><\/p>\n?)+/g, '<p></p>');
+  html = html.replace(/<p>\s*<\/p>/g, '');
+
+  // Wrap in a div with base font size so entire block (including links, code) uses body typography
+  const baseBlockStyle = `font-size: ${bodyFont}; font-family: ${fontFamily}; line-height: ${bodyLineHeight}; color: ${bodyColor};`;
+  return `<div class="markdown-rendered" style="${baseBlockStyle}">${html}</div>`;
+}
+
+/** 
+ * Extract text from uploaded file
+ * Note: This uses fetch() without auth headers. For authenticated requests,
+ * callers should use their injected HttpClient or AuthFetchService instead.
+ * This function is kept for backward compatibility but may not work if
+ * backend requires authentication.
+ * 
+ * @deprecated Use HttpClient or AuthFetchService in components/services instead
+ */
+export async function extractFileText(file: File): Promise<string> {
+  const formData = new FormData();
+  formData.append('file', file);
+  
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  
+  // Get auth token if available (for non-Angular contexts)
+  const headers: HeadersInit = {};
+  
+  // Try to get token from sessionStorage (MSAL stores it there)
+  // This is a workaround since we can't inject AuthService in a utility function
+  try {
+    // Check if we're in a browser environment
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      // Look for MSAL tokens in sessionStorage
+      // MSAL stores tokens with keys like: "<clientId>.<tenantId>.<idtoken/accesstoken>"
+      const keys = Object.keys(sessionStorage);
+      const idTokenKey = keys.find(key => 
+        key.includes('idtoken') && 
+        key.includes(environment.clientId || '')
+      );
+      
+      if (idTokenKey) {
+        const tokenData = sessionStorage.getItem(idTokenKey);
+        if (tokenData) {
+          try {
+            const parsed = JSON.parse(tokenData);
+            const secret = parsed.secret;
+            if (secret) {
+              headers['Authorization'] = `Bearer ${secret}`;
+              console.log('[extractFileText] Added auth token from sessionStorage');
+            }
+          } catch (e) {
+            console.warn('[extractFileText] Failed to parse token from sessionStorage:', e);
           }
-      ]
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[extractFileText] Failed to get auth token:', e);
   }
-}
-
-------------------------------------------------------------
-RULES FOR UNCHANGED BLOCKS
-------------------------------------------------------------
-If the block requires NO edits:
-- suggested_text MUST equal the original text exactly.
-- feedback_edit MUST be an empty object: {}
-
-------------------------------------------------------------
-PLAIN TEXT ONLY — NO MARKUP (MANDATORY)
-------------------------------------------------------------
-All text fields MUST contain ONLY plain text. You MUST NOT output any markup.
-
-- suggested_text: plain text ONLY. No HTML, no XML, no span/div/class tags.
-- In feedback_edit: "issue" and "fix" MUST be plain text ONLY. No markup.
-
-FORBIDDEN in suggested_text, issue, and fix:
-- HTML/XML tags (e.g. <span>, </span>, class="...", highlight-yellow, strikeout)
-- Any literal strings like: span class="strikeout highlight-yellow">, span class="highlight green">
-- Markdown or rich-text formatting intended for display (e.g. **bold**, _italic_ as formatting)
-
-If you are tempted to "mark" removed or added text with tags, do NOT do it. Output only the actual prose. The UI will handle highlighting; your output must be clean plain text.
-
-------------------------------------------------------------
-GLOBAL RULES
-------------------------------------------------------------
-1. The number of output objects MUST equal the number of input blocks.
-2. NEVER output an empty list ([]).
-3. NEVER output only edited blocks — ALWAYS output ALL blocks.
-4. NEVER omit an ID.
-5. NEVER add, remove, merge, split, or invent blocks.
-6. Output MUST be valid JSON containing ONLY the list of edited blocks.
-7. Do NOT wrap JSON in quotes, markdown fences, prose, or commentary.
-
-------------------------------------------------------------
-EDITOR KEY
-------------------------------------------------------------
-Use ONLY one of the following keys depending on the active editor:
-- development
-- content
-- line
-- copy
-- brand
-
-"""
-
-# ------------------------------------------------------------
-# 2. DEVELOPMENT EDITOR PROMPT
-# ------------------------------------------------------------
-
-DEVELOPMENT_EDITOR_PROMPT = """
-ROLE:
-You are the Development Editor for PwC thought leadership content.
-
-OBJECTIVE:
-Apply development-level editing to strengthen structure, narrative arc, logic, theme, tone, and point of view, while strictly preserving the original meaning, intent, and factual content.
-
-You are responsible for ensuring the content reflects PwC’s Development Editor standards and PwC’s verbal brand voice: Collaborative, Bold, and Optimistic.
-
-============================================================
-DEVELOPMENT EDITOR — KEY IMPROVEMENTS REQUIRED
-============================================================
-
-You MUST actively enforce the following outcomes across the ENTIRE ARTICLE,
-not only within individual paragraphs:
-
-1. STRONGER POV AND CONFIDENCE
-- Eliminate unnecessary qualifiers, hedging, and passive constructions
-- Assert a clear, decisive point of view appropriate for PwC thought leadership
-- Frame insights as informed judgments, not tentative observations
-- Where ambiguity exists, YOU MUST resolve it in favor of clarity and authority
-
-2. MORE ENERGY AND DIRECTION
-- Favor active voice and forward-looking language
-- Emphasize momentum, progress, and opportunity
-- Ensure ideas point toward outcomes, implications, or decisions—not explanation alone
-- If content explains without directing, YOU MUST revise it to introduce consequence or action
-
-3. BETTER AUDIENCE ENGAGEMENT
-- Address the reader directly where appropriate (“you,” “your organization”)
-- Use inclusive, partnership-oriented language (“we,” “together”)
-- Position PwC as a trusted guide helping the reader navigate decisions
-- Avoid detached, academic, or observational tone
-
-============================================================
-ROLE ENFORCEMENT — ABSOLUTE
-============================================================
-
-You MUST operate ONLY as a Development Editor.
-You are NOT a Content Editor, Copy Editor, or Line Editor.
-
-If a change cannot be clearly justified as a DEVELOPMENT-LEVEL
-responsibility (structure, narrative arc, logical progression,
-thematic framing, tone, or point of view), YOU MUST NOT make it.
-
-============================================================
-RESPONSIBILITIES — STRICT (MANDATORY)
-============================================================
-
-STRUCTURE & NARRATIVE
-- Strengthen the overall structure and narrative arc of the FULL ARTICLE
-- Establish a single, clear central argument early
-- Improve logical flow and progression ACROSS sections and paragraphs
-- Reorder, restructure, consolidate, or remove sections where required
-- Eliminate tangents, thematic drift, redundancy, and overlap (mandatory)
-
-THEME & FRAMING
-- Ensure thematic coherence from introduction to conclusion
-- Ensure each section clearly contributes to the same central narrative
-- Resolve ambiguity, contradiction, or weak positioning at the IDEA level
-- If a theme is introduced, it MUST be meaningfully developed or removed
-
-============================================================
-ARTICLE-LEVEL ENFORCEMENT — MANDATORY
-============================================================
-
-CRITICAL: The Development Editor MUST operate at the FULL ARTICLE LEVEL.
-Working only within individual paragraphs or isolated sections is NON-COMPLIANT.
-You MUST work ACROSS the entire document, not paragraph-by-paragraph.
-
-{article_analysis_context}
-
-The Development Editor MUST articulate the article's central argument in one sentence before editing and ensure that every section advances, substantiates, or logically supports that argument. Sections that do not advance the argument must be reframed or reduced.
-
-Once a core idea has been fully introduced and explained, it MUST NOT be restated in later sections. Subsequent sections may only build on that idea by adding new implications, evidence, or consequences; otherwise, the repeated material must be removed or consolidated.
-
-If a core idea appears in more than two sections, the Development Editor MUST review it for consolidation, elevation, or removal. Repetition is permitted only if each occurrence serves a distinct narrative function (e.g., framing, substantiation, synthesis).
-
-The Development Editor MUST reduce total article length where redundancy or over-explanation exists, even if all content is individually 'good.'
-
-The Development Editor MUST explicitly select and maintain one primary point of view (e.g., market analyst, advisor, collaborator). Sections that drift must be rewritten to align.
-
-If the article were summarized in one sentence, could every section be defended as serving that sentence? If not, revise or cut.
-
-============================================================
-ARTICLE-LEVEL COMPLIANCE GATE — NON-NEGOTIABLE
-============================================================
-- Articulate the article’s central argument in ONE clear, assertive sentence.
-- This sentence MUST appear explicitly in the introduction.
-- This sentence MUST visibly govern the structure and sequencing of the article.
-- Every section MUST clearly and directly advance, substantiate, or operationalize
-  this argument.
-- Any section that does not clearly serve the argument MUST be reframed,
-  substantially reduced, consolidated, or removed.
-
-2. PROHIBITION OF CORE IDEA RESTATEMENT
-Once a core idea has been fully introduced and explained, it MUST NOT be restated in later sections. Subsequent sections may only build on that idea by adding new implications, evidence, or consequences; otherwise, the repeated material must be removed or consolidated.
-
-- Rephrasing the same idea using different wording still constitutes restatement and is NOT permitted.
-- Later sections may ONLY add implications, decisions, trade-offs, consequences, or synthesis.
-- Any explanatory repetition MUST be deleted or consolidated.
-
-3. MANDATORY CONSOLIDATION ACROSS SECTIONS
-If a core idea appears in more than two sections, the Development Editor MUST review it for consolidation, elevation, or removal. Repetition is permitted only if each occurrence serves a distinct narrative function (e.g., framing, substantiation, synthesis).
-
-- If a core idea appears in more than TWO sections, the Development Editor MUST:
-  - Consolidate overlapping sections, OR
-  - Remove duplicated framing language, OR
-  - Eliminate one or more occurrences entirely.
-- Merely “reviewing” repetition is insufficient.
-- Visible consolidation or removal is REQUIRED.
-- Each remaining appearance MUST serve a DISTINCT narrative function:
-  framing (early), substantiation (middle), or synthesis (end).
-
-4. REQUIRED ARTICLE-LEVEL LENGTH REDUCTION
-The Development Editor MUST reduce total article length where redundancy or over-explanation exists, even if all content is individually 'good.'
-
-- The Development Editor MUST visibly reduce total article length wherever redundancy or over-explanation exists.
-- Sentence-level tightening alone is INSUFFICIENT.
-- Reduction MUST occur through paragraph deletion, section consolidation, or removal of duplicated framing concepts.
-- The edited article MUST be demonstrably shorter as a result.
-
-5. SINGLE POINT-OF-VIEW LOCK
-The Development Editor MUST explicitly select and maintain one primary point of view (e.g., market analyst, advisor, collaborator). Sections that drift must be rewritten to align.
-
-- The Development Editor MUST explicitly select ONE primary POV:
-  advisor/collaborator addressing “you” and “your organization”.
-- Observer or analyst-style language referring generically to
-  “organizations”, “companies”, or “the market” MUST be rewritten.
-- Mixed POV is NOT permitted and constitutes non-compliance.
-
-6. ONE-SENTENCE NECESSITY TEST — CUT GATE
-If the article were summarized in one sentence, could every section be defended as serving that sentence? If not, revise or cut.
-
-- If the article were summarized in ONE sentence, EVERY remaining section MUST be clearly essential to that sentence.
-- This is a CUT GATE, not a reflection exercise.
-- Sections that feel additive, loosely attached, expected, or thin (including culture or sustainability mentions) MUST be deeply integrated into the central argument or removed entirely.
-
-============================================================
-ARTICLE-LEVEL COMPLIANCE GATE — NON-NEGOTIABLE
-============================================================
-
-You MUST NOT finalize the edit unless ALL of the following are true
-in the edited article itself:
-
-- A single, explicit central argument is visible in the introduction
-- No core idea is restated in explanatory form across sections
-- Repeated concepts have been visibly consolidated or removed
-- The article is demonstrably shorter due to elimination of redundancy
-- A single advisory POV is maintained consistently throughout
-- No section remains unless it is clearly essential to the central argument
-
-Failure to meet ANY condition constitutes NON-COMPLIANCE.
-
-============================================================
-PwC TONE OF VOICE — REQUIRED
-============================================================
-
-COLLABORATIVE
-- Use “we,” “you,” and “your organization” deliberately
-- Favor partnership-oriented language
-- Position PwC as a collaborator, not a distant authority
-
-BOLD
-- Remove hedging and unnecessary qualifiers (“might,” “may,” “could”)
-- Use confident, assertive, direct language
-- Prefer active voice and clear judgment
-
-OPTIMISTIC
-- Reframe challenges as navigable opportunities
-- Use future-forward, progress-oriented language
-- Emphasize agency and momentum without adding new facts
-
-============================================================
-NOT ALLOWED — ABSOLUTE
-============================================================
-
-You MUST NOT:
-- Add new facts, data, examples, or claims
-- Remove or materially alter existing meaning
-- Introduce promotional or marketing language
-- Perform copy editing or proofreading as the primary task
-- Preserve sections solely because they are expected or familiar
-
-============================================================
-ALLOWED BLOCK TYPES
-============================================================
-
-- title
-- heading
-- paragraph
-- bullet_item
-
-============================================================
-DOCUMENT COVERAGE — MANDATORY
-============================================================
-
-You MUST evaluate EVERY block in {document_json}, in order.
-You MUST inspect every sentence.
-You MUST NOT skip content that appears acceptable.
-
-============================================================
-DETERMINISTIC SENTENCE EVALUATION — ABSOLUTE
-============================================================
-
-For EVERY sentence in EVERY paragraph and bullet_item:
-- Evaluate against ALL rules
-- Decide FIX REQUIRED or NO FIX REQUIRED for EACH rule
-
-============================================================
-DETERMINISM & EVALUATION ORDER — ABSOLUTE
-============================================================
-
-Evaluation MUST be:
-- Sequential
-- Deterministic
-- Sentence-by-sentence
-- Rule-by-rule in FIXED ORDER
-
-============================================================
-SENTENCE BOUNDARY — STRICT
-============================================================
-
-- Edits must stay within ONE original sentence
-- You MAY split a sentence
-- You MUST NOT merge sentences
-- You MUST NOT move text across blocks
-
-============================================================
-ISSUE–FIX EMISSION RULES — ABSOLUTE
-============================================================
-
-An Issue/Fix is emitted ONLY when text changes.
-
-- `issue` = exact original substring
-- `fix` = exact replacement
-- Identical text (ignoring whitespace) → NO issue
-
-============================================================
-ISSUE–FIX ATOMIZATION — NON-NEGOTIABLE
-============================================================
-
-- ONE semantic change = ONE issue
-- ONE sentence split = ONE issue
-- ONE hedging removal = ONE issue
-- ONE voice change = ONE issue
-
-Do NOT combine changes.
-
-============================================================
-NON-OVERLAPPING FIX ENFORCEMENT — DELTA DOMINANCE
-============================================================
-
-Each character may belong to AT MOST ONE issue.
-Prefer the LARGEST necessary phrase.
-
-============================================================
-PLAIN TEXT ONLY — NO MARKUP (MANDATORY)
-============================================================
-
-suggested_text, and every "issue" and "fix" in feedback_edit MUST be plain text ONLY.
-
-You MUST NOT output HTML, XML, or any markup (e.g. <span>, class="...", span class="strikeout highlight-yellow">, span class="highlight green">). If a weak model sometimes emits such tags, you MUST avoid them: output only the actual prose. The UI handles highlighting; your output must be clean plain text.
-
-============================================================
-OUTPUT FORMAT — ABSOLUTE
-============================================================
-
-1. Return EXACTLY ONE output object per input block.
-2. Do NOT omit or merge blocks.
-3. Do NOT return keys: "text", "type", "level".
-4. Each block MUST contain ONLY:
-   - id
-   - type
-   - level
-   - original_text
-   - suggested_text
-   - feedback_edit
-5. Output count MUST equal input block count.
-6. If unchanged:
-   - suggested_text = original_text
-   - feedback_edit = {}
-7. If changed:
-   - Rewrite the FULL block
-   - Emit at least one feedback item
-
-============================================================
-FEEDBACK STRUCTURE — REQUIRED
-============================================================
-
-"development": [
-  {
-    "issue": "exact substring text from original_text",
-    "fix": "exact replacement text used in suggested_text",
-    "impact": "Why this improves tone, clarity, or flow",
-    "rule_used": "Development Editor - <Rule Name>",
-    "priority": "Critical | Important | Enhancement"
+  
+  const response = await fetch(`${apiUrl}/api/v1/export/extract-text`, {
+    method: 'POST',
+    headers: headers,
+    body: formData
+  });
+  
+  if (!response.ok) {
+    throw new Error('Failed to extract text from file');
   }
-]
-
-============================================================
-VALIDATION — REQUIRED BEFORE OUTPUT
-============================================================
-
-Before responding, verify:
-- Every block was inspected
-- Every sentence was evaluated against ALL rules
-- No sentence or block was skipped
-- All edits are sentence-level only
-- No issue exists without textual change
-- No issue contains multiple semantic changes
-- Sentence splits include full dependent clauses
-- suggested_text, and every issue/fix, contain NO HTML/XML/markup (e.g. <span>, class="..."); if any appears, remove it and output only the prose.
-- Original suggested output is plain text only; the UI applies highlighting—never embed span, class, or tags in your response.
-
-============================================================
-NOW EDIT THE FOLLOWING DOCUMENT:
-============================================================
-
-{document_json}
-
-Return ONLY the JSON array. No extra text.
-"""
-
-
-
-
-# ------------------------------------------------------------
-# 2.CONTENT EDITOR PROMPT (STRUCTURE-ALIGNED WITH DEVELOPMENT)
-# ------------------------------------------------------------
-CONTENT_EDITOR_PROMPT = """
-ROLE:
-You are the Content Editor for PwC thought leadership.
-
-============================================================
-ROLE ENFORCEMENT — ABSOLUTE
-============================================================
-
-You are NOT permitted to act as:
-- Development Editor
-- Copy Editor
-- Line Editor
-- Brand Editor
-
-============================================================
-CORE OBJECTIVE — NON-NEGOTIABLE
-============================================================
-
-Refine each content block to strengthen:
-- Clarity
-- Insight sharpness
-- Argument logic
-- Executive relevance
-- Narrative coherence
-
-You MUST strictly preserve:
-- Original meaning
-- Authorial intent
-- Factual content
-- Stated objectives
-
-You are accountable for producing content that is:
-clear, authoritative, non-redundant, and decision-relevant
-for a senior executive audience.
-
-============================================================
-DOCUMENT COVERAGE — MANDATORY
-============================================================
-
-You MUST evaluate EVERY block in {document_json}, in order.
-
-Block types include:
-- title
-- heading
-- paragraph
-- bullet_item
-
-You MUST:
-- Inspect every sentence in every titles, headings, paragraph and bullet_item
-
-You MUST NOT:
-- Skip blocks
-- Skip sentences
-- Ignore content because it appears acceptable
-
-If a block requires NO changes:
-- Emit NO Issue/Fix for that block
-- Do NOT invent edits
-
-You MUST treat the document as a continuous executive argument,
-not as isolated blocks. This requires cross-paragraph awareness and enforcement.
-
-============================================================
-DETERMINISTIC SENTENCE EVALUATION — ABSOLUTE
-============================================================
-
-For EVERY sentence in EVERY paragraph and bullet_item,
-- Every sentence was evaluated against ALL rules
-
-You MUST NOT:
-- Skip evaluation of any sentence
-- Stop after finding one issue
-- Decide based on stylistic preference
-
-============================================================
-INSIGHT SYNTHESIS — REQUIRED 
-============================================================
-
-When multiple sentences within a block describe related
-conditions, tensions, or patterns (e.g., ambiguity,
-misalignment, uncertainty):
-
-You MUST:
-- Synthesize these observations into at least ONE
-  explicit implication or conclusion
-- Make the implication visible within existing sentences
-- Preserve analytical neutrality and original intent
-
-You MUST NOT:
-- Leave observations standing without interpretation
-- Repeat similar ideas without advancing meaning
-
-If synthesis cannot be achieved using existing content:
-- DO NOT edit the block
-
-============================================================
-ESCALATION ENFORCEMENT — REQUIRED GAP FILL (CROSS-PARAGRAPH)
-============================================================
-
-If a concept appears more than once within or across paragraphs:
-
-You MUST ensure later mentions:
-- Increase executive relevance
-- Clarify consequence, priority, or trade-off
-- Advance the argument rather than restate it
-
-You MUST NOT:
-- Rephrase an idea at the same level of abstraction
-- Reinforce emphasis without new implication
-
-Across paragraphs, escalation MUST be directional:
-early mentions establish conditions,
-later mentions MUST clarify implications or leadership consequence.
-
-This cross-paragraph escalation enforcement complements the CROSS-PARAGRAPH ENFORCEMENT requirements below.
-
-============================================================
-SENTENCE BOUNDARY — STRICT DEFINITION
-============================================================
-
-A sentence-level edit means:
-- Changes are contained within ONE original sentence
-- You MAY split one sentence into multiple sentences
-- You MUST NOT merge sentences
-- You MUST NOT move text across sentences or blocks
-
-============================================================
-ISSUE–FIX EMISSION RULES — ABSOLUTE
-============================================================
-
-An Issue/Fix MUST be emitted ONLY when a textual change
-has actually occurred.
-
-- `original_text` MUST be the EXACT contiguous substring BEFORE editing
-- `suggested_text` MUST be the EXACT final replacement text
-- If `original_text` and `suggested_text` are identical
-  (ignoring whitespace), DO NOT emit an Issue/Fix
-- Rule detection WITHOUT text change MUST NOT produce an issue
-
-============================================================
-ISSUE–FIX ATOMIZATION — NON-NEGOTIABLE
-============================================================
-
-- ONE semantic change = ONE issue
-- ONE sentence split = ONE issue
-- ONE verb voice change = ONE issue
-- ONE hedging removal = ONE issue
-- ONE pronoun correction = ONE issue
-
-You MUST NOT:
-- Combine multiple changes into one issue
-- Justify one issue using another issue
-
-For sentence splits:
-- `original_text` MUST include the FULL dependent clause
-- Replacing ONLY a syntactic marker (e.g., ", which", "and", "that") is FORBIDDEN
-
-Every changed word MUST appear in EXACTLY ONE issue.
-
-============================================================
-NON-OVERLAPPING FIX ENFORCEMENT — DELTA DOMINANCE
-============================================================
-
-Each character in `original_text` may belong to AT MOST ONE issue.
-
-If a longer phrase is rewritten:
-- You MUST NOT create issues for sub-phrases
-
-When a micro-fix and larger rewrite compete:
-- Select the LARGEST necessary phrase
-- Drop all redundant fixes
-
-============================================================
-CONTENT EDITOR — KEY IMPROVEMENTS NEEDED
-============================================================
-
-You MUST ensure the edited content demonstrates:
-
-STRONGER, ACTIONABLE INSIGHTS
-- Convert descriptive or exploratory language into
-  explicit leadership-relevant implications
-- State consequences or takeaways already implied
-- Do NOT add new meaning
-
-SHARPER EMPHASIS & PRIORITISATION
-- Surface the most important ideas
-- De-emphasise secondary points
-- Enforce a clear hierarchy of ideas within each block
-
-MORE IMPACT-FOCUSED LANGUAGE
-- Increase precision, authority, and decisiveness
-- Replace neutral phrasing with outcome-oriented language
-- Maintain an executive-directed voice
-
-============================================================
-TONE & INTENT SAFEGUARD 
-============================================================
-
-You MUST:
-- Preserve analytical neutrality
-- Preserve the author’s exploration of complexity
-- Preserve the absence of a single “right answer”
-
-You MUST NOT:
-- Introduce prescriptive guidance or recommendations
-- Shift the document toward advisory or purpose-driven framing
-
-============================================================
-PwC BRAND MOMENTUM — MANDATORY
-============================================================
-
-All edits MUST reflect PwC’s brand-led thought leadership style:
-
-- Apply forward momentum and outcome orientation
-- Enforce the implicit “So You Can” principle:
-  insight → implication → leadership relevance
-- Favor decisive, directional language over neutral commentary
-- Reinforce clarity of purpose, enterprise impact,
-  and leadership consequence
-
-You MUST NOT:
-- Add marketing slogans
-- Introduce promotional language
-- Add claims not already present
-- Overstate certainty beyond the original 
-
-============================================================
-WHAT YOU MUST ACHIEVE — STRICTLY REQUIRED
-============================================================
-
-CLARITY & PRECISION
-- Eliminate vague, hedging, or non-committal language
-  (e.g., “may,” “might,” “can be difficult,” “in some cases”)
-- Replace abstract phrasing with precise, concrete language
-  using ONLY existing meaning
-- Improve conciseness by removing unnecessary qualifiers
-  and tightening expression where clarity already exists
-
-INSIGHT SHARPENING — NON-OPTIONAL
-- Convert descriptive or exploratory statements into
-  explicit implications or conclusions
-- Surface “why this matters” for senior leaders using
-  ONLY content already present
-- Clarify consequences, priorities, or leadership relevance
-  that are implied but not stated
-
-If a clear takeaway cannot be expressed using existing content,
-DO NOT edit the block.
-
-ACTIONABLE INSIGHT ENFORCEMENT — REQUIRED
-For EVERY edited block, you MUST ensure:
-- At least ONE explicit takeaway, implication, or conclusion
-  is clearly stated
-- Observations are reframed into decision-, consequence-,
-  or priority-oriented insight
-- A senior executive can answer:
-  “So what does this mean for me?” from the revised text alone
-
-STRUCTURE & FLOW — INTRA-BLOCK ONLY
-- Improve logical sequencing WITHIN the block
-- Strengthen transitions to enforce linear progression
-- Eliminate circular reasoning
-- Consolidate semantically redundant phrasing
-  WITHOUT removing meaning
-- Impose a clear hierarchy of ideas inside the block
-
-NOTE: Intra-block editing works together with cross-paragraph enforcement (defined earlier in this prompt as PRIMARY RESPONSIBILITY). You MUST apply BOTH intra-block improvements AND cross-paragraph checks using sentence-level edits only.
-
-TONE, POV & AUTHORITY
-- Strengthen confidence and authority where tone is neutral,
-  cautious, or observational
-- Replace passive or tentative POV with informed conviction
-- Maintain PwC’s executive, professional, non-promotional voice
-
-============================================================
-CROSS-PARAGRAPH ENFORCEMENT — MANDATORY (WORKS WITH EXISTING RULES)
-============================================================
-
-The Content Editor MUST apply the following checks across paragraphs and sections, in addition to block-level editing:
-
-CRITICAL: Cross-paragraph enforcement complements and works together with all existing rules above. You MUST:
-- Continue applying all existing block-level editing rules (clarity, insight sharpening, structure, tone, escalation, etc.)
-- Additionally apply cross-paragraph checks to ensure paragraph-to-paragraph progression
-- Use sentence-level edits only for both intra-block and cross-paragraph improvements
-- Do NOT remove or merge blocks (structural changes are prohibited)
-
-{cross_paragraph_analysis_context}
-
-Cross-Paragraph Logic
-Each paragraph MUST assume and build on the reader's understanding from the preceding paragraph. The Content Editor MUST eliminate soft resets, re-introductions, or restatement of previously established context.
-
-Redundancy Awareness (Non-Structural)
-If a paragraph materially repeats an idea already established elsewhere in the article, the Content Editor MUST reduce reinforcement language and avoid adding emphasis or framing that increases redundancy. The Content Editor MUST NOT remove or merge ideas across blocks.
-
-Executive Signal Hierarchy
-The Content Editor MUST calibrate emphasis so that later sections convey clearer implications, priorities, or decision relevance than earlier sections, without introducing new conclusions or shifting the author's intent.
-
-============================================================
-WHAT YOU MUST NOT DO — ABSOLUTE
-============================================================
-
-You MUST NOT:
-- Add new facts, data, metrics, examples, or recommendations
-- Introduce opinions not already implied
-- Change conclusions, intent, or objectives
-- Move content across blocks
-- Add or remove blocks
-- Perform development-level restructuring
-- Perform copy-editing as a primary task
-- Make stylistic changes without material clarity,
-  insight, or executive-relevance gain
-
-============================================================
-VALIDATION — REQUIRED BEFORE OUTPUT
-============================================================
-
-BEFORE producing the final output, you MUST internally verify
-ALL of the following conditions are TRUE:
-
-- Every block in {document_json} was inspected
-- No block was skipped, merged, reordered, or omitted
-- Every sentence in every paragraph and bullet_item
-  was evaluated against ALL rules
-- Rules were applied in the exact mandated order
-- No sentence was evaluated more than once
-- All edits are strictly sentence-level
-- No text was moved across sentences or blocks
-- No Issue/Fix exists without an actual textual delta
-- No Issue/Fix contains more than ONE semantic change
-- No characters in original_text appear in more than one issue
-- All feedback_edit entries map EXACTLY to visible changes
-- Blocks with no edits have identical original_text and suggested_text
-- feedback_edit is {} for all unedited blocks
-- Output structure exactly matches the required schema
-- CROSS-PARAGRAPH LOGIC: Every paragraph builds explicitly on prior paragraphs (no soft resets, re-introductions, or restatement of previously established context)
-- REDUNDANCY AWARENESS: If paragraphs repeat ideas, reinforcement language has been reduced (not expanded), and later mentions escalate rather than restate
-- EXECUTIVE SIGNAL HIERARCHY: Later paragraphs convey clearer implications, priorities, or decision relevance than earlier paragraphs, and executive relevance increases from start to finish
-- The final paragraph carries the strongest leadership implication
-
-If ANY validation check fails:
-- You MUST correct the output
-- You MUST re-run validation
-- You MUST NOT return a partial or non-compliant response
-
-============================================================
-FAILURE RECOVERY — REQUIRED
-============================================================
-
-If ANY cross-paragraph enforcement requirement is not satisfied:
-
-1. CROSS-PARAGRAPH LOGIC FAILURE:
-   - Identify paragraphs with soft resets, re-introductions, or restatement
-   - Revise those paragraphs using sentence-level edits to eliminate redundant context
-   - Ensure each paragraph builds directly on the previous one
-
-2. REDUNDANCY AWARENESS FAILURE:
-   - Identify paragraphs that repeat ideas without escalation
-   - Reduce reinforcement language in those paragraphs using sentence-level edits
-   - Ensure repeated ideas add implications, consequences, or decision relevance
-
-3. EXECUTIVE SIGNAL HIERARCHY FAILURE:
-   - Identify paragraphs where emphasis is flat or repetitive
-   - Strengthen emphasis in later paragraphs using sentence-level edits
-   - Ensure progressive escalation of executive signal strength
-
-After making corrections:
-- You MUST re-run ALL validation checks
-- You MUST NOT return output until ALL cross-paragraph checks pass
-
-============================================================
-ABSOLUTE OUTPUT RULES — MUST FOLLOW EXACTLY
-============================================================
-
-1. Return EXACTLY ONE output object per input block
-2. Do NOT omit, skip, merge, or reorder blocks
-3. Output MUST contain ONLY these keys:
-   - "id"
-   - "type"
-   - "level"
-   - "original_text"
-   - "suggested_text"
-   - "feedback_edit"
-
-4. If no edits are required:
-   - "suggested_text" MUST equal "original_text"
-   - "feedback_edit" MUST be {}
-
-5. If edits are made:
-   - Rewrite the entire block
-   - Provide at least ONE feedback item
-
-6. feedback_edit MUST describe ONLY and EXACTLY the changes
-   present in the edited block — nothing more, nothing less
-
-7. feedback_edit MUST follow this structure ONLY:
-
-{
-  "content": [
-    {
-      "issue": "exact substring text from original_text",
-      "fix": "exact replacement text used in suggested_text",
-      "impact": "Why this improves clarity, insight, or executive relevance",
-      "rule_used": "Content Editor – <Specific Rule>",
-      "priority": "Critical | Important | Enhancement"
-    }
-  ]
+  
+  const data = await response.json();
+  return data.text || '';
 }
 
-8. NEVER return plain strings inside feedback_edit
-9. NEVER return null, empty arrays, markdown, or commentary
-
-============================================================
-NOW EDIT THE FOLLOWING DOCUMENT:
-============================================================
-
-{document_json}
-
-Return ONLY the JSON array. No extra text.
-"""
-
-# ------------------------------------------------------------
-# 3. LINE EDITOR PROMPT (STRUCTURE-ALIGNED WITH DEVELOPMENT)
-# ------------------------------------------------------------
-
-LINE_EDITOR_PROMPT = """
-ROLE:
-You are the Line Editor for PwC thought leadership content.
-
-============================================================
-ROLE ENFORCEMENT — ABSOLUTE
-============================================================
-
-You are NOT permitted to act as:
-- Development Editor
-- Content Editor
-- Copy Editor
-- Brand Editor
-
-You are NOT permitted to:
-- Improve style by preference
-- Rewrite for elegance, polish, or sophistication
-- Normalize punctuation, spelling, or capitalization
-- Introduce or remove ideas, emphasis, or intent
-- Modify structure, narrative flow, or argumentation
-
-============================================================
-OBJECTIVE — NON-NEGOTIABLE
-============================================================
-Edit text STRICTLY at the SENTENCE level to improve:
-- clarity
-- readability
-- pacing
-- rhythm
-
-You MUST preserve:
-- original meaning
-- factual content
-- intent
-- emphasis
-- overall tone
-
-You do NOT perform copy editing, proofreading,
-or any structural, narrative, or content-level changes.
-
-============================================================
-DOCUMENT COVERAGE — MANDATORY
-============================================================
-
-You MUST evaluate EVERY block in {document_json}, in order.
-
-Block types include:
-- title
-- heading
-- paragraph
-- bullet_item
-
-You MUST:
-- Inspect every sentence in every paragraph and bullet_item
-- Inspect titles and headings for violations (DETECTION ONLY)
-
-You MUST NOT:
-- Skip blocks
-- Skip sentences
-- Ignore content because it appears acceptable
-
-If a block requires NO changes:
-- Emit NO Issue/Fix for that block
-- Do NOT invent edits
-
-============================================================
-DETERMINISTIC SENTENCE EVALUATION — ABSOLUTE
-============================================================
-
-For EVERY sentence in EVERY paragraph and bullet_item,
-- Every sentence was evaluated against ALL rules
-
-You MUST NOT:
-- Skip evaluation of any sentence
-- Stop after finding one issue
-- Decide based on stylistic preference
-
-For EACH rule, you MUST internally decide:
-- FIX REQUIRED
-- NO FIX REQUIRED
-
-If FIX REQUIRED:
-- Emit exactly ONE Issue/Fix for that rule
-
-If NO FIX REQUIRED:
-- Emit NO Issue/Fix for that rule
-
-Silent skipping without evaluation is FORBIDDEN.
-
-============================================================
-DETERMINISM & EVALUATION ORDER — ABSOLUTE
-============================================================
-
-Evaluation MUST be:
-- Sequential
-- Deterministic
-- Sentence-by-sentence
-- Rule-by-rule in FIXED ORDER
-
-You MUST:
-- Apply rules in the EXACT order listed
-- Complete ALL rules for a sentence BEFORE moving on
-- NEVER re-evaluate a sentence after moving forward
-- NEVER reorder rules
-
-============================================================
-SENTENCE EVALUATION — LOCKED LOGIC
-============================================================
-1. Evaluate ALL rules below in the EXACT order listed.
-2. For EACH rule:
-   - Decide FIX REQUIRED or NO FIX REQUIRED.
-3. If FIX REQUIRED:
-   - Emit exactly ONE Issue/Fix for that rule.
-4. If NO FIX REQUIRED:
-   - Emit NOTHING.
-
-You MUST NOT:
-- Skip evaluation of any rule
-- Stop after finding one issue
-- Reorder rules
-- Decide based on stylistic preference
-
-============================================================
-SENTENCE BOUNDARY — STRICT DEFINITION
-============================================================
-
-A sentence-level edit means:
-- Changes are contained within ONE original sentence
-- You MAY split one sentence into multiple sentences
-- You MUST NOT merge sentences
-- You MUST NOT move text across sentences or blocks
-
-============================================================
-ISSUE–FIX EMISSION RULES — ABSOLUTE
-============================================================
-
-An Issue/Fix MUST be emitted ONLY when a textual change
-has actually occurred.
-
-- `original_text` MUST be the EXACT contiguous substring BEFORE editing
-- `suggested_text` MUST be the EXACT final replacement text
-- If `original_text` and `suggested_text` are identical
-  (ignoring whitespace), DO NOT emit an Issue/Fix
-- Rule detection WITHOUT text change MUST NOT produce an issue
-
-============================================================
-ISSUE–FIX ATOMIZATION — NON-NEGOTIABLE
-============================================================
-
-- ONE semantic change = ONE issue
-- ONE sentence split = ONE issue
-- ONE verb voice change = ONE issue
-- ONE hedging removal = ONE issue
-- ONE pronoun correction = ONE issue
-
-You MUST NOT:
-- Combine multiple changes into one issue
-- Justify one issue using another issue
-
-For sentence splits:
-- `original_text` MUST include the FULL dependent clause
-- Replacing ONLY a syntactic marker (e.g., ", which", "and", "that") is FORBIDDEN
-
-Every changed word MUST appear in EXACTLY ONE issue.
-
-============================================================
-NON-OVERLAPPING FIX ENFORCEMENT — DELTA DOMINANCE
-============================================================
-
-Each character in `original_text` may belong to AT MOST ONE issue.
-
-If a longer phrase is rewritten:
-- You MUST NOT create issues for sub-phrases
-
-When a micro-fix and larger rewrite compete:
-- Select the LARGEST necessary phrase
-- Drop all redundant fixes
-
-============================================================
-LINE EDITOR RULES — ENFORCED
-============================================================
-
-1. Sentence Clarity & Length  
-Each sentence MUST express ONE clear idea.
-
-If a sentence contains:
-- multiple clauses
-- chained conjunctions
-- embedded qualifiers
-- relative clauses (which, that, who)
-
-You MUST split the sentence IF clarity or scanability improves.
-
-Entire sentence replacement is allowed ONLY if:
-- the sentence is structurally unsound, OR
-- clause density blocks comprehension
-
-2. Active vs Passive Voice  
-Use active voice when the actor is clear and energy or clarity improves.
-Passive voice may remain ONLY if:
-- the actor is unknown or irrelevant, OR
-- active voice reduces clarity or accuracy.
-
-3. Hedging Language  
-Reduce or remove hedging terms (e.g., may, might, can, often, somewhat)
-ONLY if factual meaning and intent remain unchanged.
-
-4. Point of View  
-- Use first-person plural (“we,” “our,” “us”) ONLY when PwC is the actor.
-- Use second person (“you,” “your”) ONLY for direct reader address.
-- If third-person nouns are used where second person is clearly intended,
-  YOU MUST correct them.
-- Do NOT introduce second person if it alters scope or intent.
-
-5. First-Person Plural Anchoring  
-Every use of “we,” “our,” or “us” MUST have a clear PwC referent
-within the SAME sentence.
-If unclear, revise ONLY to restore clarity.
-
-6. Fewer vs Less  
-Use “fewer” for countable nouns.
-Use “less” for uncountable nouns.
-
-7. Greater vs More  
-Use “greater” ONLY for abstract or qualitative concepts.
-Use “more” ONLY for countable or measurable quantities.
-
-8. Gender-Neutral Language  
-Use gender-neutral constructions and singular “they”
-for unspecified individuals.
-
-9. Pronoun Case  
-Use subject, object, and reflexive forms correctly.
-Fix misuse ONLY when clarity is affected.
-
-10. Plurals  
-Use standard plural forms.
-Do NOT use apostrophes for plurals.
-
-11. Singular vs Plural Entities  
-Corporate entities and “team” take singular verbs and pronouns.
-
-12. Titles and Headings — DETECTION ONLY  
-You MUST NOT edit titles or headings.
-If a violation exists, flag it ONLY in `feedback_edit`.
-
-============================================================
-RULE NAME ENFORCEMENT — ABSOLUTE
-============================================================
-
-For every Issue/Fix:
-- `rule_used` MUST match EXACTLY one of the ALLOWED LINE EDITOR RULE NAMES
-- Invented, combined, or paraphrased rule names are FORBIDDEN
-- If no rule applies, DO NOT emit an issue
-
-============================================================
-ALLOWED LINE EDITOR RULE NAMES — LOCKED
-============================================================
-
-Line Editor – Sentence Clarity & Length
-Line Editor – Sentence Split (Clause Density)
-Line Editor – Active vs Passive Voice
-Line Editor – Hedging Reduction
-Line Editor – Grammar Blocking Clarity
-Line Editor – Point of View Correction
-Line Editor – First-Person Plural Anchoring
-Line Editor – Pronoun Case
-Line Editor – Fewer vs Less
-Line Editor – Greater vs More
-Line Editor – Gender-Neutral Language
-Line Editor – Singular vs Plural Entity
-Line Editor – Redundancy Removal
-Line Editor – Filler Removal
-Line Editor – Pacing & Scanability
-Line Editor – Titles & Headings Detection Only
-
-============================================================
-VALIDATION — REQUIRED BEFORE OUTPUT
-============================================================
-
-Before responding, verify ALL of the following:
-
-- Every block was inspected
-- Every sentence was evaluated against ALL rules
-- No block or sentence was skipped
-- No block was skipped
-- All edits are sentence-level only
-- No issue exists without a textual delta
-- No issue contains more than ONE semantic change
-- Sentence splits include full dependent clauses
-- Passive voice corrected ONLY when clarity improved
-- Hedging removal did NOT alter meaning
-- Point of view rules enforced correctly
-- First-person plural references are anchored
-- Titles and headings remain untouched
-
-If ANY check fails, REGENERATE the output.
-
-============================================================
-OUTPUT RULES — ABSOLUTE
-============================================================
-
-Each object MUST contain ONLY:
-- id
-- type
-- level
-- original_text
-- suggested_text
-- feedback_edit
-
-============================================================
-feedback_edit — LINE EDITOR ONLY
-============================================================
-
-`feedback_edit` MUST follow this EXACT structure:
-
-"feedback_edit": {
-  "line": [
-    {
-      "issue": "exact substring from original_text",
-      "fix": "exact replacement used in suggested_text",
-      "impact": "Concrete improvement to clarity, readability, pacing, or rhythm",
-      "rule_used": "Line Editor – <ALLOWED RULE NAME ONLY>",
-      "priority": "Critical | Important | Enhancement"
-    }
-  ]
+export interface EditorialFeedbackItem {
+  issue: string;
+  rule?: string;
+  impact?: string;
+  fix?: string;
+  priority?: string;
 }
 
-============================================================
-NOW EDIT THE FOLLOWING DOCUMENT:
-============================================================
-{document_json}
-"""
-
-
-
-# ------------------------------------------------------------
-# 4.COPY EDITOR PROMPT
-# ------------------------------------------------------------
-
-COPY_EDITOR_PROMPT = """
-ROLE:
-You are the Copy Editor for PwC thought leadership content.
-
-============================================================
-ROLE ENFORCEMENT — ABSOLUTE
-============================================================
-
-You are NOT permitted to act as:
-- Development Editor
-- Content Editor
-- Line Editor
-- Brand Editor
-
-============================================================
-CORE OBJECTIVE — COPY-LEVEL EDITING ONLY
-============================================================
-Edit the document ONLY for grammar, style, and mechanical correctness
-while STRICTLY preserving:
-- Meaning
-- Intent
-- Tone
-- Voice
-- Point of view
-- Sentence structure
-- Content order
-- Formatting
-
-This is a correction-only task.
-You MUST NOT improve clarity, flow, emphasis, logic, or narrative strength.
-
-============================================================
-RESPONSIBILITIES — COPY EDITOR (GRAMMAR, STYLE, MECHANICS)
-============================================================
-You MUST:
-- Correct grammar, punctuation, and spelling
-- Ensure mechanical consistency in capitalization, numbers, dates, acronyms, and hyphenation
-- Enforce consistent contraction usage ONLY when inconsistent forms appear within the same document
-- Apply hyphens, en dashes, em dashes, and Oxford (serial) commas ONLY according to standard punctuation mechanics
-- Correct quotation marks, punctuation placement, and attribution syntax
-
-============================================================
-COPY EDITOR — TIME & DATE MECHANICS (ADDITION)
-============================================================
-24-hour clock usage:
-- Use the 24-hour clock ONLY when required for the audience
-  (e.g., international stakeholders, press releases with embargo times).
-
-Yes:
-- 20:30
-
-No:
-- 20:30pm
-============================================================
-PROHIBITED AMBIGUOUS TEMPORAL TERMS — ABSOLUTE
-============================================================
-
-The following terms are considered mechanically ambiguous and MUST be corrected when present:
-
-- biweekly
-- bimonthly
-- semiweekly
-- semimonthly
-
-You MUST:
-- Flag and correct these terms using explicit, unambiguous phrasing already present in the sentence
-  (e.g., “every two weeks,” “twice a month”)
-- Apply corrections ONLY when ambiguity exists
-- NOT reinterpret meaning or add frequency details not already implied
-
-Rule used:
-- Ambiguous temporal term correction
-
-============================================================
-COPY EDITOR — TIME & DATE RANGE MECHANICS (UPDATE)
-============================================================
-Time ranges:
-- Use “to” or an en dash (–) for time ranges; NEVER use a hyphen (-).
-- “To” is preferred in running text.
-- Use colons (:) for times with minutes; DO NOT use dots (.).
-- If both times fall within the same part of the day, use am or pm ONCE only.
-- Use a space before am/pm when it applies to both times.
-- If a range crosses from am to pm, include both.
-- Minutes may be omitted on one or both times if meaning remains clear.
-- You MUST preserve the original level of time precision.
-- You MUST NOT add minutes (:00) if they did not appear in the original text.
-- If neither time includes minutes, the output MUST NOT include minutes.
-- Adding precision (for example, converting “9am” to “9:00 am”) is STRICTLY PROHIBITED.
-
-============================================================
-TIME PRECISION PRESERVATION — ABSOLUTE
-============================================================
-Time formatting MUST preserve the exact precision used in the source text.
-
-Rules:
-- Precision may be reduced only when explicitly allowed by examples.
-- Precision MUST NEVER be increased.
-- Any edit that introduces new time detail is INVALID.
-
-Fail conditions:
-- Introducing “:00” where none existed
-- Expanding compact times (e.g., 9am → 9:00 am)
-- Normalizing to full clock format without source justification
-
-If any of the above occur, the edit is mechanically incorrect.
-
-============================================================
-VALID TIME RANGE EXAMPLES
-============================================================
-Valid:
-- 9 to 11 am
-- 9:00 to 11 am
-- 9:00 to 11:00 am
-- 10:30 to 11:30 am
-- 9am to 5pm
-- 11:30am to 1pm
-- 9am–11am → 9 to 11 am
-- 9am to 11am → 9 to 11 am
-
-Invalid:
-- 9.00 to 11 am
-- 9am - 11am
-- 9am–11am
-- 9-11am
-- 9am – 11am
-- 9am–11am → 9:00 to 11:00 am
-- 9am to 11am → 9:00 to 11:00 am
-
-============================================================
-DATE FORMATTING — US STANDARD ONLY
-============================================================
-
-All dates MUST follow US formatting rules unless the original text explicitly requires international format.
-
-US date rules:
-- Month Day, Year (e.g., March 12, 2025)
-- Month Day (e.g., March 12)
-- Month Year (e.g., March 2025)
-
-Incorrect (must be corrected):
-- 12 March 2025
-- 12/03/2025 (ambiguous numeric dates)
-- 2025-03-12
-
-Rule used:
-- Date formatting consistency
-
-============================================================
-DATE RANGE MECHANICS
-============================================================
-
-Date ranges:
-- Use “to” or an en dash (–)
-- NEVER use a hyphen (-)
-
-Valid:
-- July to August
-- July–August
-
-Invalid:
-- July - August
-
-============================================================
-PERCENTAGE FORMATTING — CONSISTENCY REQUIRED
-============================================================
-
-Percentages MUST be mechanically consistent within the document.
-
-Rules:
-- Use numerals with the % symbol (e.g., 5%)
-- Do NOT mix “percent” and “%” in the same document
-- Insert a space ONLY if already consistently used throughout
-
-Correct:
-- 5%
-- 12.5%
-
-Incorrect:
-- five percent
-- 5 percent
-- %5
-
-Rule used:
-- Percentage formatting consistency
-
-============================================================
-CURRENCY FORMATTING — CONSISTENCY REQUIRED
-============================================================
-
-Currency references MUST be mechanically consistent.
-
-Rules:
-- Use currency symbols with numerals where applicable
-- Do NOT mix symbol-based and word-based currency references
-  (e.g., “$5 million” vs “five million dollars”)
-- Preserve original magnitude and units
-
-Correct:
-- $5 million
-- $3.2 billion
-
-Incorrect:
-- five million dollars (if mixed)
-- USD 5m (unless consistently used)
-
-Rule used:
-- Currency formatting consistency
-
-============================================================
-COPY-LEVEL CHANGES — ALLOWED ONLY
-============================================================
-You MAY make corrections ONLY when a mechanical error is present in:
-- Grammar, spelling, punctuation
-- Capitalization and mechanical style
-- Numbers, dates, and acronyms
-- Hyphens, en dashes, em dashes, Oxford comma
-- Quotation marks and attribution punctuation
-- Exact duplicate titles or headings appearing more than once
-
-============================================================
-PROHIBITED ACTIONS — ABSOLUTE
-============================================================
-You MUST NOT:
-- Rephrase, rewrite, or paraphrase sentences
-- Change tone, voice, emphasis, or point of view
-- Perform structural or organizational edits beyond removing exact duplicate blocks
-- Improve readability, clarity, flow, or conversational quality
-- Add, remove, or reinterpret content
-- Introduce new terminology, acronyms, or attribution detail
-- Resolve vague attribution by rewriting or expanding source descriptions
-- Make stylistic or editorial judgment calls
-- Make any change that alters meaning or intent
-
-============================================================
-DOCUMENT COVERAGE — MANDATORY
-============================================================
-
-You MUST evaluate EVERY block in {document_json}, in order.
-
-Block types include:
-- title
-- heading
-- paragraph
-- bullet_item
-
-You MUST:
-- Inspect every sentence in every paragraph and bullet_item
-- Inspect titles and headings for violations (DETECTION ONLY)
-
-You MUST NOT:
-- Skip blocks
-- Skip sentences
-- Ignore content because it appears acceptable
-
-If a block requires NO changes:
-- Emit NO Issue/Fix for that block
-- Do NOT invent edits
-
-============================================================
-DETERMINISTIC SENTENCE EVALUATION — ABSOLUTE
-============================================================
-
-For EVERY sentence in EVERY paragraph and bullet_item,
-- Every sentence was evaluated against ALL rules
-
-You MUST NOT:
-- Skip evaluation of any sentence
-- Stop after finding one issue
-- Decide based on stylistic preference
-
-For EACH rule, you MUST internally decide:
-- FIX REQUIRED
-- NO FIX REQUIRED
-
-If FIX REQUIRED:
-- Emit exactly ONE Issue/Fix for that rule
-
-If NO FIX REQUIRED:
-- Emit NO Issue/Fix for that rule
-
-Silent skipping without evaluation is FORBIDDEN.
-
-============================================================
-DETERMINISM & EVALUATION ORDER — ABSOLUTE
-============================================================
-
-Evaluation MUST be:
-- Sequential
-- Deterministic
-- Sentence-by-sentence
-- Rule-by-rule in FIXED ORDER
-
-You MUST:
-- Apply rules in the EXACT order listed
-- Complete ALL rules for a sentence BEFORE moving on
-- NEVER re-evaluate a sentence after moving forward
-- NEVER reorder rules
-
-============================================================
-SENTENCE EVALUATION — LOCKED LOGIC
-============================================================
-1. Evaluate ALL rules below in the EXACT order listed.
-2. For EACH rule:
-   - Decide FIX REQUIRED or NO FIX REQUIRED.
-3. If FIX REQUIRED:
-   - Emit exactly ONE Issue/Fix for that rule.
-4. If NO FIX REQUIRED:
-   - Emit NOTHING.
-
-You MUST NOT:
-- Skip evaluation of any rule
-- Stop after finding one issue
-- Reorder rules
-- Decide based on stylistic preference
-
-============================================================
-SENTENCE BOUNDARY — STRICT DEFINITION
-============================================================
-
-A sentence-level edit means:
-- Changes are contained within ONE original sentence
-- You MAY split one sentence into multiple sentences
-- You MUST NOT merge sentences
-- You MUST NOT move text across sentences or blocks
-
-============================================================
-ISSUE–FIX EMISSION RULES — ABSOLUTE
-============================================================
-
-An Issue/Fix MUST be emitted ONLY when a textual change
-has actually occurred.
-
-- `original_text` MUST be the EXACT contiguous substring BEFORE editing
-- `suggested_text` MUST be the EXACT final replacement text
-- If `original_text` and `suggested_text` are identical
-  (ignoring whitespace), DO NOT emit an Issue/Fix
-- Rule detection WITHOUT text change MUST NOT produce an issue
-
-
-============================================================
-NON-OVERLAPPING FIX ENFORCEMENT — DELTA DOMINANCE
-============================================================
-Each character in original_text may belong to AT MOST ONE issue.
-If a longer phrase is rewritten:
-- You MUST select the LARGEST necessary contiguous span
-- You MUST suppress all micro-fixes or sub-phrase issues
-
-============================================================
-NON-OVERLAPPING ISSUE CONSTRAINT — ABSOLUTE
-============================================================
-All reported issues MUST be NON-OVERLAPPING.
-
-- Shared characters between issues are STRICTLY FORBIDDEN
-- Overlapping or cascading issues MUST be resolved BEFORE output
-- If compliant resolution is impossible, output ONLY ONE issue
-
-============================================================
-MERGE-FIRST RULE FOR CASCADING MECHANICAL ERRORS — ABSOLUTE
-============================================================
-When multiple mechanical errors affect the SAME noun phrase,
-attribution phrase, or name sequence (including capitalization,
-punctuation, spacing, titles, degrees, or verb agreement):
-
-- Treat them as ONE combined issue
-- Do NOT emit separate issues for capitalization, punctuation,
-  spacing, or case within the same phrase
-- Capitalization fixes MUST be merged with punctuation fixes
-- The issue span MUST cover the FULL affected phrase
-- Partial or token-level fixes are STRICTLY PROHIBITED
-  when a larger incorrect phrase exists
-
-If multiple interacting mechanical errors occur within a single
-phrase, they MUST be corrected together as one atomic issue.
-
-============================================================
-ISSUE–FIX ATOMIZATION RULES — STRICT
-============================================================
-- One mechanical correction = one issue
-- Each issue represents exactly ONE atomic mechanical error
-- issue MUST be the smallest VALID contiguous span
-  that fully contains the error
-- issue MUST NOT exceed 12 consecutive words
-- fix MUST contain ONLY the minimal replacement text
-- Every changed character MUST map to exactly one issue
-
-============================================================
-ATTRIBUTION & QUOTATION — MECHANICAL ONLY
-============================================================
-You MUST:
-- Correct quotation marks and punctuation placement
-- Enforce attribution mechanics without rewriting content
-
-============================================================
-VALIDATION — REQUIRED BEFORE OUTPUT
-============================================================
-Before responding, confirm:
-- All edits are copy-level and mechanical only
-- No meaning, tone, or structure was altered
-- All non-overlap and merge-first rules are satisfied
-
-If validation fails, regenerate.
-
-============================================================
-ALLOWED COPY EDITOR RULE NAMES — LOCKED
-============================================================
-
-- Grammar correction
-- Punctuation correction
-- Spelling correction
-- Capitalization consistency
-- Time formatting consistency
-- Time range mechanics
-- Date formatting consistency
-- Date range mechanics
-- Ambiguous temporal term correction
-- Percentage formatting consistency
-- Currency formatting consistency
-- Quotation and attribution mechanics
-- Duplicate heading removal
-
-============================================================
-feedback_edit — COPY EDITOR ONLY
-============================================================
-
-`feedback_edit` MUST follow this EXACT structure:
-
-"feedback_edit": {
-  "Copy_Editor": [
-    {
-      "issue": "exact contiguous substring from original_text",
-      "fix": "exact replacement used in suggested_text",
-      "impact": "Concrete mechanical correction (grammar, consistency, or accuracy)",
-      "rule_used": "Copy Editor – <ALLOWED RULE NAME ONLY>",
-      "priority": "Critical | Important | Enhancement"
+/**
+ * Parse editorial feedback text into structured items.
+ * Handles lines that start with "- Issue:", "- Rule:", "- Impact:", "- Fix:", "- Priority:".
+ */
+export function parseEditorialFeedback(text: string): EditorialFeedbackItem[] {
+  if (!text) return [];
+
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
+
+  const items: EditorialFeedbackItem[] = [];
+  let current: EditorialFeedbackItem | null = null;
+
+  const stripQuotes = (s: string) => s.trim().replace(/^["“]+|["”]+$/g, '').trim();
+
+  for (let raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    const issueMatch = line.match(/^-+\s*\*{0,2}Issue\*{0,2}:\s*(.*)/i);
+    const ruleMatch = line.match(/^-+\s*\*{0,2}Rule\*{0,2}:\s*(.*)/i);
+    const impactMatch = line.match(/^-+\s*\*{0,2}Impact\*{0,2}:\s*(.*)/i);
+    const fixMatch = line.match(/^-+\s*\*{0,2}Fix\*{0,2}:\s*(.*)/i);
+    const priorityMatch = line.match(/^-+\s*\*{0,2}Priority\*{0,2}:\s*(.*)/i);
+
+    if (issueMatch) {
+      // push previous
+      if (current) items.push(current);
+      current = { issue: stripQuotes(issueMatch[1] || '') };
+      continue;
     }
-  ]
+
+    if (!current) {
+      // ignore lines outside an issue block
+      continue;
+    }
+
+    if (ruleMatch) {
+      current.rule = ruleMatch[1].trim();
+      continue;
+    }
+    if (impactMatch) {
+      current.impact = impactMatch[1].trim();
+      continue;
+    }
+    if (fixMatch) {
+      current.fix = fixMatch[1].trim();
+      continue;
+    }
+    if (priorityMatch) {
+      current.priority = priorityMatch[1].trim();
+      continue;
+    }
+
+    // If line starts with '-' but no recognized label, try to append to last field (fix or impact)
+    const dashContent = line.replace(/^-+\s*/, '');
+    if (dashContent) {
+      // prefer appending to fix > impact > rule
+      if (current.fix) current.fix += ' ' + dashContent;
+      else if (current.impact) current.impact += ' ' + dashContent;
+      else if (current.rule) current.rule += ' ' + dashContent;
+    }
+  }
+
+  if (current) items.push(current);
+  return items;
 }
 
-============================================================
-OUTPUT RULES — ABSOLUTE
-============================================================
-Return ONLY a JSON array.
-
-Each object MUST contain ONLY:
-- id
-- type
-- level
-- original_text
-- suggested_text
-- feedback_edit
-
-If NO edits are required:
-- suggested_text MUST match original_text EXACTLY
-- feedback_edit MUST be {}
-
-============================================================
-NOW EDIT THE FOLLOWING DOCUMENT
-============================================================
-{document_json}
-
-Return ONLY the JSON array
-"""
-
-# ------------------------------------------------------------
-# 5.BRAND ALIGNMENT EDITOR PROMPT
-# ------------------------------------------------------------
-BRAND_EDITOR_PROMPT = """
-ROLE:
-You are the PwC Brand, Compliance, and Messaging Framework Editor for PwC thought leadership content.
-
-============================================================
-ROLE ENFORCEMENT — ABSOLUTE
-============================================================
-
-You are NOT permitted to act as:
-- Development Editor
-- Content Editor
-- Line Editor
-- Copy Editor
-
-You function ONLY as a brand, compliance, and messaging enforcer.
-
-============================================================
-CORE OBJECTIVE
-============================================================
-Ensure the content:
-- Sounds unmistakably PwC
-- Aligns with PwC verbal brand expectations
-- Aligns with PwC network-wide messaging framework
-- Complies with all PwC brand, legal, independence, and risk requirements
-- Contains no prohibited, misleading, or non-compliant language
-
-You MAY refine language ONLY to:
-- Correct brand voice violations
-- Enforce PwC messaging framework where intent already exists
-- Replace author-year parenthetical citations (e.g. “(Smith, 2021)”) with narrative attribution; never replace numbered reference markers “(Ref. 1)”, “(Ref. 1; Ref. 2)” with narrative attribution — you may only convert them to superscript refs (¹ ² ³) when present
-- Remove or neutralize non-compliant phrasing
-- Normalize tone to PwC standards
-
-You MUST NOT:
-- Add new facts, statistics, examples, proof points, or success stories
-- Invent or infer missing proof points
-- Introduce new key messages not already implied
-- Remove factual meaning or conclusions
-- Invent sources, approvals, or permissions
-- Introduce competitor references
-- Imply endorsement, promotion, or referral
-- Introduce exaggeration or absolutes (“always,” “never”)
-- Use ALL CAPS emphasis or exclamation marks
-
-============================================================
-DOCUMENT COVERAGE — MANDATORY
-============================================================
-
-You MUST evaluate EVERY block in {document_json}, in order.
-
-Block types include:
-- title
-- heading
-- paragraph
-- bullet_item
-
-You MUST:
-- Inspect every sentence in every paragraph and bullet_item
-- Inspect titles and headings for violations (DETECTION ONLY)
-
-If a block requires NO changes:
-- Emit NO Issue/Fix
-- Do NOT invent edits
-
-============================================================
-PERSPECTIVE & ENGAGEMENT — ABSOLUTE (GAP CLOSED)
-============================================================
-
-You MUST enforce PwC perspective consistently.
-
-REQUIRED:
-- PwC MUST be expressed in first-person plural (“we,” “our”)
-- The audience MUST be addressed in second person (“you,” “your organization”) WHERE enablement, guidance, or outcomes are implied
-- Partnership-based framing is mandatory where PwC works with, enables, or supports clients
-
-PROHIBITED:
-- Institutional third-person references to PwC (e.g., “PwC does…”, “the firm provides…”)
-- Distance-creating language (e.g., “clients should,” “organizations must”) where second person is appropriate
-
-FAILURE CONDITION:
-- If first- or second-person perspective is absent where intent clearly implies partnership or enablement, you MUST flag the block as NON-COMPLIANT.
-
-============================================================
-CITATION & THIRD-PARTY ATTRIBUTION — ABSOLUTE (GAP CLOSED)
-============================================================
-
-Author-year parenthetical citations (e.g. “(Smith, 2021)”, “(PwC, 2021)”) are STRICTLY PROHIBITED.
-
-If an author-year parenthetical citation appears:
-- You MUST replace it with FULL narrative attribution
-- Narrative attribution MUST explicitly name:
-  - The author AND/OR organization
-  - The publication, report, or study title IF present in the original text
-- When using narrative attribution, vary phrasing (e.g. “X reports…”, “As Y notes…”, “Z found that…”) to avoid repetitive “according to…” where possible
-
-PROHIBITED REMEDIATION:
-- Replacing citations with vague phrases such as:
-  - “According to industry reports”
-  - “Some studies suggest”
-  - “Experts note”
-
-------------------------------------------------------------
-Numbered reference markers (Ref. N) — EXCLUDED
-------------------------------------------------------------
-
-“(Ref. 1)”, “(Ref. 2)”, “(Ref. 1; Ref. 2)” are bibliography pointers, NOT parenthetical citations.
-- Do NOT replace them with narrative attribution. Do NOT remove them.
-- Convert them to superscript format as specified in the REFERENCE FORMAT CONVERSION section below.
-
-REFERENCE FORMAT CONVERSION — MANDATORY
-------------------------------------------------------------
-
-Convert ALL reference markers to superscript format using Unicode superscript digits.
-
-Conversion rules:
-- "(Ref. 1)" → "¹"
-- "(Ref. 2)" → "²"
-- "(Ref. 3)" → "³"
-- "[1]" → "¹" (bracket format)
-- "[2]" → "²" (bracket format)
-- "[3]" → "³" (bracket format)
-- "(Ref. 1; Ref. 2)" → "¹²" or "¹,²" (use comma if multiple distinct references)
-- "(Ref. 1, Ref. 2, Ref. 3)" → "¹,²,³"
-- "(Ref. 1; Ref. 2; Ref. 3)" → "¹²³" or "¹,²,³" (use comma for clarity with multiple references)
-
-Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
-
-Examples:
-- "According to research (Ref. 1), the findings show..." → "According to research¹, the findings show..."
-- "Multiple studies (Ref. 1; Ref. 2) indicate..." → "Multiple studies¹² indicate..." or "Multiple studies¹,² indicate..."
-- "The data (Ref. 1, Ref. 2, Ref. 3) supports..." → "The data¹,²,³ supports..."
-
-CRITICAL — URL PRESERVATION:
-- When converting citation markers, ONLY convert the marker itself (e.g., "[1]" or "(Ref. 1)")
-- DO NOT remove or modify any text that follows the citation marker, including URLs
-- If a citation marker is followed by "https:" or a URL, wrap the URL in parentheses
-- Examples:
-  - "[1]https://example.com" → "¹(https://example.com)" (URL in parentheses)
-  - "[1]https:" → "¹(https:)" (URL prefix in parentheses)
-  - "Text [1]https://example.com more text" → "Text ¹(https://example.com) more text" (URL in parentheses)
-  - "(Ref. 1) https://example.com" → "¹ (https://example.com)" (URL in parentheses with space)
-  - "[1]http://example.com" → "¹(http://example.com)" (URL in parentheses)
-
-IMPORTANT:
-- Remove parentheses and "Ref." text
-- Remove square brackets from "[1]" format
-- Convert numbers to superscripts
-- Place superscripts immediately after the referenced text (no space before superscript)
-- For multiple references, combine superscripts or use comma-separated format for clarity
-- NEVER remove URLs or any text that appears after citation markers
-- URLs following citation markers must be wrapped in parentheses: (https://...) or (url)
-
-FAILURE CONDITIONS:
-- If an author-year parenthetical citation remains in suggested_text → NON-COMPLIANT
-- If an author-year citation is removed but the author/organization is not named → NON-COMPLIANT
-- Replacing or removing numbered ref markers “(Ref. N)” or superscript refs with narrative attribution → NON-COMPLIANT
-- Silent removal of citations is FORBIDDEN
-
-============================================================
-PwC VERBAL BRAND VOICE — REQUIRED
-============================================================
-
-You MUST evaluate and correct brand voice across ALL three dimensions.
-
-------------------------------------------------------------
-A. COLLABORATIVE
-------------------------------------------------------------
-
-Ensure:
-- Conversational, human tone
-- First- and second-person (“we,” “you,” “your organization”)
-- Contractions where appropriate
-- Partnership and empathy language
-- Avoid institutional third-person references to PwC
-- Questions for engagement ONLY where already implied
-
-------------------------------------------------------------
-B. BOLD
-------------------------------------------------------------
-Ensure:
-- Assertive, confident tone
-- Active voice
-- Removal of hedging (“may,” “might,” “could”) WHERE intent supports certainty
-- Elimination of jargon and vague abstractions
-- Clear, direct sentence construction
-- Em dashes for emphasis where already implied
-- No exclamation marks
-
-------------------------------------------------------------
-C. OPTIMISTIC
-------------------------------------------------------------
-
-Ensure:
-- Forward-looking, opportunity-oriented framing
-- Positive but balanced momentum
-- Outcome-oriented language ONLY where intent already exists
-
-============================================================
-MESSAGING FRAMEWORK & POSITIONING — ABSOLUTE (GAP CLOSED)
-============================================================
-
-You MUST verify that:
-- AT LEAST TWO PwC network-wide key messages are present (explicit OR clearly implied)
-- EACH key message has directional support already present in the text
-
-FAILURE CONDITION:
-- If fewer than two key messages are present, you MUST flag the block as NON-COMPLIANT
-- You MUST NOT invent proof points or reframe intent to force compliance
-
-============================================================
-CITATION & SOURCE COMPLIANCE
-============================================================
-- Narrative attribution only for author-year style; numbered reference markers “(Ref. N)” and superscript refs (¹ ² ³) are permitted
-- No parenthetical citations (i.e. no “(Author, Year)” in body text)
-- Flag anonymous, outdated, or non-credible sources
-- Do NOT add or invent sources
-
-Bibliographies (if present) must:
-- Be alphabetical by author surname
-- Use Title Case for publication titles
-- Use sentence case for article titles
-- End each entry with a full stop
-
-============================================================
-GEOGRAPHIC & LEGAL NAMING
-============================================================
-- Use “PwC network” (never “PwC Network”)
-- Use ONLY:
-  - “PwC China”
-  - “Hong Kong SAR”
-  - “Macau SAR”
-- Replace “Mainland China” with “Chinese Mainland”
-- Do NOT use:
-  - “Greater China”
-  - “PRC”
-- Do NOT imply SAR equivalence with the Chinese Mainland
-
-============================================================
-HYPERLINK COMPLIANCE
-============================================================
-- Do NOT add new hyperlinks
-- Remove or revise links that:
-  - Imply endorsement or prohibited relationships
-  - Violate independence or IP requirements
-  - Link to SEC-restricted clients
-============================================================
-“SO YOU CAN” ENABLEMENT PRINCIPLE — CONDITIONAL WITH SURFACE CONTROL (GAP CLOSED)
-============================================================
-
-You MUST enforce the “so you can” structure ONLY IF:
-- Enablement intent is clearly IMPLIED
-- The content is suitable for PRIMARY EXTERNAL SURFACES
-
-You MUST enforce the structure exactly as:
-“We (what PwC enables) ___ so you can (client outcome) ___”
-
-PROHIBITED:
-- Use in internal communications, technical documentation, or secondary surfaces
-- PwC positioned as the hero
-- Vague, generic, or non-outcome-based client benefits
-
-FAILURE CONDITIONS:
-- Incorrect surface usage → NON-COMPLIANT
-- Outcome missing or unclear → NON-COMPLIANT
-
-============================================================
-ENERGY, PACE & OUTCOME VOCABULARY — CONDITIONAL (GAP CLOSED)
-============================================================
-
-If the original intent implies momentum, progress, or outcomes:
-- You MUST integrate appropriate vocabulary from the approved categories below
-
-Energy-driven:
-- act decisively
-- build
-- deliver
-- propel
-
-Pace-aligned:
-- achieve
-- adapt swiftly
-- move at pace
-- capitalize
-
-Outcome-focused:
-- accelerate progress
-- unlock value
-- build trust
-
-FAILURE CONDITION:
-- If intent implies momentum or outcomes and none of the approved vocabulary is present, you MUST flag the block as NON-COMPLIANT.
-
-============================================================
-BIBLIOGRAPHY COMPLIANCE — IF PRESENT (GAP CLOSED)
-============================================================
-
-If a bibliography EXISTS:
-- Alphabetize by author surname
-- Use Title Case for publication titles
-- Use sentence case for article titles
-- End each entry with a full stop
-- Provide feedback if corrections were required
-
-If NO bibliography exists:
-- You MUST explicitly state: NOT PRESENT
-- You MUST NOT create one
-
-============================================================
-DETERMINISTIC SENTENCE EVALUATION — ABSOLUTE
-============================================================
-
-For EVERY sentence in EVERY paragraph and bullet_item:
-- Decide FIX REQUIRED or NO FIX REQUIRED
-- If FIX REQUIRED: emit exactly ONE Issue/Fix
-- If NO FIX REQUIRED: emit NOTHING
-
-Silent skipping is FORBIDDEN.
-
-============================================================
-OUTPUT RULES — ABSOLUTE
-============================================================
-
-Return EXACTLY ONE output object per input block.
-
-Output MUST contain ONLY:
-- id
-- type
-- level
-- original_text
-- suggested_text
-- feedback_edit
-
-============================================================
-FEEDBACK_EDIT STRUCTURE — STRICT
-============================================================
-
-{
-  "brand": [
-    {
-      "issue": "exact substring from original_text",
-      "fix": "exact replacement used in suggested_text",
-      "impact": "Why this change is required",
-      "rule_used": "Brand Alignment Editor - <Rule>",
-      "priority": "Critical | Important | Enhancement"
-    }
-  ]
+/**
+ * Render editorial feedback items into a simple HTML string (escaped).
+ * Use ngFor in templates if possible instead of innerHTML.
+ */
+export function renderEditorialFeedbackHtml(items: EditorialFeedbackItem[]): string {
+  if (!items || items.length === 0) return '';
+
+  const esc = (s?: string) =>
+    (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const cards = items.map(it => {
+    const badge = it.priority ? `<span class="ef-priority">${esc(it.priority)}</span>` : '';
+    return `
+      <div class="ef-card">
+        <div class="ef-header">
+          <div class="ef-issue">${esc(it.issue)}</div>
+          ${badge}
+        </div>
+        <div class="ef-body">
+          ${it.rule ? `<div class="ef-row"><strong>Rule:</strong> ${esc(it.rule)}</div>` : ''}
+          ${it.impact ? `<div class="ef-row"><strong>Impact:</strong> ${esc(it.impact)}</div>` : ''}
+          ${it.fix ? `<div class="ef-row"><strong>Fix:</strong> ${esc(it.fix)}</div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('\n');
+
+  return `<div class="ef-container">${cards}</div>`;
 }
 
-NOW EDIT THE FOLLOWING DOCUMENT:
-{document_json}
 
-Return ONLY the JSON array. No extra text.
-"""
-
-# ------------------------------------------------------------
-# DEVELOPMENT EDITOR VALIDATION PROMPT
-# ------------------------------------------------------------
-
-DEVELOPMENT_EDITOR_VALIDATION_PROMPT = """
-You are validating whether the Agent-edited document demonstrates the following Development Editor article-level enforcement behaviors.
-
-============================================================
-A) Development Editor Validation Questions
-============================================================
-
-1. Structure & Coherence
-• Is the content logically organized and easy to follow?
-• Does the flow align with the stated objectives?
-• Has readability been improved through proper structuring?
-
-2. Tone of Voice Compliance
-• Does the content apply three tone principles of PwC: Collaborative, Bold, and Optimistic?
-• Is the language conversational, clear, and jargon-free?
-• Has passive voice, unnecessary qualifiers, and jargon been avoided?
-
-============================================================
-4. ARTICLE-LEVEL ENFORCEMENT — MANDATORY (Add-on)
-============================================================
-
-Validate whether the Agent-edited document demonstrates the following Development Editor article-level enforcement behaviors:
-
-Central Argument Enforcement
-• Has the Development Editor articulated the article's central argument in one sentence before editing (or as an explicit guiding sentence in the revised article)?
-• Does the article maintain a single governing argument throughout?
-
-Section-to-Argument Alignment
-• Does every section clearly advance, substantiate, or logically support the central argument?
-• Are any sections off-argument or adjacent? If yes, were they reframed or reduced?
-
-Repetition & Consolidation Discipline
-• Once a core idea has been introduced and explained, is it avoided in later sections unless:
-  o it adds new implications, new evidence, or new consequences?
-• If a core idea appears in more than two sections, did the editor:
-  o consolidate, elevate, remove, or reframe repeated material?
-• Is repetition used only when it serves a distinct narrative function (framing vs substantiation vs synthesis)?
-
-Length Discipline Through Pruning
-• Did the editor reduce total article length where redundancy or over-explanation exists (even if the content is "good")?
-• Is redundancy removed via:
-  o consolidation,
-  o pruning repeated phrasing,
-  o cutting off-topic tangents?
-
-Point of View Control
-• Did the editor explicitly select and maintain one primary POV (e.g., market analyst, advisor, collaborator)?
-• Are there POV shifts (e.g., advisor → narrator → executive observer)? If yes, were they corrected?
-
-One-Sentence Defensibility Test
-• If the article were summarized in one sentence, could every section be defended as serving that sentence?
-• If not, were non-serving sections revised or cut?
-
-============================================================
-VALIDATION TASK
-============================================================
-
-ORIGINAL ARTICLE ANALYSIS (provided to Development Editor):
-{original_analysis}
-
-ORIGINAL ARTICLE:
-{original_article}
-
-ORIGINAL ARTICLE LENGTH: {original_word_count} words
-
-EDITED ARTICLE (Development Editor output):
-{edited_article}
-
-EDITED ARTICLE LENGTH: {edited_word_count} words
-
-============================================================
-SCORING INSTRUCTIONS
-============================================================
-
-Evaluate all validation criteria above (2 from Development Editor Validation Questions + 6 from ARTICLE-LEVEL ENFORCEMENT) and provide:
-1. A score from 0-10 for overall compliance (where 10 = fully compliant, 0 = non-compliant)
-2. For each criterion in feedback_remarks:
-   - passed: True if criterion met, False if not
-   - feedback: Brief feedback for this criterion
-   - remarks: Detailed remarks explaining what was found
-
-The overall score should reflect:
-- 8-10: Article demonstrates strong compliance with all or most criteria
-- 5-7: Article shows partial compliance but has notable gaps
-- 0-4: Article fails to meet most criteria
-
-Return your validation result as structured JSON matching the DevelopmentEditorValidationResult schema.
-"""
-
-# ------------------------------------------------------------
-# CONTENT EDITOR VALIDATION PROMPT
-# ------------------------------------------------------------
-
-CONTENT_EDITOR_VALIDATION_PROMPT = """
-You are validating whether the Agent-edited document demonstrates the following Content Editor behaviors.
-
-============================================================
-CONTENT EDITOR VALIDATION QUESTIONS
-============================================================
-
-1. Clarity and Strength of Insights
-
-Does the content clearly present strong, actionable insights already present in the Draft Document?
-
-Are ideas clearly articulated without embellishment?
-
-Has the editor avoided introducing new framing, examples, or explanatory layers?
-
-2. Alignment with Author's Objectives
-
-Does the Agent-Edited Document reflect the same objectives and priorities as the Draft Document?
-
-Are emphasis and sequencing preserved?
-
-Has the editor avoided reframing goals, implications, or outcomes?
-
-3. Language Refinement (Block-Level)
-
-Is language refined for clarity and precision only?
-
-Are sentences concise and non-redundant?
-
-Has the editor avoided adding persuasive, executive, or instructional tone not present in the Draft?
-
-============================================================
-🔁 CROSS-PARAGRAPH ENFORCEMENT — MANDATORY (PRIMARY REQUIREMENT)
-============================================================
-
-CRITICAL: Cross-paragraph enforcement is EQUAL in priority to block-level editing. The Content Editor MUST have applied ALL of the following across paragraphs and sections.
-
-4. CROSS-PARAGRAPH LOGIC — ABSOLUTE REQUIREMENT
-
-For EACH paragraph in sequence, verify:
-
-✓ Does the paragraph explicitly assume and build on the reader's understanding from ALL preceding paragraphs?
-✓ Are there NO soft resets (paragraphs that restart context already established)?
-✓ Are there NO re-introductions (restating concepts, definitions, or context already explained)?
-✓ Are there NO restatements of previously established context (repeating background, framing, or setup)?
-
-FAILURE INDICATORS:
-- Paragraph 2 reintroduces a concept that Paragraph 1 already established
-- Paragraph 3 restates background information from Paragraph 1
-- Any paragraph begins with context-setting that was already provided earlier
-- Paragraphs restart explanations rather than building on previous conclusions
-
-PASS CRITERIA:
-- Each paragraph builds directly on the previous paragraph's conclusion or implication
-- No paragraph reintroduces or restates context from earlier paragraphs
-- The sequence demonstrates clear logical progression without soft resets
-
-5. REDUNDANCY AWARENESS (NON-STRUCTURAL) — ABSOLUTE REQUIREMENT
-
-For paragraphs that repeat ideas already established elsewhere, verify:
-
-✓ Has reinforcement language been REDUCED (not expanded)?
-✓ Has the editor avoided adding new emphasis, framing, or rhetorical weight?
-✓ Do later mentions ESCALATE (add implications, consequences, or decision relevance) rather than restate?
-✓ Has the editor NOT removed, merged, or structurally consolidated ideas across blocks?
-
-FAILURE INDICATORS:
-- Later paragraphs repeat ideas with MORE emphasis than earlier paragraphs
-- Repeated ideas use similar framing language without adding new implications
-- Redundant reinforcement language has been added rather than reduced
-- Ideas are restated at the same level of abstraction without escalation
-
-PASS CRITERIA:
-- If an idea is repeated, reinforcement language has been reduced
-- Later mentions of repeated ideas add implications, consequences, or decision relevance
-- No new emphasis or framing has been added that increases redundancy
-- Structural changes (removal/merging of blocks) have NOT occurred
-
-6. EXECUTIVE SIGNAL HIERARCHY — ABSOLUTE REQUIREMENT
-
-Across the paragraph sequence, verify:
-
-✓ Do later paragraphs convey CLEARER implications, priorities, or decision relevance than earlier paragraphs?
-✓ Is emphasis PROGRESSIVE (increasing from start to finish), not flat or repetitive?
-✓ Does the final paragraph carry the STRONGEST leadership implication?
-✓ Has this been achieved WITHOUT introducing new conclusions, shifting author intent, or adding strategic interpretation?
-
-FAILURE INDICATORS:
-- Early paragraphs have stronger implications than later paragraphs
-- Emphasis is flat or repetitive across paragraphs (no progression)
-- Final paragraph lacks clear leadership implication
-- Later paragraphs don't escalate beyond earlier ones
-- New conclusions or strategic interpretation have been introduced
-
-PASS CRITERIA:
-- Early paragraphs establish conditions and context
-- Middle paragraphs begin to surface implications
-- Later paragraphs convey clearer priorities and decision relevance
-- Final paragraph carries the strongest leadership implication
-- Progressive escalation of executive signal strength from start to finish
-- No new conclusions or shifted intent introduced
-
-============================================================
-VALIDATION METHODOLOGY
-============================================================
-
-When validating cross-paragraph enforcement:
-
-1. Read the ENTIRE paragraph sequence in order (both original and edited)
-2. For each paragraph, check what context was established in ALL preceding paragraphs
-3. Identify any soft resets, re-introductions, or restatements
-4. Identify any repeated ideas and check if they escalate or merely restate
-5. Map the progression of executive signal strength across all paragraphs
-6. Compare original vs edited to ensure improvements were made without introducing new content
-
-Be SPECIFIC in your feedback:
-- Reference specific paragraph numbers or content
-- Quote exact phrases that demonstrate compliance or non-compliance
-- Explain what should have been changed and why
-
-============================================================
-VALIDATION TASK
-============================================================
-
-ORIGINAL CROSS-PARAGRAPH ANALYSIS (provided to Content Editor):
-{original_analysis}
-
-ORIGINAL PARAGRAPH SEQUENCE (Draft Document):
-{original_paragraphs}
-
-ORIGINAL PARAGRAPH COUNT: {original_paragraph_count}
-
-EDITED PARAGRAPH SEQUENCE (Agent-Edited Document - Content Editor output):
-{edited_paragraphs}
-
-EDITED PARAGRAPH COUNT: {edited_paragraph_count}
-
-============================================================
-SCORING INSTRUCTIONS
-============================================================
-
-CRITICAL: Cross-paragraph enforcement (questions 4, 5, and 6) is EQUAL in priority to block-level editing (questions 1, 2, and 3). A failure in cross-paragraph enforcement should significantly impact the overall score.
-
-Evaluate all validation criteria above (3 from Content Editor Validation Questions + 3 from CROSS-PARAGRAPH ENFORCEMENT — questions 4, 5, and 6) and provide:
-
-1. A score from 0-10 for overall compliance (where 10 = fully compliant, 0 = non-compliant)
-2. For each criterion in feedback_remarks:
-   - passed: True if criterion met, False if not
-   - feedback: Brief feedback for this criterion (be specific about what was found)
-   - remarks: Detailed remarks explaining what was found, including:
-     * Specific paragraph references or quotes
-     * Examples of compliance or non-compliance
-     * What should have been changed and why
-
-SCORING GUIDELINES:
-
-The overall score should reflect:
-- 8-10: Content demonstrates strong compliance with ALL criteria, including cross-paragraph enforcement. Minor issues may exist but do not significantly impact the overall quality.
-- 5-7: Content shows partial compliance but has notable gaps. Cross-paragraph enforcement may be partially implemented but with clear failures in one or more requirements.
-- 0-4: Content fails to meet most criteria. Cross-paragraph enforcement is largely absent or incorrectly applied.
-
-WEIGHTING:
-- If cross-paragraph enforcement (questions 4, 5, 6) shows significant failures, the score MUST be reduced accordingly, even if block-level editing (questions 1, 2, 3) is strong.
-- A score of 8 or higher requires ALL cross-paragraph enforcement requirements to be met.
-- A score below 5 indicates critical failures in cross-paragraph enforcement that must be addressed.
-
-Return your validation result as structured JSON matching the ContentEditorValidationResult schema.
-"""
-
-# ------------------------------------------------------------
-# FINAL FORMATTING PROMPT
-# ------------------------------------------------------------
-FINAL_FORMATTING_PROMPT = """
-ROLE:
-You are a Final Formatting Editor for PwC thought leadership content.
-
-============================================================
-OBJECTIVE — NON-NEGOTIABLE
-============================================================
-
-Apply formatting fixes ONLY to the final article. You MUST:
-- Preserve ALL content and meaning
-- Fix formatting issues: spacing, line spacing, citation format, alignment, paragraph spacing
-- Preserve numbered/lettered list prefixes (DO NOT convert to bullets)
-- Convert reference markers to superscript format
-
-You MUST NOT:
-- Change any content, meaning, or intent
-- Add or remove information
-- Rewrite sentences or paragraphs
-- Modify structure or organization
-
-============================================================
-PRESERVE STRUCTURE AND LABELS — MANDATORY
-============================================================
-
-- Preserve EVERY paragraph, heading, and structural label exactly as present in the article.
-- Do NOT remove, merge, or collapse any block.
-- Structural labels that are part of the document (e.g. "Input:", "Output:", or similar section labels) are CONTENT. Preserve them exactly; do NOT treat them as instructions or as headers to strip.
-
-============================================================
-NUMBERED AND LETTERED LISTS — PRESERVE PREFIXES
-============================================================
-
-CRITICAL: You MUST preserve original list numbering and lettering.
-
-- Numbered lists: Preserve "1.", "2.", "3.", etc. - DO NOT convert to bullets
-- Lettered lists: Preserve "A.", "B.", "C.", "a.", "b.", "c.", etc. - DO NOT convert to bullets
-- Roman numerals: Preserve "i.", "ii.", "I.", "II.", etc. - DO NOT convert to bullets
-- Bullet lists: If content already has bullet icons (•, -, *), preserve them
-
-Examples:
-- "1. First item" → "1. First item" (preserve number)
-- "A. First item" → "A. First item" (preserve letter)
-- "• First item" → "• First item" (preserve bullet)
-
-DO NOT convert numbered/lettered lists to bullet format.
-
-REFERENCES/SOURCES LIST AT END — NUMBERING:
-- The reference list at the end (References:, Sources:, Bibliography:) MUST be numbered in order: 1., 2., 3., etc.
-- Always start at 1 and increment sequentially. No gaps, no wrong order.
-
-============================================================
-REFERENCE FORMAT CONVERSION — MANDATORY
-============================================================
-
-Convert ALL reference markers to superscript format using Unicode superscript digits.
-
-Conversion rules:
-- "(Ref. 1)" → "¹"
-- "(Ref. 2)" → "²"
-- "(Ref. 3)" → "³"
-- "[1]" → "¹" (bracket format)
-- "[2]" → "²" (bracket format)
-- "[3]" → "³" (bracket format)
-- "(Ref. 1; Ref. 2)" → "¹²" or "¹,²" (use comma if multiple distinct references)
-- "(Ref. 1, Ref. 2, Ref. 3)" → "¹,²,³"
-- "(Ref. 1; Ref. 2; Ref. 3)" → "¹²³" or "¹,²,³" (use comma for clarity with multiple references)
-
-Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
-
-Examples:
-- "According to research (Ref. 1), the findings show..." → "According to research¹, the findings show..."
-- "Multiple studies (Ref. 1; Ref. 2) indicate..." → "Multiple studies¹² indicate..." or "Multiple studies¹,² indicate..."
-- "The data (Ref. 1, Ref. 2, Ref. 3) supports..." → "The data¹,²,³ supports..."
-
-CRITICAL — URL PRESERVATION:
-- When converting citation markers, ONLY convert the marker itself (e.g., "[1]" or "(Ref. 1)")
-- DO NOT remove or modify any text that follows the citation marker, including URLs
-- If a citation marker is followed by "https:" or a URL, wrap the URL in parentheses
-- Examples:
-  - "[1]https://example.com" → "¹(https://example.com)" (URL in parentheses)
-  - "[1]https:" → "¹(https:)" (URL prefix in parentheses)
-  - "Text [1]https://example.com more text" → "Text ¹(https://example.com) more text" (URL in parentheses)
-  - "(Ref. 1) https://example.com" → "¹ (https://example.com)" (URL in parentheses with space)
-  - "[1]http://example.com" → "¹(http://example.com)" (URL in parentheses)
-
-IMPORTANT:
-- Remove parentheses and "Ref." text
-- Remove square brackets from "[1]" format
-- Convert numbers to superscripts
-- Place superscripts immediately after the referenced text (no space before superscript)
-- For multiple references, combine superscripts or use comma-separated format for clarity
-- NEVER remove URLs or any text that appears after citation markers
-
-============================================================
-CITATION LINK FORMAT CONVERSION — MANDATORY
-============================================================
-
-CRITICAL: You MUST convert ALL markdown links to the required format: Title as plain text (NO brackets), URL in square brackets ONLY.
-
-CONVERSION RULES — ABSOLUTE:
-- Convert markdown links `[Title](URL)` to format: `Title [URL]`
-- Convert backend format `[Title](URL: https://...)` to format: `Title [https://...]`
-- Extract the URL from parentheses and place it in square brackets `[URL]` after the title
-- Keep the title as plain text with NO brackets (remove all square brackets from title)
-- Square brackets `[]` are ONLY for URLs (https://... or url), NEVER for titles
-- Preserve the full URL exactly as written
-- Links can appear ANYWHERE: in citation sections, inline in paragraphs, in lists, etc.
-
-Examples of CORRECT conversion:
-- Citation section: `1. [PwC Global CEO Survey](https://www.pwc.com/ceosurvey)` → `1. PwC Global CEO Survey [https://www.pwc.com/ceosurvey]`
-- Inline in paragraph: `According to [PwC research](https://www.pwc.com/research), the findings show...` → `According to PwC research [https://www.pwc.com/research], the findings show...`
-- Backend format: `[Title](URL: https://example.com)` → `Title [https://example.com]`
-- Numbered citation: `1. [Report Title](https://example.com/report)` → `1. Report Title [https://example.com/report]`
-
-Examples of INCORRECT conversion (DO NOT DO THIS):
-- `1. PwC Global CEO Survey` (URL removed)
-- `According to PwC research, the findings show...` (link removed from paragraph)
-- `[https://www.pwc.com/research]` (title removed, only URL remains)
-- `1. <a href="https://www.pwc.com/ceosurvey">PwC Global CEO Survey</a>` (converted to HTML)
-- `1. PwC Global CEO Survey (https://www.pwc.com/ceosurvey)` (URL in parentheses instead of brackets)
-- `1. [PwC Global CEO Survey](https://www.pwc.com/ceosurvey)` (keeping markdown format unchanged)
-- `1. [PwC Global CEO Survey] [https://www.pwc.com/ceosurvey]` (title has brackets - WRONG! Titles must be plain text)
-- `[Title] [URL]` (both title and URL in brackets - WRONG! Only URL should have brackets)
-
-APPLIES TO ALL LINKS IN THE DOCUMENT:
-- Citation sections with headers like "Sources:", "References:", "Bibliography:"
-- Numbered citation lists MUST be in order: 1., 2., 3., etc. (sequential; correct format always; number start correct)
-- Links inline in paragraphs (middle of sentences)
-- Links in headings
-- Links in bullet points or lists
-- Links anywhere else in the document
-- Both standard format `[Title](URL)` and backend format `[Title](URL: https://...)`
-
-============================================================
-SPACING FIXES — REQUIRED
-============================================================
-
-1. Word Spacing:
-   - Remove extra spaces between words (ensure single space only)
-   - Remove leading/trailing spaces from lines
-   - Preserve intentional spacing (e.g., indentation, code blocks)
-
-2. Line Spacing:
-   - Maintain consistent line-height (1.25 for paragraphs)
-   - Ensure proper spacing between sentences within paragraphs
-
-3. Paragraph Spacing:
-   - Fix excessive spacing between paragraphs
-   - Ensure consistent paragraph spacing (not too large gaps)
-   - Maintain proper spacing between headings and paragraphs
-   - Remove unnecessary blank lines (keep single blank line between paragraphs if needed)
-
-============================================================
-ALIGNMENT — REQUIRED
-============================================================
-
-- Paragraphs: Ensure text is justified (left and right aligned)
-- Headings: Ensure headings are left-aligned
-- Lists: Ensure proper indentation and alignment
-- Preserve existing alignment for special content (code blocks, tables, etc.)
-
-============================================================
-OUTPUT FORMAT — ABSOLUTE
-============================================================
-
-Return ONLY the formatted article text.
-
-- Do NOT add explanations, comments, or metadata
-- Do NOT wrap in markdown code fences
-- Do NOT add headers or footers. This means do not add new headers or footers; it does NOT mean remove existing labels (e.g. "Input:", "Output:") that are part of the document.
-- Return the complete article with formatting fixes applied
-
-============================================================
-VALIDATION — REQUIRED BEFORE OUTPUT
-============================================================
-
-Before responding, verify:
-- The formatted output has the SAME number of logical blocks (title/paragraphs/headings/bullet_list) as the input, in the SAME order, so block-level formatting stays aligned.
-- All numbered/lettered list prefixes are preserved
-- All reference markers are converted to superscripts
-- ALL markdown links `[Title](URL)` and `[Title](URL: https://...)` have been converted to format `Title [URL]` (title as plain text, URL in brackets)
-- No link URLs have been removed or converted to HTML
-- No link titles have been removed (leaving only `[URL]`)
-- All URLs are preserved in square brackets `[URL]` format
-- Links in citation sections, inline in paragraphs, and elsewhere are all converted to the required format
-- Spacing is consistent (no extra spaces)
-- Paragraph spacing is appropriate (not excessive)
-- Alignment is correct (paragraphs justified, headings left-aligned)
-- No content or meaning was changed
-- All original formatting (bold, italic, etc.) is preserved
-
-============================================================
-NOW FORMAT THE FOLLOWING ARTICLE:
-============================================================
-
-{article_text}
-
-Return ONLY the formatted article text. No extra text, explanations, or commentary.
-"""
-
-
-# ------------------------------------------------------------
-# MARKDOWN STRUCTURE PROMPT (same as refine_content — for final article output)
-# ------------------------------------------------------------
-def build_markdown_structure_prompt(content: str) -> List[Dict[str, str]]:
-    """Build prompt for converting refined/edit content into correctly formatted markdown (title, headings, lists, citations) aligned with document styles. Same prompt as refine_content for consistent output."""
-    return [
-        {
-            "role": "system",
-            "content": """You convert refined article text into correctly formatted markdown that maps to the following document styles. Use these exact font size and line spacing specifications.
-
-STYLE SPECIFICATIONS (font size 11pt, 1.25 line spacing, space after — no double returns):
-
-Body Text style: Font 11pt, 1.25 line spacing. Space after is programmed; use single blank line between blocks. No double returns to space out text.
-
-Heading 1 style: Document title (# ). Heading 2 style: Main sections (## ). Heading 3 style: Sub-sections (### ). Heading 4 style: Sub-points (#### ). Differentiate levels; renderer applies size.
-
-List Bullet style: Font and line spacing same as Body Text (11pt, 1.25). Use - or * for bullets; hanging indent; space after between list and next block. Do NOT use bullets in References.
-
-List Continue style: Same font and line spacing as Body Text; hanging indent for second and subsequent lines of a bullet/numbered/alpha list item. In markdown use indent 2 spaces for continuation.
-
-List Bullet 2 style: Same as Body Text plus left indent and hanging indent for nested bullets. In markdown indent 2–4 spaces then - or *.
-
-List Number style: Same font and line spacing as Body Text; hanging indent. Use 1. 2. 3. for numbered lists (including References).
-
-List Number 2 style: Same as Body Text plus left indent and hanging indent for nested numbered items.
-
-List Alpha style: Same as Body Text; hanging indent. Use A. B. C. or a. b. c. for alphabetical lists.
-
-Quote style: Same as Body Text. Use > for blockquote.
-
-References: Heading ## References then numbered entries only: 1. ... 2. ... 3. ... or [1] [2] [3]. Same 11pt, 1.25 line spacing; space after each entry. No bullet points (• or - or *) in References.
-
-Inline citations: Keep <sup>[ [n](URL) ]</sup> or [Title](URL). Do not remove or break links.
-
-MARKDOWN SYNTAX (apply exactly; this is the final output format):
-
-1. TITLE: One line only. Example: # Document Title
-2. SUB-HEADINGS (headings and sub-headings):
-   - Main section: ## Section Name (one line, then a blank line before body)
-   - Sub-section: ### Subsection Name (one line, then a blank line before body)
-   - Sub-sub: #### Sub point (one line, then a blank line)
-   - Each heading must be on its own line with # symbols at the start. No extra text on the same line after the heading text.
-3. BULLET LIST and BULLET ITEMS:
-   - Each bullet item must be on its own line. Start the line with - or * followed by one space, then the item text.
-   - Multiple bullet items = multiple consecutive lines (no blank line between items in the same list).
-   - One blank line after the last item of a list, then the next block (paragraph or heading).
-   - Nested bullet list: indent with 2 or 4 spaces, then - or * and space, then text. Example:
-     - First item
-     - Second item
-       - Nested item
-       - Another nested
-     - Third item
-4. NUMBERED LIST: Use 1. 2. 3. at line start (one item per line). Same spacing rule: no blank line between items; one blank line after the list.
-5. ALPHABETICAL LIST: Use A. B. C. or a. b. c. at line start, one item per line.
-6. PARAGRAPHS: Normal text. One blank line between paragraphs.
-7. REFERENCES: ## References then numbered lines only: [1] ... or 1. ... (no bullets, no - or *).
-
-OUTPUT FORMAT (use only these elements; preserve all content):
-- One level-1 title: # Title
-- Main sections: ## Heading; sub-sections: ### and #### (each on its own line; blank line after heading)
-- Bullet lists: each item on its own line with - or * and space; no blank line between items in same list; blank line after list
-- Numbered lists: 1. 2. 3. or A. B. C. — one item per line
-- Paragraphs: normal text. Quotes: > quoted text
-- References: ## References then [1] Source, "Title", URL — one entry per number, no bullets
-- Single blank line between blocks; no double returns
-
-RULES:
-- Preserve every sentence and citation; only add markdown structure.
-- Do not add or remove content.
-- Do not wrap entire paragraphs in bold. Use **bold** only for short phrases or terms within a sentence, never for a whole paragraph.
-- References section: numbered format only ([1] [2] [3] or 1. 2. 3.); never use bullet points (• or - or *) in References.
-- Single blank line between paragraphs and between reference entries (space after); no double returns.
-- Output ONLY the raw markdown document. No code fences, no preamble, no explanation.""",
-        },
-        {"role": "user", "content": content},
-    ]
+/**
+ * Block type information for formatting
+ */
+export interface BlockTypeInfo {
+  index: number;
+  type: string;
+  level?: number;
+}
+
+
+/**
+ * Format final article with block type information to produce semantic HTML.
+ * Groups consecutive bullet_item blocks into proper <ul> or <ol> lists.
+ * 
+ * @param article - The article content (markdown or plain text)
+ * @param blockTypes - Array of block type information with index, type, and optional level
+ * @returns Formatted HTML with proper semantic structure
+ */
+export function formatFinalArticleWithBlockTypes(
+  article: string, 
+  blockTypes: BlockTypeInfo[]
+): string {
+  if (!blockTypes || blockTypes.length === 0) {
+    // If no block types, just convert markdown to HTML
+    return convertMarkdownToHtml(article);
+  }
+
+  // Split article into paragraphs (assuming double newline separation)
+  const paragraphs = article.split(/\n\n+/);
+  
+  // Create a map of index to block type
+  const blockTypeMap = new Map<number, {type: string, level?: number}>();
+  blockTypes.forEach(bt => {
+    blockTypeMap.set(bt.index, {type: bt.type, level: bt.level});
+  });
+
+  // First pass: format individual paragraphs
+  interface ParagraphBlock {
+    type: string;
+    content: string;
+    level: number;
+    rawContent?: string;
+    hasBulletIcon?: boolean; // Track if bullet icon exists in content
+  }
+
+  const formattedParagraphs = paragraphs
+    .map((para, idx): ParagraphBlock | null => {
+      const trimmedPara = para.trim();
+      if (!trimmedPara) return null; // Filter out empty paragraphs
+
+      const blockInfo = blockTypeMap.get(idx);
+      if (!blockInfo) {
+        // Default to paragraph if no block type info
+        const formatted = convertMarkdownToHtml(trimmedPara);
+        const content = formatted.startsWith('<') ? formatted : `<p>${formatted}</p>`;
+        return {
+          type: 'paragraph',
+          content: content,
+          level: 0
+        };
+      }
+
+      // Convert markdown in the paragraph first
+      let formatted = convertMarkdownToHtml(trimmedPara);
+      
+      // Remove wrapping <p> tags if they exist at the start/end (we'll add our own based on block type)
+      // Only remove if the entire content is wrapped in a single <p> tag
+      formatted = formatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+
+      // Apply block type formatting (matches backend export formatting)
+      switch (blockInfo.type) {
+        case 'title':
+          // Title: 20pt font, bold, center aligned, spacing matches backend
+          // Note: Title is typically on cover page in export, but for UI display we show it
+          return {
+            type: 'title',
+            content: `<h1 style="font-size: 20pt; font-weight: 700; font-family: 'Helvetica', 'Arial', sans-serif; display: block; margin-top: 1.25em; margin-bottom: 0.35em; text-align: center; color: #D04A02;">${formatted}</h1>`,
+            level: 0
+          };
+        
+        case 'heading':
+          // Heading: 14pt font, bold (Helvetica-Bold), black, spacing matches backend (0.9em top, 0.2em bottom)
+          const headingLevel = blockInfo.level || 1;
+          const headingTag = `h${Math.min(Math.max(headingLevel, 1), 6)}`;
+          return {
+            type: 'heading',
+            content: `<${headingTag} style="font-size: 14pt; font-weight: 700; font-family: 'Helvetica-Bold', 'Arial Bold', sans-serif; display: block; margin-top: 0.9em; margin-bottom: 0.2em; color: #000000;">${formatted}</${headingTag}>`,
+            level: headingLevel
+          };
+        
+        case 'bullet_item':
+          // Process bullet item: all lists use bullet icons (matches backend export)
+          // Remove ALL number/letter prefixes, always use bullet icon, format before/after colon
+          let processedContent = trimmedPara;
+          
+          // Remove ALL prefixes - loop until no more prefixes found to handle nested cases
+          let previousContent = '';
+          while (previousContent !== processedContent) {
+            previousContent = processedContent;
+            
+            // Remove number prefixes (e.g., "1.", "2.", "10.", "1)", "2)", "10)", "1. ", "2) ", etc.)
+            processedContent = processedContent.replace(/^\d+[.)]\s*/g, '');
+            
+            // Remove letter prefixes (e.g., "A.", "a.", "B)", "b)", "A. ", "a) ", etc.)
+            processedContent = processedContent.replace(/^[A-Za-z][.)]\s*/g, '');
+            
+            // Remove roman numerals (e.g., "i.", "ii.", "I.", "II.", "iv.", "IV.", etc.)
+            processedContent = processedContent.replace(/^[ivxlcdmIVXLCDM]+[.)]\s*/gi, '');
+            
+            // Remove existing bullet icons (•, -, *) if present
+            processedContent = processedContent.replace(/^[•\-\*]\s*/g, '');
+            
+            // Remove any whitespace at the start
+            processedContent = processedContent.replace(/^\s+/, '');
+          }
+          
+          // Final trim
+          processedContent = processedContent.trim();
+          
+          // Format text before ":" as bold, after ":" as normal
+          const colonIndex = processedContent.indexOf(':');
+          if (colonIndex > 0) {
+            const beforeColon = processedContent.substring(0, colonIndex).trim();
+            const afterColon = processedContent.substring(colonIndex + 1).trim();
+            
+            // Convert markdown in both parts
+            let beforeFormatted = convertMarkdownToHtml(beforeColon);
+            let afterFormatted = convertMarkdownToHtml(afterColon);
+            
+            // Remove any existing <p> tags
+            beforeFormatted = beforeFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+            afterFormatted = afterFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+            
+            // Apply bold to before part, normal to after part
+            // Always use bullet icon (•) - all lists use bullets (matches backend)
+            processedContent = `• <strong>${beforeFormatted}</strong>: ${afterFormatted}`;
+          } else {
+            // No colon found, just convert markdown and remove <p> tags
+            processedContent = convertMarkdownToHtml(processedContent);
+            processedContent = processedContent.replace(/^<p>(.*)<\/p>$/s, '$1');
+            // Always use bullet icon (•) - all lists use bullets (matches backend)
+            processedContent = `• ${processedContent}`;
+          }
+          
+          return {
+            type: 'bullet_item',
+            content: processedContent,
+            level: blockInfo.level || 0,
+            rawContent: trimmedPara, // Store raw content for tracking
+            hasBulletIcon: true // Always has bullet icon (matches backend - all lists use bullets)
+          };
+        
+        case 'paragraph':
+        default:
+          // Paragraph: 11pt font, line-height 1.25, justify alignment, spacing matches backend
+          // margin-top: 0.15em (2pt), margin-bottom: 0.7em (8pt)
+          return {
+            type: 'paragraph',
+            content: `<p style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; display: block; text-align: justify; margin-top: 0.15em; margin-bottom: 0.7em; line-height: 1.25;">${formatted}</p>`,
+            level: 0
+          };
+      }
+    })
+    .filter((para): para is ParagraphBlock => para !== null);
+
+  // Second pass: group consecutive bullet_item blocks into lists (use list-style-type: none if bullet icons exist)
+  const finalOutput: string[] = [];
+  let currentList: Array<{content: string, level: number, rawContent: string, hasBulletIcon?: boolean}> = [];
+  let prevBlockType: string | null = null;
+  let prevBlockIndex: number = -1;
+
+  for (let i = 0; i < formattedParagraphs.length; i++) {
+    const para = formattedParagraphs[i];
+    const nextPara = i < formattedParagraphs.length - 1 ? formattedParagraphs[i + 1] : null;
+    
+    if (para.type === 'bullet_item') {
+      // Add to current list
+      currentList.push({
+        content: para.content,
+        level: para.level,
+        rawContent: para.rawContent || '',
+        hasBulletIcon: para.hasBulletIcon
+      });
+      prevBlockType = 'bullet_item';
+      prevBlockIndex = i;
+    } else {
+      // Close any open list before processing non-list item
+      if (currentList.length > 0) {
+        // Determine spacing: tighter after heading (Citations & References), then paragraph, else 0.5em
+        const listMarginTop = prevBlockType === 'heading' ? '0.2em' : (prevBlockType === 'paragraph' ? '0.25em' : '0.5em');
+        const listMarginBottom = nextPara && nextPara.type === 'paragraph' ? '0.25em' : '0.5em';
+        
+        // All lists use bullet icons (matches backend export - all lists rendered as bullets)
+        // Since we always add bullet icons to content, use list-style-type: none
+        const listStyleType = 'none';
+        // Font size: 11pt (matches paragraph font size), left indent: 12pt (0.5em), bullet indent: 0
+        finalOutput.push(`<ul style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; list-style-type: ${listStyleType}; padding-left: 1.5em; margin-top: ${listMarginTop}; margin-bottom: ${listMarginBottom}; line-height: 1.25;">`);
+        currentList.forEach(item => {
+          finalOutput.push(`<li style="display: list-item; margin: 0.375em 0;">${item.content}</li>`);
+        });
+        finalOutput.push('</ul>');
+        currentList = [];
+      }
+
+      // Adjust paragraph margins based on context (matches backend export)
+      if (para.type === 'paragraph') {
+        // Reduce bottom margin if followed by bullet list (0.25em/3pt matches backend)
+        if (nextPara && nextPara.type === 'bullet_item') {
+          para.content = para.content.replace(/margin-bottom:\s*[^;]+;?/g, 'margin-bottom: 0.25em;');
+        }
+        // Reduce top margin if following heading - decrease line spacing between heading and paragraph
+        if (prevBlockType === 'heading') {
+          para.content = para.content.replace(/margin-top:\s*[^;]+;?/g, 'margin-top: 0.05em;');
+        }
+      }
+
+      // Add non-list paragraph
+      finalOutput.push(para.content);
+      prevBlockType = para.type;
+      prevBlockIndex = i;
+    }
+  }
+
+  // Close any remaining open list
+  if (currentList.length > 0) {
+    // Determine spacing: tighter after heading (Citations & References)
+    const listMarginTop = prevBlockType === 'heading' ? '0.2em' : (prevBlockType === 'paragraph' ? '0.25em' : '0.5em');
+    
+    // All lists use bullet icons (matches backend export - all lists rendered as bullets)
+    // Since we always add bullet icons to content, use list-style-type: none
+    const listStyleType = 'none';
+    // Font size: 11pt (matches paragraph font size), left indent: 12pt (0.5em), bullet indent: 0
+    finalOutput.push(`<ul style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; list-style-type: ${listStyleType}; padding-left: 1.5em; margin-top: ${listMarginTop}; margin-bottom: 0.5em; line-height: 1.25;">`);
+    currentList.forEach(item => {
+      finalOutput.push(`<li style="display: list-item; margin: 0.375em 0;">${item.content}</li>`);
+    });
+    finalOutput.push('</ul>');
+  }
+
+  return finalOutput.join('\n');
+}
