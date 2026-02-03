@@ -1,1914 +1,764 @@
-import { Component, OnInit, ChangeDetectorRef  } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
-import { TlFlowService } from '../../../core/services/tl-flow.service';
-import { ChatService } from '../../../core/services/chat.service';
-import { TlChatBridgeService } from '../../../core/services/tl-chat-bridge.service';
-import { AuthFetchService } from '../../../core/services/auth-fetch.service';
-import { ThoughtLeadershipMetadata } from '../../../core/models';
-import { FileUploadComponent } from '../../../shared/ui/components/file-upload/file-upload.component';
-import { EditorProgressItem } from '../../../shared/ui/components/editor-progress/editor-progress.component'; // EditorProgressComponent removed - not used in template
-import { normalizeEditorOrder, normalizeContent, EditorType, extractDocumentTitle, getEditorDisplayName, formatMarkdown, convertMarkdownToHtml, extractFileText, parseEditorialFeedback, renderEditorialFeedbackHtml, EditorialFeedbackItem, BlockTypeInfo } from '../../../core/utils/edit-content.utils';
-import { 
-  createParagraphEditsFromComparison, 
-  allParagraphsDecided,
-  validateStringEquality
-} from '../../../core/utils/paragraph-edit.utils';
-import { ParagraphEdit } from '../../../core/models/message.model';
-import { environment } from '../../../../environments/environment';
-interface EditForm {
-  selectedEditors: EditorType[];
-  uploadedFile: File | null;
+/**
+ * Shared utility functions for Edit Content workflow
+ * Ensures deterministic results across Quick Start and Guided Journey flows
+ * 
+ * NOTE: EDITOR_ORDER and EDITOR_NAME_MAP must match backend constants in
+ * edit_content_service.py for consistent behavior between frontend and backend
+ */
+import { environment } from "../../../environments/environment";
+// Editor processing order (must match backend EDITOR_ORDER in edit_content_service.py)
+export const EDITOR_ORDER = ['development', 'content', 'line', 'copy', 'brand-alignment'] as const;
+
+export type EditorType = 'development' | 'content' | 'line' | 'copy' | 'brand-alignment';
+
+/**
+ * Normalize editor IDs to ensure consistent ordering for deterministic results.
+ * Ensures brand-alignment is always included and editors are in the correct order.
+ * 
+ * @param editorIds - Array of editor IDs to normalize
+ * @returns Normalized array of editor IDs in EDITOR_ORDER sequence
+ */
+export function normalizeEditorOrder(editorIds: string[]): string[] {
+  // Create a copy to avoid mutating the input
+  let normalized = [...editorIds];
+  
+  // Ensure brand-alignment is always included
+  if (!normalized.includes('brand-alignment')) {
+    normalized.push('brand-alignment');
+  }
+  
+  // Filter and order according to EDITOR_ORDER for deterministic results
+  return EDITOR_ORDER.filter(editor => normalized.includes(editor));
 }
 
-interface ParagraphFeedback {
-  index: number;
-  original: string;
-  edited: string;
-  tags: string[];
-  autoApproved: boolean;
-  approved?: boolean | null;
-  block_type?: string;
-  level?: number;
-  editorial_feedback: {
-    development?: any[];
-    content?: any[];
-    copy?: any[];
-    line?: any[];
-    brand?: any[];
-  };
-  displayOriginal?: string;
-  displayEdited?: string;
+/**
+ * Normalize content text to ensure consistent processing.
+ * Trims whitespace and normalizes line endings.
+ * 
+ * @param content - Content text to normalize
+ * @returns Normalized content text
+ */
+export function normalizeContent(content: string): string {
+  if (!content) {
+    return '';
+  }
+  
+  // Trim leading/trailing whitespace
+  let normalized = content.trim();
+  
+  // Normalize line endings to \n (Unix-style)
+  normalized = normalized.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  
+  // Remove trailing whitespace from each line (but preserve structure)
+  // This ensures consistent processing without changing content meaning
+  normalized = normalized.split('\n')
+    .map(line => line.trimEnd())
+    .join('\n');
+  
+  return normalized;
 }
 
-@Component({
-  selector: 'app-edit-content-flow',
-  standalone: true,
-  imports: [CommonModule, FormsModule, FileUploadComponent], // EditorProgressComponent removed - not used in template
-  templateUrl: './edit-content-flow.component.html',
-  styleUrls: ['./edit-content-flow.component.scss']
-})
-export class EditContentFlowComponent implements OnInit {
-  isGenerating: boolean = false;
-  editFeedback: string = '';
-  feedbackItems: EditorialFeedbackItem[] = [];
-  feedbackHtml: string = '';
-  revisedContent: string = '';
-  originalContent: string = '';
-  iterationCount: number = 0;
-  showSatisfactionPrompt: boolean = false;
-  showImprovementInput: boolean = false;
-  improvementRequestText: string = '';
-  fileUploadError: string = '';
-  uploadedFileSize: string = '';
-  MAX_FILE_SIZE_MB: number = 5;
-  editorProgressList: EditorProgressItem[] = [];
-  currentEditorIndex: number = 0;
-  totalEditors: number = 0;
-  currentEditorId: string = '';
-  
-  // Sequential workflow properties
-  threadId: string | null = null;
-  currentEditor: string | null = null;
-  isSequentialMode: boolean = false;
-  isLastEditor: boolean = false;
-  isEditorLoading: boolean = false; // Track if current editor is loading
-  
-  paragraphFeedbackData: ParagraphFeedback[] = [];
-  paragraphEdits: ParagraphEdit[] = [];
-  showFinalOutput: boolean = false;
-  /** Raw markdown from backend (final article). Display via finalArticleHtml. */
-  finalArticle: string = '';
-  isGeneratingFinal: boolean = false;
-
-  /** Final article as HTML with consistent styling (line-height 1, headings, lists, citations, clickable URLs). */
-  get finalArticleHtml(): string {
-    return convertMarkdownToHtml(this.finalArticle || '');
+/**
+ * Compute a simple hash of content for verification purposes.
+ * Used to verify identical inputs are being processed.
+ * 
+ * @param content - Content to hash
+ * @returns Hash string
+ */
+export function hashContent(content: string): string {
+  if (!content) {
+    return 'empty';
   }
-
-  /** Paragraphs that require review (exclude autoApproved) */
-  private get reviewParagraphs(): ParagraphFeedback[] {
-    return (this.paragraphFeedbackData || [])
-      .filter(p => p.autoApproved !== true)
-      .sort((a, b) => a.index - b.index);
+  
+  // Simple hash function for verification
+  let hash = 0;
+  for (let i = 0; i < content.length; i++) {
+    const char = content.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
   }
+  
+  return Math.abs(hash).toString(36);
+}
 
-  /** Flatten all editorial feedback items across paragraphs */
-  private getAllFeedbackItems(): Array<{
-    paraIndex: number;
-    editorType: string;
-    fbIndex: number;
-    fb: any;
-  }> {
-    const items: Array<{ paraIndex: number; editorType: string; fbIndex: number; fb: any }> = [];
-
-    for (const para of this.reviewParagraphs) {
-      const types = Object.keys(para.editorial_feedback || {});
-      for (const editorType of types) {
-        const arr = (para.editorial_feedback as any)[editorType] || [];
-        arr.forEach((fb: any, fbIndex: number) => {
-          items.push({ paraIndex: para.index, editorType, fbIndex, fb });
-        });
-      }
+/**
+ * Extract document title from content.
+ * Checks for H1 heading first, then first line if it looks like a title,
+ * otherwise falls back to filename.
+ * 
+ * @param content - Document content text
+ * @param filename - Optional filename to use as fallback
+ * @returns Extracted title
+ */
+export function extractDocumentTitle(content: string, filename?: string): string {
+  if (!content || !content.trim()) {
+    // Fallback to filename if no content
+    if (filename) {
+      return filename.replace(/\.[^/.]+$/, '').trim();
     }
-
-    return items;
+    return 'Revised Article';
   }
 
-  /** Count of feedback items approved (fb.approved === true) */
-  get approvedFeedbackCount(): number {
-    return this.getAllFeedbackItems().filter(x => x.fb?.approved === true).length;
+  const normalizedContent = normalizeContent(content);
+  const lines = normalizedContent.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+
+  if (lines.length === 0) {
+    // Fallback to filename if no content lines
+    if (filename) {
+      return filename.replace(/\.[^/.]+$/, '').trim();
+    }
+    return 'Revised Article';
   }
 
-  /** Count of feedback items rejected (fb.approved === false) */
-  get rejectedFeedbackCount(): number {
-    return this.getAllFeedbackItems().filter(x => x.fb?.approved === false).length;
+  // Check for H1 heading at the start (# Title)
+  const firstLine = lines[0];
+  const h1Match = firstLine.match(/^#\s+(.+)$/);
+  if (h1Match && h1Match[1]) {
+    return h1Match[1].trim();
   }
 
-  /** Count of feedback items pending (fb.approved is null/undefined) */
-  get pendingFeedbackCount(): number {
-    return this.getAllFeedbackItems().filter(
-      x => x.fb?.approved === null || x.fb?.approved === undefined
-    ).length;
-  }
-
-  /** Scroll to the first feedback card with the requested status */
-  scrollToFirstFeedbackByStatus(status: 'pending' | 'approved' | 'rejected'): void {
-    const match = this.getAllFeedbackItems().find(x => {
-      if (status === 'approved') return x.fb?.approved === true;
-      if (status === 'rejected') return x.fb?.approved === false;
-      return x.fb?.approved === null || x.fb?.approved === undefined;
-    });
-
-    if (!match) return;
-
-    const el = document.getElementById(`fb-${match.paraIndex}-${match.editorType}-${match.fbIndex}`);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+  // Check if first line looks like a title
+  // Criteria: short (less than 100 chars), starts with capital, no ending punctuation (except ? or !)
+  if (firstLine.length > 0 && firstLine.length < 100) {
+    const firstChar = firstLine[0];
+    const lastChar = firstLine[firstLine.length - 1];
+    
+    // Check if starts with capital letter or number
+    const startsWithCapital = /^[A-Z0-9]/.test(firstChar);
+    
+    // Check if doesn't end with period, comma, or semicolon (but allow ? or !)
+    const endsWithPunctuation = /[.,;]$/.test(lastChar);
+    
+    // Check if it's not a list item or code block
+    const isListItem = /^[-*+\d.]\s/.test(firstLine);
+    const isCodeBlock = firstLine.startsWith('```') || firstLine.startsWith('`');
+    
+    if (startsWithCapital && !endsWithPunctuation && !isListItem && !isCodeBlock) {
+      return firstLine;
     }
   }
 
-  
-  formData: EditForm = {
-    selectedEditors: ['development', 'content', 'line', 'copy', 'brand-alignment'],
-    uploadedFile: null
+  // Fallback to filename
+  if (filename) {
+    return filename.replace(/\.[^/.]+$/, '').trim();
+  }
+
+  return 'Revised Article';
+}
+
+/** Editor name mapping (must match backend EDITOR_NAMES in edit_content_service.py) */
+const EDITOR_NAME_MAP: { [key: string]: string } = {
+  'development': 'Development Editor',
+  'content': 'Content Editor',
+  'line': 'Line Editor',
+  'copy': 'Copy Editor',
+  'brand-alignment': 'PwC Brand Alignment Editor'
+};
+
+/** Get editor display name by ID */
+export function getEditorDisplayName(editorId: string): string {
+  return EDITOR_NAME_MAP[editorId] || editorId;
+}
+
+/** Format markdown text to HTML for basic formatting (bold, italic, line breaks) */
+export function formatMarkdown(text: string): string {
+  let formatted = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  formatted = formatted.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  formatted = formatted.replace(/\n/g, '<br>');
+  return formatted;
+}
+
+/** Convert markdown text to HTML with proper formatting for headings, lists, paragraphs, etc. */
+export function convertMarkdownToHtml(markdown: string): string {
+  if (!markdown || !markdown.trim()) {
+    return '';
+  }
+
+  let html = markdown;
+
+  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+
+  html = html.replace(/^---$/gm, '<hr>');
+  html = html.replace(/^\*\*\*$/gm, '<hr>');
+
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Links:
+  // - Standard markdown: [text](https://example.com)
+  // - Backend citation variant: [Title](URL: https://example.com)
+  //   If we don't strip "URL:", the href becomes invalid ("URL: https://...").
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, linkText, rawHref) => {
+    const textRaw = String(linkText ?? '');
+    const hrefRaw = String(rawHref ?? '').trim();
+
+    // Minimal escaping to avoid breaking attributes / HTML structure.
+    // Note: this utility already does simplistic markdown->HTML transforms elsewhere.
+    const escHtml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escAttr = (s: string) => escHtml(s).replace(/"/g, '&quot;');
+    const text = escHtml(textRaw);
+
+    // Handle "(URL: https://...)" (case-insensitive). URL can wrap across newlines so long citation URLs are fully clickable.
+    const citationUrlMatch = hrefRaw.match(/^url:\s*(https?:\/\/[^\s)]*(?:\n[^\s)]*)*)\s*$/i);
+    if (citationUrlMatch && citationUrlMatch[1]) {
+      const url = citationUrlMatch[1].replace(/\n/g, '').trim();
+      const urlAttr = escAttr(url);
+      const urlText = escHtml(url);
+      // Show both the title and the URL (common expectation for citation blocks)
+      // return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(${urlText})</span>`;
+      return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${urlText}</a>)</span>`;
+    }
+
+    // Standard markdown link
+    return `<a href="${escAttr(hrefRaw)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+  });
+
+  // Spacing: ensure one space before (https:// when preceded by ), ], or superscript (e.g. )²(https:// -> )² (https://)
+  html = html.replace(/([)\]⁰¹²³⁴⁵⁶⁷⁸⁹])(\s*)(\()(https?:\/\/)/g, '$1 $3$4');
+
+  // Plain URLs: in References "Title [https://...]", in-paragraph "(https://...)" or "[https://...]" -> one full clickable link
+  // Match "[https://...]" so the entire URL is one <a> (no break in middle); class citation-url-link for styling.
+  const escAttr = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const escHtml = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Format "[https://...]" as [<a>full URL</a>] so the whole URL is one clickable link when it wraps
+  html = html.replace(/\[(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)\]/g, (_match, url) => {
+    const urlTrimmed = url.replace(/\n/g, ' ').trim();
+    return `[<a class="citation-url-link" href="${escAttr(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${escHtml(urlTrimmed)}</a>]`;
+  });
+  // Standalone https:// (no brackets) -> clickable; do not match when URL is already inside an <a> (before would be ">")
+  html = html.replace(/(^|[\s.)])(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)/g, (_match, before, url) => {
+    const urlTrimmed = url.replace(/\n/g, ' ').trim();
+    return before + `<a class="citation-url-link" href="${escAttr(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${escHtml(urlTrimmed)}</a>`;
+  });
+
+  // List styles: match paragraph/export (11pt, Helvetica/Arial, line-height 1.5), tight spacing between list items (citations)
+  const listBlockStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.25em; margin-bottom: 0.5em;";
+  const listBlockStyleAfterHeading = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.2em; margin-bottom: 0.5em;";
+  const listItemStyle = "display: list-item; margin: 0.05em 0 0.2em 0;";
+
+  const lines = html.split('\n');
+  const processedLines: string[] = [];
+  let inUnorderedList = false;
+  let inOrderedList = false;
+  let lastOrderedNumber = 0; // Track last number to detect gaps
+
+  const lastProcessedLineIsHeading = () => {
+    for (let j = processedLines.length - 1; j >= 0; j--) {
+      const s = processedLines[j].trim();
+      if (!s) continue;
+      return /<\/h[1-6]>$/i.test(s) || /^<h[1-6]\b/i.test(s);
+    }
+    return false;
   };
-  
-  fileReadError: string = '';
 
-  // Notification properties
-  showNotification: boolean = false;
-  notificationMessage: string = '';
-  notificationType: 'success' | 'error' = 'success';
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmedLine = line.trim();
 
-  isCopied: boolean = false;
+    const unorderedMatch = trimmedLine.match(/^[-*]\s+(.+)$/);
+    const orderedMatch = trimmedLine.match(/^(\d+)\.\s+(.+)$/);
 
-
-  editorTypes: { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] = [
-    { 
-      id: 'development' as EditorType, 
-      name: 'Development Editor', 
-      icon: '🚀', 
-      description: 'Reviews and restructures content for alignment and coherence',
-      details: 'Reviews: thought leadership quality, competitive differentiation, risk words (guarantee/promise/always), China terminology',
-      disabled: false
-    },
-    { 
-      id: 'content' as EditorType, 
-      name: 'Content Editor', 
-      icon: '📄', 
-      description: "Refines language to align with author's key objectives",
-      details: 'Validates: mutually exclusive/collectively exhaustive structure, source citations, evidence quality, argument logic',
-      disabled: false
-    },
-    { 
-      id: 'line' as EditorType, 
-      name: 'Line Editor', 
-      icon: '📝', 
-      description: 'Improves sentence flow, readability, and style preserving voice',
-      details: 'Improves: active voice throughout, sentence length, precise word choice, paragraph structure, transitional phrases',
-      disabled: false
-    },
-    { 
-      id: 'copy' as EditorType, 
-      name: 'Copy Editor', 
-      icon: '✏️', 
-      description: 'Corrects grammar, punctuation, and typos',
-      details: 'Enforces: Oxford commas, apostrophes, em dashes, sentence case headlines, date formats, abbreviations, active voice',
-      disabled: false
-    },
-    { 
-      id: 'brand-alignment' as EditorType, 
-      name: 'PwC Brand Alignment Editor', 
-      icon: '🎯', 
-      description: 'Aligns content writing standards with PwC brand',
-      details: 'Checks: we/you language, contractions, active voice, prohibited words (catalyst, PwC Network), China references, brand messaging',
-      disabled: true
-    }
-  ];
-
-  constructor(
-    public tlFlowService: TlFlowService,
-    private chatService: ChatService,
-    private tlChatBridge: TlChatBridgeService,
-    private cdr: ChangeDetectorRef,
-    private authFetchService: AuthFetchService
-  ) {}
-
-  ngOnInit(): void {
-    // this.paragraphFeedbackData.forEach(para => {
-    //   // Add these properties so Angular/TypeScript knows they exist
-    //   para.displayOriginal = para.original;
-    //   para.displayEdited = para.edited;
-    // });
-  }
-
-  get isOpen(): boolean {
-    return this.tlFlowService.currentFlow === 'edit-content';
-  }
-
-  onClose(): void {
-    this.resetForm();
-    this.tlFlowService.closeFlow();
-  }
-
-  back(): void{
-    this.resetForm();
-    this.tlFlowService.closeFlow();
-    this.tlFlowService.openGuidedDialog();
-  }
-
-  resetForm(): void {
-    this.isGenerating = false;
-    this.editFeedback = '';
-    this.feedbackItems = [];
-    this.feedbackHtml = '';
-    this.revisedContent = '';
-    this.originalContent = '';
-    this.fileReadError = '';
-    this.fileUploadError = '';
-    this.uploadedFileSize = '';
-    this.iterationCount = 0;
-    this.showSatisfactionPrompt = false;
-    this.showImprovementInput = false;
-    this.improvementRequestText = '';
-    this.paragraphEdits = [];
-    this.paragraphFeedbackData = [];
-    this.showFinalOutput = false;
-    this.finalArticle = '';
-    this.isGeneratingFinal = false;
-    this.editorProgressList = [];
-    this.currentEditorIndex = 0;
-    this.totalEditors = 0;
-    this.currentEditorId = '';
-    this.isCopied = false;
-    this.isEditorLoading = false;
-    this.formData = {
-      selectedEditors: ['development', 'content', 'line', 'copy', 'brand-alignment'],
-      uploadedFile: null
-    };
-  }
-
-  canEdit(): boolean {
-    return this.formData.uploadedFile !== null && this.formData.selectedEditors.length > 0;
-  }
-
-  clearUploadError(): void {
-    this.fileUploadError = '';
-  }
-
-  clearReadError(): void {
-    this.fileReadError = '';
-  }
-  
-  onFileSelect(file: File): void {
-    if (file) {
-      // Reset error states
-      this.fileReadError = '';
-      this.fileUploadError = '';
+    if (unorderedMatch) {
+      if (!inUnorderedList) {
+        if (inOrderedList) {
+          processedLines.push('</ol>');
+          inOrderedList = false;
+          lastOrderedNumber = 0; // Reset counter when closing ordered list
+        }
+        processedLines.push(`<ul style="${listBlockStyle}">`);
+        inUnorderedList = true;
+      }
+      processedLines.push(`<li style="${listItemStyle}">${unorderedMatch[1]}</li>`);
+    } else if (orderedMatch) {
+      const originalNumber = parseInt(orderedMatch[1], 10);
+      const itemText = orderedMatch[2];
       
-      // Calculate and display file size
-      this.uploadedFileSize = this.formatFileSize(file.size);
-      this.formData.uploadedFile = file;
-    }
-  }
-
-  onFileRemoved(): void {
-    this.formData.uploadedFile = null;
-    this.fileUploadError = '';
-    this.fileReadError = '';
-    this.uploadedFileSize = '';
-  }
-
-  formatFileSize(bytes: number): string {
-     if (bytes === 0) return '0 Bytes';
-    
-    // Show exact size in KB (no rounding)
-    if (bytes < 1024) {
-      return bytes + ' Bytes';
-    } else if (bytes < 1024 * 1024) {
-      // Exact KB with decimal precision
-      const kb = bytes / 1024;
-      return kb.toFixed(2) + ' KB';
+      // Check if this is a new ordered list (gap in numbering or first item)
+      const isNewList = !inOrderedList || (lastOrderedNumber > 0 && originalNumber < lastOrderedNumber);
+      
+      if (isNewList) {
+        if (inUnorderedList) {
+          processedLines.push('</ul>');
+          inUnorderedList = false;
+        }
+        if (inOrderedList) {
+          processedLines.push('</ol>');
+        }
+        const olStyle = lastProcessedLineIsHeading() ? listBlockStyleAfterHeading : listBlockStyle;
+        processedLines.push(`<ol style="${olStyle}">`);
+        inOrderedList = true;
+        lastOrderedNumber = 0; // Reset counter for new list
+      }
+      
+      // Preserve original number using value attribute to maintain correct citation order
+      // This is critical for citations which must maintain their original numbering (1, 2, 3...)
+      processedLines.push(`<li value="${originalNumber}" style="${listItemStyle}">${itemText}</li>`);
+      lastOrderedNumber = originalNumber;
     } else {
-      // For MB and above, show with 2 decimal places
-      const mb = bytes / (1024 * 1024);
-      return mb.toFixed(2) + ' MB';
-    }
-  }
-
-  /** Toggle editor selection, ensuring brand-alignment is always included */
-  toggleEditor(type: EditorType): void {
-    if (type === 'brand-alignment') {
-      return;
-    }
-    
-    const index = this.formData.selectedEditors.indexOf(type);
-    if (index > -1) {
-      this.formData.selectedEditors.splice(index, 1);
-    } else {
-      this.formData.selectedEditors.push(type);
-    }
-    
-    if (!this.formData.selectedEditors.includes('brand-alignment')) {
-      this.formData.selectedEditors.push('brand-alignment');
-    }
-  }
-
-  isEditorSelected(type: EditorType): boolean {
-    return this.formData.selectedEditors.includes(type);
-  }
-
-  /** Get selectable editors (excluding brand-alignment which is always enabled) */
-  get selectableEditors(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] {
-    return this.editorTypes.filter(editor => editor.id !== 'brand-alignment');
-  }
-
-  /** Get brand alignment editor info */
-  get brandAlignmentEditor(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean } | undefined {
-    return this.editorTypes.find(editor => editor.id === 'brand-alignment');
-  }
-
-  /** Get selected editors in normalized order (for timeline display) */
-  get selectedEditorsForTimeline(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] {
-    if (!this.formData.selectedEditors || this.formData.selectedEditors.length === 0) {
-      return [];
-    }
-    
-    // Normalize order to match processing order
-    const normalizedOrder = normalizeEditorOrder([...this.formData.selectedEditors]) as EditorType[];
-    
-    // Map to full editor info objects
-    return normalizedOrder.map(editorId => {
-      const editor = this.editorTypes.find(e => e.id === editorId);
-      return editor || {
-        id: editorId,
-        name: getEditorDisplayName(editorId),
-        icon: '',
-        description: '',
-        details: '',
-        disabled: false
-      };
-    });
-  }
-
-  /** Steps array for editor timeline (0..totalEditors-1) */
-  get editorSteps(): number[] {
-    const total = this.totalEditors || 0;
-    if (total <= 0) return [];
-    return Array.from({ length: total }, (_, i) => i);
-  }
-
-
-  getEditorNames(): string {
-    if (this.formData.selectedEditors.length === 0) return '';
-    if (this.formData.selectedEditors.length === 1) {
-      const editor = this.editorTypes.find(e => e.id === this.formData.selectedEditors[0]);
-      return editor ? editor.name : '';
-    }
-    return `${this.formData.selectedEditors.length} editors`;
-  }
-  
-  getSatisfactionPromptText(): string {
-    if (this.iterationCount === 1) {
-      return 'Are you satisfied with the edited document output, or do you need additional updates?';
-    }
-    return `Are you satisfied with this revision (Iteration ${this.iterationCount}), or do you need additional updates?`;
-  }
-
-  async editContent(): Promise<void> {
-    this.isGenerating = true;
-    this.isEditorLoading = true; // Initial editor loading starts
-    this.fileReadError = '';
-    this.fileUploadError = '';
-    this.editFeedback = '';
-    this.revisedContent = '';
-    this.editorProgressList = [];
-    this.currentEditorIndex = 0;
-    this.totalEditors = 0;
-    this.currentEditorId = '';
-    
-    let contentText = '';
-    
-    if (this.formData.uploadedFile) {
-      // Validate file is not empty
-      if (this.formData.uploadedFile.size === 0) {
-        this.fileUploadError = 'The uploaded file is empty. Please upload a valid document with content.';
-        this.isGenerating = false;
-        return;
+      if (inUnorderedList) {
+        processedLines.push('</ul>');
+        inUnorderedList = false;
       }
-      
-      // Validate minimum file size (10 bytes)
-      const MIN_FILE_SIZE = 10;
-      if (this.formData.uploadedFile.size < MIN_FILE_SIZE) {
-        this.fileUploadError = 'The uploaded file appears to be empty or corrupted. Please upload a valid document.';
-        this.isGenerating = false;
-        return;
+      if (inOrderedList) {
+        processedLines.push('</ol>');
+        inOrderedList = false;
+        lastOrderedNumber = 0; // Reset counter when closing ordered list
       }
-      
-      // Validate maximum file size (5MB)
-      const fileSizeMB = this.formData.uploadedFile.size / (1024 * 1024);
-      if (fileSizeMB > this.MAX_FILE_SIZE_MB) {
-        this.fileUploadError = `File size exceeds the maximum limit of ${this.MAX_FILE_SIZE_MB}MB. Please upload a smaller file.`;
-        this.isGenerating = false;
-        return;
-      }
-      
-      try {
-        const extractedText = await extractFileText(this.formData.uploadedFile);
-        contentText = normalizeContent(extractedText);
-        
-        // Validate extracted content is not empty
-        if (!contentText || contentText.trim().length === 0) {
-          this.fileUploadError = 'The uploaded document appears to be empty or contains no readable text. Please upload a document with content.';
-          this.isGenerating = false;
-          return;
+
+      if (trimmedLine) {
+        if (trimmedLine.startsWith('<')) {
+          processedLines.push(line);
+        } else {
+          processedLines.push(`<p>${trimmedLine}</p>`);
         }
-        
-        // Validate minimum content length (50 characters for meaningful content)
-        const MIN_CONTENT_LENGTH = 50;
-        if (contentText.trim().length < MIN_CONTENT_LENGTH) {
-          this.fileUploadError = `The uploaded document contains insufficient content (minimum ${MIN_CONTENT_LENGTH} characters required). Please upload a document with more text.`;
-          this.isGenerating = false;
-          return;
-        }
-        
-        this.originalContent = contentText;
-      } catch (error) {
-        console.error('Error extracting file:', error);
-        this.fileReadError = 'Error reading uploaded file. Please try again or upload a different format.';
-        this.isGenerating = false;
-        return;
-      }
-    }
-    
-    const messages = [{
-      role: 'user' as const,
-      content: contentText
-    }];
-
-    let fullResponse = '';
-    const editorsToUse = normalizeEditorOrder(this.formData.selectedEditors) as EditorType[];
-
-    this.editorProgressList = editorsToUse.map((id, index) => ({
-      editorId: id,
-      editorName: getEditorDisplayName(id),
-      status: 'pending' as const,
-      current: index + 1,
-      total: editorsToUse.length
-    }));
-    this.totalEditors = editorsToUse.length;
-
-    this.chatService.streamEditContent(messages, editorsToUse).subscribe({
-      next: (data: any) => {
-        if (data.type === 'editor_progress') {
-          // Backend sends 1-based index, convert to 0-based for our array
-          const backendCurrentIndex = data.current || 1;
-          this.currentEditorIndex = backendCurrentIndex - 1; // Convert to 0-based
-          this.totalEditors = data.total || editorsToUse.length;
-          this.currentEditorId = data.editor || '';
-          
-          // Set loading state when editor starts processing
-          this.isEditorLoading = true;
-          
-          // Update editor statuses (using 0-based index)
-          this.editorProgressList.forEach((editor, index) => {
-            if (index < this.currentEditorIndex) {
-              editor.status = 'completed';
-            } else if (index === this.currentEditorIndex) {
-              editor.status = 'processing'; // In Progress when loading
-              editor.current = backendCurrentIndex; // Keep 1-based for display
-              editor.total = this.totalEditors;
-            } else {
-              editor.status = 'pending';
-            }
-          });
-
-          this.cdr.detectChanges();
-        } else if (data.type === 'editor_content') {
-          if (data.content) {
-            fullResponse += data.content;
-          }
-        } else if (data.type === 'editor_complete') {
-          // Sequential workflow: Handle single editor completion
-          console.log('[EditContentFlow] Editor complete:', data);
-          
-          // Store thread_id for sequential workflow
-          if (data.thread_id) {
-            this.threadId = data.thread_id;
-            this.isSequentialMode = true;
-          }
-          
-          // Store current editor info
-          if (data.current_editor) {
-            this.currentEditor = data.current_editor;
-            this.currentEditorIndex = data.editor_index || 0;
-            this.totalEditors = data.total_editors || this.totalEditors;
-            this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || 1) - 1;
-          }
-          
-          // Update editor progress - change to review-pending after generation
-          const completedEditor = this.editorProgressList.find(e => e.editorId === data.current_editor);
-          if (completedEditor) {
-            completedEditor.status = 'review-pending';
-          }
-          
-          // Process paragraph edits (same structure as final_complete)
-          if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
-            console.log('[EditContentFlow] Paragraph edits received:', data.paragraph_edits);
-            this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
-          }
-          
-          // Update content
-          if (data.original_content) {
-            this.originalContent = data.original_content;
-          }
-          
-          if (data.final_revised) {
-            const trimmedRevised = data.final_revised.trim();
-            fullResponse = trimmedRevised;
-            this.revisedContent = convertMarkdownToHtml(trimmedRevised);
-          }
-          
-          // Process feedback (only current editor's feedback)
-          if (data.combined_feedback) {
-            const feedbackContent = data.combined_feedback.trim();
-            this.feedbackItems = parseEditorialFeedback(feedbackContent);
-            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
-            this.editFeedback = this.feedbackHtml;
-          }
-          
-          this.isGenerating = false;
-          this.isEditorLoading = false; // Editor loaded, now in review pending state
-          this.cdr.detectChanges();
-        } else if (data.type === 'editor_error') {
-          console.error(`${data.editor} editor error:`, data.error);
-        } else if (data.type === 'final_complete') {
-          this.editorProgressList.forEach(editor => {
-            if (editor.status !== 'error') {
-              editor.status = 'completed';
-            }
-          });
-          this.currentEditorId = 'completed';
-          this.cdr.detectChanges();
-          
-          if (data.combined_feedback) {
-            const feedbackContent = data.combined_feedback.trim();
-            // parse and render structured feedback; keep legacy fallback in editFeedback
-            this.feedbackItems = parseEditorialFeedback(feedbackContent);
-            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
-            this.editFeedback = this.feedbackHtml;
-          }
-          
-          if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
-            console.log('Paragraph edits received:', data.paragraph_edits);
-            this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
-          } else if (data.final_revised && data.original_content) {
-            this.paragraphEdits = this.createParagraphEditsFromComparison(
-              data.original_content,
-              data.final_revised
-            );
-          }
-          
-          if (data.original_content) {
-            this.originalContent = data.original_content;
-          }
-          
-          if (data.final_revised) {
-            const trimmedRevised = data.final_revised.trim();
-            fullResponse = trimmedRevised;
-            this.revisedContent = convertMarkdownToHtml(trimmedRevised);
-          }
-          
-          this.isGenerating = false;
-        } else if (data?.type === 'content' && data.content) {
-          fullResponse += data.content;
-        } else if (data?.type === 'done' || data?.done) {
-          return;
-        } else if (data?.error) {
-          this.editFeedback = `❌ Error: ${data.error}`;
-          this.isGenerating = false;
-          return;
-        } else if (typeof data === 'string') {
-          fullResponse += data;
-        }
-      },
-      error: (error: any) => {
-        console.error('[EditContentFlow] Streaming error:', error);
-        this.editFeedback = 'Sorry, there was an error editing your content. Please try again.';
-        this.isGenerating = false;
-      },
-      complete: () => {
-        this.iterationCount++;
-        if (this.revisedContent && this.revisedContent.trim()) {
-          this.showSatisfactionPrompt = true;
-        }
-      }
-    });
-  }
-
-  /** Parse edit response (fallback method for old format or improvement requests) */
-  private parseEditResponse(response: string): void {
-    if (!response || !response.trim()) {
-      return;
-    }
-
-    const feedbackMatch = response.match(/===\s*FEEDBACK\s*===\s*([\s\S]*?)(?====\s*REVISED ARTICLE\s*===|$)/i);
-    const revisedMatch = response.match(/===\s*REVISED ARTICLE\s*===\s*([\s\S]*?)$/i);
-    
-    if (feedbackMatch && feedbackMatch[1]) {
-      const feedbackContent = feedbackMatch[1].trim();
-      this.feedbackItems = parseEditorialFeedback(feedbackContent);
-      this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
-      this.editFeedback = this.feedbackHtml;
-    } else if (!revisedMatch && response.trim()) {
-      const feedbackContent = response.trim();
-      this.feedbackItems = parseEditorialFeedback(feedbackContent);
-      this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
-      this.editFeedback = this.feedbackHtml;
-    }
-    
-    if (revisedMatch && revisedMatch[1]) {
-      let revisedText = revisedMatch[1].trim();
-      revisedText = revisedText
-        .replace(/===\s*FEEDBACK\s*===/gi, '')
-        .replace(/##\s*📝\s*Editorial\s*Feedback/gi, '')
-        .trim();
-      this.revisedContent = convertMarkdownToHtml(revisedText);
-    }
-  }
-
-  /** Convert markdown to HTML (public method for template) */
-  convertMarkdownToHtml(markdown: string): string {
-    return convertMarkdownToHtml(markdown);
-  }
-
-  /** Copy content to clipboard */
-  async copyToClipboard(): Promise<void>  {
-    let content = '';
-    if (this.showFinalOutput && this.finalArticle) {
-      content = this.finalArticleHtml;
-    } else {
-      content = this.revisedContent || this.editFeedback;
-    }
-    const plainText = content.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
-    try {
-      await navigator.clipboard.writeText(plainText);
-      
-      this.isCopied = true;
-      this.cdr.detectChanges();
-
-      setTimeout(() => {
-        this.isCopied = false;
-        this.cdr.detectChanges();
-      },2000);
-    } catch (error) {
-      console.error('Failed to copy to clipboard:', error);
-      this.showNotificationMessage('Failed to copy ', 'error');
-    }
-
-  }
-
-  /** Download revised content as DOCX or PDF */
-  async downloadRevised(format: 'docx' | 'pdf'): Promise<void> {
-    let contentToDownload = '';
-    if (this.showFinalOutput && this.finalArticle) {
-      contentToDownload = this.finalArticleHtml;
-    } else if (this.revisedContent) {
-      contentToDownload = this.revisedContent.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
-    } else {
-      this.showNotificationMessage('article is not available yet.', 'error');
-      return;
-    }
-
-    const plainText = contentToDownload.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
-    const endpoint = format === 'docx' ? '/api/v1/export/word' : '/api/v1/export/pdf-pwc';
-    const extension = format === 'docx' ? 'docx' : 'pdf';
-    const title = 'revised-article';
-    
-    // Extract first line as subtitle
-    const lines = plainText.split('\n').filter(line => line.trim());
-    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : ''; // First line, max 150 chars
-
-    // Get API URL from environment (supports runtime config via window._env)
-    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-    const fullEndpoint = `${apiUrl}${endpoint}`;
-
-    try {
-      const response = await this.authFetchService.authenticatedFetch(fullEndpoint, {
-        method: 'POST',
-        body: JSON.stringify({
-          content: plainText,
-          title,
-          subtitle
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
-      }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${title}.${extension}`;
-      link.click();
-      window.URL.revokeObjectURL(url);
-      this.showNotificationMessage(`${extension.toUpperCase()} downloaded successfully!`, 'success');
-    } catch (error) {
-      console.error(`Error generating ${extension.toUpperCase()}:`, error);
-      this.showNotificationMessage(`Failed to generate ${extension.toUpperCase()} file. Please try again.`, 'error');
-    }
-  }
-  
-  /** Handle satisfaction response - send to chat or show improvement input */
-  // onSatisfactionResponse(isSatisfied: boolean): void {
-  //   if (isSatisfied) {
-  //     const contentToSend = (this.showFinalOutput && this.finalArticle) 
-  //       ? this.finalArticle 
-  //       : this.revisedContent;
-      
-  //     if (contentToSend && contentToSend.trim()) {
-  //       let plainText = contentToSend;
-  //       if (contentToSend.includes('<')) {
-  //         const tempDiv = document.createElement('div');
-  //         tempDiv.innerHTML = contentToSend;
-  //         plainText = tempDiv.textContent || tempDiv.innerText || '';
-  //       }
-  //       plainText = plainText.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
-        
-  //       const headerLines: string[] = ['### Guided Journey – Edit Content'];
-  //       const uploadedFileName = this.formData.uploadedFile?.name;
-  //       if (uploadedFileName) {
-  //         headerLines.push(`_Source: ${uploadedFileName}_`);
-  //       }
-        
-  //       const selectedEditorNames = this.formData.selectedEditors
-  //         .map(id => {
-  //           const editor = this.editorTypes.find(e => e.id === id);
-  //           return editor ? editor.name : id;
-  //         })
-  //         .join(', ');
-        
-  //       if (selectedEditorNames) {
-  //         headerLines.push(`_Editors Applied: ${selectedEditorNames}_`);
-  //       }
-        
-  //       const articleTitle = this.showFinalOutput ? 'Final Revised Article' : 'Revised Article';
-  //       headerLines.push('', `**${articleTitle}**`, '');
-        
-  //       const documentTitle = extractDocumentTitle(
-  //         this.originalContent || '',
-  //         uploadedFileName
-  //       );
-        
-  //       if (documentTitle && documentTitle !== articleTitle) {
-  //         headerLines.push(`**${documentTitle}**`, '');
-  //       }
-        
-  //       const headerHtml = convertMarkdownToHtml(headerLines.join('\n'));
-  //       const contentHtml = this.showFinalOutput && this.finalArticle
-  //         ? convertMarkdownToHtml(this.finalArticle)
-  //         : this.revisedContent;
-  //       const combinedHtml = `${headerHtml}${contentHtml}`;
-        
-  //       const revisedMetadata: ThoughtLeadershipMetadata = {
-  //         contentType: 'article',
-  //         topic: documentTitle || articleTitle,
-  //         fullContent: plainText,
-  //         showActions: true
-  //       };
-        
-  //       this.tlChatBridge.sendMessage({
-  //         role: 'assistant',
-  //         content: combinedHtml,
-  //         timestamp: new Date(),
-  //         isHtml: true,
-  //         thoughtLeadership: revisedMetadata
-  //       });
-  //     }
-      
-  //     this.onClose();
-  //   } else {
-  //     this.showImprovementInput = true;
-  //     this.showSatisfactionPrompt = false;
-  //   }
-  // }
-  
-  submitImprovementRequest(): void {
-    if (!this.improvementRequestText?.trim()) {
-      return;
-    }
-    
-    const nextIteration = this.iterationCount + 1;
-    if (nextIteration > 5) {
-      alert('You have reached the maximum number of iterations (5). Please start a new edit workflow if you need further changes.');
-      this.cancelImprovementRequest();
-      return;
-    }
-    
-    const revisedPlainText = this.revisedContent.replace(/<br>/g, '\n');
-    const improvementMessage = `Please review the following revised article and apply these additional improvements:\n\n${this.improvementRequestText.trim()}\n\nRevised Article:\n${revisedPlainText}`;
-    
-    const messages = [{
-      role: 'user' as const,
-      content: improvementMessage
-    }];
-    
-    this.isGenerating = true;
-    this.showImprovementInput = false;
-    this.improvementRequestText = '';
-    this.editFeedback = '';
-    this.revisedContent = '';
-    
-    let fullResponse = '';
-    const editorsToUse = normalizeEditorOrder(this.formData.selectedEditors) as EditorType[];
-
-    this.chatService.streamEditContent(messages, editorsToUse).subscribe({
-      next: (data: any) => {
-        if (data.type === 'editor_progress') {
-        } else if (data.type === 'editor_content') {
-          if (data.content) {
-            fullResponse += data.content;
-          }
-        } else if (data.type === 'editor_complete') {
-          if (data.revised_content) {
-            fullResponse = data.revised_content;
-            this.revisedContent = convertMarkdownToHtml(fullResponse);
-          }
-        } else if (data.type === 'editor_error') {
-          console.error(`${data.editor} editor error:`, data.error);
-        } else if (data.type === 'final_complete') {
-          if (data.final_revised) {
-            fullResponse = data.final_revised;
-            this.revisedContent = convertMarkdownToHtml(fullResponse);
-          }
-          if (data.combined_feedback) {
-            const feedbackContent = data.combined_feedback.trim();
-            this.feedbackItems = parseEditorialFeedback(feedbackContent);
-            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
-            this.editFeedback = this.feedbackHtml;
-          }
-        } else if (data.type === 'content' && data.content) {
-          fullResponse += data.content;
-        } else if (typeof data === 'string') {
-          fullResponse += data;
-        }
-      },
-      error: (error: any) => {
-        console.error('Error improving content:', error);
-        this.editFeedback = 'Sorry, there was an error processing your improvement request. Please try again.';
-        this.isGenerating = false;
-        this.revisedContent = revisedPlainText.replace(/\n/g, '<br>');
-        this.showSatisfactionPrompt = true;
-      },
-      complete: () => {
-        if (!this.revisedContent && fullResponse) {
-          this.parseEditResponse(fullResponse);
-        }
-        this.isGenerating = false;
-        this.iterationCount = nextIteration;
-        if (!this.revisedContent || !this.revisedContent.trim()) {
-          this.revisedContent = revisedPlainText.replace(/\n/g, '<br>');
-        }
-        this.showSatisfactionPrompt = true;
-      }
-    });
-  }
-  
-  cancelImprovementRequest(): void {
-    this.showImprovementInput = false;
-    this.improvementRequestText = '';
-    this.showSatisfactionPrompt = true;
-  }
-  
-  /** Create paragraph edits by comparing original and edited content */
-  private createParagraphEditsFromComparison(original: string, edited: string): ParagraphEdit[] {
-    const allEditorNames = this.formData.selectedEditors.map(editorId => {
-      const editor = this.editorTypes.find(e => e.id === editorId);
-      return editor ? editor.name : editorId;
-    });
-    
-    return createParagraphEditsFromComparison(original, edited, allEditorNames);
-  }
-  
-  /** Approve a paragraph edit */
-  approveParagraph(index: number): void {
-    const paragraph = this.paragraphEdits.find(p => p.index === index);
-    if (!paragraph) {
-      return;
-    }
-    paragraph.approved = true; 
-  }
-  
-  /** Decline a paragraph edit */
-  declineParagraph(index: number): void {
-    const paragraph = this.paragraphEdits.find(p => p.index === index);
-    if (!paragraph) {
-      return;
-    }
-    paragraph.approved = false;
-  }
-
-  /** Get paragraphs that require user review (excludes auto-approved), sorted by index */
-  get getParagraphsForReview(): ParagraphEdit[] {
-    return this.paragraphEdits
-      .filter(p => p.autoApproved !== true)
-      .sort((a, b) => a.index - b.index);
-  }
-  
-  /** Get count of auto-approved paragraphs */
-  get autoApprovedCount(): number {
-    return this.paragraphEdits.filter(p => p.autoApproved === true).length;
-  }
-  
-  /** Get auto-approved count text with proper pluralization */
-  get autoApprovedText(): string {
-    const count = this.autoApprovedCount;
-    if (count === 0) {
-      return '';
-    }
-    return `(${count} paragraph${count !== 1 ? 's' : ''} auto-approved)`;
-  }
-
-  /** Get paragraphs that require user review (excludes auto-approved), sorted by index */
-  get getParagraphsForFeedbackReview(): ParagraphFeedback[] {
-    return this.paragraphFeedbackData
-      .filter(p => p.autoApproved !== true)
-      .sort((a, b) => a.index - b.index);
-  }
-
-  /** Get count of auto-approved paragraphs in feedback data */
-  get autoApprovedFeedbackCount(): number {
-    return this.paragraphFeedbackData.filter(
-      p => p.autoApproved === true
-    ).length;
-  }
-
-  /** Get auto-approved count text for feedback data */
-  get autoApprovedFeedbackText(): string {
-    const count = this.autoApprovedFeedbackCount;
-
-    if (count === 0) {
-      return '';
-    }
-
-    return `(${count} paragraph${count !== 1 ? 's' : ''} auto-approved)`;
-  }
-  
-  /** Check if all paragraphs have been decided */
-  get allParagraphsDecided(): boolean {
-    // Check both paragraphEdits and paragraphFeedbackData
-    const editsDecided = this.paragraphEdits.length === 0 || allParagraphsDecided(this.paragraphEdits);
-    const feedbackDecided = this.allParagraphFeedbackDecided;
-    return editsDecided && feedbackDecided;
-  }
-
-  /** Check if all paragraph feedback items are decided */
-  get allParagraphFeedbackDecided(): boolean {
-    if (!this.paragraphFeedbackData || this.paragraphFeedbackData.length === 0) {
-      return true; // No feedback to decide
-    }
-    
-    return this.paragraphFeedbackData.every(para => {
-      // Check if paragraph itself is decided
-      if (para.approved === null || para.approved === undefined) {
-        return false;
-      }
-      
-      // Check if all editorial feedback items are decided
-      const feedbackTypes = Object.keys(para.editorial_feedback || {});
-      for (const editorType of feedbackTypes) {
-        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-        for (const fb of feedbacks) {
-          if (fb.approved === null || fb.approved === undefined) {
-            return false;
-          }
-        }
-      }
-      
-      return true;
-    });
-  }
-
-  /** Check if all paragraphs are approved */
-  get allParagraphsApproved(): boolean {
-    return this.paragraphEdits.length > 0 && 
-           this.paragraphEdits.every(p => p.approved === true);
-  }
-  
-  /** Check if all paragraphs are declined */
-  get allParagraphsDeclined(): boolean {
-    return this.paragraphEdits.length > 0 && 
-           this.paragraphEdits.every(p => p.approved === false);
-  }
-
-  get isImprovementRequestValid(): boolean {
-    return !!this.improvementRequestText && this.improvementRequestText.trim().length > 0;
-  }
-  
-  /** Approve all paragraph edits */
-  approveAllParagraphs(): void {
-    if (this.paragraphEdits.length === 0) {
-      return;
-    }
-    
-    this.paragraphEdits.forEach(paragraph => {
-      paragraph.approved = true;
-    });
-  }
-  
-  /** Decline all paragraph edits */
-  declineAllParagraphs(): void {
-    if (this.paragraphEdits.length === 0) {
-      return;
-    }
-    
-    this.paragraphEdits.forEach(paragraph => {
-      paragraph.approved = false;
-    });
-  }
-
-  
-  /** Generate final article using approved edits */
-  async runFinalOutput(): Promise<void> {
-    if (!this.allParagraphsDecided) {
-      alert('Please approve or decline all paragraph edits before generating the final article.');
-      return;
-    }
-    
-    this.isGeneratingFinal = true;
-    
-    try {
-      const decisions = this.paragraphEdits.map(p => ({
-        index: p.index,
-        approved: p.approved === true
-      }));
-      
-      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
-        method: 'POST',
-        body: JSON.stringify({
-          original_content: this.originalContent,
-          paragraph_edits: this.paragraphEdits.map(p => ({
-            index: p.index,
-            original: p.original,
-            edited: p.edited,
-            tags: p.tags,
-            autoApproved: p.autoApproved
-          })),
-          decisions: decisions
-        })
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
-        throw new Error(`Failed to generate final article: ${response.status} ${errorText}`);
-      }
-      
-      const data = await response.json();
-      const finalArticle = data.final_article || '';
-      
-      if (!finalArticle) {
-        throw new Error('No final article returned from server');
-      }
-      
-      // Collect block_type information from paragraphEdits
-      const blockTypes: BlockTypeInfo[] = this.paragraphEdits.map(p => ({
-        index: p.index,
-        type: p.block_type || 'paragraph',
-        level: p.level || 0
-      }));
-      
-      // Store raw markdown; display uses convertMarkdownToHtml via finalArticleHtml (line-height 1, URLs, citations)
-      this.finalArticle = finalArticle;
-      this.showFinalOutput = true;
-      this.showSatisfactionPrompt = true;
-    } catch (error) {
-      console.error('Error generating final article:', error);
-      const errorMessage = error instanceof Error 
-        ? `Failed to generate final article: ${error.message}` 
-        : 'Failed to generate final article. Please try again.';
-      alert(errorMessage);
-    } finally {
-      this.isGeneratingFinal = false;
-    }
-  }
-
-  /** Generate final article using approved edits and feedback */
-  async generateFinalOutput(): Promise<void> {
-    if (!this.allParagraphsDecided) {
-      alert('Please approve or reject all paragraph edits and feedback before generating the final article.');
-      return;
-    }
-    
-    this.isGeneratingFinal = true;
-    
-    try {
-      // Collect all approved/rejected decisions from paragraphFeedbackData
-      const paragraphDecisions = this.paragraphFeedbackData.map(para => ({
-        index: para.index,
-        approved: para.approved === true,
-        editorial_feedback_decisions: this.collectFeedbackDecisions(para)
-      }));
-      
-      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
-        method: 'POST',
-        body: JSON.stringify({
-          original_content: this.originalContent,
-          paragraph_edits: this.paragraphFeedbackData.map(p => ({
-            index: p.index,
-            original: p.original,
-            edited: p.edited,
-            tags: p.tags,
-            autoApproved: p.autoApproved,
-            block_type: p.block_type || 'paragraph',
-            level: p.level || 0,
-            editorial_feedback: p.editorial_feedback
-          })),
-          decisions: paragraphDecisions,
-          include_quality_checks: true,
-          include_copy_check: true
-        })
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
-        throw new Error(`Failed to generate final article: ${response.status} ${errorText}`);
-      }
-      
-      const data = await response.json();
-      const finalArticle = data.final_article || '';
-      
-      if (!finalArticle) {
-        throw new Error('No final article returned from server');
-      }
-      
-      // Use backend's block_types (correctly aligned with final_article paragraph indices)
-      // Backend constructs block_types as it builds final_article, ensuring 1:1 alignment
-      let blockTypes: BlockTypeInfo[] = [];
-      if (data.block_types && Array.isArray(data.block_types) && data.block_types.length > 0) {
-        // Backend provides correctly aligned block_types with indices matching final_article split
-        // IMPORTANT: Only default to 'paragraph' if type is truly missing (undefined/null), preserve actual values
-        blockTypes = data.block_types.map((bt: any) => ({
-          index: bt.index !== undefined && bt.index !== null ? bt.index : 0,
-          type: (bt.type !== undefined && bt.type !== null && bt.type !== '') ? bt.type : 'paragraph',
-          level: bt.level !== undefined && bt.level !== null ? bt.level : 0
-        }));
-        
-        // Debug: Log block_types to verify they're not all 'paragraph'
-        const typeCounts = blockTypes.reduce((acc, bt) => {
-          acc[bt.type] = (acc[bt.type] || 0) + 1;
-          return acc;
-        }, {} as Record<string, number>);
-        console.log('[EditContentFlow] Final article block_types distribution:', typeCounts);
-        console.log('[EditContentFlow] Total block_types:', blockTypes.length, 'Sample:', blockTypes.slice(0, 5));
       } else {
-        // Fallback: generate from paragraphFeedbackData (shouldn't happen if backend is working correctly)
-        console.warn('[EditContentFlow] Backend did not provide block_types, falling back to paragraphFeedbackData');
-        blockTypes = this.paragraphFeedbackData.map(p => ({
-          index: p.index,
-          type: p.block_type || 'paragraph',
-          level: p.level || 0
-        }));
+        processedLines.push('');
       }
-      
-      // Use same markdown-to-HTML styling as display (line-height 1, headings, lists, clickable URLs)
-      const formattedContentHtml = convertMarkdownToHtml(finalArticle.trim());
+    }
+  }
 
-      let plainText = finalArticle;
-      if (finalArticle.includes('<')) {
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = finalArticle;
-        plainText = tempDiv.textContent || tempDiv.innerText || '';
-      }
-      plainText = plainText.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
-      
-      // Build header with metadata
-      const headerLines: string[] = ['### Guided Journey – Edit Content'];
-      const uploadedFileName = this.formData.uploadedFile?.name;
-      if (uploadedFileName) {
-        headerLines.push(`_Source: ${uploadedFileName}_`);
-      }
-      
-      headerLines.push('', '---', '');
-      
-      const documentTitle = extractDocumentTitle(
-        this.originalContent || '',
-        uploadedFileName
+  if (inUnorderedList) {
+    processedLines.push('</ul>');
+  }
+  if (inOrderedList) {
+    processedLines.push('</ol>');
+    lastOrderedNumber = 0; // Reset counter when closing ordered list
+  }
+
+  html = processedLines.join('\n');
+  html = html.replace(/(<p><\/p>\n?)+/g, '<p></p>');
+  html = html.replace(/<p>\s*<\/p>/g, '');
+
+  return html;
+}
+
+/** 
+ * Extract text from uploaded file
+ * Note: This uses fetch() without auth headers. For authenticated requests,
+ * callers should use their injected HttpClient or AuthFetchService instead.
+ * This function is kept for backward compatibility but may not work if
+ * backend requires authentication.
+ * 
+ * @deprecated Use HttpClient or AuthFetchService in components/services instead
+ */
+export async function extractFileText(file: File): Promise<string> {
+  const formData = new FormData();
+  formData.append('file', file);
+  
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  
+  // Get auth token if available (for non-Angular contexts)
+  const headers: HeadersInit = {};
+  
+  // Try to get token from sessionStorage (MSAL stores it there)
+  // This is a workaround since we can't inject AuthService in a utility function
+  try {
+    // Check if we're in a browser environment
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      // Look for MSAL tokens in sessionStorage
+      // MSAL stores tokens with keys like: "<clientId>.<tenantId>.<idtoken/accesstoken>"
+      const keys = Object.keys(sessionStorage);
+      const idTokenKey = keys.find(key => 
+        key.includes('idtoken') && 
+        key.includes(environment.clientId || '')
       );
       
-      const headerHtml = convertMarkdownToHtml(headerLines.join('\n'));
-      
-      // // Use formatted content with block types
-      const combinedHtml = `${headerHtml}${formattedContentHtml}`;
-      
-      const revisedMetadata: ThoughtLeadershipMetadata = {
-        contentType: 'edit-article',
-        topic: documentTitle || 'Final Revised Article',
-        fullContent: plainText,
-        showActions: true,
-        block_types: blockTypes  // Store block types for export formatting
-      };
-      
-      // Send to chat
-      this.tlChatBridge.sendMessage({
-        role: 'assistant',
-        content: combinedHtml,
-        timestamp: new Date(),
-        isHtml: true,
-        thoughtLeadership: revisedMetadata
-      });
-      
-      // Close the edit-content-flow component
-      this.onClose();
-    } catch (error) {
-      console.error('Error generating final article:', error);
-      const errorMessage = error instanceof Error 
-        ? `Failed to generate final article: ${error.message}` 
-        : 'Failed to generate final article. Please try again.';
-      alert(errorMessage);
-    } finally {
-      this.isGeneratingFinal = false;
-    }
-  }
-
-
-
-  /** Collect feedback decisions from a paragraph */
-  private collectFeedbackDecisions(para: ParagraphFeedback): any {
-    const decisions: any = {};
-    const feedbackTypes = Object.keys(para.editorial_feedback || {});
-    
-    for (const editorType of feedbackTypes) {
-      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-      decisions[editorType] = feedbacks.map((fb: any) => ({
-        issue: fb.issue,
-        approved: fb.approved === true
-      }));
-    }
-    
-    return decisions;
-  }
-
-  /** Process paragraph edits from backend response (reusable helper) */
-  private processParagraphEdits(paragraph_edits: any[]): ParagraphFeedback[] {
-    // If API returned no paragraph edits at all, just clear the data array.
-    // The template can show an inline "no feedback" message inside the paragraph box.
-    if (!paragraph_edits || !Array.isArray(paragraph_edits) || paragraph_edits.length === 0) {
-      return [];
-    }
-
-    const feedbackData: ParagraphFeedback[] = paragraph_edits.map((edit: any) => {
-      const editorial_feedback = {
-        development: edit.editorial_feedback?.development || [],
-        content: edit.editorial_feedback?.content || [],
-        copy: edit.editorial_feedback?.copy || [],
-        line: edit.editorial_feedback?.line || [],
-        brand: edit.editorial_feedback?.brand || []
-      };
-
-      return {
-        index: edit.index || 0,
-        original: edit.original || '',
-        edited: edit.edited || '',
-        tags: edit.tags || [],
-        autoApproved: edit.autoApproved ?? false,
-        approved: edit.approved ?? null,
-        block_type: edit.block_type || 'paragraph',
-        level: edit.level || 0,
-        editorial_feedback
-      };
-    });
-
-    return feedbackData;
-  }
-
-  /** True when there are no feedback items inside paragraphFeedbackData */
-  get hasNoParagraphFeedback(): boolean {
-    if (!this.paragraphFeedbackData || this.paragraphFeedbackData.length === 0) {
-      return true;
-    }
-
-    // No editorial feedback items across all paragraphs
-    return this.paragraphFeedbackData.every(para => {
-      const types = Object.keys(para.editorial_feedback || {});
-      return types.every(t => {
-        const arr = (para.editorial_feedback as any)[t] || [];
-        return !arr || arr.length === 0;
-      });
-    });
-  }
-
-  /** Move to next editor in sequential workflow */
-  async nextEditor(): Promise<void> {
-    if (!this.threadId) {
-      console.error('[EditContentFlow] No thread_id available for next editor');
-      return;
-    }
-
-    if (!this.allParagraphsDecided) {
-      alert('Please approve or reject all paragraph edits before proceeding to the next editor.');
-      return;
-    }
-
-    this.isGenerating = true;
-    this.isEditorLoading = true; // Mark that we're loading the next editor
-
-    // Mark current editor as completed when moving to next
-    const currentEditorItem = this.editorProgressList.find(e => e.editorId === this.currentEditor);
-    if (currentEditorItem && currentEditorItem.status === 'review-pending') {
-      currentEditorItem.status = 'completed';
-    }
-
-    // Immediately update next editor to 'processing' status for visual feedback
-    const nextEditorIndex = this.currentEditorIndex + 1;
-    if (nextEditorIndex < this.editorProgressList.length) {
-      const nextEditorItem = this.editorProgressList[nextEditorIndex];
-      if (nextEditorItem && (nextEditorItem.status === 'pending' || nextEditorItem.status === 'review-pending')) {
-        nextEditorItem.status = 'processing';
-        // Update currentEditor to match the next editor
-        this.currentEditor = nextEditorItem.editorId;
-        this.currentEditorIndex = nextEditorIndex;
-        this.cdr.detectChanges();
-      }
-    }
-
-    try {
-      // Collect decisions from paragraphFeedbackData
-      const decisions = this.paragraphFeedbackData.map(para => ({
-        index: para.index,
-        approved: para.approved === true
-      }));
-
-      // Prepare paragraph_edits
-      const paragraph_edits = this.paragraphFeedbackData.map(para => ({
-        index: para.index,
-        original: para.original,
-        edited: para.edited,
-        tags: para.tags || [],
-        autoApproved: para.autoApproved || false,
-        approved: para.approved
-      }));
-
-      // Call /next endpoint via ChatService
-      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/next`, {
-        method: 'POST',
-        body: JSON.stringify({
-          thread_id: this.threadId,
-          paragraph_edits: paragraph_edits,
-          decisions: decisions,
-          accept_all: false,
-          reject_all: false
-        })
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
-        throw new Error(`Failed to proceed to next editor: ${response.status} ${errorText}`);
-      }
-
-      // Handle streaming response
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      if (!reader) {
-        throw new Error('No response body reader available');
-      }
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const dataStr = line.slice(6).trim();
-            if (dataStr && dataStr !== '[DONE]') {
-              try {
-                const data = JSON.parse(dataStr);
-                
-                // Handle editor_progress - show In Progress
-                if (data.type === 'editor_progress') {
-                  // Backend sends 1-based index, convert to 0-based for our array
-                  const backendCurrentIndex = data.current || 1;
-                  this.currentEditorIndex = backendCurrentIndex - 1; // Convert to 0-based
-                  this.totalEditors = data.total || this.totalEditors;
-                  this.currentEditorId = data.editor || '';
-                  this.isEditorLoading = true;
-                  
-                  // Update editor statuses (using 0-based index)
-                  this.editorProgressList.forEach((editor, index) => {
-                    if (index < this.currentEditorIndex) {
-                      editor.status = 'completed';
-                    } else if (index === this.currentEditorIndex) {
-                      editor.status = 'processing'; // In Progress
-                      editor.current = backendCurrentIndex; // Keep 1-based for display
-                      editor.total = this.totalEditors;
-                    } else {
-                      editor.status = 'pending';
-                    }
-                  });
-                  
-                  this.cdr.detectChanges();
-                }
-                
-                // Handle all_complete
-                if (data.type === 'all_complete') {
-                  this.isGenerating = false;
-                  // Mark as last editor to show "Generate Final Output" button
-                  this.isLastEditor = true;
-                  this.currentEditorIndex = this.totalEditors;
-                  this.cdr.detectChanges();
-                  return;
-                }
-
-                // Handle editor_complete (same as initial flow)
-                if (data.type === 'editor_complete') {
-                  const scrollContainer = document.querySelector('.flow-content') || 
-                                         document.querySelector('.flow-container') || 
-                                         document.documentElement;
-                  const scrollPosition = scrollContainer === document.documentElement
-                    ? window.scrollY || window.pageYOffset 
-                    : (scrollContainer as HTMLElement).scrollTop;
-
-                  // Store thread_id
-                  if (data.thread_id) {
-                    this.threadId = data.thread_id;
-                  }
-
-                  // Store current editor info
-                  if (data.current_editor) {
-                    this.currentEditor = data.current_editor;
-                    this.currentEditorIndex = data.editor_index || 0;
-                    this.totalEditors = data.total_editors || this.totalEditors;
-                    this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || 1) - 1;
-                  }
-
-                  // Mark previous editor as completed when moving to next editor
-                  if (this.currentEditorIndex > 0) {
-                    const previousEditorIndex = this.currentEditorIndex - 1;
-                    const previousEditor = this.editorProgressList[previousEditorIndex];
-                    if (previousEditor && previousEditor.status === 'review-pending') {
-                      previousEditor.status = 'completed';
-                    }
-                  }
-
-                  // Update current editor to review-pending after generation completes
-                  const currentEditorItem = this.editorProgressList.find(e => e.editorId === data.current_editor);
-                  if (currentEditorItem) {
-                    currentEditorItem.status = 'review-pending';
-                  }
-
-                  // Process paragraph edits
-                  if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
-                    this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
-                  }
-
-                  // Update content
-                  if (data.original_content) {
-                    this.originalContent = data.original_content;
-                  }
-
-                  if (data.final_revised) {
-                    this.revisedContent = convertMarkdownToHtml(data.final_revised.trim());
-                  }
-
-                  // Process feedback
-                  if (data.combined_feedback) {
-                    const feedbackContent = data.combined_feedback.trim();
-                    this.feedbackItems = parseEditorialFeedback(feedbackContent);
-                    this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
-                    this.editFeedback = this.feedbackHtml;
-                  }
-
-                  this.isGenerating = false;
-                  this.isEditorLoading = false; // Loading complete, now in review pending state
-                  
-                  this.cdr.detectChanges();
-
-                  setTimeout(() => {
-                    const paragraphSection = document.getElementById('paragraph-feedback-section');
-                    if (paragraphSection) {
-                      paragraphSection.scrollIntoView({ 
-                        behavior: 'smooth', 
-                        block: 'start',
-                        inline: 'nearest'
-                      });
-                    }
-                  }, 100);
-
-
-                }
-
-                // Handle errors
-                if (data.type === 'error') {
-                  throw new Error(data.error || 'Unknown error');
-                }
-              } catch (e) {
-                console.error('[EditContentFlow] Error parsing SSE data:', e);
-              }
+      if (idTokenKey) {
+        const tokenData = sessionStorage.getItem(idTokenKey);
+        if (tokenData) {
+          try {
+            const parsed = JSON.parse(tokenData);
+            const secret = parsed.secret;
+            if (secret) {
+              headers['Authorization'] = `Bearer ${secret}`;
+              console.log('[extractFileText] Added auth token from sessionStorage');
             }
+          } catch (e) {
+            console.warn('[extractFileText] Failed to parse token from sessionStorage:', e);
           }
         }
       }
-    } catch (error) {
-      console.error('[EditContentFlow] Error in nextEditor:', error);
-      const errorMessage = error instanceof Error 
-        ? `Failed to proceed to next editor: ${error.message}` 
-        : 'Failed to proceed to next editor. Please try again.';
-      alert(errorMessage);
-      this.isGenerating = false;
-      this.isEditorLoading = false; // Reset loading state on error
+    }
+  } catch (e) {
+    console.warn('[extractFileText] Failed to get auth token:', e);
+  }
+  
+  const response = await fetch(`${apiUrl}/api/v1/export/extract-text`, {
+    method: 'POST',
+    headers: headers,
+    body: formData
+  });
+  
+  if (!response.ok) {
+    throw new Error('Failed to extract text from file');
+  }
+  
+  const data = await response.json();
+  return data.text || '';
+}
+
+export interface EditorialFeedbackItem {
+  issue: string;
+  rule?: string;
+  impact?: string;
+  fix?: string;
+  priority?: string;
+}
+
+/**
+ * Parse editorial feedback text into structured items.
+ * Handles lines that start with "- Issue:", "- Rule:", "- Impact:", "- Fix:", "- Priority:".
+ */
+export function parseEditorialFeedback(text: string): EditorialFeedbackItem[] {
+  if (!text) return [];
+
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
+
+  const items: EditorialFeedbackItem[] = [];
+  let current: EditorialFeedbackItem | null = null;
+
+  const stripQuotes = (s: string) => s.trim().replace(/^["“]+|["”]+$/g, '').trim();
+
+  for (let raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    const issueMatch = line.match(/^-+\s*\*{0,2}Issue\*{0,2}:\s*(.*)/i);
+    const ruleMatch = line.match(/^-+\s*\*{0,2}Rule\*{0,2}:\s*(.*)/i);
+    const impactMatch = line.match(/^-+\s*\*{0,2}Impact\*{0,2}:\s*(.*)/i);
+    const fixMatch = line.match(/^-+\s*\*{0,2}Fix\*{0,2}:\s*(.*)/i);
+    const priorityMatch = line.match(/^-+\s*\*{0,2}Priority\*{0,2}:\s*(.*)/i);
+
+    if (issueMatch) {
+      // push previous
+      if (current) items.push(current);
+      current = { issue: stripQuotes(issueMatch[1] || '') };
+      continue;
+    }
+
+    if (!current) {
+      // ignore lines outside an issue block
+      continue;
+    }
+
+    if (ruleMatch) {
+      current.rule = ruleMatch[1].trim();
+      continue;
+    }
+    if (impactMatch) {
+      current.impact = impactMatch[1].trim();
+      continue;
+    }
+    if (fixMatch) {
+      current.fix = fixMatch[1].trim();
+      continue;
+    }
+    if (priorityMatch) {
+      current.priority = priorityMatch[1].trim();
+      continue;
+    }
+
+    // If line starts with '-' but no recognized label, try to append to last field (fix or impact)
+    const dashContent = line.replace(/^-+\s*/, '');
+    if (dashContent) {
+      // prefer appending to fix > impact > rule
+      if (current.fix) current.fix += ' ' + dashContent;
+      else if (current.impact) current.impact += ' ' + dashContent;
+      else if (current.rule) current.rule += ' ' + dashContent;
     }
   }
 
-  objectKeys = Object.keys;
+  if (current) items.push(current);
+  return items;
+}
 
-  /** Get display name for editor */
-  getEditorDisplayName(editorId: string | null): string {
-    if (!editorId) return '';
-    
-    // Map editor IDs to display names
-    const editorMap: { [key: string]: string } = {
-      'development': 'Development Editor',
-      'content': 'Content Editor',
-      'line': 'Line Editor',
-      'copy': 'Copy Editor',
-      // 'brand': 'PwC Brand Alignment Editor',
-      'brand-alignment': 'PwC Brand Alignment Editor'
-    };
-    
-    return editorMap[editorId] || editorId;
+/**
+ * Render editorial feedback items into a simple HTML string (escaped).
+ * Use ngFor in templates if possible instead of innerHTML.
+ */
+export function renderEditorialFeedbackHtml(items: EditorialFeedbackItem[]): string {
+  if (!items || items.length === 0) return '';
+
+  const esc = (s?: string) =>
+    (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const cards = items.map(it => {
+    const badge = it.priority ? `<span class="ef-priority">${esc(it.priority)}</span>` : '';
+    return `
+      <div class="ef-card">
+        <div class="ef-header">
+          <div class="ef-issue">${esc(it.issue)}</div>
+          ${badge}
+        </div>
+        <div class="ef-body">
+          ${it.rule ? `<div class="ef-row"><strong>Rule:</strong> ${esc(it.rule)}</div>` : ''}
+          ${it.impact ? `<div class="ef-row"><strong>Impact:</strong> ${esc(it.impact)}</div>` : ''}
+          ${it.fix ? `<div class="ef-row"><strong>Fix:</strong> ${esc(it.fix)}</div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('\n');
+
+  return `<div class="ef-container">${cards}</div>`;
+}
+
+
+/**
+ * Block type information for formatting
+ */
+export interface BlockTypeInfo {
+  index: number;
+  type: string;
+  level?: number;
+}
+
+
+/**
+ * Format final article with block type information to produce semantic HTML.
+ * Groups consecutive bullet_item blocks into proper <ul> or <ol> lists.
+ * 
+ * @param article - The article content (markdown or plain text)
+ * @param blockTypes - Array of block type information with index, type, and optional level
+ * @returns Formatted HTML with proper semantic structure
+ */
+export function formatFinalArticleWithBlockTypes(
+  article: string, 
+  blockTypes: BlockTypeInfo[]
+): string {
+  if (!blockTypes || blockTypes.length === 0) {
+    // If no block types, just convert markdown to HTML
+    return convertMarkdownToHtml(article);
   }
 
-  /** Update paragraph's approved status based on its feedback items */
-  private updateParagraphApprovedStatus(para: ParagraphFeedback): void {
-    // Check if all feedback items in this paragraph are decided
-    const feedbackTypes = Object.keys(para.editorial_feedback || {});
-    let allDecided = true;
-    let allApproved = true;
-    let hasAnyFeedback = false;
-    
-    for (const editorType of feedbackTypes) {
-      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-      for (const fb of feedbacks) {
-        hasAnyFeedback = true;
-        if (fb.approved === null || fb.approved === undefined) {
-          allDecided = false;
-          break;
-        } else if (fb.approved === false) {
-          allApproved = false;
-        }
+  // Split article into paragraphs (assuming double newline separation)
+  const paragraphs = article.split(/\n\n+/);
+  
+  // Create a map of index to block type
+  const blockTypeMap = new Map<number, {type: string, level?: number}>();
+  blockTypes.forEach(bt => {
+    blockTypeMap.set(bt.index, {type: bt.type, level: bt.level});
+  });
+
+  // First pass: format individual paragraphs
+  /** 'numbered' = preserve 1., 2., A., i. etc. (use <ol>); 'bullet' = use • (use <ul>) */
+  type ListKind = 'numbered' | 'bullet';
+  interface ParagraphBlock {
+    type: string;
+    content: string;
+    level: number;
+    rawContent?: string;
+    hasBulletIcon?: boolean;
+    listKind?: ListKind;   // For bullet_item: preserve numbers/letters vs force bullet
+    listValue?: number;   // For numbered: value for <li value="..."> (1, 2, 3...)
+  }
+
+  const formattedParagraphs = paragraphs
+    .map((para, idx): ParagraphBlock | null => {
+      const trimmedPara = para.trim();
+      if (!trimmedPara) return null; // Filter out empty paragraphs
+
+      const blockInfo = blockTypeMap.get(idx);
+      if (!blockInfo) {
+        // Default to paragraph if no block type info
+        const formatted = convertMarkdownToHtml(trimmedPara);
+        const content = formatted.startsWith('<') ? formatted : `<p>${formatted}</p>`;
+        return {
+          type: 'paragraph',
+          content: content,
+          level: 0
+        };
       }
-      if (!allDecided) break;
-    }
-    
-    // If no feedback items exist, paragraph doesn't need approval
-    if (!hasAnyFeedback) {
-      para.approved = true; // No feedback means nothing to approve/reject
-      return;
-    }
-    
-    // If all feedback items are decided, set paragraph's approved status
-    if (allDecided) {
-      // Set to true if all are approved, false if any are rejected
-      para.approved = allApproved;
-    } else {
-      // If not all feedback items are decided, reset paragraph approval to null
-      // This ensures the getter properly reflects that decisions are incomplete
-      para.approved = null;
-    }
-  }
 
+      // Convert markdown in the paragraph first
+      let formatted = convertMarkdownToHtml(trimmedPara);
+      
+      // Remove wrapping <p> tags if they exist at the start/end (we'll add our own based on block type)
+      // Only remove if the entire content is wrapped in a single <p> tag
+      formatted = formatted.replace(/^<p>(.*)<\/p>$/s, '$1');
 
-  approveEditorialFeedback(para: any, editorType: string, fb: any) {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
-    }
-    
-    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
-    if (fb.approved === true) {
-      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
-    } else {
-      fb.approved = true; // Approve (green/strikeout)
-    }
-    
-    // Clear display properties so highlightAllFeedbacks() handles all highlighting
-    para.displayOriginal = undefined;
-    para.displayEdited = undefined;
+      // Apply block type formatting (matches backend export formatting)
+      switch (blockInfo.type) {
+        case 'title':
+          // Title: 24pt font (matches PDF), bold, center aligned, spacing matches backend
+          // Note: Title is typically on cover page in export, but for UI display we show it
+          return {
+            type: 'title',
+            content: `<h1 style="font-size: 24pt; font-weight: 700; font-family: 'Helvetica', 'Arial', sans-serif; display: block; margin-top: 1.25em; margin-bottom: 0.35em; text-align: center; color: #D04A02;">${formatted}</h1>`,
+            level: 0
+          };
+        
+        case 'heading':
+          // Heading: 14pt font, bold (Helvetica-Bold), black, spacing matches backend (0.9em top, 0.2em bottom)
+          const headingLevel = blockInfo.level || 1;
+          const headingTag = `h${Math.min(Math.max(headingLevel, 1), 6)}`;
+          return {
+            type: 'heading',
+            content: `<${headingTag} style="font-size: 14pt; font-weight: 700; font-family: 'Helvetica-Bold', 'Arial Bold', sans-serif; display: block; margin-top: 0.9em; margin-bottom: 0.2em; color: #000000;">${formatted}</${headingTag}>`,
+            level: headingLevel
+          };
+        
+        case 'bullet_item': {
+          // Preserve numbered/lettered list prefixes (match backend FINAL_FORMATTING_PROMPT).
+          // Only use bullet icon (•) when content has bullet prefix (•, -, *) or no prefix.
+          const numPrefixMatch = trimmedPara.match(/^(\d+)[.)]\s+(.+)$/s);
+          const romanPrefixMatch = trimmedPara.match(/^([ivxlcdmIVXLCDM]+)[.)]\s+(.+)$/i);
+          const letterPrefixMatch = trimmedPara.match(/^([A-Za-z])[.)]\s+(.+)$/s);
+          const bulletPrefixMatch = trimmedPara.match(/^[•\-\*]\s+(.+)$/s);
 
-    this.updateParagraphApprovedStatus(para);
-    
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
+          let listKind: ListKind = 'bullet';
+          let listValue: number | undefined;
+          let processedContent: string;
+          let prefix = '';
 
-  rejectEditorialFeedback(para: any, editorType: string, fb: any) {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
-    }
-    
-    // Toggle: If already rejected, uncheck it (set to null for unreviewed/yellow)
-    if (fb.approved === false) {
-      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
-    } else {
-      fb.approved = false; // Reject (green/strikeout opposite)
-    }
-    
-    // Clear display properties so highlightAllFeedbacks() handles all highlighting
-    para.displayOriginal = undefined;
-    para.displayEdited = undefined;
-
-    this.updateParagraphApprovedStatus(para);
-    
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
-
-  applyEditorialFix(para: any, editorType: string, fb: any) {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
-    }
-    
-    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
-    if (fb.approved === true) {
-      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
-    } else {
-      fb.approved = true; // Approve (green/strikeout)
-    }
-    
-    // Clear display properties so highlightAllFeedbacks() handles all highlighting
-    para.displayOriginal = undefined;
-    para.displayEdited = undefined;
-
-    this.updateParagraphApprovedStatus(para);
-    
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
-
-  rejectEditorialFix(para: any, editorType: string, fb: any) {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
-    }
-    
-    // Toggle: If already rejected, uncheck it (set to null for unreviewed/yellow)
-    if (fb.approved === false) {
-      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
-    } else {
-      fb.approved = false; // Reject (green/strikeout opposite)
-    }
-    
-    // Clear display properties so highlightAllFeedbacks() handles all highlighting
-    para.displayOriginal = undefined;
-    para.displayEdited = undefined;
-
-    this.updateParagraphApprovedStatus(para);
-    
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
-
-  highlightAllFeedbacks(
-    para: ParagraphFeedback,
-    hovered?: { editorType: string; fbIndex: number }
-  ): { original: string; edited: string } {
-
-    let highlightedOriginal = para.original;
-    let highlightedEdited = para.edited;
-
-    type HighlightItem = {
-      text: string;
-      approved: boolean | null;
-      start: number;
-      end: number;
-      hovered: boolean;
-    };
-
-    const originalItems: HighlightItem[] = [];
-    const editedItems: HighlightItem[] = [];
-
-    // ------------------------------------------------------------
-    // STEP 1: Collect ALL highlight metadata (NO string mutation)
-    // ------------------------------------------------------------
-    Object.keys(para.editorial_feedback).forEach(editorType => {
-      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-
-      feedbacks.forEach((fb: any, idx: number) => {
-        const issueText = fb.issue?.trim();
-        const fixText = fb.fix?.trim();
-
-        const isHovered =
-          !!hovered &&
-          hovered.editorType === editorType &&
-          hovered.fbIndex === idx;
-
-        const approved: boolean | null =
-          fb.approved === true ? true : fb.approved === false ? false : null;
-
-        // ---- ORIGINAL (issue) ----
-        if (issueText) {
-          const regex = new RegExp(this.escapeRegex(issueText), 'g');
-          let match: RegExpExecArray | null;
-
-          while ((match = regex.exec(highlightedOriginal)) !== null) {
-            originalItems.push({
-              text: issueText,
-              approved,
-              start: match.index,
-              end: match.index + issueText.length,
-              hovered: isHovered
-            });
-          }
-        }
-
-        // ---- EDITED (fix) ----
-        if (fixText) {
-          const regex = new RegExp(this.escapeRegex(fixText), 'g');
-          let match: RegExpExecArray | null;
-
-          while ((match = regex.exec(highlightedEdited)) !== null) {
-            editedItems.push({
-              text: fixText,
-              approved,
-              start: match.index,
-              end: match.index + fixText.length,
-              hovered: isHovered
-            });
-          }
-        }
-      });
-    });
-
-    // ------------------------------------------------------------
-    // STEP 2: Apply highlights (END → START to keep indexes valid)
-    // ------------------------------------------------------------
-    const applyHighlights = (
-      source: string,
-      items: HighlightItem[],
-      mode: 'original' | 'edited'
-    ): string => {
-
-      items
-        .sort((a, b) => b.start - a.start)
-        .forEach(item => {
-          let cssClass = '';
-
-          if (mode === 'original') {
-            if (item.approved === true) {
-              cssClass = 'strikeout highlight-yellow';
-            } else if (item.approved === false) {
-              cssClass = 'highlight-green';
-            } else {
-              cssClass = 'highlight-yellow';
-            }
+          if (numPrefixMatch) {
+            listKind = 'numbered';
+            listValue = parseInt(numPrefixMatch[1], 10);
+            prefix = numPrefixMatch[1] + '. ';
+            processedContent = numPrefixMatch[2].trim();
+          } else if (romanPrefixMatch) {
+            listKind = 'numbered';
+            prefix = romanPrefixMatch[1] + '. ';
+            processedContent = romanPrefixMatch[2].trim();
+          } else if (letterPrefixMatch) {
+            listKind = 'numbered';
+            prefix = letterPrefixMatch[1] + '. ';
+            processedContent = letterPrefixMatch[2].trim();
+          } else if (bulletPrefixMatch) {
+            prefix = '• ';
+            processedContent = bulletPrefixMatch[1].trim();
           } else {
-            if (item.approved === true) {
-              cssClass = 'highlight-green';
-            } else if (item.approved === false) {
-              cssClass = 'strikeout highlight-yellow';
-            } else {
-              cssClass = 'highlight-yellow';
-            }
+            prefix = '• ';
+            processedContent = trimmedPara;
           }
 
-          if (item.hovered) {
-            cssClass += ' highlight-border';
+          // Format text before ":" as bold, after ":" as normal (for both numbered and bullet)
+          const colonIndex = processedContent.indexOf(':');
+          if (colonIndex > 0) {
+            const beforeColon = processedContent.substring(0, colonIndex).trim();
+            const afterColon = processedContent.substring(colonIndex + 1).trim();
+            let beforeFormatted = convertMarkdownToHtml(beforeColon);
+            let afterFormatted = convertMarkdownToHtml(afterColon);
+            beforeFormatted = beforeFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+            afterFormatted = afterFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+            processedContent = `${prefix}<strong>${beforeFormatted}</strong>: ${afterFormatted}`;
+          } else {
+            processedContent = convertMarkdownToHtml(processedContent);
+            processedContent = processedContent.replace(/^<p>(.*)<\/p>$/s, '$1');
+            processedContent = prefix + processedContent;
           }
 
-          const wrapped = `<span class="${cssClass}">${item.text}</span>`;
+          return {
+            type: 'bullet_item',
+            content: processedContent,
+            level: blockInfo.level || 0,
+            rawContent: trimmedPara,
+            hasBulletIcon: listKind === 'bullet',
+            listKind,
+            listValue
+          };
+        }
+        
+        case 'paragraph':
+        default:
+          // Paragraph: 11pt font, line-height 1.5 (matches backend), justify alignment, spacing matches backend
+          // margin-top: 0.15em (2pt), margin-bottom: 0.7em (8pt)
+          return {
+            type: 'paragraph',
+            content: `<p style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; display: block; text-align: justify; margin-top: 0.15em; margin-bottom: 0.7em; line-height: 1.5;">${formatted}</p>`,
+            level: 0
+          };
+      }
+    })
+    .filter((para): para is ParagraphBlock => para !== null);
 
-          source =
-            source.substring(0, item.start) +
-            wrapped +
-            source.substring(item.end);
-        });
+  // Second pass: group consecutive bullet_item blocks into <ol> (numbered) or <ul> (bullet)
+  const finalOutput: string[] = [];
+  type ListItem = { content: string; level: number; rawContent: string; hasBulletIcon?: boolean; listKind?: ListKind; listValue?: number };
+  let currentList: ListItem[] = [];
+  let prevBlockType: string | null = null;
+  let prevBlockIndex: number = -1;
 
-      return source;
-    };
-
-    highlightedOriginal = applyHighlights(
-      highlightedOriginal,
-      originalItems,
-      'original'
-    );
-
-    highlightedEdited = applyHighlights(
-      highlightedEdited,
-      editedItems,
-      'edited'
-    );
-
-    return {
-      original: highlightedOriginal,
-      edited: highlightedEdited
-    };
-  }
-
-
-  // Helper method to escape special regex characters
-  private escapeRegex(str: string): string {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-
-  approveAllFeedback(): void {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
+  const flushList = (list: ListItem[], marginTop: string, marginBottom: string) => {
+    if (list.length === 0) return;
+    const isNumbered = list.every(item => item.listKind === 'numbered');
+    // Tighter spacing for citations/references: less gap between list and heading, and between list items
+    const listStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; padding-left: 1.5em; margin-top: " + marginTop + "; margin-bottom: " + marginBottom + "; line-height: 1.4;";
+    const liStyle = "display: list-item; margin: 0.15em 0; line-height: 1.4;";
+    if (isNumbered) {
+      // Preserve numbered/lettered prefixes (content already has "1. ", "A. ", "i. " etc.)
+      finalOutput.push(`<ol style="${listStyle} list-style-type: none;">`);
+      list.forEach(item => finalOutput.push(`<li style="${liStyle}">${item.content}</li>`));
+      finalOutput.push('</ol>');
+    } else {
+      finalOutput.push(`<ul style="${listStyle} list-style-type: none;">`);
+      list.forEach(item => finalOutput.push(`<li style="${liStyle}">${item.content}</li>`));
+      finalOutput.push('</ul>');
     }
-    this.paragraphFeedbackData.forEach(para => {
+  };
 
-      para.approved = true;
-
-
-      Object.keys(para.editorial_feedback).forEach(editorType => {
-        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-        feedbacks.forEach((fb: any) => {
-          // Set all to approved (don't toggle)
-          fb.approved = true;
-        });
-      });
-      // Clear display properties so highlightAllFeedbacks() handles all highlighting
-      para.displayOriginal = undefined;
-      para.displayEdited = undefined;
-    });
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
-
-  rejectAllFeedback(): void {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
-    }
-    this.paragraphFeedbackData.forEach(para => {
-      para.approved = false;
-      Object.keys(para.editorial_feedback).forEach(editorType => {
-        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-        feedbacks.forEach((fb: any) => {
-          // Set all to rejected (don't toggle)
-          fb.approved = false;
-        });
-      });
-      // Clear display properties so highlightAllFeedbacks() handles all highlighting
-      para.displayOriginal = undefined;
-      para.displayEdited = undefined;
-    });
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
-
-    /** Show notification message */
-  private showNotificationMessage(message: string, type: 'success' | 'error' = 'success'): void {
-    this.notificationMessage = message;
-    this.notificationType = type;
-    this.showNotification = true;
+  for (let i = 0; i < formattedParagraphs.length; i++) {
+    const para = formattedParagraphs[i];
+    const nextPara = i < formattedParagraphs.length - 1 ? formattedParagraphs[i + 1] : null;
     
-    // Auto-hide after 3 seconds
-    setTimeout(() => {
-      this.showNotification = false;
-    }, 3000);
+    if (para.type === 'bullet_item') {
+      currentList.push({
+        content: para.content,
+        level: para.level,
+        rawContent: para.rawContent || '',
+        hasBulletIcon: para.hasBulletIcon,
+        listKind: para.listKind,
+        listValue: para.listValue
+      });
+      prevBlockType = 'bullet_item';
+      prevBlockIndex = i;
+    } else {
+      // Close any open list before processing non-list item
+      if (currentList.length > 0) {
+        const listMarginTop = prevBlockType === 'heading' ? '0.1em' : (prevBlockType === 'paragraph' ? '0.2em' : '0.4em');
+        const listMarginBottom = nextPara && nextPara.type === 'paragraph' ? '0.2em' : '0.4em';
+        flushList(currentList, listMarginTop, listMarginBottom);
+        currentList = [];
+      }
+
+      // Adjust paragraph margins based on context (matches backend export)
+      if (para.type === 'paragraph') {
+        // Reduce bottom margin if followed by bullet list (0.25em/3pt matches backend)
+        if (nextPara && nextPara.type === 'bullet_item') {
+          para.content = para.content.replace(/margin-bottom:\s*[^;]+;?/g, 'margin-bottom: 0.25em;');
+        }
+        // Reduce top margin if following heading - decrease line spacing between heading and paragraph
+        if (prevBlockType === 'heading') {
+          para.content = para.content.replace(/margin-top:\s*[^;]+;?/g, 'margin-top: 0.05em;');
+        }
+      }
+
+      // Add non-list paragraph
+      finalOutput.push(para.content);
+      prevBlockType = para.type;
+      prevBlockIndex = i;
+    }
   }
 
-  hoveredFeedback: { paraIndex: number, editorType: string, fbIndex: number } | null = null;
-
-  onFeedbackHover(paraIndex: number, editorType: string, fbIndex: number) {
-    this.hoveredFeedback = { paraIndex, editorType, fbIndex };
+  // Close any remaining open list
+  if (currentList.length > 0) {
+    const listMarginTop = prevBlockType === 'heading' ? '0.1em' : (prevBlockType === 'paragraph' ? '0.2em' : '0.4em');
+    flushList(currentList, listMarginTop, '0.4em');
   }
 
-  onFeedbackLeave() {
-    this.hoveredFeedback = null;
-  }
+  return finalOutput.join('\n');
 }
