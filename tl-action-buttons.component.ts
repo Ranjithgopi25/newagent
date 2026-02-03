@@ -540,6 +540,7 @@ def build_refine_graph():
     graph.add_node("EDIT_SEQUENCE", edit_sequence_node)
     graph.add_node("VALIDATE", validate_node)
     graph.add_node("SUGGESTIONS_ONLY", suggestions_node)
+    graph.add_node("MARKDOWN_STRUCTURE", markdown_structure_node)
 
     graph.set_entry_point("PLANNER")
 
@@ -550,7 +551,8 @@ def build_refine_graph():
     graph.add_edge("EDIT_SEQUENCE", "VALIDATE")
     graph.add_edge("EXPAND_TRIM", "VALIDATE")
     graph.add_edge("COMPRESS_ENFORCE", "VALIDATE")
-    graph.add_edge("SUGGESTIONS_ONLY", END)
+    graph.add_edge("SUGGESTIONS_ONLY", "MARKDOWN_STRUCTURE")
+    graph.add_edge("MARKDOWN_STRUCTURE", END)
 
     graph.add_conditional_edges(
         "SEMANTIC_CLEAN",
