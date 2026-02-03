@@ -2471,24 +2471,31 @@ def build_markdown_structure_prompt(content: str) -> List[Dict[str, str]]:
     return [
         {
             "role": "system",
-            "content": """You convert refined article text into correctly formatted markdown that maps to the following document styles.
+            "content": """You convert refined article text into correctly formatted markdown that maps to the following document styles. Use these exact font size and line spacing specifications.
 
-STYLE REFERENCE (font 11pt, 1.5 line spacing, space after — apply via structure; renderer applies size/spacing):
-- Body Text: 11pt, 1.5 line spacing, space after. Use normal paragraphs. Single blank line between blocks; no double returns.
-- Heading 1–4: # ## ### #### (one title, then main sections, sub-sections, sub-points).
-- List Bullet: - or * for content lists only; one item per line; hanging indent implied; space after. Do NOT use bullets for References.
-- List Continue: continuation of list item (indent 2 spaces in markdown for wrap).
-- List Bullet 2 / List Number 2: nested lists (indent 2–4 spaces).
-- List Number: 1. 2. 3. for numbered content lists.
-- List Alpha: A. B. C. or a. b. c. for alphabetical lists.
-- Quote: > for blockquote.
-- Inline citations: keep <sup>[ [n](URL) ]</sup> or [Title](URL). Do not remove or break links.
+STYLE SPECIFICATIONS (font size 11pt, 1.5 line spacing, space after — no double returns):
 
-REFERENCES SECTION (mandatory format — no bullets):
-- Use a "References" or "## References" heading, then numbered entries only.
-- Do NOT use bullet points (• or - or *) in References. Use numbered format only: [1] ... [2] ... [3] ... or 1. ... 2. ... 3. ...
-- Each reference: number then source, title, URL on same line (or wrap with single line break; Body Text style, 1.5 spacing).
-- One blank line (space after) between each reference entry. Same font and line spacing as Body Text.
+Body Text style: Font 11pt, 1.5 line spacing. Space after is programmed; use single blank line between blocks. No double returns to space out text.
+
+Heading 1 style: Document title (# ). Heading 2 style: Main sections (## ). Heading 3 style: Sub-sections (### ). Heading 4 style: Sub-points (#### ). Differentiate levels; renderer applies size.
+
+List Bullet style: Font and line spacing same as Body Text (11pt, 1.5). Use - or * for bullets; hanging indent; space after between list and next block. Do NOT use bullets in References.
+
+List Continue style: Same font and line spacing as Body Text; hanging indent for second and subsequent lines of a bullet/numbered/alpha list item. In markdown use indent 2 spaces for continuation.
+
+List Bullet 2 style: Same as Body Text plus left indent and hanging indent for nested bullets. In markdown indent 2–4 spaces then - or *.
+
+List Number style: Same font and line spacing as Body Text; hanging indent. Use 1. 2. 3. for numbered lists (including References).
+
+List Number 2 style: Same as Body Text plus left indent and hanging indent for nested numbered items.
+
+List Alpha style: Same as Body Text; hanging indent. Use A. B. C. or a. b. c. for alphabetical lists.
+
+Quote style: Same as Body Text. Use > for blockquote.
+
+References: Heading ## References then numbered entries only: 1. ... 2. ... 3. ... or [1] [2] [3]. Same 11pt, 1.5 line spacing; space after each entry. No bullet points (• or - or *) in References.
+
+Inline citations: Keep <sup>[ [n](URL) ]</sup> or [Title](URL). Do not remove or break links.
 
 MARKDOWN SYNTAX (apply exactly; this is the final output format):
 
