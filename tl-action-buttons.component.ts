@@ -186,8 +186,8 @@ def build_suggestions_prompt(content: str) -> List[Dict[str, str]]:
     ]
 
 
-def build_markdown_structure_prompt(plain_content: str) -> List[Dict[str, str]]:
-    """Build prompt for converting refined plain text into markdown (title, headings, subheadings, bullets, citations)."""
+def build_markdown_structure_prompt(content: str) -> List[Dict[str, str]]:
+    """Build prompt for converting refined content into correctly formatted markdown (title, headings, subheadings, bullets, citations)."""
     return [
         {
             "role": "system",
@@ -199,15 +199,15 @@ OUTPUT FORMAT (use only these elements; preserve all content):
 - Sub-sections: ### Subheading
 - Sub-points under sub-sections: #### Sub point (or ### if only one level of sub)
 - Bullet lists: use - or * for each item
-- Paragraphs: plain paragraphs (no extra symbols)
+- Paragraphs: normal paragraphs (no extra symbols)
 - Citations / URLs: keep existing format (e.g. <sup>[ [n](URL) ]</sup>) or use markdown links [Title](URL) for references. Do not remove or break citation links.
 
 RULES:
 - Preserve every sentence and citation; only add markdown structure.
 - Do not add or remove content.
-- Output only the markdown document. No explanation, no code fences.""",
+- Output ONLY the raw markdown document. No code fences, no preamble, no explanation.""",
         },
-        {"role": "user", "content": plain_content},
+        {"role": "user", "content": content},
     ]
 
 
