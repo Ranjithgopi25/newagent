@@ -1,2836 +1,1864 @@
-<div
-  class="app-container"
-  [class.sidebar-expanded]="sidebarExpanded"
-  >
-  <!-- Top Header Bar -->
-  <header class="top-header">
-    <div class="header-left">
-      <button
-          class="menu-toggle"
-          (click)="toggleMobileMenu()"
-          type="button"
-          aria-label="Toggle menu"
-          >
-          <svg
-            width="24"
-            height="24"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            >
-            <line x1="3" y1="12" x2="21" y2="12"></line>
-            <line x1="3" y1="6" x2="21" y2="6"></line>
-            <line x1="3" y1="18" x2="21" y2="18"></line>
-          </svg>
-      </button>
-      <img
-        src="assets/images/pwc-logo-2025.png"
-        alt="PwC"
-        (click)="goHome()"
-        class="pwc-header-logo"
-        />
-        <span class="business-services-text">Business Services</span>
-        <span class="mcx-ai-text"></span>
-      </div>
+import { Component, OnInit, ChangeDetectorRef  } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { TlFlowService } from '../../../core/services/tl-flow.service';
+import { ChatService } from '../../../core/services/chat.service';
+import { TlChatBridgeService } from '../../../core/services/tl-chat-bridge.service';
+import { AuthFetchService } from '../../../core/services/auth-fetch.service';
+import { ThoughtLeadershipMetadata } from '../../../core/models';
+import { FileUploadComponent } from '../../../shared/ui/components/file-upload/file-upload.component';
+import { EditorProgressItem } from '../../../shared/ui/components/editor-progress/editor-progress.component'; // EditorProgressComponent removed - not used in template
+import { normalizeEditorOrder, normalizeContent, EditorType, extractDocumentTitle, getEditorDisplayName, formatMarkdown, convertMarkdownToHtml, renderMarkdownForDisplay, extractFileText, parseEditorialFeedback, renderEditorialFeedbackHtml, EditorialFeedbackItem } from '../../../core/utils/edit-content.utils';
+import { 
+  createParagraphEditsFromComparison, 
+  allParagraphsDecided,
+  validateStringEquality
+} from '../../../core/utils/paragraph-edit.utils';
+import { ParagraphEdit } from '../../../core/models/message.model';
+import { environment } from '../../../../environments/environment';
+interface EditForm {
+  selectedEditors: EditorType[];
+  uploadedFile: File | null;
+}
 
-      <div class="llm-container">
-        <div class="llm-selector-container">
-          <!-- Service Provider Dropdown -->
-          <!-- <div class="dropdown-wrapper">
-            <button
-              class="dropdown-btn"
-              (click)="toggleDropdown('service-provider', $event)"
-              type="button"
-              title="Select Service Provider"
-              >
-             <span class="dropdown-label">{{ selectedServiceProvider === 'openai' ? 'OpenAI' : 'Anthropic' }}</span> 
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                [class.rotate]="openDropdown === 'service-provider'"
-                >
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </button> 
-            @if (openDropdown === 'service-provider') {
-              <div
-                class="dropdown-menu"
-                (click)="$event.stopPropagation()"
-                >
-                <button
-                  class="dropdown-item"
-                  [class.active]="selectedServiceProvider === 'openai'"
-                  (click)="selectServiceProvider('openai', $event)"
-                  type="button"
-                  >
-                  OpenAI
-                </button>
-                <button
-                  class="dropdown-item"
-                  [class.active]="selectedServiceProvider === 'anthropic'"
-                  (click)="selectServiceProvider('anthropic', $event)"
-                  type="button"
-                  >
-                  Anthropic
-                </button>
-              </div>
-            }
-          </div> -->
+interface ParagraphFeedback {
+  index: number;
+  original: string;
+  edited: string;
+  tags: string[];
+  autoApproved: boolean;
+  approved?: boolean | null;
+  block_type?: string;
+  level?: number;
+  editorial_feedback: {
+    development?: any[];
+    content?: any[];
+    copy?: any[];
+    line?: any[];
+    brand?: any[];
+  };
+  displayOriginal?: string;
+  displayEdited?: string;
+}
 
-          <!-- Model Dropdown -->
-          <!-- <div class="dropdown-wrapper">
-            <button
-              class="dropdown-btn"
-              (click)="toggleDropdown('model-select', $event)"
-              type="button"
-              title="Select LLM Model"
-              >
-              <span class="dropdown-label">{{ selectedModel }}</span>
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                [class.rotate]="openDropdown === 'model-select'"
-                >
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </button>
-            @if (openDropdown === 'model-select') {
-              <div
-                class="dropdown-menu"
-                (click)="$event.stopPropagation()"
-                >
-                @for (model of availableModels; track model) {
-                  <button
-                    class="dropdown-item"
-                    [class.active]="selectedModel === model"
-                    (click)="selectModel(model, $event)"
-                    type="button"
-                    >
-                    {{ model }}
-                  </button>
-                }
-              </div>
-            } 
-          </div>-->
-        </div>
-      </div>
+@Component({
+  selector: 'app-edit-content-flow',
+  standalone: true,
+  imports: [CommonModule, FormsModule, FileUploadComponent], // EditorProgressComponent removed - not used in template
+  templateUrl: './edit-content-flow.component.html',
+  styleUrls: ['./edit-content-flow.component.scss']
+})
+export class EditContentFlowComponent implements OnInit {
+  isGenerating: boolean = false;
+  editFeedback: string = '';
+  feedbackItems: EditorialFeedbackItem[] = [];
+  feedbackHtml: string = '';
+  revisedContent: string = '';
+  originalContent: string = '';
+  iterationCount: number = 0;
+  showSatisfactionPrompt: boolean = false;
+  showImprovementInput: boolean = false;
+  improvementRequestText: string = '';
+  fileUploadError: string = '';
+  uploadedFileSize: string = '';
+  MAX_FILE_SIZE_MB: number = 5;
+  editorProgressList: EditorProgressItem[] = [];
+  currentEditorIndex: number = 0;
+  totalEditors: number = 0;
+  currentEditorId: string = '';
+  
+  // Sequential workflow properties
+  threadId: string | null = null;
+  currentEditor: string | null = null;
+  isSequentialMode: boolean = false;
+  isLastEditor: boolean = false;
+  isEditorLoading: boolean = false; // Track if current editor is loading
+  
+  paragraphFeedbackData: ParagraphFeedback[] = [];
+  paragraphEdits: ParagraphEdit[] = [];
+  showFinalOutput: boolean = false;
+  /** Final article as markdown (same as Quick Start). For in-component display we convert to HTML. */
+  finalArticle: string = '';
+  isGeneratingFinal: boolean = false;
 
-      <div class="header-center">
-      </div>
-      <!-- Home Button -->
-      <div class="header-right">
-        <button
-          class="header-icon-btn"
-          (click)="goHome()"
-          type="button"
-          title="Home"
-          >
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            >
-            <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-            <polyline points="9 22 9 12 15 12 15 22"></polyline>
-          </svg>
-        </button>
+  /** HTML for in-component display of final article — same as Quick Start: marked.parse + list/citation post-process (no convertMarkdownToHtml). */
+  get finalArticleDisplay(): string {
+    return this.finalArticle ? renderMarkdownForDisplay(this.finalArticle) : '';
+  }
 
-        <button
-          class="header-icon-btn notifications"
-          type="button"
-          title="Notifications"
-          >
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            >
-            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
-            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
-          </svg>
-          <span class="notification-badge">3</span>
-        </button>
-        @if (user$ | async; as user) {
-          <div class="dropdown-wrapper profile-dropdown-wrapper">
-            <button
-              class="header-icon-btn profile-menu"
-              type="button"
-              title="User profile"
-              (click)="toggleDropdown('profile-menu', $event)"
-              >
-              <div class="header-profile-avatar">
-                @if (profileImageUrl) {
-                  <img 
-                    [src]="profileImageUrl" 
-                    [alt]="displayName"
-                    class="header-profile-image"
-                    (error)="$event.target.style.display='none'">
-                }
-                @if (!profileImageUrl) {
-                  <svg 
-                    width="20"
-                    height="20"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    class="header-profile-icon"
-                    >
-                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                    <circle cx="12" cy="7" r="4"></circle>
-                  </svg>
-                }
-              </div>
-              <span class="username">{{ user.name }}</span>
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                class="dropdown-arrow"
-                [class.rotate]="openDropdown === 'profile-menu'"
-                >
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </button>
-            @if (openDropdown === 'profile-menu') {
-              <div
-                class="dropdown-menu profile-dropdown-menu"
-                (click)="$event.stopPropagation()"
-                >
-                <div class="profile-info">
-                  @if (userProfile) {
-                    <div class="profile-avatar-large">
-                      @if (profileImageUrl) {
-                        <img 
-                          [src]="profileImageUrl" 
-                          [alt]="displayName"
-                          class="profile-image-large"
-                          (error)="$event.target.style.display='none'">
-                      }
-                      @if (!profileImageUrl) {
-                        <svg 
-                          class="avatar-icon-large" 
-                          viewBox="0 0 24 24" 
-                          fill="none" 
-                          stroke="currentColor" 
-                          stroke-width="2">
-                          <circle cx="12" cy="8" r="4" />
-                          <path d="M6 20c0-3.3 2.7-6 6-6s6 2.7 6 6" />
-                        </svg>
-                      }
-                    </div>
-                  }
-                  <div class="profile-text">
-                    <div class="profile-name">
-                      {{ displayName.includes('(') ? displayName.split('(')[0] : displayName }}
-                    </div>
-                    @if (userProfile) {
-                      <div class="profile-role">
-                        {{ userProfile.jobTitle }}
-                      </div>
-                    }
-                    @if (userProfile) {
-                      <div class="profile-location">
-                        {{ userProfile.location }}
-                      </div>
-                    }
-                  </div>
-                </div>
-                <div class="dropdown-divider"></div>
-                <button
-                  class="dropdown-item logout-item"
-                  (click)="logout()"
-                  type="button"
-                  >
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                    <polyline points="16 17 21 12 16 7"></polyline>
-                    <line x1="21" y1="12" x2="9" y2="12"></line>
-                  </svg>
-                  Logout
-                </button>
-              </div>
-            }
-          </div>
-        }
-      </div>
-    </header>
+  /** Paragraphs that require review (exclude autoApproved) */
+  private get reviewParagraphs(): ParagraphFeedback[] {
+    return (this.paragraphFeedbackData || [])
+      .filter(p => p.autoApproved !== true)
+      .sort((a, b) => a.index - b.index);
+  }
 
-    <!-- Collapsible Left Sidebar -->
-    <aside
-      class="icon-sidebar"
-      [class.mobile-open]="mobileMenuOpen"
-      [class.expanded]="sidebarExpanded"
-      >
-      <div class="sidebar-header">
-        <button
-          class="sidebar-toggle-btn"
-          (click)="toggleSidebar()"
-          type="button"
-        [attr.aria-label]="
-          sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'
-        "
-          >
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            >
-            <line x1="3" y1="12" x2="21" y2="12"></line>
-            <line x1="3" y1="6" x2="21" y2="6"></line>
-            <line x1="3" y1="18" x2="21" y2="18"></line>
-          </svg>
-        </button>
-      </div>
+  /** Flatten all editorial feedback items across paragraphs */
+  private getAllFeedbackItems(): Array<{
+    paraIndex: number;
+    editorType: string;
+    fbIndex: number;
+    fb: any;
+  }> {
+    const items: Array<{ paraIndex: number; editorType: string; fbIndex: number; fb: any }> = [];
 
-      <nav class="icon-nav" role="navigation" aria-label="Main navigation">
-        <button
-          class="icon-nav-btn"
-          [class.active]="selectedFlow === 'ppt'"
-          [class.hidden]="!offeringVisibility['ppt']"
-          (click)="selectFlow('ppt')"
-          type="button"
-          title="Doc Studio"
-          >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-            <line x1="8" y1="21" x2="16" y2="21"></line>
-            <line x1="12" y1="17" x2="12" y2="21"></line>
-            <path d="M7 7h5v5H7z"></path>
-            <path d="M14 7h3"></path>
-            <path d="M14 10h3"></path>
-          </svg>
-          <span class="nav-label">Doc Studio</span>
-        </button>
-        <button
-          class="icon-nav-btn"
-          [class.active]="selectedFlow === 'market-intelligence'"
-          [class.hidden]="!offeringVisibility['market-intelligence']"
-          (click)="selectFlow('market-intelligence')"
-          type="button"
-          title="Market Intelligence & Insights"
-          >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
-            <polyline points="4 14 8 10 12 15 16 8 20 12" />
-            <line x1="4" y1="19" x2="20" y2="19" />
-            <line x1="4" y1="4" x2="4" y2="19" />
-          </svg>
-          <span class="nav-label">
-            <span class="label-line">Market Intelligence & Insights</span>
-          </span>
-        </button>
-        <button
-          class="icon-nav-btn"
-          [class.active]="selectedFlow === 'thought-leadership'"
-          [class.hidden]="!offeringVisibility['thought-leadership']"
-          (click)="selectFlow('thought-leadership')"
-          type="button"
-          *ngIf="isProfilePresent(profile)"
-          title="Cortex"
-          >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 2v2"></path>
-            <path d="M12 18v2"></path>
-            <path d="M4.93 4.93l1.41 1.41"></path>
-            <path d="M17.66 17.66l1.41 1.41"></path>
-            <path d="M2 12h2"></path>
-            <path d="M20 12h2"></path>
-            <path d="M6.34 17.66l-1.41 1.41"></path>
-            <path d="M19.07 4.93l-1.41 1.41"></path>
-            <circle cx="12" cy="12" r="5"></circle>
-            <path d="M12 12v-5"></path>
-          </svg>
-          <span class="nav-label">
-            <span class="label-line">Cortex</span>
-          </span>
-        </button>
-        <!-- separator below Cortex -->
-        <div class="sidebar-separator" aria-hidden="true"></div>
-        <button
-          class="icon-nav-btn"
-          (click)="toggleHistoryPanel()"
-          [class.active]="showHistoryPanel"
-          type="button"
-          title="Research & Request History"
-          >
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            >
-            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-            <path d="M3 3v5h5"></path>
-            <path d="M12 7v5l4 2"></path>
-          </svg>
-          <span class="nav-label">
-            <span class="label-line">Research & Request History</span>
-          </span>
-        </button>
-        @if(!showLandingPage) {
-        <button class="icon-nav-btn" type="button" title="New Chat" (click)="startNewChat()">
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            >
-            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-          </svg>
-          <span class="nav-label">New Chat</span>
-        </button>
+    for (const para of this.reviewParagraphs) {
+      const types = Object.keys(para.editorial_feedback || {});
+      for (const editorType of types) {
+        const arr = (para.editorial_feedback as any)[editorType] || [];
+        arr.forEach((fb: any, fbIndex: number) => {
+          items.push({ paraIndex: para.index, editorType, fbIndex, fb });
+        });
       }
-        <!-- separator below New Chat -->
-        <div class="sidebar-separator" aria-hidden="true"></div>
-        <button
-              class="icon-nav-btn"
-              (click)="openRequestForm()"
-              title="Request DDC Support">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" 
-                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <!-- Headband -->
-                  <path d="M4 12a8 8 0 0 1 16 0" />
-                  <!-- Left earcup -->
-                  <rect x="2" y="12" width="4" height="6" rx="1" />
-                  <!-- Right earcup -->
-                  <rect x="18" y="12" width="4" height="6" rx="1" />
-                  <!-- Mic boom -->
-                <path d="M18 18v2a2 2 0 0 1-2 2h-4" />
-              </svg>
-               <span class="nav-label">
-                <span class="label-line">Request DDC Support</span>
-              </span>
-            </button>
-            <button
-              class="icon-nav-btn"
-              (click)="onRaisePhoenix()"
-              title="Request MCX Publication Support"
-              *ngIf="isProfilePresent(profile)">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 2s-4 3-4 7c0 5 4 9 4 9s4-4 4-9c0-4-4-7-4-7z"></path>
-                <path d="M5 18c2 2 5 3 7 3s5-1 7-3"></path>
-              </svg>
-              <span class="nav-label">
-                <span class="label-line">Request MCX Publication Support</span>
-              </span>
-            </button>
-      </nav>
+    }
+
+    return items;
+  }
+
+  /** Count of feedback items approved (fb.approved === true) */
+  get approvedFeedbackCount(): number {
+    return this.getAllFeedbackItems().filter(x => x.fb?.approved === true).length;
+  }
+
+  /** Count of feedback items rejected (fb.approved === false) */
+  get rejectedFeedbackCount(): number {
+    return this.getAllFeedbackItems().filter(x => x.fb?.approved === false).length;
+  }
+
+  /** Count of feedback items pending (fb.approved is null/undefined) */
+  get pendingFeedbackCount(): number {
+    return this.getAllFeedbackItems().filter(
+      x => x.fb?.approved === null || x.fb?.approved === undefined
+    ).length;
+  }
+
+  /** Scroll to the first feedback card with the requested status */
+  scrollToFirstFeedbackByStatus(status: 'pending' | 'approved' | 'rejected'): void {
+    const match = this.getAllFeedbackItems().find(x => {
+      if (status === 'approved') return x.fb?.approved === true;
+      if (status === 'rejected') return x.fb?.approved === false;
+      return x.fb?.approved === null || x.fb?.approved === undefined;
+    });
+
+    if (!match) return;
+
+    const el = document.getElementById(`fb-${match.paraIndex}-${match.editorType}-${match.fbIndex}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    }
+  }
+
+  
+  formData: EditForm = {
+    selectedEditors: ['development', 'content', 'line', 'copy', 'brand-alignment'],
+    uploadedFile: null
+  };
+  
+  fileReadError: string = '';
+
+  // Notification properties
+  showNotification: boolean = false;
+  notificationMessage: string = '';
+  notificationType: 'success' | 'error' = 'success';
+
+  isCopied: boolean = false;
+
+
+  editorTypes: { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] = [
+    { 
+      id: 'development' as EditorType, 
+      name: 'Development Editor', 
+      icon: '🚀', 
+      description: 'Reviews and restructures content for alignment and coherence',
+      details: 'Reviews: thought leadership quality, competitive differentiation, risk words (guarantee/promise/always), China terminology',
+      disabled: false
+    },
+    { 
+      id: 'content' as EditorType, 
+      name: 'Content Editor', 
+      icon: '📄', 
+      description: "Refines language to align with author's key objectives",
+      details: 'Validates: mutually exclusive/collectively exhaustive structure, source citations, evidence quality, argument logic',
+      disabled: false
+    },
+    { 
+      id: 'line' as EditorType, 
+      name: 'Line Editor', 
+      icon: '📝', 
+      description: 'Improves sentence flow, readability, and style preserving voice',
+      details: 'Improves: active voice throughout, sentence length, precise word choice, paragraph structure, transitional phrases',
+      disabled: false
+    },
+    { 
+      id: 'copy' as EditorType, 
+      name: 'Copy Editor', 
+      icon: '✏️', 
+      description: 'Corrects grammar, punctuation, and typos',
+      details: 'Enforces: Oxford commas, apostrophes, em dashes, sentence case headlines, date formats, abbreviations, active voice',
+      disabled: false
+    },
+    { 
+      id: 'brand-alignment' as EditorType, 
+      name: 'PwC Brand Alignment Editor', 
+      icon: '🎯', 
+      description: 'Aligns content writing standards with PwC brand',
+      details: 'Checks: we/you language, contractions, active voice, prohibited words (catalyst, PwC Network), China references, brand messaging',
+      disabled: true
+    }
+  ];
+
+  constructor(
+    public tlFlowService: TlFlowService,
+    private chatService: ChatService,
+    private tlChatBridge: TlChatBridgeService,
+    private cdr: ChangeDetectorRef,
+    private authFetchService: AuthFetchService
+  ) {}
+
+  ngOnInit(): void {
+    // this.paragraphFeedbackData.forEach(para => {
+    //   // Add these properties so Angular/TypeScript knows they exist
+    //   para.displayOriginal = para.original;
+    //   para.displayEdited = para.edited;
+    // });
+  }
+
+  get isOpen(): boolean {
+    return this.tlFlowService.currentFlow === 'edit-content';
+  }
+
+  onClose(): void {
+    this.resetForm();
+    this.tlFlowService.closeFlow();
+  }
+
+  back(): void{
+    this.resetForm();
+    this.tlFlowService.closeFlow();
+    this.tlFlowService.openGuidedDialog();
+  }
+
+  resetForm(): void {
+    this.isGenerating = false;
+    this.editFeedback = '';
+    this.feedbackItems = [];
+    this.feedbackHtml = '';
+    this.revisedContent = '';
+    this.originalContent = '';
+    this.fileReadError = '';
+    this.fileUploadError = '';
+    this.uploadedFileSize = '';
+    this.iterationCount = 0;
+    this.showSatisfactionPrompt = false;
+    this.showImprovementInput = false;
+    this.improvementRequestText = '';
+    this.paragraphEdits = [];
+    this.paragraphFeedbackData = [];
+    this.showFinalOutput = false;
+    this.finalArticle = '';
+    this.isGeneratingFinal = false;
+    this.editorProgressList = [];
+    this.currentEditorIndex = 0;
+    this.totalEditors = 0;
+    this.currentEditorId = '';
+    this.isCopied = false;
+    this.isEditorLoading = false;
+    this.formData = {
+      selectedEditors: ['development', 'content', 'line', 'copy', 'brand-alignment'],
+      uploadedFile: null
+    };
+  }
+
+  canEdit(): boolean {
+    return this.formData.uploadedFile !== null && this.formData.selectedEditors.length > 0;
+  }
+
+  clearUploadError(): void {
+    this.fileUploadError = '';
+  }
+
+  clearReadError(): void {
+    this.fileReadError = '';
+  }
+  
+  onFileSelect(file: File): void {
+    if (file) {
+      // Reset error states
+      this.fileReadError = '';
+      this.fileUploadError = '';
       
-      <!-- Copyright Footer -->
-      <div class="sidebar-copyright">
-        <p>©2026 PwC. All rights reserved.</p>
-      </div>
-    </aside>    <!-- Chat History Panel -->
-    <div class="history-panel" [class.show]="showHistoryPanel">
-      <div class="history-header">
-        <h3>Research and Request History</h3>
-        <button
-          class="close-history-btn"
-          (click)="showHistoryPanel = false"
-          type="button"
-          aria-label="Close history"
-          >
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            >
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
-      </div>
-      <div class="history-content">
-        <div class="history-search">
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            class="search-icon"
-            >
-            <circle cx="11" cy="11" r="8"></circle>
-            <path d="m21 21-4.35-4.35"></path>
-          </svg>
-          <input
-            type="text"
-            placeholder="Search history..."
-            class="history-search-input"
-            [(ngModel)]="searchQuery"
-            />
-          </div>
-          @if (filteredChatSessions.length > 0) {
-            <div class="history-list">
-              @for (session of filteredChatSessions; track session.id) {
-                <button
-                  class="history-item"
-                  (click)="loadDbConversation(session.id); showHistoryPanel = false"
-                  type="button"
-                  >
-                  <div class="history-item-content">
-                    <h4 class="history-item-title">{{ session.title }}</h4>
-                    <p class="history-item-date">
-                      {{ session.lastModified | date: "MMM d, h:mm a" }}
-                    </p>
-                  </div>
-                  <button
-                    class="history-item-delete"
-                    (click)="deleteDbSession(session.id, $event)"
-                    type="button"
-                    aria-label="Delete chat"
-                    >
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      >
-                      <polyline points="3 6 5 6 21 6"></polyline>
-                      <path
-                        d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
-                      ></path>
-                    </svg>
-                  </button>
-                </button>
-              }
-            </div>
-          }
-          @if (filteredChatSessions.length === 0) {
-            <div class="history-empty">
-              <svg
-                width="48"
-                height="48"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                >
-                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-                <path d="M3 3v5h5"></path>
-                <path d="M12 7v5l4 2"></path>
-              </svg>
-              @if (searchQuery.trim()) {
-                <p>No matching history</p>
-                <span>Try different keywords</span>
-              } @else {
-                <p>No chat history yet</p>
-                <span>Your conversations will appear here</span>
-              }
-            </div>
-          }
-        </div>
-      </div>
-      <!-- Main Content -->
-      <main class="main-content">
-        <!-- Global toast notification (centered with backdrop) -->
-        @if (showNotification) {
-          <!-- Backdrop overlay with blur -->
-          <div class="toast-backdrop"></div>
+      // Calculate and display file size
+      this.uploadedFileSize = this.formatFileSize(file.size);
+      this.formData.uploadedFile = file;
+    }
+  }
+
+  onFileRemoved(): void {
+    this.formData.uploadedFile = null;
+    this.fileUploadError = '';
+    this.fileReadError = '';
+    this.uploadedFileSize = '';
+  }
+
+  formatFileSize(bytes: number): string {
+     if (bytes === 0) return '0 Bytes';
+    
+    // Show exact size in KB (no rounding)
+    if (bytes < 1024) {
+      return bytes + ' Bytes';
+    } else if (bytes < 1024 * 1024) {
+      // Exact KB with decimal precision
+      const kb = bytes / 1024;
+      return kb.toFixed(2) + ' KB';
+    } else {
+      // For MB and above, show with 2 decimal places
+      const mb = bytes / (1024 * 1024);
+      return mb.toFixed(2) + ' MB';
+    }
+  }
+
+  /** Toggle editor selection, ensuring brand-alignment is always included */
+  toggleEditor(type: EditorType): void {
+    if (type === 'brand-alignment') {
+      return;
+    }
+    
+    const index = this.formData.selectedEditors.indexOf(type);
+    if (index > -1) {
+      this.formData.selectedEditors.splice(index, 1);
+    } else {
+      this.formData.selectedEditors.push(type);
+    }
+    
+    if (!this.formData.selectedEditors.includes('brand-alignment')) {
+      this.formData.selectedEditors.push('brand-alignment');
+    }
+  }
+
+  isEditorSelected(type: EditorType): boolean {
+    return this.formData.selectedEditors.includes(type);
+  }
+
+  /** Get selectable editors (excluding brand-alignment which is always enabled) */
+  get selectableEditors(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] {
+    return this.editorTypes.filter(editor => editor.id !== 'brand-alignment');
+  }
+
+  /** Get brand alignment editor info */
+  get brandAlignmentEditor(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean } | undefined {
+    return this.editorTypes.find(editor => editor.id === 'brand-alignment');
+  }
+
+  /** Get selected editors in normalized order (for timeline display) */
+  get selectedEditorsForTimeline(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] {
+    if (!this.formData.selectedEditors || this.formData.selectedEditors.length === 0) {
+      return [];
+    }
+    
+    // Normalize order to match processing order
+    const normalizedOrder = normalizeEditorOrder([...this.formData.selectedEditors]) as EditorType[];
+    
+    // Map to full editor info objects
+    return normalizedOrder.map(editorId => {
+      const editor = this.editorTypes.find(e => e.id === editorId);
+      return editor || {
+        id: editorId,
+        name: getEditorDisplayName(editorId),
+        icon: '',
+        description: '',
+        details: '',
+        disabled: false
+      };
+    });
+  }
+
+  /** Steps array for editor timeline (0..totalEditors-1) */
+  get editorSteps(): number[] {
+    const total = this.totalEditors || 0;
+    if (total <= 0) return [];
+    return Array.from({ length: total }, (_, i) => i);
+  }
+
+
+  getEditorNames(): string {
+    if (this.formData.selectedEditors.length === 0) return '';
+    if (this.formData.selectedEditors.length === 1) {
+      const editor = this.editorTypes.find(e => e.id === this.formData.selectedEditors[0]);
+      return editor ? editor.name : '';
+    }
+    return `${this.formData.selectedEditors.length} editors`;
+  }
+  
+  getSatisfactionPromptText(): string {
+    if (this.iterationCount === 1) {
+      return 'Are you satisfied with the edited document output, or do you need additional updates?';
+    }
+    return `Are you satisfied with this revision (Iteration ${this.iterationCount}), or do you need additional updates?`;
+  }
+
+  async editContent(): Promise<void> {
+    this.isGenerating = true;
+    this.isEditorLoading = true; // Initial editor loading starts
+    this.fileReadError = '';
+    this.fileUploadError = '';
+    this.editFeedback = '';
+    this.revisedContent = '';
+    this.editorProgressList = [];
+    this.currentEditorIndex = 0;
+    this.totalEditors = 0;
+    this.currentEditorId = '';
+    
+    let contentText = '';
+    
+    if (this.formData.uploadedFile) {
+      // Validate file is not empty
+      if (this.formData.uploadedFile.size === 0) {
+        this.fileUploadError = 'The uploaded file is empty. Please upload a valid document with content.';
+        this.isGenerating = false;
+        return;
+      }
+      
+      // Validate minimum file size (10 bytes)
+      const MIN_FILE_SIZE = 10;
+      if (this.formData.uploadedFile.size < MIN_FILE_SIZE) {
+        this.fileUploadError = 'The uploaded file appears to be empty or corrupted. Please upload a valid document.';
+        this.isGenerating = false;
+        return;
+      }
+      
+      // Validate maximum file size (5MB)
+      const fileSizeMB = this.formData.uploadedFile.size / (1024 * 1024);
+      if (fileSizeMB > this.MAX_FILE_SIZE_MB) {
+        this.fileUploadError = `File size exceeds the maximum limit of ${this.MAX_FILE_SIZE_MB}MB. Please upload a smaller file.`;
+        this.isGenerating = false;
+        return;
+      }
+      
+      try {
+        const extractedText = await extractFileText(this.formData.uploadedFile);
+        contentText = normalizeContent(extractedText);
+        
+        // Validate extracted content is not empty
+        if (!contentText || contentText.trim().length === 0) {
+          this.fileUploadError = 'The uploaded document appears to be empty or contains no readable text. Please upload a document with content.';
+          this.isGenerating = false;
+          return;
+        }
+        
+        // Validate minimum content length (50 characters for meaningful content)
+        const MIN_CONTENT_LENGTH = 50;
+        if (contentText.trim().length < MIN_CONTENT_LENGTH) {
+          this.fileUploadError = `The uploaded document contains insufficient content (minimum ${MIN_CONTENT_LENGTH} characters required). Please upload a document with more text.`;
+          this.isGenerating = false;
+          return;
+        }
+        
+        this.originalContent = contentText;
+      } catch (error) {
+        console.error('Error extracting file:', error);
+        this.fileReadError = 'Error reading uploaded file. Please try again or upload a different format.';
+        this.isGenerating = false;
+        return;
+      }
+    }
+    
+    const messages = [{
+      role: 'user' as const,
+      content: contentText
+    }];
+
+    let fullResponse = '';
+    const editorsToUse = normalizeEditorOrder(this.formData.selectedEditors) as EditorType[];
+
+    this.editorProgressList = editorsToUse.map((id, index) => ({
+      editorId: id,
+      editorName: getEditorDisplayName(id),
+      status: 'pending' as const,
+      current: index + 1,
+      total: editorsToUse.length
+    }));
+    this.totalEditors = editorsToUse.length;
+
+    this.chatService.streamEditContent(messages, editorsToUse).subscribe({
+      next: (data: any) => {
+        if (data.type === 'editor_progress') {
+          // Backend sends 1-based index, convert to 0-based for our array
+          const backendCurrentIndex = data.current || 1;
+          this.currentEditorIndex = backendCurrentIndex - 1; // Convert to 0-based
+          this.totalEditors = data.total || editorsToUse.length;
+          this.currentEditorId = data.editor || '';
           
-          <!-- Toast notification -->
-          <div class="toast-container" [attr.data-type]="notificationType">
-            <div class="toast-content">
-              <span>{{ notificationMessage }}</span>
-            </div>
-          </div>
-        }
-
-        <!-- MCX AI Banner -->
-        <div class="mcx-banner">
-          <div class="banner-content">
-            <h1 class="banner-title">{{ getFeatureName() }}</h1>
-          </div>
-          <div class="banner-image"></div>
-        </div>
-
-        <!-- Landing Page (First Time User) -->
-        @if (showLandingPage) {
-          <div class="content-area landing-page-view" [class.fade-out]="landingPageFadingOut">
-            <div class="landing-page-content">
-              <div class="landing-header">
-                <h1>Welcome to ThinkSpace</h1>
-                <p>A space for bold thinking</p>
-              </div>
-
-              <div class="landing-buttons-grid" [class.two-cols]="!isProfilePresent(profile)">
-                <button
-                  class="landing-flow-btn ddc-flow-btn"
-                  (click)="selectFlow('ppt')"
-                  type="button"
-                >
-                  <div class="flow-icon">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-                      <line x1="8" y1="21" x2="16" y2="21"></line>
-                      <line x1="12" y1="17" x2="12" y2="21"></line>
-                      <path d="M7 7h5v5H7z"></path>
-                      <path d="M14 7h3"></path>
-                      <path d="M14 10h3"></path>
-                    </svg>
-                  </div>
-                  <h2>Doc Studio</h2>
-                  <p>PwC quality presentations at the speed of thought</p>
-                </button>
-
-                <button
-                  class="landing-flow-btn mi-flow-btn"
-                  (click)="selectFlow('market-intelligence')"
-                  type="button"
-                >
-                  <div class="flow-icon">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
-                      <polyline points="4 14 8 10 12 15 16 8 20 12" />
-                      <line x1="4" y1="19" x2="20" y2="19" />
-                      <line x1="4" y1="4" x2="4" y2="19" />
-                    </svg>
-                  </div>
-                  <h2>Market Intelligence & Insights</h2>
-                  <p>Structured preparation for confident client interactions</p>
-                </button>
-
-                <button
-                  class="landing-flow-btn tl-flow-btn"
-                  (click)="selectFlow('thought-leadership')"
-                  type="button"
-                  *ngIf="isProfilePresent(profile)"
-                >
-                  <div class="flow-icon">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M12 2v2"></path>
-                      <path d="M12 18v2"></path>
-                      <path d="M4.93 4.93l1.41 1.41"></path>
-                      <path d="M17.66 17.66l1.41 1.41"></path>
-                      <path d="M2 12h2"></path>
-                      <path d="M20 12h2"></path>
-                      <path d="M6.34 17.66l-1.41 1.41"></path>
-                      <path d="M19.07 4.93l-1.41 1.41"></path>
-                      <circle cx="12" cy="12" r="5"></circle>
-                      <path d="M12 12v-5"></path>
-                    </svg>
-                  </div>
-                  <h2>Cortex</h2>
-                  <p>Where all firm intelligence is created, curated, and deployed</p>
-                </button>
-              </div>
-            </div>
-          </div>
-        }
-
-        <!-- Welcome/Quick Start Area -->
-        @if (!showLandingPage && messages.length === 0 && !showDraftForm) {
-          <div
-            class="content-area welcome-screen"
-            >
-            <!-- Centered Conversation Starter -->
-            <div class="welcome-center">
-              <!-- Quick Start and Guided Journey buttons -->
-              <div class="top-action-buttons">
-                <button
-                  #quickStartBtn
-                  class="top-action-btn primary"
-                  (click)="quickStart()"
-                  type="button"
-                  aria-label="Start quick conversation - Begin chatting immediately with AI assistance"
-                  >
-                  <div class="btn-icon-badge">
-                    <svg
-                      width="24"
-                      height="24"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      >
-                      <polygon
-                        points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"
-                      ></polygon>
-                    </svg>
-                  </div>
-                  <div class="btn-content">
-                    <h3 class="btn-heading">Quick Request</h3>
-                    <p class="btn-description">
-                      Engage with the AI assistant
-                    </p>
-                  </div>
-                </button>
-                <button
-                  class="top-action-btn guided"
-                  (click)="openGuidedDialog()"
-                  type="button"
-                  aria-label="Guided Journey - Step-by-step form for structured workflows"
-                  >
-                  <div class="btn-icon-badge">
-                    <svg
-                      width="24"
-                      height="24"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      >
-                      <path
-                        d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"
-                      ></path>
-                      <circle cx="12" cy="10" r="3"></circle>
-                    </svg>
-                  </div>
-                  <div class="btn-content">
-                    <h3 class="btn-heading">Guided Journey</h3>
-                    <p class="btn-description">
-                      Launch step-by-step wizard
-                    </p>
-                  </div>
-                </button>
-              </div>
-              <div class="welcome-message">
-                <h2>How can I help you today?</h2>
-                <p>
-                  @if (selectedFlow === 'thought-leadership') {
-                    <span>Start chatting or choose from the below services</span>
-                  }
-                  @if (selectedFlow === 'ppt') {
-                    <span>Start chatting or choose from the below services</span>
-                  }
-                  @if (selectedFlow === 'market-intelligence') {
-                    <span>Start chatting or choose from the below services</span>
-                  }
-                </p>
-              </div>
-            </div>
-            <!-- Quick Action Dropdown Buttons - DDC Feature -->
-            @if (selectedFlow === 'ppt') {
-              <div class="quick-action-dropdowns ddc-actions">
-                <!-- First Row: 2 Buttons -->
-                <div class="quick-action-row">
-                  <div class="button-wrapper">
-                    <button class="dropdown-btn" (click)="openDdcWorkflow('slide-creation-prompt')" type="button">
-                      <div class="btn-icon">
-                        <svg
-                            width="24"
-                            height="24"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                            stroke-linejoin="round">
-                            <!-- Document -->
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                          <polyline points="14 2 14 8 20 8"></polyline>
-                          <polyline points="9 13 11 15 15 11"></polyline>
-                          </svg>
-                      </div>
-                      <span class="btn-label">Prompt to Draft</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper">
-                    <button class="dropdown-btn" (click)="openDdcWorkflow('slide-creation')" type="button">
-                      <div class="btn-icon">
-                        <svg
-                            width="24"
-                            height="24"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                            stroke-linejoin="round">
-                          <!-- Book spine -->
-                            <rect x="3" y="4" width="6" height="16" rx="1"></rect>
-                              
-                          <!-- Middle book -->
-                            <rect x="9" y="4" width="6" height="16" rx="1"></rect>
-                              
-                          <!-- Right book -->
-                            <rect x="15" y="4" width="6" height="16" rx="1"></rect>
-                              
-                          <!-- Decorative lines for pages -->
-                            <line x1="3" y1="8" x2="9" y2="8"></line>
-                            <line x1="9" y1="12" x2="15" y2="12"></line>
-                            <line x1="15" y1="16" x2="21" y2="16"></line>
-                            </svg>
-                          </div>
-                        <span class="btn-label">Outline to Deck</span>
-                      </button>
-                    </div>
-                  <!-- </div> -->
-                <!-- Second Row: 2 Button -->
-                  <!-- <div class="quick-action-row"> -->
-                  <div class="button-wrapper">
-                    <button class="dropdown-btn" (click)="openDdcWorkflow('sanitization')" type="button">
-                      <div class="btn-icon">
-                        <!-- simple filled broom icon (uses currentColor) -->
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                          <!-- bristles -->
-                          <rect x="2" y="15" width="12" height="5" rx="1.5" fill="currentColor" />
-                          <!-- handle (rotated thin rect) -->
-                          <rect x="12.5" y="2" width="2" height="14" rx="1" fill="currentColor" transform="rotate(28 12.5 2)" />
-                          <!-- small accent detail -->
-                          <circle cx="4.5" cy="17" r="1" fill="currentColor" opacity="0.9" />
-                        </svg>
-                      </div>
-                      <span class="btn-label">Doc Sanitization</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper">
-                    <button class="dropdown-btn disabled" (click)="openDdcWorkflow('brand-format')" type="button" disabled>
-                      <div class="btn-icon">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10c.93 0 1.5-.65 1.5-1.5 0-.44-.15-.84-.4-1.13-.24-.29-.4-.69-.4-1.12 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-4.97-4.48-9-10-9z"></path>
-                          <circle cx="6.5" cy="11.5" r="1.5"></circle>
-                          <circle cx="9.5" cy="7.5" r="1.5"></circle>
-                          <circle cx="14.5" cy="7.5" r="1.5"></circle>
-                          <circle cx="17.5" cy="11.5" r="1.5"></circle>
-                        </svg>
-                      </div>
-                      <span class="btn-label">Draft Refinement</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
+          // Set loading state when editor starts processing
+          this.isEditorLoading = true;
+          
+          // Update editor statuses (using 0-based index)
+          this.editorProgressList.forEach((editor, index) => {
+            if (index < this.currentEditorIndex) {
+              editor.status = 'completed';
+            } else if (index === this.currentEditorIndex) {
+              editor.status = 'processing'; // In Progress when loading
+              editor.current = backendCurrentIndex; // Keep 1-based for display
+              editor.total = this.totalEditors;
+            } else {
+              editor.status = 'pending';
             }
-            <!-- Quick Action Dropdown Buttons - Thought Leadership Feature -->
-            @if (selectedFlow === 'thought-leadership') {
-              <div
-                class="quick-action-dropdowns tl-actions"
-                >
-                <!-- First Row: 3 Buttons -->
-                <div class="quick-action-row">
-                  <div class="button-wrapper-tl">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onTLActionCardClick('draft-content')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg
-                          width="20"
-                          height="20"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                          >
-                          <path d="M12 20h9"></path>
-                          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
-                        </svg>
-                      </div>
-                      <span class="btn-label">Draft Content</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper-tl">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onTLActionCardClick('conduct-research')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg
-                          width="20"
-                          height="20"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                          >
-                          <circle cx="11" cy="11" r="8"></circle>
-                          <path d="m21 21-4.35-4.35"></path>
-                        </svg>
-                      </div>
-                      <span class="btn-label">Conduct Research</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper-tl">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onTLActionCardClick('edit-content')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg
-                          width="20"
-                          height="20"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                          >
-                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                        </svg>
-                      </div>
-                      <span class="btn-label">Edit Content</span>
-                    </button>
-                  </div>
-                </div>
-                <!-- Second Row: 2 Buttons -->
-                <div class="quick-action-row">
-                  <div class="button-wrapper-tl">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onTLActionCardClick('refine-content')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg
-                          width="20"
-                          height="20"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                          >
-                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                          <polyline points="14 2 14 8 20 8"></polyline>
-                          <polyline points="9 13 11 15 15 11"></polyline>
-                        </svg>
-                      </div>
-                      <span class="btn-label">Refine Drafts</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper-tl">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onTLActionCardClick('format-translator')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg
-                          width="20"
-                          height="20"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                          >
-                          <polyline points="16 3 21 3 21 8"></polyline>
-                          <line x1="4" y1="20" x2="21" y2="3"></line>
-                          <polyline points="21 16 21 21 16 21"></polyline>
-                          <line x1="15" y1="15" x2="21" y2="21"></line>
-                          <line x1="4" y1="4" x2="9" y2="9"></line>
-                        </svg>
-                      </div>
-                      <span class="btn-label">Adapt Content</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            }
-            <!-- Quick Action Dropdown Buttons - Market Intelligence Feature -->
-            @if (selectedFlow === 'market-intelligence') {
-              <div
-                class="quick-action-dropdowns mi-actions"
-                >
-                <!-- First Row: 3 Buttons -->
-                <div class="quick-action-row">
-                  <div class="button-wrapper-mi">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onMIActionCardClick('conduct-research')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <circle cx="11" cy="11" r="8"></circle>
-                          <path d="m21 21-4.35-4.35"></path>
-                        </svg>
-                      </div>
-                      <span class="btn-label">Conduct Research</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper-mi">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onMIActionCardClick('target-industry-insights')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <polyline points="23 4 23 10 17 10"></polyline>
-                          <path d="M20.49 15a9 9 0 1 1 .64-8.5"></path>
-                        </svg>
-                      </div>
-                      <span class="btn-label">Generate Industry Insights</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper-mi">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onMIActionCardClick('prepare-client-meeting')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <path d="M12 2a10 10 0 1 0 10 10M12 6v6l4 2"></path>
-                        </svg>
-                      </div>
-                      <span class="btn-label">Prepare for Client Meeting</span>
-                    </button>
-                  </div>
-                </div>
-                <!-- Second Row: 2 Buttons -->
-                <div class="quick-action-row">
-                  <div class="button-wrapper-mi">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onMIActionCardClick('create-pov')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                          <polyline points="14 2 14 8 20 8"></polyline>
-                          <line x1="12" y1="13" x2="8" y2="13"></line>
-                          <line x1="12" y1="17" x2="8" y2="17"></line>
-                        </svg>
-                      </div>
-                      <span class="btn-label">Create Point of View</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper-mi">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onMIActionCardClick('gather-proposal-insights')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <path d="M3 8h12M3 8l3-3M3 8l3 3M21 16H9M21 16l-3-3M21 16l-3 3"></path>
-                        </svg>
-                      </div>
-                      <span class="btn-label">Gather Proposal Inputs</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            }
-          </div>
-        }
+          });
 
-        <!-- Chat Messages Area -->
-        @if (messages.length > 0 || showDraftForm) {
-          <div
-            class="content-area chat-area"
-            >
-            <div class="messages-wrapper" #messagesContainer>
-              @for (message of messages; track message; let i = $index) {
-                <div
-                  class="message"
-                  [class.user-message]="message.role === 'user'"
-                  [class.assistant-message]="message.role === 'assistant'"
-                  >
-                  <div class="message-content">
-                    @if (message.role === 'assistant') {
-                      <div class="message-avatar">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <rect x="5" y="7" width="14" height="12" rx="2"></rect>
-                          <path d="M12 7V4"></path>
-                          <circle cx="9" cy="12" r="1" fill="currentColor"></circle>
-                          <circle cx="15" cy="12" r="1" fill="currentColor"></circle>
-                          <path d="M9 16h6"></path>
-                        </svg>
-                      </div>
-                    }
-                    <div class="message-bubble">
-                      <!-- Action in Progress Indicator -->
-                      @if (message.actionInProgress) {
-                        <div class="action-progress">
-                          <div class="progress-icon">
-                            <svg
-                              class="spinner"
-                              width="16"
-                              height="16"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                              >
-                              <path
-                                d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"
-                                />
-                              </svg>
-                            </div>
-                            <span>{{ message.actionInProgress }}</span>
-                          </div>
-                        }
-                        <!-- Edit Content Workflow: Editor Progress Indicator -->
-                        @if (message.editWorkflow?.editorProgressList && message.editWorkflow?.step === 'processing') {
-                          <app-editor-progress
-                            [editors]="message.editWorkflow?.editorProgressList || []"
-                            [currentEditor]="message.editWorkflow?.editorProgress?.currentEditor || ''"
-                            [currentIndex]="message.editWorkflow?.editorProgress?.current || 0"
-                            [totalEditors]="message.editWorkflow?.editorProgress?.total || (message.editWorkflow?.editorProgressList?.length ?? 0)">
-                          </app-editor-progress>
-                          
-                        }
-                        <!-- Edit Content Workflow: Paragraph Edits Component -->
-                        @if ((message.editWorkflow?.paragraphEdits?.length ?? 0) > 0) {
-                          <app-paragraph-edits
-                            [paragraphEdits]="message.editWorkflow!.paragraphEdits!"
-                            [showFinalOutput]="hasFinalOutputBeenGenerated(message, i)"
-                            [isGeneratingFinal]="getParagraphEditsGeneratingState(message)"
-                            [threadId]="message.editWorkflow?.threadId"
-                            [currentEditor]="message.editWorkflow?.currentEditor"
-                            [editorOrder]="$any(message.editWorkflow).editorOrder"
-                            [isSequentialMode]="message.editWorkflow?.isSequentialMode"
-                            [isLastEditor]="message.editWorkflow?.isLastEditor"
-                            [currentEditorIndex]="message.editWorkflow?.currentEditorIndex"
-                            [totalEditors]="message.editWorkflow?.totalEditors"
-                            [isGenerating]="getParagraphEditsNextEditorGeneratingState(message)"
-                            (paragraphApproved)="onParagraphApproved(message, $event)"
-                            (paragraphDeclined)="onParagraphDeclined(message, $event)"
-                            (generateFinal)="onGenerateFinalArticle(message)"
-                            (nextEditor)="onNextEditor(message)">
-                          </app-paragraph-edits>
-                        }
-                        <!-- Typing dots indicator - positioned above message text -->
-                        @if (message.isStreaming || (message.role === 'assistant' && !message.content && !message.editWorkflow)) {
-                          <div class="processing-container">
-                            <div class="processing-lines">
-                              @for (line of getProcessingMessageLines(i); track $index) {
-                                <div class="processing-line" [class.last-line]="$index === getProcessingMessageLines(i).length - 1" [class.remove-animate]="isLineAnimatingOut(i, $index)">
-                                  @if (isProcessingMessageCompleted(i, $index)) {
-                                    <svg class="processing-checkmark" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-                                      <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="currentColor"/>
-                                    </svg>
-                                  }
-                                  <span class="processing-text">{{ line }}</span>
-                                  @if ($index === getProcessingMessageLines(i).length - 1) {
-                                    <div class="typing-dots" aria-hidden="true">
-                                      <span></span>
-                                      <span></span>
-                                      <span></span>
-                                    </div>
-                                  }
-                                </div>
-                              }
-                            </div>
-                          </div>
-                        }
-                        @if ((message.thoughtLeadership?.topic === 'Editorial Feedback' || ((!message.editWorkflow?.editorProgressList || message.editWorkflow?.step !== 'processing') && (!message.editWorkflow?.paragraphEdits || message.editWorkflow?.paragraphEdits?.length === 0))) && !shouldHideEditorialFeedback(message, i)) {
-                          <div
-                            class="message-text"
-                            [class.revised-content-formatted]="message.thoughtLeadership?.contentType === 'edit-article' || message.thoughtLeadership?.topic === 'Final Revised Article'"
-                            [innerHTML]="message.role === 'assistant' && message.sources ? (message.content | sourceCitation:message.sources) : getFormattedContent(message)"
-                          ></div>
-                        }
-                        <!-- Edit Content Workflow: Editor Selection -->
-                        @if (message.editWorkflow?.showEditorSelection && message.editWorkflow?.editorOptions && message.editWorkflow?.step === 'awaiting_editors') {
-                          <app-editor-selection
-                            [editors]="message.editWorkflow?.editorOptions || []"
-                            (selectionChanged)="onWorkflowEditorsSelectionChanged(message, $event)"
-                            (submitted)="onWorkflowEditorsSubmitted($event)"
-                            (cancelled)="onWorkflowCancelled()">
-                          </app-editor-selection>
-                        }
-                        <!-- Edit Content Workflow: File Upload (Step 2 - awaiting_content) -->
-                        @if (message.editWorkflow?.showFileUpload && editWorkflowService.isActive) {
-                          <div class="workflow-file-upload-wrapper">
-                            <app-file-upload
-                              accept=".docx,.pdf,.txt,.md"
-                              label="Upload Documents"
-                              [uploadedFile]="getUploadedFileForMessage(message)"
-                              (fileSelected)="onWorkflowFileSelected($event)"
-                              (fileRemoved)="onWorkflowFileRemoved()"
-                              class="workflow-file-upload">
-                            </app-file-upload>
-                            
-                            <!-- Error message display -->
-                            <!-- @if (editDocumentUploadError) {
-                              <div class="upload-error-message">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                  <circle cx="12" cy="12" r="10"></circle>
-                                  <line x1="12" y1="8" x2="12" y2="12"></line>
-                                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                                </svg>
-                                <span>{{ editDocumentUploadError }}</span>
-                                <button 
-                                  class="error-close-btn" 
-                                  (click)="editDocumentUploadError = ''"
-                                  type="button"
-                                  aria-label="Close error message">
-                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                                  </svg>
-                                </button>
-                              </div>
-                            } -->
-                          </div>
-                        }
-
-                        <!-- Edit Content Workflow: Simple Cancel Button (Step 2 - awaiting_content) -->
-                        @if (message.editWorkflow?.showSimpleCancelButton && editWorkflowService.isActive) {
-                          <div class="workflow-cancel-container">
-                            <button
-                              class="workflow-cancel-btn simple-cancel-btn"
-                              (click)="onWorkflowCancelled()"
-                              type="button">
-                              Cancel
-                            </button>
-                          </div>
-                        }
-                        <!-- Edit Content Workflow: Cancel Workflow Button (Step 3+ - processing, disabled) -->
-                        @if (message.editWorkflow?.showCancelButton && !message.editWorkflow?.showEditorSelection && !message.editWorkflow?.showSimpleCancelButton && editWorkflowService.isActive) {
-                          <div class="workflow-cancel-container">
-                            <button
-                              class="workflow-cancel-btn"
-                              (click)="onWorkflowCancelled()"
-                              [disabled]="message.editWorkflow?.cancelButtonDisabled"
-                              type="button">
-                              Cancel Workflow
-                            </button>
-                          </div>
-                        }
-                        <!-- Thought Leadership Action Buttons (Only for results: Editorial Feedback and Revised Article in Quick Start Edit) -->
-                        @if (shouldShowTLActions(message) && isEditWorkflowResult(message)) {
-                          @if (getTLMetadata(message); as metadata) {
-                            <app-tl-action-buttons
-                              [metadata]="metadata"
-                              [messageId]="'msg_' + i"
-                              [selectedFlow]="selectedFlow">
-                              
-                            </app-tl-action-buttons>
-                          }
-                          <!-- Quick Start Edit Content: Run Final Output button (visible and accessible) -->
-                          @if ((message.editWorkflow?.paragraphEdits?.length ?? 0) > 0) {
-                            <div class="tl-final-output-container">
-                              <button
-                                class="tl-final-output-btn"
-                                type="button"
-                                [disabled]="getParagraphEditsGeneratingState(message)"
-                                (click)="onGenerateFinalArticle(message)">
-                                @if (getParagraphEditsGeneratingState(message)) {
-                                  <span class="spinner small"></span>
-                                }
-                                {{ getParagraphEditsGeneratingState(message) ? 'Generating...' : 'Run Final Output' }}
-                              </button>
-                            </div>
-                          }
-                        }
-                        <!-- Action Buttons (for interactive options like content type selection) -->
-                        @if (message.actionButtons && message.actionButtons.length > 0) {
-                          <div class="action-buttons-container">
-                            @for (button of message.actionButtons; track button) {
-                              <button
-                                class="action-option-btn"
-                                (click)="onActionButtonClick(button.action)"
-                                type="button">
-                                {{ button.label }}
-                              </button>
-                            }
-                          </div>
-                        }
-                        <!-- Download and Preview Actions (for non-TL messages) -->
-                        @if (
-                          !shouldShowTLActions(message) && (
-                          message.downloadUrl ||
-                          message.previewUrl ||
-                          (message.role === 'assistant' && message.content && !draftWorkflowService.isActive) ||
-                          (draftWorkflowService.isActive && isDraftWorkflowFileUploadVisible())
-                          )
-                          ) {
-                          <div
-                            class="message-actions"
-                            >
-                            <!-- Copy to Clipboard Button (for all assistant messages, but not for edit workflow steps) -->
-                            @if (message.role === 'assistant' && message.content && !message.editWorkflow) {
-                              <button
-                                class="action-btn copy-btn"
-                                [class.copied]="copiedButtonId === 'copy-' + $index"
-                                (click)="copyToClipboard(message.content, 'copy-' + $index)"
-                                [title]="copiedButtonId === 'copy-' + $index ? 'Copied!' : 'Copy to clipboard'"
-                                >
-                                @if (copiedButtonId === 'copy-' + $index) {
-                                  <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    class="check-icon"
-                                    >
-                                    <polyline points="20 6 9 17 4 12"></polyline>
-                                  </svg>
-                                } @else {
-                                  <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    >
-                                    <rect
-                                      x="9"
-                                      y="9"
-                                      width="13"
-                                      height="13"
-                                      rx="2"
-                                      ry="2"
-                                    ></rect>
-                                    <path
-                                      d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
-                                    ></path>
-                                  </svg>
-                                }
-                              </button>
-                            }
-                            <!-- Draft Workflow Upload Button (appears when outline/supporting doc steps are active) -->
-                            @if (draftWorkflowService.isActive && isDraftWorkflowFileUploadVisible(message)) {
-                              <input
-                                #draftUploadInput
-                                type="file"
-                                accept=".pdf,.doc,.docx,.txt,.md"
-                                style="display: none"
-                                (change)="onDraftUploadSelected(draftUploadInput.files)"
-                                />
-                                <button
-                                  class="action-btn upload-btn"
-                                  type="button"
-                                  (click)="draftUploadInput.click()"
-                                  title="Upload document"
-                                  >
-                                  Upload
-                                </button>
-                              }
-                              <!-- Regenerate Button (for all assistant messages, but not for edit workflow steps). Hidden when TL/MI metadata contentType === 'Phoenix_Request' -->
-                              <!-- @if (message.role === 'assistant' && selectedFlow !== 'ppt' && message.content && !message.editWorkflow && (getTLMetadata(message)?.contentType !== 'Phoenix_Request')) {
-                                <button
-                                  class="action-btn regenerate-btn"
-                                  (click)="regenerateMessage(i)"
-                                  title="Regenerate response"
-                                  >
-                                  <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    >
-                                    <path d="M23 4v6h-6"></path>
-                                    <path d="M1 20v-6h6"></path>
-                                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36M20.49 15a9 9 0 0 1-14.85 3.36"></path>
-                                  </svg>
-                                </button>
-                              } -->
-                              
-                              <!-- Export Dropdown (for all assistant messages, but not for edit workflow steps) -->
-                              @if (message.role === 'assistant' && selectedFlow !== 'ppt' && message.content && !message.editWorkflow && (getTLMetadata(message)?.contentType !== 'Phoenix_Request')) {
-                                <div class="export-dropdown">
-                                  <button 
-                                    class="action-btn btn-export"
-                                    [class.exporting]="isExporting[i]"
-                                    [class.exported]="isExported[i]"
-                                    (click)="toggleExportDropdown(i)"
-                                    title="Export"
-                                  >
-                                    @if (isExporting[i]) {
-                                      <div class="export-spinner">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                          <circle cx="12" cy="12" r="10" opacity="0.25"></circle>
-                                          <path d="M12 2a10 10 0 0 1 10 10" opacity="0.75"></path>
-                                        </svg>
-                                        <span>{{ exportFormat[i] }}</span>
-                                      </div>
-                                    } @else if (isExported[i]) {
-                                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                        <polyline points="20 6 9 17 4 12"></polyline>
-                                      </svg>
-                                      <span>{{ exportFormat[i] }}</span>
-                                    } @else {
-                                      <span>Export</span>
-                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                        <polyline points="6 9 12 15 18 9"></polyline>
-                                      </svg>
-                                    }
-                                  </button>
-                                  
-                                  @if (showExportDropdown[i]) {
-                                    <div class="dropdown-menu">
-                                      <button class="dropdown-item" (click)="exportSelected(i, 'word')">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                                          <polyline points="14 2 14 8 20 8"></polyline>
-                                        </svg>
-                                        <span>Word (.docx)</span>
-                                      </button>
-                                      <button class="dropdown-item" (click)="exportSelected(i, 'pdf')">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                                          <polyline points="14 2 14 8 20 8"></polyline>
-                                        </svg>
-                                        <span>PDF (.pdf)</span>
-                                      </button>
-                                      <!-- <button class="dropdown-item" (click)="exportSelected(i, 'ppt')">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                                          <polyline points="14 2 14 8 20 8"></polyline>
-                                        </svg>
-                                        <span>PPT (.ppt)</span>
-                                      </button> -->
-                                    </div>
-                                  }
-                                </div>
-                              }
-                              <!-- Webpage Ready Button (appears when webpage is ready to open) -->
-                              @if (message.webpageReadyCompleted) {
-                                <button
-                                  class="action-btn btn-export"
-                                  (click)="openWebpageReady(message)"
-                                  title="Webpage Ready"
-                                  >
-                                  <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    >
-                                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                                    <polyline points="15 3 21 3 21 9"></polyline>
-                                    <line x1="10" y1="14" x2="21" y2="3"></line>
-                                  </svg>
-                                  <span>Webpage Ready</span>
-                                </button>
-                              }
-                              <!-- Word Export Button (for all assistant messages, but not for edit workflow steps) -->
-                              <!-- Commenting out Word button, To use for your particular feature put conditional checks in place -->
-                              <!-- <button
-                              class="action-btn word-btn"
-                              *ngIf="message.role === 'assistant' && message.content && !message.editWorkflow"
-                              (click)="downloadAsWord(message.content)"
-                              title="Download as Word document"
-                              >
-                              <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                >
-                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                                <polyline points="14 2 14 8 20 8"></polyline>
-                                <line x1="16" y1="13" x2="8" y2="13"></line>
-                                <line x1="16" y1="17" x2="8" y2="17"></line>
-                                <polyline points="10 9 9 9 8 9"></polyline>
-                              </svg>
-                              Word
-                            </button> -->
-                            <!-- PDF Export Button (for all assistant messages, but not for edit workflow steps) -->
-                            <!-- Commenting out pdf button, To use for your particular feature put conditional checks in place -->
-                            <!-- <button
-                            class="action-btn pdf-btn"
-                            *ngIf="message.role === 'assistant' && message.content && !message.editWorkflow"
-                            (click)="downloadAsPDF(message.content)"
-                            title="Download as PDF"
-                            >
-                            <svg
-                              width="16"
-                              height="16"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                              >
-                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                              <polyline points="14 2 14 8 20 8"></polyline>
-                              <line x1="16" y1="13" x2="8" y2="13"></line>
-                              <line x1="16" y1="17" x2="8" y2="17"></line>
-                              <polyline points="10 9 9 9 8 9"></polyline>
-                            </svg>
-                            PDF
-                          </button> -->
-                          <!-- PPTX Downloads (Doc Studio Quick Start only) -->
-                          @if (
-                            selectedFlow === 'ppt' &&
-                            message.downloadUrl &&
-                            message.downloadFilename?.endsWith('.pptx')
-                            ) {
-                            <button
-                              class="action-btn download-btn"
-                  (click)="
-                    downloadFile(
-                      message.downloadUrl!,
-                      message.downloadFilename!
-                    )
-                  "
-                              >
-                              <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                >
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                <polyline points="7 10 12 15 17 10"></polyline>
-                                <line x1="12" y1="15" x2="12" y2="3"></line>
-                              </svg>
-                              Download PPTX
-                            </button>
-                            <button
-                class="action-btn btn-canvas raise-btn"
-                (click)="openRequestForm()"
-                title="Request DDC Support">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" 
-                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <!-- Headband -->
-                  <path d="M4 12a8 8 0 0 1 16 0" />
-                  <!-- Left earcup -->
-                  <rect x="2" y="12" width="4" height="6" rx="1" />
-                  <!-- Right earcup -->
-                  <rect x="18" y="12" width="4" height="6" rx="1" />
-                  <!-- Mic boom -->
-                <path d="M18 18v2a2 2 0 0 1-2 2h-4" />
-              </svg>
-                <span>Request DDC Support</span>
-              </button>
-                          }
-                          <!-- Download Placemat (Cortex Quick Start) -->
-                          @if (
-                            message.downloadUrl &&
-                            message.content &&
-                            message.content.toLowerCase().includes('placemat')
-                            ) {
-                            <button
-                              class="action-btn download-btn"
-                  (click)="
-                    downloadFile(
-                      message.downloadUrl!,
-                      message.downloadFilename!
-                    )
-                  "
-                              >
-                              <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                >
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                <polyline points="7 10 12 15 17 10"></polyline>
-                                <line x1="12" y1="15" x2="12" y2="3"></line>
-                              </svg>
-                              Download Placemat
-                            </button>
-                          }
-                          <!-- Request DDC Support for Doc Studio Quickstart -->
-                          @if (
-                            message.role === 'assistant' && 
-                            selectedFlow === 'ppt' && 
-                            message.content && 
-                            !message.downloadUrl &&
-                            message.content.toLowerCase().includes('download')
-                            ) {
-                            <button
-                class="action-btn btn-canvas raise-btn"
-                (click)="openRequestForm()"
-                title="Request DDC Support">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" 
-                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <!-- Headband -->
-                  <path d="M4 12a8 8 0 0 1 16 0" />
-                  <!-- Left earcup -->
-                  <rect x="2" y="12" width="4" height="6" rx="1" />
-                  <!-- Right earcup -->
-                  <rect x="18" y="12" width="4" height="6" rx="1" />
-                  <!-- Mic boom -->
-                <path d="M18 18v2a2 2 0 0 1-2 2h-4" />
-              </svg>
-                <span>Request DDC Support</span>
-              </button>
-                          }
-                          <!-- Podcast Download - Half Width Buttons -->
-                          @if (
-                            message.downloadUrl &&
-                            message.downloadFilename?.endsWith('.mp3')
-                            ) {
-                            <div
-                              class="podcast-download-container"
-                              >
-                              <button
-                                class="action-btn copy-btn half-width"
-                                [class.copied]="copiedButtonId === 'copy-podcast-' + $index"
-                                (click)="copyToClipboard(message.content, 'copy-podcast-' + $index)"
-                                [title]="copiedButtonId === 'copy-podcast-' + $index ? 'Copied!' : 'Copy podcast script'"
-                                >
-                                @if (copiedButtonId === 'copy-podcast-' + $index) {
-                                  <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    class="check-icon"
-                                    >
-                                    <polyline points="20 6 9 17 4 12"></polyline>
-                                  </svg>
-                                } @else {
-                                  <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    >
-                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                                  </svg>
-                                }
-                                Copy Script
-                              </button>
-                              <button
-                                class="action-btn download-btn half-width"
-                    (click)="
-                      downloadFile(
-                        message.downloadUrl!,
-                        message.downloadFilename!
-                      )
-                    "
-                                title="Download podcast audio"
-                                >
-                                <svg
-                                  width="16"
-                                  height="16"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  stroke-width="2"
-                                  >
-                                  <path
-                                    d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
-                                  ></path>
-                                  <polyline points="7 10 12 15 17 10"></polyline>
-                                  <line x1="12" y1="15" x2="12" y2="3"></line>
-                                </svg>
-                                Download MP3
-                              </button>
-                            </div>
-                          }
-                          <!-- Podcast Download from Blob URL (when contentType is podcast) -->
-                          @if (message.thoughtLeadership?.contentType === 'podcast' && message.thoughtLeadership?.podcastAudioUrl) {
-                            <button
-                              class="action-btn btn-icon"
-                              (click)="downloadPodcastFromBlob(message)"
-                              title="Download podcast MP3">
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                <polyline points="7 10 12 15 17 10"></polyline>
-                                <line x1="12" y1="15" x2="12" y2="3"></line>
-                              </svg>
-                              <span>Download MP3</span>
-                            </button>
-                          }
-                          <!-- Generated Content Downloads with Format Options -->
-                          @if (
-                            message.downloadUrl &&
-                            !message.downloadFilename?.endsWith('.pptx') &&
-                            !message.downloadFilename?.endsWith('.mp3')
-                            ) {
-                            <div
-                              class="download-format-group"
-                              >
-                              <span class="download-label">Download as:</span>
-                              <button
-                                class="format-btn"
-                    (click)="
-                      downloadGeneratedDocument(
-                        'word',
-                        message.content,
-                        'document'
-                      )
-                    "
-                                title="Download as Word document"
-                                >
-                                <svg
-                                  width="14"
-                                  height="14"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  stroke-width="2"
-                                  >
-                                  <path
-                                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-                                  ></path>
-                                  <polyline points="14 2 14 8 20 8"></polyline>
-                                </svg>
-                                Word
-                              </button>
-                              <button
-                                class="format-btn"
-                    (click)="
-                      downloadGeneratedDocument(
-                        'txt',
-                        message.content,
-                        'document'
-                      )
-                    "
-                                title="Download as Text file"
-                                >
-                                <svg
-                                  width="14"
-                                  height="14"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  stroke-width="2"
-                                  >
-                                  <path
-                                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-                                  ></path>
-                                </svg>
-                                Text
-                              </button>
-                              <button
-                                class="format-btn"
-                    (click)="
-                      downloadGeneratedDocument(
-                        'pdf',
-                        message.content,
-                        'document'
-                      )
-                    "
-                                title="Download as PDF"
-                                >
-                                <svg
-                                  width="14"
-                                  height="14"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  stroke-width="2"
-                                  >
-                                  <path
-                                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-                                  ></path>
-                                  <polyline points="14 2 14 8 20 8"></polyline>
-                                  <line x1="9" y1="15" x2="15" y2="15"></line>
-                                </svg>
-                                PDF
-                              </button>
-                            </div>
-                          }
-                          @if (message.previewUrl) {
-                            <button
-                              class="action-btn preview-btn"
-                              (click)="previewFile(message.previewUrl!)"
-                              >
-                              <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                >
-                                <path
-                                  d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"
-                                ></path>
-                                <circle cx="12" cy="12" r="3"></circle>
-                              </svg>
-                              Preview
-                            </button>
-                          }
-                        </div>
-                      }
-                    </div>
-                  </div>
-                </div>
-              }
-            </div>
-            <!-- Loading Indicator -->
-            @if (isLoading) {
-              <div
-                class="loading-indicator"
-                role="status"
-                aria-live="polite"
-                >
-                @if (currentAction) {
-                  <span class="loading-text">{{
-                    currentAction
-                  }}</span>
-                }
-                @if (!currentAction) {
-                  <span class="sr-only">Loading response...</span>
-                }
-              </div>
-            }
-            <!-- Canvas Editor (side-by-side within chat area) -->
-            <app-canvas-editor></app-canvas-editor>
-          </div>
-        }
-
-        <!-- Chat Input - Claude.ai Inspired (Always Visible except on landing page) -->
-        @if (!showLandingPage) {
-          <div class="chat-composer" [class.expanded]="isComposerExpanded">
-            <div class="composer-input-wrapper">
-            <div class="composer-tools">
-              <!-- Edit Content Document Upload (Thought Leadership mode) -->
-              @if (selectedFlow === 'thought-leadership' || selectedFlow === 'market-intelligence') {
-                <button
-                  class="tool-btn"
-                  (click)="editWorkflowService.isActive ? triggerEditDocumentUpload() : triggerDocumentAnalysisUpload()"
-                  title="Upload documents(Word, PDF, Text, Markdown)"
-                  type="button"
-                  [disabled]="isLoading || isExtractingText"
-                  >
-                  <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                    <polyline points="17 8 12 3 7 8"></polyline>
-                    <line x1="12" y1="3" x2="12" y2="15"></line>
-                  </svg>
-                </button>
-              }
-              <!-- PPT Upload (DDC mode) -->
-              @if (selectedFlow === 'ppt') {
-                <button
-                  class="tool-btn"
-                  (click)="triggerReferenceUpload()"
-                  title="Upload documents(PPT,Word, PDF, Text, Images)"
-                  type="button"
-                  >
-                  <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                    <polyline points="17 8 12 3 7 8"></polyline>
-                    <line x1="12" y1="3" x2="12" y2="15"></line>
-                  </svg>
-                </button>
-              }
-              <button
-                class="tool-btn mic-btn"
-                (click)="startVoiceInput()"
-                title="Voice input"
-                type="button"
-                [disabled]="isLoading"
-                >
-                <svg
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  >
-                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-                  <line x1="12" y1="19" x2="12" y2="23"></line>
-                  <line x1="8" y1="23" x2="16" y2="23"></line>
-                </svg>
-              </button>
-              @if (false) {
-                <button class="tool-btn" title="Add link" type="button">
-                  <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <path
-                      d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
-                    ></path>
-                    <path
-                      d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
-                    ></path>
-                  </svg>
-                </button>
-              }
-              <!-- Collapse Button (visible when expanded) -->
-              @if (isComposerExpanded) {
-                <button
-                  class="tool-btn collapse-btn"
-                  (click)="collapseComposer()"
-                  title="Collapse input"
-                  type="button"
-                  >
-                  <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <polyline points="18 15 12 9 6 15"></polyline>
-                  </svg>
-                </button>
-              }
-            </div>
-            <textarea
-              #composerTextarea
-              [(ngModel)]="userInput"
-              (keydown.enter)="onEnterPress($event)"
-              (input)="onComposerInput($event)"
-              (focus)="onComposerFocus()"
-              placeholder="How can I help you today?"
-              rows="1"
-              class="composer-textarea"
-              aria-label="Message input"
-              [attr.aria-disabled]="isLoading || isAwaitingContent || isExtractingText"
-              [disabled]="isAwaitingContent || isExtractingText"
-              [readonly]="isAwaitingContent || isExtractingText"
-              >
-            </textarea>
-            <button
-              class="send-btn-composer"
-              (click)="sendMessage()"
-              [disabled]="!isSendButtonEnabled"
-              type="button"
-              aria-label="Send message"
-              [attr.aria-busy]="isLoading"
-              >
-              <svg
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                >
-                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
-              </svg>
-            </button>
-          </div>
-
-          <!-- Extraction Loading Indicator -->
-          @if (isExtractingText) {
-            <div class="extraction-loading">
-              <svg class="spinner" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
-              </svg>
-              <span>{{ currentAction }}</span>
-            </div>
+          this.cdr.detectChanges();
+        } else if (data.type === 'editor_content') {
+          if (data.content) {
+            fullResponse += data.content;
           }
-
-          <!-- Uploaded Edit Document Display (Thought Leadership & Market Intelligence) -->
-          @if ((extractedDocuments && extractedDocuments.length > 0) && (selectedFlow === 'thought-leadership' || selectedFlow === 'market-intelligence')) {
-            @for (doc of extractedDocuments; track doc.fileName) {
-              <div class="reference-doc-preview ppt-attachment">
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  >
-                  <path
-                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-                  ></path>
-                  <polyline points="14 2 14 8 20 8"></polyline>
-                </svg>
-                <span>{{ doc.fileName }}</span>
-                <button class="remove-ref" (click)="removeExtractedDocument(doc.fileName)" type="button" aria-label="Remove document">
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                </button>
-              </div>
+        } else if (data.type === 'editor_complete') {
+          // Sequential workflow: Handle single editor completion
+          console.log('[EditContentFlow] Editor complete:', data);
+          
+          // Store thread_id for sequential workflow
+          if (data.thread_id) {
+            this.threadId = data.thread_id;
+            this.isSequentialMode = true;
+          }
+          
+          // Store current editor info
+          if (data.current_editor) {
+            this.currentEditor = data.current_editor;
+            this.currentEditorIndex = data.editor_index || 0;
+            this.totalEditors = data.total_editors || this.totalEditors;
+            this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || 1) - 1;
+          }
+          
+          // Update editor progress - change to review-pending after generation
+          const completedEditor = this.editorProgressList.find(e => e.editorId === data.current_editor);
+          if (completedEditor) {
+            completedEditor.status = 'review-pending';
+          }
+          
+          // Process paragraph edits (same structure as final_complete)
+          if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
+            console.log('[EditContentFlow] Paragraph edits received:', data.paragraph_edits);
+            this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
+          }
+          
+          // Update content
+          if (data.original_content) {
+            this.originalContent = data.original_content;
+          }
+          
+          if (data.final_revised) {
+            const trimmedRevised = data.final_revised.trim();
+            fullResponse = trimmedRevised;
+            this.revisedContent = convertMarkdownToHtml(trimmedRevised);
+          }
+          
+          // Process feedback (only current editor's feedback)
+          if (data.combined_feedback) {
+            const feedbackContent = data.combined_feedback.trim();
+            this.feedbackItems = parseEditorialFeedback(feedbackContent);
+            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+            this.editFeedback = this.feedbackHtml;
+          }
+          
+          this.isGenerating = false;
+          this.isEditorLoading = false; // Editor loaded, now in review pending state
+          this.cdr.detectChanges();
+        } else if (data.type === 'editor_error') {
+          console.error(`${data.editor} editor error:`, data.error);
+        } else if (data.type === 'final_complete') {
+          this.editorProgressList.forEach(editor => {
+            if (editor.status !== 'error') {
+              editor.status = 'completed';
             }
-          } @else if (uploadedEditDocumentFile && (selectedFlow === 'thought-leadership' || selectedFlow === 'market-intelligence')) {
-            <div class="reference-doc-preview ppt-attachment">
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                >
-                <path
-                  d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-                ></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-              </svg>
-              <span>{{ uploadedEditDocumentFile.name }}</span>
-              <button class="remove-ref" (click)="removeUploadedEditDocument()" type="button" aria-label="Remove document">
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  >
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-            </div>
+          });
+          this.currentEditorId = 'completed';
+          this.cdr.detectChanges();
+          
+          if (data.combined_feedback) {
+            const feedbackContent = data.combined_feedback.trim();
+            // parse and render structured feedback; keep legacy fallback in editFeedback
+            this.feedbackItems = parseEditorialFeedback(feedbackContent);
+            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+            this.editFeedback = this.feedbackHtml;
           }
-
-          <!-- Uploaded PPT Display -->
-          @if (uploadedPPTFile && selectedFlow === 'ppt') {
-            <div class="reference-doc-preview ppt-attachment">
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                >
-                <path
-                  d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"
-                ></path>
-                <polyline points="13 2 13 9 20 9"></polyline>
-              </svg>
-              <span>{{ uploadedPPTFile.name }}</span>
-              <button class="remove-ref" (click)="removeUploadedPPT()" type="button">
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  >
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-            </div>
+          
+          if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
+            console.log('Paragraph edits received:', data.paragraph_edits);
+            this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
+          } else if (data.final_revised && data.original_content) {
+            this.paragraphEdits = this.createParagraphEditsFromComparison(
+              data.original_content,
+              data.final_revised
+            );
           }
-
-          <!-- Extracted Documents Display (Word, PDF, TXT) -->
-          @if (extractedDocuments && extractedDocuments.length > 0 && selectedFlow === 'ppt') {
-            @for (doc of extractedDocuments; track doc.fileName) {
-              <div class="reference-doc-preview ppt-attachment">
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  >
-                  <path
-                    d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"
-                  ></path>
-                  <polyline points="13 2 13 9 20 9"></polyline>
-                </svg>
-                <span>{{ doc.fileName }}</span>
-                <button class="remove-ref" (click)="removeExtractedDocument(doc.fileName)" type="button">
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                </button>
-              </div>
-            }
+          
+          if (data.original_content) {
+            this.originalContent = data.original_content;
           }
-
-          <!-- Inline Error Message (for document upload validation) -->
-          @if (editDocumentUploadError) {
-            <div class="upload-error-message composer-error">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="8" x2="12" y2="12"></line>
-                <line x1="12" y1="16" x2="12.01" y2="16"></line>
-              </svg>
-              <span>{{ editDocumentUploadError }}</span>
-              <button 
-                class="error-close-btn" 
-                (click)="editDocumentUploadError = ''"
-                type="button"
-                aria-label="Close error message">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-            </div>
+          
+          if (data.final_revised) {
+            const trimmedRevised = data.final_revised.trim();
+            fullResponse = trimmedRevised;
+            this.revisedContent = convertMarkdownToHtml(trimmedRevised);
           }
-        </div>
-
-        <!-- AI Disclaimer Message -->
-        @if (!showLandingPage) {
-          <div class="ai-disclaimer">
-            <p>This response is AI‑generated and may require human validation.</p>
-          </div>
+          
+          this.isGenerating = false;
+        } else if (data?.type === 'content' && data.content) {
+          fullResponse += data.content;
+        } else if (data?.type === 'done' || data?.done) {
+          return;
+        } else if (data?.error) {
+          this.editFeedback = `❌ Error: ${data.error}`;
+          this.isGenerating = false;
+          return;
+        } else if (typeof data === 'string') {
+          fullResponse += data;
         }
+      },
+      error: (error: any) => {
+        console.error('[EditContentFlow] Streaming error:', error);
+        this.editFeedback = 'Sorry, there was an error editing your content. Please try again.';
+        this.isGenerating = false;
+      },
+      complete: () => {
+        this.iterationCount++;
+        if (this.revisedContent && this.revisedContent.trim()) {
+          this.showSatisfactionPrompt = true;
+        }
+      }
+    });
+  }
+
+  /** Parse edit response (fallback method for old format or improvement requests) */
+  private parseEditResponse(response: string): void {
+    if (!response || !response.trim()) {
+      return;
+    }
+
+    const feedbackMatch = response.match(/===\s*FEEDBACK\s*===\s*([\s\S]*?)(?====\s*REVISED ARTICLE\s*===|$)/i);
+    const revisedMatch = response.match(/===\s*REVISED ARTICLE\s*===\s*([\s\S]*?)$/i);
+    
+    if (feedbackMatch && feedbackMatch[1]) {
+      const feedbackContent = feedbackMatch[1].trim();
+      this.feedbackItems = parseEditorialFeedback(feedbackContent);
+      this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+      this.editFeedback = this.feedbackHtml;
+    } else if (!revisedMatch && response.trim()) {
+      const feedbackContent = response.trim();
+      this.feedbackItems = parseEditorialFeedback(feedbackContent);
+      this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+      this.editFeedback = this.feedbackHtml;
+    }
+    
+    if (revisedMatch && revisedMatch[1]) {
+      let revisedText = revisedMatch[1].trim();
+      revisedText = revisedText
+        .replace(/===\s*FEEDBACK\s*===/gi, '')
+        .replace(/##\s*📝\s*Editorial\s*Feedback/gi, '')
+        .trim();
+      this.revisedContent = convertMarkdownToHtml(revisedText);
+    }
+  }
+
+  /** Convert markdown to HTML (public method for template) */
+  convertMarkdownToHtml(markdown: string): string {
+    return convertMarkdownToHtml(markdown);
+  }
+
+  /** Copy content to clipboard */
+  async copyToClipboard(): Promise<void>  {
+    let content = '';
+    if (this.showFinalOutput && this.finalArticle) {
+      content = this.finalArticle;
+    } else {
+      content = this.revisedContent || this.editFeedback;
+    }
+    const plainText = content.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    try {
+      await navigator.clipboard.writeText(plainText);
       
+      this.isCopied = true;
+      this.cdr.detectChanges();
 
-      <!-- Guided Journey Dialog -->
-      @if (showGuidedDialog) {
-        <div
-          class="dialog-overlay"
-          >
-          <div class="dialog-container" (click)="$event.stopPropagation()">
-            <div class="dialog-header">
-              <div>
-                <h2>
-                  {{
-                  selectedFlow === "ppt" ? 'Create Presentation'
-                  :selectedFlow === 'market-intelligence' ? 'Market Intelligence & Insights'
-                  : "Cortex"
-                  }}
-                </h2>
-                <!-- @if (selectedFlow === 'ppt') {
-                  <p class="mi-intro-text">Where all firm intelligence is created, curated, and deployed</p>
-                } -->
-                @if (selectedFlow === 'market-intelligence') {
-                  <p class="mi-intro-text">Structured preparation for confident client interactions</p>
+      setTimeout(() => {
+        this.isCopied = false;
+        this.cdr.detectChanges();
+      },2000);
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+      this.showNotificationMessage('Failed to copy ', 'error');
+    }
+
+  }
+
+  /** Download revised content as DOCX or PDF */
+  async downloadRevised(format: 'docx' | 'pdf'): Promise<void> {
+    let contentToDownload = '';
+    if (this.showFinalOutput && this.finalArticle) {
+      contentToDownload = this.finalArticle;
+    } else if (this.revisedContent) {
+      contentToDownload = this.revisedContent.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    } else {
+      this.showNotificationMessage('article is not available yet.', 'error');
+      return;
+    }
+
+    const plainText = contentToDownload.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    const endpoint = format === 'docx' ? '/api/v1/export/word' : '/api/v1/export/pdf-pwc';
+    const extension = format === 'docx' ? 'docx' : 'pdf';
+    const title = 'revised-article';
+    
+    // Extract first line as subtitle
+    const lines = plainText.split('\n').filter(line => line.trim());
+    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : ''; // First line, max 150 chars
+
+    // Get API URL from environment (supports runtime config via window._env)
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const fullEndpoint = `${apiUrl}${endpoint}`;
+
+    try {
+      const response = await this.authFetchService.authenticatedFetch(fullEndpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          content: plainText,
+          title,
+          subtitle
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${title}.${extension}`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+      this.showNotificationMessage(`${extension.toUpperCase()} downloaded successfully!`, 'success');
+    } catch (error) {
+      console.error(`Error generating ${extension.toUpperCase()}:`, error);
+      this.showNotificationMessage(`Failed to generate ${extension.toUpperCase()} file. Please try again.`, 'error');
+    }
+  }
+  
+  /** Handle satisfaction response - send to chat or show improvement input */
+  // onSatisfactionResponse(isSatisfied: boolean): void {
+  //   if (isSatisfied) {
+  //     const contentToSend = (this.showFinalOutput && this.finalArticle) 
+  //       ? this.finalArticle 
+  //       : this.revisedContent;
+      
+  //     if (contentToSend && contentToSend.trim()) {
+  //       let plainText = contentToSend;
+  //       if (contentToSend.includes('<')) {
+  //         const tempDiv = document.createElement('div');
+  //         tempDiv.innerHTML = contentToSend;
+  //         plainText = tempDiv.textContent || tempDiv.innerText || '';
+  //       }
+  //       plainText = plainText.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
+        
+  //       const headerLines: string[] = ['### Guided Journey – Edit Content'];
+  //       const uploadedFileName = this.formData.uploadedFile?.name;
+  //       if (uploadedFileName) {
+  //         headerLines.push(`_Source: ${uploadedFileName}_`);
+  //       }
+        
+  //       const selectedEditorNames = this.formData.selectedEditors
+  //         .map(id => {
+  //           const editor = this.editorTypes.find(e => e.id === id);
+  //           return editor ? editor.name : id;
+  //         })
+  //         .join(', ');
+        
+  //       if (selectedEditorNames) {
+  //         headerLines.push(`_Editors Applied: ${selectedEditorNames}_`);
+  //       }
+        
+  //       const articleTitle = this.showFinalOutput ? 'Final Revised Article' : 'Revised Article';
+  //       headerLines.push('', `**${articleTitle}**`, '');
+        
+  //       const documentTitle = extractDocumentTitle(
+  //         this.originalContent || '',
+  //         uploadedFileName
+  //       );
+        
+  //       if (documentTitle && documentTitle !== articleTitle) {
+  //         headerLines.push(`**${documentTitle}**`, '');
+  //       }
+        
+  //       const headerHtml = convertMarkdownToHtml(headerLines.join('\n'));
+  //       const contentHtml = this.showFinalOutput && this.finalArticle
+  //         ? convertMarkdownToHtml(this.finalArticle)
+  //         : this.revisedContent;
+  //       const combinedHtml = `${headerHtml}${contentHtml}`;
+        
+  //       const revisedMetadata: ThoughtLeadershipMetadata = {
+  //         contentType: 'article',
+  //         topic: documentTitle || articleTitle,
+  //         fullContent: plainText,
+  //         showActions: true
+  //       };
+        
+  //       this.tlChatBridge.sendMessage({
+  //         role: 'assistant',
+  //         content: combinedHtml,
+  //         timestamp: new Date(),
+  //         isHtml: true,
+  //         thoughtLeadership: revisedMetadata
+  //       });
+  //     }
+      
+  //     this.onClose();
+  //   } else {
+  //     this.showImprovementInput = true;
+  //     this.showSatisfactionPrompt = false;
+  //   }
+  // }
+  
+  submitImprovementRequest(): void {
+    if (!this.improvementRequestText?.trim()) {
+      return;
+    }
+    
+    const nextIteration = this.iterationCount + 1;
+    if (nextIteration > 5) {
+      alert('You have reached the maximum number of iterations (5). Please start a new edit workflow if you need further changes.');
+      this.cancelImprovementRequest();
+      return;
+    }
+    
+    const revisedPlainText = this.revisedContent.replace(/<br>/g, '\n');
+    const improvementMessage = `Please review the following revised article and apply these additional improvements:\n\n${this.improvementRequestText.trim()}\n\nRevised Article:\n${revisedPlainText}`;
+    
+    const messages = [{
+      role: 'user' as const,
+      content: improvementMessage
+    }];
+    
+    this.isGenerating = true;
+    this.showImprovementInput = false;
+    this.improvementRequestText = '';
+    this.editFeedback = '';
+    this.revisedContent = '';
+    
+    let fullResponse = '';
+    const editorsToUse = normalizeEditorOrder(this.formData.selectedEditors) as EditorType[];
+
+    this.chatService.streamEditContent(messages, editorsToUse).subscribe({
+      next: (data: any) => {
+        if (data.type === 'editor_progress') {
+        } else if (data.type === 'editor_content') {
+          if (data.content) {
+            fullResponse += data.content;
+          }
+        } else if (data.type === 'editor_complete') {
+          if (data.revised_content) {
+            fullResponse = data.revised_content;
+            this.revisedContent = convertMarkdownToHtml(fullResponse);
+          }
+        } else if (data.type === 'editor_error') {
+          console.error(`${data.editor} editor error:`, data.error);
+        } else if (data.type === 'final_complete') {
+          if (data.final_revised) {
+            fullResponse = data.final_revised;
+            this.revisedContent = convertMarkdownToHtml(fullResponse);
+          }
+          if (data.combined_feedback) {
+            const feedbackContent = data.combined_feedback.trim();
+            this.feedbackItems = parseEditorialFeedback(feedbackContent);
+            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+            this.editFeedback = this.feedbackHtml;
+          }
+        } else if (data.type === 'content' && data.content) {
+          fullResponse += data.content;
+        } else if (typeof data === 'string') {
+          fullResponse += data;
+        }
+      },
+      error: (error: any) => {
+        console.error('Error improving content:', error);
+        this.editFeedback = 'Sorry, there was an error processing your improvement request. Please try again.';
+        this.isGenerating = false;
+        this.revisedContent = revisedPlainText.replace(/\n/g, '<br>');
+        this.showSatisfactionPrompt = true;
+      },
+      complete: () => {
+        if (!this.revisedContent && fullResponse) {
+          this.parseEditResponse(fullResponse);
+        }
+        this.isGenerating = false;
+        this.iterationCount = nextIteration;
+        if (!this.revisedContent || !this.revisedContent.trim()) {
+          this.revisedContent = revisedPlainText.replace(/\n/g, '<br>');
+        }
+        this.showSatisfactionPrompt = true;
+      }
+    });
+  }
+  
+  cancelImprovementRequest(): void {
+    this.showImprovementInput = false;
+    this.improvementRequestText = '';
+    this.showSatisfactionPrompt = true;
+  }
+  
+  /** Create paragraph edits by comparing original and edited content */
+  private createParagraphEditsFromComparison(original: string, edited: string): ParagraphEdit[] {
+    const allEditorNames = this.formData.selectedEditors.map(editorId => {
+      const editor = this.editorTypes.find(e => e.id === editorId);
+      return editor ? editor.name : editorId;
+    });
+    
+    return createParagraphEditsFromComparison(original, edited, allEditorNames);
+  }
+  
+  /** Approve a paragraph edit */
+  approveParagraph(index: number): void {
+    const paragraph = this.paragraphEdits.find(p => p.index === index);
+    if (!paragraph) {
+      return;
+    }
+    paragraph.approved = true; 
+  }
+  
+  /** Decline a paragraph edit */
+  declineParagraph(index: number): void {
+    const paragraph = this.paragraphEdits.find(p => p.index === index);
+    if (!paragraph) {
+      return;
+    }
+    paragraph.approved = false;
+  }
+
+  /** Get paragraphs that require user review (excludes auto-approved), sorted by index */
+  get getParagraphsForReview(): ParagraphEdit[] {
+    return this.paragraphEdits
+      .filter(p => p.autoApproved !== true)
+      .sort((a, b) => a.index - b.index);
+  }
+  
+  /** Get count of auto-approved paragraphs */
+  get autoApprovedCount(): number {
+    return this.paragraphEdits.filter(p => p.autoApproved === true).length;
+  }
+  
+  /** Get auto-approved count text with proper pluralization */
+  get autoApprovedText(): string {
+    const count = this.autoApprovedCount;
+    if (count === 0) {
+      return '';
+    }
+    return `(${count} paragraph${count !== 1 ? 's' : ''} auto-approved)`;
+  }
+
+  /** Get paragraphs that require user review (excludes auto-approved), sorted by index */
+  get getParagraphsForFeedbackReview(): ParagraphFeedback[] {
+    return this.paragraphFeedbackData
+      .filter(p => p.autoApproved !== true)
+      .sort((a, b) => a.index - b.index);
+  }
+
+  /** Get count of auto-approved paragraphs in feedback data */
+  get autoApprovedFeedbackCount(): number {
+    return this.paragraphFeedbackData.filter(
+      p => p.autoApproved === true
+    ).length;
+  }
+
+  /** Get auto-approved count text for feedback data */
+  get autoApprovedFeedbackText(): string {
+    const count = this.autoApprovedFeedbackCount;
+
+    if (count === 0) {
+      return '';
+    }
+
+    return `(${count} paragraph${count !== 1 ? 's' : ''} auto-approved)`;
+  }
+  
+  /** Check if all paragraphs have been decided */
+  get allParagraphsDecided(): boolean {
+    // Check both paragraphEdits and paragraphFeedbackData
+    const editsDecided = this.paragraphEdits.length === 0 || allParagraphsDecided(this.paragraphEdits);
+    const feedbackDecided = this.allParagraphFeedbackDecided;
+    return editsDecided && feedbackDecided;
+  }
+
+  /** Check if all paragraph feedback items are decided */
+  get allParagraphFeedbackDecided(): boolean {
+    if (!this.paragraphFeedbackData || this.paragraphFeedbackData.length === 0) {
+      return true; // No feedback to decide
+    }
+    
+    return this.paragraphFeedbackData.every(para => {
+      // Check if paragraph itself is decided
+      if (para.approved === null || para.approved === undefined) {
+        return false;
+      }
+      
+      // Check if all editorial feedback items are decided
+      const feedbackTypes = Object.keys(para.editorial_feedback || {});
+      for (const editorType of feedbackTypes) {
+        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+        for (const fb of feedbacks) {
+          if (fb.approved === null || fb.approved === undefined) {
+            return false;
+          }
+        }
+      }
+      
+      return true;
+    });
+  }
+
+  /** Check if all paragraphs are approved */
+  get allParagraphsApproved(): boolean {
+    return this.paragraphEdits.length > 0 && 
+           this.paragraphEdits.every(p => p.approved === true);
+  }
+  
+  /** Check if all paragraphs are declined */
+  get allParagraphsDeclined(): boolean {
+    return this.paragraphEdits.length > 0 && 
+           this.paragraphEdits.every(p => p.approved === false);
+  }
+
+  get isImprovementRequestValid(): boolean {
+    return !!this.improvementRequestText && this.improvementRequestText.trim().length > 0;
+  }
+  
+  /** Approve all paragraph edits */
+  approveAllParagraphs(): void {
+    if (this.paragraphEdits.length === 0) {
+      return;
+    }
+    
+    this.paragraphEdits.forEach(paragraph => {
+      paragraph.approved = true;
+    });
+  }
+  
+  /** Decline all paragraph edits */
+  declineAllParagraphs(): void {
+    if (this.paragraphEdits.length === 0) {
+      return;
+    }
+    
+    this.paragraphEdits.forEach(paragraph => {
+      paragraph.approved = false;
+    });
+  }
+
+  
+  /** Generate final article using approved edits */
+  async runFinalOutput(): Promise<void> {
+    if (!this.allParagraphsDecided) {
+      alert('Please approve or decline all paragraph edits before generating the final article.');
+      return;
+    }
+    
+    this.isGeneratingFinal = true;
+    
+    try {
+      const decisions = this.paragraphEdits.map(p => ({
+        index: p.index,
+        approved: p.approved === true
+      }));
+      
+      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
+        method: 'POST',
+        body: JSON.stringify({
+          original_content: this.originalContent,
+          paragraph_edits: this.paragraphEdits.map(p => ({
+            index: p.index,
+            original: p.original,
+            edited: p.edited,
+            tags: p.tags,
+            autoApproved: p.autoApproved
+          })),
+          decisions: decisions
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Failed to generate final article: ${response.status} ${errorText}`);
+      }
+      
+      const data = await response.json();
+      const finalArticle = data.final_article || '';
+      
+      if (!finalArticle) {
+        throw new Error('No final article returned from server');
+      }
+      
+      // Same as Quick Start: store markdown only (no formatFinalArticleWithBlockTypes). Display uses getter to HTML.
+      this.finalArticle = finalArticle.trim();
+      this.showFinalOutput = true;
+      this.showSatisfactionPrompt = true;
+    } catch (error) {
+      console.error('Error generating final article:', error);
+      const errorMessage = error instanceof Error 
+        ? `Failed to generate final article: ${error.message}` 
+        : 'Failed to generate final article. Please try again.';
+      alert(errorMessage);
+    } finally {
+      this.isGeneratingFinal = false;
+    }
+  }
+
+  /** Generate final article using approved edits and feedback */
+  async generateFinalOutput(): Promise<void> {
+    if (!this.allParagraphsDecided) {
+      alert('Please approve or reject all paragraph edits and feedback before generating the final article.');
+      return;
+    }
+    
+    this.isGeneratingFinal = true;
+    
+    try {
+      // Collect all approved/rejected decisions from paragraphFeedbackData
+      const paragraphDecisions = this.paragraphFeedbackData.map(para => ({
+        index: para.index,
+        approved: para.approved === true,
+        editorial_feedback_decisions: this.collectFeedbackDecisions(para)
+      }));
+      
+      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
+        method: 'POST',
+        body: JSON.stringify({
+          original_content: this.originalContent,
+          paragraph_edits: this.paragraphFeedbackData.map(p => ({
+            index: p.index,
+            original: p.original,
+            edited: p.edited,
+            tags: p.tags,
+            autoApproved: p.autoApproved,
+            block_type: p.block_type || 'paragraph',
+            level: p.level || 0,
+            editorial_feedback: p.editorial_feedback
+          })),
+          decisions: paragraphDecisions,
+          include_quality_checks: true,
+          include_copy_check: true
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Failed to generate final article: ${response.status} ${errorText}`);
+      }
+      
+      const data = await response.json();
+      const finalArticle = data.final_article || '';
+      
+      if (!finalArticle) {
+        throw new Error('No final article returned from server');
+      }
+      
+      const trimmedFinal = finalArticle.trim();
+      
+      // Same as Quick Start: send markdown so chat renders with marked.parse() (getFormattedContent). No formatFinalArticleWithBlockTypes.
+      const headerLines: string[] = ['### Guided Journey – Edit Content'];
+      const uploadedFileName = this.formData.uploadedFile?.name;
+      if (uploadedFileName) {
+        headerLines.push(`_Source: ${uploadedFileName}_`);
+      }
+      headerLines.push('', '---', '');
+      
+      const documentTitle = extractDocumentTitle(
+        this.originalContent || '',
+        uploadedFileName
+      );
+      
+      const contentAsMarkdown = headerLines.join('\n') + trimmedFinal;
+      
+      const revisedMetadata: ThoughtLeadershipMetadata = {
+        contentType: 'edit-article',
+        topic: documentTitle || 'Final Revised Article',
+        fullContent: trimmedFinal,
+        showActions: true
+      };
+      
+      // Send to chat as markdown (isHtml: false) so chat uses marked.parse() like Quick Start
+      this.tlChatBridge.sendMessage({
+        role: 'assistant',
+        content: contentAsMarkdown,
+        timestamp: new Date(),
+        isHtml: false,
+        thoughtLeadership: revisedMetadata
+      });
+      
+      // Close the edit-content-flow component
+      this.onClose();
+    } catch (error) {
+      console.error('Error generating final article:', error);
+      const errorMessage = error instanceof Error 
+        ? `Failed to generate final article: ${error.message}` 
+        : 'Failed to generate final article. Please try again.';
+      alert(errorMessage);
+    } finally {
+      this.isGeneratingFinal = false;
+    }
+  }
+
+
+
+  /** Collect feedback decisions from a paragraph */
+  private collectFeedbackDecisions(para: ParagraphFeedback): any {
+    const decisions: any = {};
+    const feedbackTypes = Object.keys(para.editorial_feedback || {});
+    
+    for (const editorType of feedbackTypes) {
+      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+      decisions[editorType] = feedbacks.map((fb: any) => ({
+        issue: fb.issue,
+        approved: fb.approved === true
+      }));
+    }
+    
+    return decisions;
+  }
+
+  /** Process paragraph edits from backend response (reusable helper) */
+  private processParagraphEdits(paragraph_edits: any[]): ParagraphFeedback[] {
+    // If API returned no paragraph edits at all, just clear the data array.
+    // The template can show an inline "no feedback" message inside the paragraph box.
+    if (!paragraph_edits || !Array.isArray(paragraph_edits) || paragraph_edits.length === 0) {
+      return [];
+    }
+
+    const feedbackData: ParagraphFeedback[] = paragraph_edits.map((edit: any) => {
+      const editorial_feedback = {
+        development: edit.editorial_feedback?.development || [],
+        content: edit.editorial_feedback?.content || [],
+        copy: edit.editorial_feedback?.copy || [],
+        line: edit.editorial_feedback?.line || [],
+        brand: edit.editorial_feedback?.brand || []
+      };
+
+      return {
+        index: edit.index || 0,
+        original: edit.original || '',
+        edited: edit.edited || '',
+        tags: edit.tags || [],
+        autoApproved: edit.autoApproved ?? false,
+        approved: edit.approved ?? null,
+        block_type: edit.block_type || 'paragraph',
+        level: edit.level || 0,
+        editorial_feedback
+      };
+    });
+
+    return feedbackData;
+  }
+
+  /** True when there are no feedback items inside paragraphFeedbackData */
+  get hasNoParagraphFeedback(): boolean {
+    if (!this.paragraphFeedbackData || this.paragraphFeedbackData.length === 0) {
+      return true;
+    }
+
+    // No editorial feedback items across all paragraphs
+    return this.paragraphFeedbackData.every(para => {
+      const types = Object.keys(para.editorial_feedback || {});
+      return types.every(t => {
+        const arr = (para.editorial_feedback as any)[t] || [];
+        return !arr || arr.length === 0;
+      });
+    });
+  }
+
+  /** Move to next editor in sequential workflow */
+  async nextEditor(): Promise<void> {
+    if (!this.threadId) {
+      console.error('[EditContentFlow] No thread_id available for next editor');
+      return;
+    }
+
+    if (!this.allParagraphsDecided) {
+      alert('Please approve or reject all paragraph edits before proceeding to the next editor.');
+      return;
+    }
+
+    this.isGenerating = true;
+    this.isEditorLoading = true; // Mark that we're loading the next editor
+
+    // Mark current editor as completed when moving to next
+    const currentEditorItem = this.editorProgressList.find(e => e.editorId === this.currentEditor);
+    if (currentEditorItem && currentEditorItem.status === 'review-pending') {
+      currentEditorItem.status = 'completed';
+    }
+
+    // Immediately update next editor to 'processing' status for visual feedback
+    const nextEditorIndex = this.currentEditorIndex + 1;
+    if (nextEditorIndex < this.editorProgressList.length) {
+      const nextEditorItem = this.editorProgressList[nextEditorIndex];
+      if (nextEditorItem && (nextEditorItem.status === 'pending' || nextEditorItem.status === 'review-pending')) {
+        nextEditorItem.status = 'processing';
+        // Update currentEditor to match the next editor
+        this.currentEditor = nextEditorItem.editorId;
+        this.currentEditorIndex = nextEditorIndex;
+        this.cdr.detectChanges();
+      }
+    }
+
+    try {
+      // Collect decisions from paragraphFeedbackData
+      const decisions = this.paragraphFeedbackData.map(para => ({
+        index: para.index,
+        approved: para.approved === true
+      }));
+
+      // Prepare paragraph_edits
+      const paragraph_edits = this.paragraphFeedbackData.map(para => ({
+        index: para.index,
+        original: para.original,
+        edited: para.edited,
+        tags: para.tags || [],
+        autoApproved: para.autoApproved || false,
+        approved: para.approved
+      }));
+
+      // Call /next endpoint via ChatService
+      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/next`, {
+        method: 'POST',
+        body: JSON.stringify({
+          thread_id: this.threadId,
+          paragraph_edits: paragraph_edits,
+          decisions: decisions,
+          accept_all: false,
+          reject_all: false
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Failed to proceed to next editor: ${response.status} ${errorText}`);
+      }
+
+      // Handle streaming response
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      if (!reader) {
+        throw new Error('No response body reader available');
+      }
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.slice(6).trim();
+            if (dataStr && dataStr !== '[DONE]') {
+              try {
+                const data = JSON.parse(dataStr);
+                
+                // Handle editor_progress - show In Progress
+                if (data.type === 'editor_progress') {
+                  // Backend sends 1-based index, convert to 0-based for our array
+                  const backendCurrentIndex = data.current || 1;
+                  this.currentEditorIndex = backendCurrentIndex - 1; // Convert to 0-based
+                  this.totalEditors = data.total || this.totalEditors;
+                  this.currentEditorId = data.editor || '';
+                  this.isEditorLoading = true;
+                  
+                  // Update editor statuses (using 0-based index)
+                  this.editorProgressList.forEach((editor, index) => {
+                    if (index < this.currentEditorIndex) {
+                      editor.status = 'completed';
+                    } else if (index === this.currentEditorIndex) {
+                      editor.status = 'processing'; // In Progress
+                      editor.current = backendCurrentIndex; // Keep 1-based for display
+                      editor.total = this.totalEditors;
+                    } else {
+                      editor.status = 'pending';
+                    }
+                  });
+                  
+                  this.cdr.detectChanges();
                 }
-                @if (selectedFlow !== 'ppt' && selectedFlow !== 'market-intelligence') {
-                  <p class="mi-intro-text">Where all firm intelligence is created, curated, and deployed</p>
+                
+                // Handle all_complete
+                if (data.type === 'all_complete') {
+                  this.isGenerating = false;
+                  // Mark as last editor to show "Generate Final Output" button
+                  this.isLastEditor = true;
+                  this.currentEditorIndex = this.totalEditors;
+                  this.cdr.detectChanges();
+                  return;
                 }
-              </div>
-              <button
-                class="close-dialog-btn"
-                (click)="closeGuidedDialog()"
-                type="button"
-                >
-                <svg
-                  width="20"
-                  height="20"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  >
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-            </div>
-            <div class="dialog-content">
-              <!-- PPT Forms -->
-              @if (selectedFlow === 'ppt') {
-                <div>
-                  <div class="form-tabs">
-                    <button
-                      class="tab-btn"
-                      [class.active]="selectedPPTOperation === 'draft'"
-                      (click)="selectedPPTOperation = 'draft'"
-                      >
-                      Draft
-                    </button>
-                    <button
-                      class="tab-btn"
-                      [class.active]="selectedPPTOperation === 'improve'"
-                      (click)="selectedPPTOperation = 'improve'"
-                      >
-                      Improve
-                    </button>
-                    <button
-                      class="tab-btn"
-                      [class.active]="selectedPPTOperation === 'sanitize'"
-                      (click)="selectedPPTOperation = 'sanitize'"
-                      >
-                      Sanitize
-                    </button>
-                    <button
-                      class="tab-btn"
-                      [class.active]="selectedPPTOperation === 'bestPractices'"
-                      (click)="selectedPPTOperation = 'bestPractices'"
-                      >
-                      Best Practices
-                    </button>
-                  </div>
-                  @if (selectedPPTOperation === 'draft') {
-                    <div class="form-content">
-                      <div class="form-field">
-                        <label>Topic *</label>
-                        <input
-                          type="text"
-                          [(ngModel)]="draftData.topic"
-                          placeholder="e.g., Digital Transformation Strategy"
-                          aria-required="true"
-                          [class.error]="!draftData.topic && draftData.topic !== ''"
-                          />
-                          @if (!draftData.topic && draftData.topic !== '') {
-                            <small
-                              class="error-text"
-                              >Topic is required</small
-                              >
-                          }
-                        </div>
-                        <div class="form-field">
-                          <label>Objective *</label>
-                          <input
-                            type="text"
-                            [(ngModel)]="draftData.objective"
-                            placeholder="e.g., Secure board approval"
-                            aria-required="true"
-                [class.error]="
-                  !draftData.objective && draftData.objective !== ''
-                "
-                            />
-                            @if (!draftData.objective && draftData.objective !== '') {
-                              <small
-                                class="error-text"
-                                >Objective is required</small
-                                >
-                            }
-                          </div>
-                          <div class="form-field">
-                            <label>Target Audience *</label>
-                            <input
-                              type="text"
-                              [(ngModel)]="draftData.audience"
-                              placeholder="e.g., C-Suite executives"
-                              aria-required="true"
-                              [class.error]="!draftData.audience && draftData.audience !== ''"
-                              />
-                              @if (!draftData.audience && draftData.audience !== '') {
-                                <small
-                                  class="error-text"
-                                  >Target Audience is required</small
-                                  >
-                              }
-                            </div>
-                            <div class="form-field">
-                              <label>Additional Context</label>
-                              <textarea
-                                [(ngModel)]="draftData.additional_context"
-                                rows="3"
-                                placeholder="Any specific requirements..."
-                              ></textarea>
-                            </div>
-                            <div class="form-field">
-                              <label>Reference Document (Optional)</label>
-                              <input
-                                type="file"
-                                accept=".pdf,.docx,.pptx,.txt"
-                                (change)="onReferenceDocumentSelected($event)"
-                                class="file-input"
-                                />
-                                <small class="help-text"
-                                  >Upload a reference document to include its content in the final
-                                  output</small
-                                  >
-                                </div>
-                                <div class="form-field">
-                                  <label>Reference Link (Optional)</label>
-                                  <input
-                                    type="url"
-                                    [(ngModel)]="draftData.reference_link"
-                                    placeholder="https://example.com/reference"
-                                    />
-                                    <small class="help-text"
-                                      >Provide a link to reference content</small
-                                      >
-                                    </div>
-                                    <button
-                                      class="submit-btn"
-                                      (click)="createDraft(); closeGuidedDialog()"
-              [disabled]="
-                !draftData.topic ||
-                !draftData.objective ||
-                !draftData.audience ||
-                isLoading
-              "
-                                      >
-                                      Generate Presentation
-                                    </button>
-                                  </div>
-                                }
-                                @if (selectedPPTOperation === 'improve') {
-                                  <div class="form-content">
-                                    <div class="form-field">
-                                      <label>Original PowerPoint *</label>
-                                      <div class="file-upload-area">
-                                        <input
-                                          type="file"
-                                          accept=".pptx"
-                                          (change)="onOriginalFileSelected($event)"
-                                          id="original-file"
-                                          class="file-input-hidden"
-                                          />
-                                          <label for="original-file" class="file-upload-label">
-                                            <svg
-                                              width="24"
-                                              height="24"
-                                              viewBox="0 0 24 24"
-                                              fill="none"
-                                              stroke="currentColor"
-                                              stroke-width="2"
-                                              >
-                                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                              <polyline points="17 8 12 3 7 8"></polyline>
-                                              <line x1="12" y1="3" x2="12" y2="15"></line>
-                                            </svg>
-                                            @if (!originalPPTFile) {
-                                              <span>Upload file</span>
-                                            }
-                                            @if (originalPPTFile) {
-                                              <span class="file-name"
-                                                >✓ {{ originalPPTFile.name }}</span
-                                                >
-                                            }
-                                          </label>
-                                        </div>
-                                      </div>
-                                      <div class="form-field">
-                                        <label>Reference PowerPoint (optional)</label>
-                                        <div class="file-upload-area">
-                                          <input
-                                            type="file"
-                                            accept=".pptx"
-                                            (change)="onReferenceFileSelected($event)"
-                                            id="reference-file"
-                                            class="file-input-hidden"
-                                            />
-                                            <label for="reference-file" class="file-upload-label">
-                                              <svg
-                                                width="24"
-                                                height="24"
-                                                viewBox="0 0 24 24"
-                                                fill="none"
-                                                stroke="currentColor"
-                                                stroke-width="2"
-                                                >
-                                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                                <polyline points="17 8 12 3 7 8"></polyline>
-                                                <line x1="12" y1="3" x2="12" y2="15"></line>
-                                              </svg>
-                                              @if (!referencePPTFile) {
-                                                <span>Upload file</span>
-                                              }
-                                              @if (referencePPTFile) {
-                                                <span class="file-name"
-                                                  >✓ {{ referencePPTFile.name }}</span
-                                                  >
-                                              }
-                                            </label>
-                                          </div>
-                                        </div>
-                                        <button
-                                          class="submit-btn"
-                                          (click)="improvePPT(); closeGuidedDialog()"
-                                          [disabled]="!originalPPTFile || isLoading"
-                                          >
-                                          Improve Presentation
-                                        </button>
-                                      </div>
-                                    }
-                                    @if (selectedPPTOperation === 'sanitize') {
-                                      <div class="form-content">
-                                        <div class="form-field">
-                                          <label>PowerPoint File *</label>
-                                          <div class="file-upload-area">
-                                            <input
-                                              type="file"
-                                              accept=".pptx"
-                                              (change)="onSanitizeFileSelected($event)"
-                                              id="sanitize-file"
-                                              class="file-input-hidden"
-                                              />
-                                              <label for="sanitize-file" class="file-upload-label">
-                                                <svg
-                                                  width="24"
-                                                  height="24"
-                                                  viewBox="0 0 24 24"
-                                                  fill="none"
-                                                  stroke="currentColor"
-                                                  stroke-width="2"
-                                                  >
-                                                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                                  <polyline points="17 8 12 3 7 8"></polyline>
-                                                  <line x1="12" y1="3" x2="12" y2="15"></line>
-                                                </svg>
-                                                @if (!sanitizePPTFile) {
-                                                  <span>Upload file</span>
-                                                }
-                                                @if (sanitizePPTFile) {
-                                                  <span class="file-name"
-                                                    >✓ {{ sanitizePPTFile.name }}</span
-                                                    >
-                                                }
-                                              </label>
-                                            </div>
-                                          </div>
-                                          <div class="form-field">
-                                            <label>Client Name (optional)</label>
-                                            <input
-                                              type="text"
-                                              [(ngModel)]="sanitizeData.clientName"
-                                              placeholder="e.g., Adobe Inc"
-                                              />
-                                            </div>
-                                            <div class="form-field">
-                                              <label>Product Names (optional)</label>
-                                              <input
-                                                type="text"
-                                                [(ngModel)]="sanitizeData.products"
-                                                placeholder="e.g., Photoshop, Creative Cloud"
-                                                />
-                                              </div>
-                                              <div class="form-field">
-                                                <label style="margin-bottom: 12px; display: block"
-                                                  >Sanitization Options</label
-                                                  >
-                                                  <div class="checkbox-group">
-                                                    <label class="checkbox-label">
-                                                      <input
-                                                        type="checkbox"
-                                                        [(ngModel)]="sanitizeData.options.numericData"
-                                                        />
-                                                        <span>Numeric Data (currency, percentages, FTEs)</span>
-                                                      </label>
-                                                      <label class="checkbox-label">
-                                                        <input
-                                                          type="checkbox"
-                                                          [(ngModel)]="sanitizeData.options.personalInfo"
-                                                          />
-                                                          <span
-                                                            >Personal Information (emails, phones, SSN, IP
-                                                            addresses)</span
-                                                            >
-                                                          </label>
-                                                          <label class="checkbox-label">
-                                                            <input
-                                                              type="checkbox"
-                                                              [(ngModel)]="sanitizeData.options.financialData"
-                                                              />
-                                                              <span
-                                                                >Financial Data (credit cards, bank accounts, tax IDs)</span
-                                                                >
-                                                              </label>
-                                                              <label class="checkbox-label">
-                                                                <input
-                                                                  type="checkbox"
-                                                                  [(ngModel)]="sanitizeData.options.locations"
-                                                                  />
-                                                                  <span>Locations (addresses, cities, states, zip codes)</span>
-                                                                </label>
-                                                                <label class="checkbox-label">
-                                                                  <input
-                                                                    type="checkbox"
-                                                                    [(ngModel)]="sanitizeData.options.identifiers"
-                                                                    />
-                                                                    <span
-                                                                      >Business Identifiers (project IDs, deal codes,
-                                                                      invoices)</span
-                                                                      >
-                                                                    </label>
-                                                                    <label class="checkbox-label">
-                                                                      <input
-                                                                        type="checkbox"
-                                                                        [(ngModel)]="sanitizeData.options.names"
-                                                                        />
-                                                                        <span>Client & Product Names</span>
-                                                                      </label>
-                                                                      <label class="checkbox-label">
-                                                                        <input
-                                                                          type="checkbox"
-                                                                          [(ngModel)]="sanitizeData.options.logos"
-                                                                          />
-                                                                          <span>Logos & Watermarks</span>
-                                                                        </label>
-                                                                        <label class="checkbox-label">
-                                                                          <input
-                                                                            type="checkbox"
-                                                                            [(ngModel)]="sanitizeData.options.metadata"
-                                                                            />
-                                                                            <span>Metadata & Speaker Notes</span>
-                                                                          </label>
-                                                                          <label class="checkbox-label">
-                                                                            <input
-                                                                              type="checkbox"
-                                                                              [(ngModel)]="sanitizeData.options.llmDetection"
-                                                                              />
-                                                                              <span
-                                                                                >AI-Powered Detection (company names, person names,
-                                                                                cities)</span
-                                                                                >
-                                                                              </label>
-                                                                              <label class="checkbox-label">
-                                                                                <input
-                                                                                  type="checkbox"
-                                                                                  [(ngModel)]="sanitizeData.options.hyperlinks"
-                                                                                  />
-                                                                                  <span>Hyperlinks (remove all hyperlinks from shapes)</span>
-                                                                                </label>
-                                                                                <label class="checkbox-label">
-                                                                                  <input
-                                                                                    type="checkbox"
-                                                                                    [(ngModel)]="sanitizeData.options.embeddedObjects"
-                                                                                    />
-                                                                                    <span>Embedded Objects (Excel, Word, PDF files)</span>
-                                                                                  </label>
-                                                                                </div>
-                                                                              </div>
-                                                                              <button
-                                                                                class="submit-btn"
-                                                                                (click)="sanitizePPT(); closeGuidedDialog()"
-                                                                                [disabled]="!sanitizePPTFile || isLoading"
-                                                                                >
-                                                                                Sanitize Presentation
-                                                                              </button>
-                                                                            </div>
-                                                                          }
-                                                                          @if (selectedPPTOperation === 'bestPractices') {
-                                                                            <div
-                                                                              class="form-content"
-                                                                              >
-                                                                              <div class="form-field">
-                                                                                <label>PowerPoint File *</label>
-                                                                                <div class="file-upload-area">
-                                                                                  <input
-                                                                                    type="file"
-                                                                                    accept=".pptx"
-                                                                                    (change)="onBestPracticesFileSelected($event)"
-                                                                                    id="best-practices-file"
-                                                                                    class="file-input-hidden"
-                                                                                    />
-                                                                                    <label for="best-practices-file" class="file-upload-label">
-                                                                                      <svg
-                                                                                        width="24"
-                                                                                        height="24"
-                                                                                        viewBox="0 0 24 24"
-                                                                                        fill="none"
-                                                                                        stroke="currentColor"
-                                                                                        stroke-width="2"
-                                                                                        >
-                                                                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                                                                        <polyline points="17 8 12 3 7 8"></polyline>
-                                                                                        <line x1="12" y1="3" x2="12" y2="15"></line>
-                                                                                      </svg>
-                                                                                      @if (!bestPracticesPPTFile) {
-                                                                                        <span>Upload file</span>
-                                                                                      }
-                                                                                      @if (bestPracticesPPTFile) {
-                                                                                        <span class="file-name"
-                                                                                          >✓ {{ bestPracticesPPTFile.name }}</span
-                                                                                          >
-                                                                                      }
-                                                                                    </label>
-                                                                                  </div>
-                                                                                </div>
-                                                                                <div class="form-field">
-                                                                                  <label style="margin-bottom: 12px; display: block"
-                                                                                    >Validation Categories</label
-                                                                                    >
-                                                                                    <div class="checkbox-group">
-                                                                                      <label class="checkbox-label">
-                                                                                        <input
-                                                                                          type="checkbox"
-                                                                                          [(ngModel)]="bestPracticesData.categories.structure"
-                                                                                          />
-                                                                                          <span>Structure (MECE framework, logical flow)</span>
-                                                                                        </label>
-                                                                                        <label class="checkbox-label">
-                                                                                          <input
-                                                                                            type="checkbox"
-                                                                                            [(ngModel)]="bestPracticesData.categories.visuals"
-                                                                                            />
-                                                                                            <span>Visuals (Image quality, relevance, placement)</span>
-                                                                                          </label>
-                                                                                          <label class="checkbox-label">
-                                                                                            <input
-                                                                                              type="checkbox"
-                                                                                              [(ngModel)]="bestPracticesData.categories.design"
-                                                                                              />
-                                                                                              <span>Design (Color scheme, fonts, spacing)</span>
-                                                                                            </label>
-                                                                                            <label class="checkbox-label">
-                                                                                              <input
-                                                                                                type="checkbox"
-                                                                                                [(ngModel)]="bestPracticesData.categories.charts"
-                                                                                                />
-                                                                                                <span>Charts (Data visualization, clarity, labels)</span>
-                                                                                              </label>
-                                                                                              <label class="checkbox-label">
-                                                                                                <input
-                                                                                                  type="checkbox"
-                                                                                                  [(ngModel)]="bestPracticesData.categories.formatting"
-                                                                                                  />
-                                                                                                  <span>Formatting (Consistency, alignment, text size)</span>
-                                                                                                </label>
-                                                                                                <label class="checkbox-label">
-                                                                                                  <input
-                                                                                                    type="checkbox"
-                                                                                                    [(ngModel)]="bestPracticesData.categories.content"
-                                                                                                    />
-                                                                                                    <span>Content (Clarity, conciseness, grammar)</span>
-                                                                                                  </label>
-                                                                                                </div>
-                                                                                              </div>
-                                                                                              <button
-                                                                                                class="submit-btn"
-                                                                                                (click)="submitBestPracticesForm()"
-                                                                                                [disabled]="!bestPracticesPPTFile || isLoading"
-                                                                                                >
-                                                                                                Validate Best Practices
-                                                                                              </button>
-                                                                                            </div>
-                                                                                          }
-                                                                                        </div>
-                                                                                      }
-                                                                                      <!-- Thought Leadership Action Cards -->
-                                                                                      @if (selectedFlow === 'thought-leadership') {
-                                                                                        <div>
-                                                                                          <!-- <p class="tl-intro-text">Where all firm intelligence is created, curated, and deployed</p> -->
-                                                                                          <div class="tl-action-cards-grid">
-                                                                                            <button class="tl-action-card" (click)="onTLActionCardClick('draft-content')">
-                                                                                              <div class="tl-card-icon">✍️</div>
-                                                                                              <h3>Draft Content</h3>
-                                                                                              <p>Turn preliminary concepts or outlines into well-research, written, and edited drafts​</p>
-                                                                                            </button>
-                                                                                            <button class="tl-action-card" (click)="onTLActionCardClick('conduct-research')">
-                                                                                              <div class="tl-card-icon">🔍</div>
-                                                                                              <h3>Conduct Research</h3>
-                                                                                              <p>Tap into PwC’s full knowledge bank and third-party sources to execute targeted research in minutes​</p>
-                                                                                            </button>
-                                                                                            <button class="tl-action-card" (click)="onTLActionCardClick('edit-content')">
-                                                                                              <div class="tl-card-icon">✏️</div>
-                                                                                              <h3>Edit Content</h3>
-                                                                                              <p>Deploy development, content, line, copy, and PwC brand alignment editors​</p>
-                                                                                            </button>
-                                                                                            <button class="tl-action-card" (click)="onTLActionCardClick('refine-content')">
-                                                                                              <div class="tl-card-icon">⚡</div>
-                                                                                              <h3>Refine Drafts</h3>
-                                                                                              <p>Expand or compress content, change tone, or enhance with targeted research & insights​</p>
-                                                                                            </button>
-                                                                                            <button class="tl-action-card" (click)="onTLActionCardClick('format-translator')">
-                                                                                              <div class="tl-card-icon">🔄</div>
-                                                                                              <h3>Adapt Content</h3>
-                                                                                              <p>Transform final outputs into podcasts, social media posts or placemats</p>
-                                                                                            </button>
-                                                                                          </div>
-                                                                                        </div>
-                                                                                      }
-                                                                                      <!-- Market Intelligence Action Cards -->
-                                                                                      @if (selectedFlow === 'market-intelligence') {
-                                                                                        <div>
-                                                                                          <!-- <p class="mi-intro-text">Where data and research are transformed into decision-ready analysis and action​</p> -->
-                                                                                          <div class="mi-action-cards-grid">
-                                                                                            <!-- <button class="mi-action-card" (click)="onMIActionCardClick('draft-content')">
-                                                                                              <div class="mi-card-icon">📝</div>
-                                                                                              <h3>Draft Content</h3>
-                                                                                              <p>Generate market research articles, reports, and briefs powered by AI strategic analysis.</p>
-                                                                                            </button> -->
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('conduct-research')">
-                                                                                              <div class="mi-card-icon">🔍</div>
-                                                                                              <h3>Conduct Research</h3>
-                                                                                              <p>Tap into PwC’s full knowledge bank and third-party sources to execute targeted research in minutes ​</p>
-                                                                                            </button>
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('target-industry-insights')">
-                                                                                              <div class="mi-card-icon">🔄</div>
-                                                                                              <h3>Generate Industry Insights</h3>
-                                                                                              <p>Synthesize PwC expertise and market data to deliver structured industry intelligence​</p>
-                                                                                            </button>
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('prepare-client-meeting')">
-                                                                                              <div class="mi-card-icon">✨</div>
-                                                                                              <h3>Prepare for Client Meeting</h3>
-                                                                                              <p> Rapidly ramp-up for senior discussions with structured insights informed by years of experience ​</p>
-                                                                                            </button>
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('create-pov')">
-                                                                                              <div class="mi-card-icon">📋</div>
-                                                                                              <h3>Create Point of View</h3>
-                                                                                              <p>Quickly convert targeted research into well-written, edited, and refined perspectives​</p>
-                                                                                            </button>
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('gather-proposal-insights')">
-                                                                                              <div class="mi-card-icon">🔀</div>
-                                                                                              <h3>Gather Proposal Inputs</h3>
-                                                                                              <p>Develop a proposal outline and pull sample frameworks, approaches, and quals with one click ​</p>
-                                                                                            </button>
-                                                                                            
-                                                                                            <!-- <button class="mi-action-card" (click)="onMIActionCardClick('generate-podcast')">
-                                                                                              <div class="mi-card-icon">🎙️</div>
-                                                                                              <h3>Generate Podcast</h3>
-                                                                                              <p>Transform market research into engaging podcast scripts for audio distribution.</p>
-                                                                                            </button>
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('brand-format')">
-                                                                                              <div class="mi-card-icon">🎨</div>
-                                                                                              <h3>Brand Format</h3>
-                                                                                              <p>Apply PwC branding standards and visual formatting to your market analysis.</p>
-                                                                                            </button>
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('professional-polish')">
-                                                                                              <div class="mi-card-icon">⭐</div>
-                                                                                              <h3>Professional Polish</h3>
-                                                                                              <p>Apply premium editing and refinement for executive-level market intelligence.</p>
-                                                                                            </button>  -->
-                                                                                          </div>
-                                                                                        </div>
-                                                                                      }
-                                                                                    </div>
-                                                                                  </div>
-                                                                                </div>
-                                                                              }
-                                                                            
 
-                                                                            <!-- Thought Leadership Guided Flow Components -->
-                                                                            <app-draft-content-flow></app-draft-content-flow>
-                                                                            <app-conduct-research-flow></app-conduct-research-flow>
-                                                                            <app-edit-content-flow></app-edit-content-flow>
-                                                                            <app-refine-content-flow
-                                                                              (contentGenerated)="onRefinedContentGenerated($event)"
-                                                                              (streamToChat)="onRefineContentStreamToChat($event)">
-                                                                            </app-refine-content-flow>
-                                                                            <app-format-translator-flow></app-format-translator-flow>
+                // Handle editor_complete (same as initial flow)
+                if (data.type === 'editor_complete') {
+                  const scrollContainer = document.querySelector('.flow-content') || 
+                                         document.querySelector('.flow-container') || 
+                                         document.documentElement;
+                  const scrollPosition = scrollContainer === document.documentElement
+                    ? window.scrollY || window.pageYOffset 
+                    : (scrollContainer as HTMLElement).scrollTop;
 
-                                                                            <!-- Market Intelligence Guided Flow Components -->
-                                                                            <app-mi-draft-content-flow></app-mi-draft-content-flow>
-                                                                            <app-mi-conduct-research-flow></app-mi-conduct-research-flow>
-                                                                            <app-mi-edit-content-flow></app-mi-edit-content-flow>
-                                                                            <app-mi-refine-content-flow></app-mi-refine-content-flow>
-                                                                            <app-mi-format-translator-flow></app-mi-format-translator-flow>
-                                                                            <app-mi-generate-podcast-flow></app-mi-generate-podcast-flow>
-                                                                            <app-mi-brand-format-flow></app-mi-brand-format-flow>
-                                                                            <app-mi-professional-polish-flow></app-mi-professional-polish-flow>
-                                                                            <app-mi-create-pov-flow></app-mi-create-pov-flow>
-                                                                            <app-mi-prepare-client-meeting-flow></app-mi-prepare-client-meeting-flow>
-                                                                            <app-mi-gather-proposal-insights-flow></app-mi-gather-proposal-insights-flow>
-                                                                            <app-mi-target-industry-insights-flow></app-mi-target-industry-insights-flow>
+                  // Store thread_id
+                  if (data.thread_id) {
+                    this.threadId = data.thread_id;
+                  }
 
-                                                                            <!-- DDC Guided Dialog and Flow Components -->
-                                                                            <app-guided-dialog
-                                                                              [isOpen]="showDdcGuidedDialog"
-                                                                              journeyType="ddc"
-                                                                              [title]="'Doc Studio'"
-                                                                              [introText]="ddcIntroText"
-                                                                              [subIntroText]="ddcSubIntroText"
-                                                                              [workflows]="ddcWorkflows"
-                                                                              (workflowSelected)="onWorkflowSelected($event)"
-                                                                              (close)="closeDdcGuidedDialog()">
-                                                                            </app-guided-dialog>
+                  // Store current editor info
+                  if (data.current_editor) {
+                    this.currentEditor = data.current_editor;
+                    this.currentEditorIndex = data.editor_index || 0;
+                    this.totalEditors = data.total_editors || this.totalEditors;
+                    this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || 1) - 1;
+                  }
 
-                                                                            <!-- MI Guided Dialog and Flow Components -->
-                                                                            <app-guided-dialog
-                                                                              [isOpen]="showMiGuidedDialog"
-                                                                              journeyType="market-intelligence"
-                                                                              [workflows]="miWorkflows"
-                                                                              (workflowSelected)="onWorkflowSelected($event)"
-                                                                              (close)="closeGuidedDialog()">
-                                                                            </app-guided-dialog>
+                  // Mark previous editor as completed when moving to next editor
+                  if (this.currentEditorIndex > 0) {
+                    const previousEditorIndex = this.currentEditorIndex - 1;
+                    const previousEditor = this.editorProgressList[previousEditorIndex];
+                    if (previousEditor && previousEditor.status === 'review-pending') {
+                      previousEditor.status = 'completed';
+                    }
+                  }
 
-                                                                            <!-- Quick Draft Dialog -->
-                                                                            <app-quick-draft-dialog
-                                                                              [isOpen]="showQuickDraftDialog"
-                                                                              [topic]="quickDraftTopic"
-                                                                              [contentType]="quickDraftContentType"
-                                                                              (close)="closeQuickDraftDialog()"
-                                                                              (submit)="onQuickDraftSubmit($event)">
-                                                                            </app-quick-draft-dialog>
+                  // Update current editor to review-pending after generation completes
+                  const currentEditorItem = this.editorProgressList.find(e => e.editorId === data.current_editor);
+                  if (currentEditorItem) {
+                    currentEditorItem.status = 'review-pending';
+                  }
 
-                                                                            <app-brand-format-flow></app-brand-format-flow>
-                                                                            <app-professional-polish-flow></app-professional-polish-flow>
-                                                                            <app-sanitization-flow
-                                                                              [hideBackButton]="workflowOpenedFrom === 'quick-action'"
-                                                                              [openedFrom]="workflowOpenedFrom">
-                                                                            </app-sanitization-flow>
-                                                                            <app-client-customization-flow></app-client-customization-flow>
-                                                                            <app-rfp-response-flow></app-rfp-response-flow>
-                                                                            <app-ddc-format-translator-flow></app-ddc-format-translator-flow>
-                                                                            <app-slide-creation-flow
-                                                                              [hideBackButton]="workflowOpenedFrom === 'quick-action'"
-                                                                              [openedFrom]="workflowOpenedFrom">
-                                                                            </app-slide-creation-flow>
-                                                                            <app-slide-creation-prompt-flow
-                                                                              [hideBackButton]="workflowOpenedFrom === 'quick-action'"
-                                                                              [openedFrom]="workflowOpenedFrom">
-                                                                            </app-slide-creation-prompt-flow>
+                  // Process paragraph edits
+                  if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
+                    this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
+                  }
 
-                                                                            <!-- Voice Input Modal -->
-                                                                            <app-voice-input
-                                                                              (transcriptChange)="onVoiceTranscriptChange($event)"
-                                                                              (listeningChange)="onVoiceListeningChange($event)"
-                                                                            ></app-voice-input>
+                  // Update content
+                  if (data.original_content) {
+                    this.originalContent = data.original_content;
+                  }
 
-                                                                            <!-- DDC Request Form -->
-                                                                            @if (showRequestForm) {
-                                                                              <app-ddc-request-form
-                                                                                (ticketCreated)="onTicketCreated($event)"
-                                                                                (close)="showRequestForm = false">
-                                                                              </app-ddc-request-form>
-                                                                            }
-                                                                            
-                                                                            <!-- TL Request Form (MCX Publication Support) -->
-                                                                            @if (showTLRequestForm) {
-                                                                              <app-tl-request-form
-                                                                                (ticketCreated)="onTicketCreated($event)"
-                                                                                (close)="showTLRequestForm = false">
-                                                                              </app-tl-request-form>
-                                                                            }
-                                                                          }
-                                                                     
+                  if (data.final_revised) {
+                    this.revisedContent = convertMarkdownToHtml(data.final_revised.trim());
+                  }
+
+                  // Process feedback
+                  if (data.combined_feedback) {
+                    const feedbackContent = data.combined_feedback.trim();
+                    this.feedbackItems = parseEditorialFeedback(feedbackContent);
+                    this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+                    this.editFeedback = this.feedbackHtml;
+                  }
+
+                  this.isGenerating = false;
+                  this.isEditorLoading = false; // Loading complete, now in review pending state
+                  
+                  this.cdr.detectChanges();
+
+                  setTimeout(() => {
+                    const paragraphSection = document.getElementById('paragraph-feedback-section');
+                    if (paragraphSection) {
+                      paragraphSection.scrollIntoView({ 
+                        behavior: 'smooth', 
+                        block: 'start',
+                        inline: 'nearest'
+                      });
+                    }
+                  }, 100);
+
+
+                }
+
+                // Handle errors
+                if (data.type === 'error') {
+                  throw new Error(data.error || 'Unknown error');
+                }
+              } catch (e) {
+                console.error('[EditContentFlow] Error parsing SSE data:', e);
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[EditContentFlow] Error in nextEditor:', error);
+      const errorMessage = error instanceof Error 
+        ? `Failed to proceed to next editor: ${error.message}` 
+        : 'Failed to proceed to next editor. Please try again.';
+      alert(errorMessage);
+      this.isGenerating = false;
+      this.isEditorLoading = false; // Reset loading state on error
+    }
+  }
+
+  objectKeys = Object.keys;
+
+  /** Get display name for editor */
+  getEditorDisplayName(editorId: string | null): string {
+    if (!editorId) return '';
+    
+    // Map editor IDs to display names
+    const editorMap: { [key: string]: string } = {
+      'development': 'Development Editor',
+      'content': 'Content Editor',
+      'line': 'Line Editor',
+      'copy': 'Copy Editor',
+      // 'brand': 'PwC Brand Alignment Editor',
+      'brand-alignment': 'PwC Brand Alignment Editor'
+    };
+    
+    return editorMap[editorId] || editorId;
+  }
+
+  /** Update paragraph's approved status based on its feedback items */
+  private updateParagraphApprovedStatus(para: ParagraphFeedback): void {
+    // Check if all feedback items in this paragraph are decided
+    const feedbackTypes = Object.keys(para.editorial_feedback || {});
+    let allDecided = true;
+    let allApproved = true;
+    let hasAnyFeedback = false;
+    
+    for (const editorType of feedbackTypes) {
+      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+      for (const fb of feedbacks) {
+        hasAnyFeedback = true;
+        if (fb.approved === null || fb.approved === undefined) {
+          allDecided = false;
+          break;
+        } else if (fb.approved === false) {
+          allApproved = false;
+        }
+      }
+      if (!allDecided) break;
+    }
+    
+    // If no feedback items exist, paragraph doesn't need approval
+    if (!hasAnyFeedback) {
+      para.approved = true; // No feedback means nothing to approve/reject
+      return;
+    }
+    
+    // If all feedback items are decided, set paragraph's approved status
+    if (allDecided) {
+      // Set to true if all are approved, false if any are rejected
+      para.approved = allApproved;
+    } else {
+      // If not all feedback items are decided, reset paragraph approval to null
+      // This ensures the getter properly reflects that decisions are incomplete
+      para.approved = null;
+    }
+  }
+
+
+  approveEditorialFeedback(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    
+    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === true) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = true; // Approve (green/strikeout)
+    }
+    
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
+    
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  rejectEditorialFeedback(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    
+    // Toggle: If already rejected, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === false) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = false; // Reject (green/strikeout opposite)
+    }
+    
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
+    
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  applyEditorialFix(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    
+    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === true) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = true; // Approve (green/strikeout)
+    }
+    
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
+    
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  rejectEditorialFix(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    
+    // Toggle: If already rejected, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === false) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = false; // Reject (green/strikeout opposite)
+    }
+    
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
+    
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  highlightAllFeedbacks(
+    para: ParagraphFeedback,
+    hovered?: { editorType: string; fbIndex: number }
+  ): { original: string; edited: string } {
+
+    let highlightedOriginal = para.original;
+    let highlightedEdited = para.edited;
+
+    type HighlightItem = {
+      text: string;
+      approved: boolean | null;
+      start: number;
+      end: number;
+      hovered: boolean;
+    };
+
+    const originalItems: HighlightItem[] = [];
+    const editedItems: HighlightItem[] = [];
+
+    // ------------------------------------------------------------
+    // STEP 1: Collect ALL highlight metadata (NO string mutation)
+    // ------------------------------------------------------------
+    Object.keys(para.editorial_feedback).forEach(editorType => {
+      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+
+      feedbacks.forEach((fb: any, idx: number) => {
+        const issueText = fb.issue?.trim();
+        const fixText = fb.fix?.trim();
+
+        const isHovered =
+          !!hovered &&
+          hovered.editorType === editorType &&
+          hovered.fbIndex === idx;
+
+        const approved: boolean | null =
+          fb.approved === true ? true : fb.approved === false ? false : null;
+
+        // ---- ORIGINAL (issue) ----
+        if (issueText) {
+          const regex = new RegExp(this.escapeRegex(issueText), 'g');
+          let match: RegExpExecArray | null;
+
+          while ((match = regex.exec(highlightedOriginal)) !== null) {
+            originalItems.push({
+              text: issueText,
+              approved,
+              start: match.index,
+              end: match.index + issueText.length,
+              hovered: isHovered
+            });
+          }
+        }
+
+        // ---- EDITED (fix) ----
+        if (fixText) {
+          const regex = new RegExp(this.escapeRegex(fixText), 'g');
+          let match: RegExpExecArray | null;
+
+          while ((match = regex.exec(highlightedEdited)) !== null) {
+            editedItems.push({
+              text: fixText,
+              approved,
+              start: match.index,
+              end: match.index + fixText.length,
+              hovered: isHovered
+            });
+          }
+        }
+      });
+    });
+
+    // ------------------------------------------------------------
+    // STEP 2: Apply highlights (END → START to keep indexes valid)
+    // ------------------------------------------------------------
+    const applyHighlights = (
+      source: string,
+      items: HighlightItem[],
+      mode: 'original' | 'edited'
+    ): string => {
+
+      items
+        .sort((a, b) => b.start - a.start)
+        .forEach(item => {
+          let cssClass = '';
+
+          if (mode === 'original') {
+            if (item.approved === true) {
+              cssClass = 'strikeout highlight-yellow';
+            } else if (item.approved === false) {
+              cssClass = 'highlight-green';
+            } else {
+              cssClass = 'highlight-yellow';
+            }
+          } else {
+            if (item.approved === true) {
+              cssClass = 'highlight-green';
+            } else if (item.approved === false) {
+              cssClass = 'strikeout highlight-yellow';
+            } else {
+              cssClass = 'highlight-yellow';
+            }
+          }
+
+          if (item.hovered) {
+            cssClass += ' highlight-border';
+          }
+
+          const wrapped = `<span class="${cssClass}">${item.text}</span>`;
+
+          source =
+            source.substring(0, item.start) +
+            wrapped +
+            source.substring(item.end);
+        });
+
+      return source;
+    };
+
+    highlightedOriginal = applyHighlights(
+      highlightedOriginal,
+      originalItems,
+      'original'
+    );
+
+    highlightedEdited = applyHighlights(
+      highlightedEdited,
+      editedItems,
+      'edited'
+    );
+
+    return {
+      original: highlightedOriginal,
+      edited: highlightedEdited
+    };
+  }
+
+
+  // Helper method to escape special regex characters
+  private escapeRegex(str: string): string {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  approveAllFeedback(): void {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    this.paragraphFeedbackData.forEach(para => {
+
+      para.approved = true;
+
+
+      Object.keys(para.editorial_feedback).forEach(editorType => {
+        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+        feedbacks.forEach((fb: any) => {
+          // Set all to approved (don't toggle)
+          fb.approved = true;
+        });
+      });
+      // Clear display properties so highlightAllFeedbacks() handles all highlighting
+      para.displayOriginal = undefined;
+      para.displayEdited = undefined;
+    });
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  rejectAllFeedback(): void {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    this.paragraphFeedbackData.forEach(para => {
+      para.approved = false;
+      Object.keys(para.editorial_feedback).forEach(editorType => {
+        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+        feedbacks.forEach((fb: any) => {
+          // Set all to rejected (don't toggle)
+          fb.approved = false;
+        });
+      });
+      // Clear display properties so highlightAllFeedbacks() handles all highlighting
+      para.displayOriginal = undefined;
+      para.displayEdited = undefined;
+    });
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+    /** Show notification message */
+  private showNotificationMessage(message: string, type: 'success' | 'error' = 'success'): void {
+    this.notificationMessage = message;
+    this.notificationType = type;
+    this.showNotification = true;
+    
+    // Auto-hide after 3 seconds
+    setTimeout(() => {
+      this.showNotification = false;
+    }, 3000);
+  }
+
+  hoveredFeedback: { paraIndex: number, editorType: string, fbIndex: number } | null = null;
+
+  onFeedbackHover(paraIndex: number, editorType: string, fbIndex: number) {
+    this.hoveredFeedback = { paraIndex, editorType, fbIndex };
+  }
+
+  onFeedbackLeave() {
+    this.hoveredFeedback = null;
+  }
+}
