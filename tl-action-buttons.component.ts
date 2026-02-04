@@ -206,7 +206,7 @@ STYLE REFERENCE (font 11pt, 1.5 line spacing, space after — apply via structur
 
 REFERENCES SECTION (mandatory format — no bullets):
 - Use a "References" or "## References" heading, then numbered entries only.
-- Do NOT use bullet points (• or - or *) in References. Use superscript format: [¹]. ... [²]. ... [³]. ... (Unicode superscript numerals ¹²³⁴⁵⁶⁷⁸⁹).
+- Do NOT use bullet points (• or - or *) in References. Use plain numbers only: [1]. ... [2]. ... [3]. ... (citation numbers in References stay as 1, 2, 3 — no superscript).
 - Each reference: number then source, title, URL on same line (or wrap with single line break; Body Text style, 1.5 spacing).
 - One blank line (space after) between each reference entry. Same font and line spacing as Body Text.
 
@@ -216,13 +216,13 @@ OUTPUT FORMAT (use only these elements; preserve all content):
 - Content bullet lists: - or * (one item per line; indent for nested). Do not use bullets in References.
 - Numbered content lists: 1. 2. 3. Alphabetical: A. B. C. or a. b. c.
 - Paragraphs: normal text (Body Text). Quotes: > quoted text
-- References: ## References then [¹]. Source, "Title", URL — one entry per number (use superscript ¹²³⁴⁵⁶⁷⁸⁹ in brackets), no bullets, single blank line between entries.
+- References: ## References then [1]. Source, "Title", URL — one entry per number (keep plain numbers [1], [2], [3] in References; do not use superscript here), no bullets, single blank line between entries.
 - Single blank line between blocks; no double returns (space after is applied by style).
 
 RULES:
 - Preserve every sentence and citation; only add markdown structure.
 - Do not add or remove content.
-- References section: superscript format only ([¹]. [²]. [³]. — Unicode ¹²³⁴⁵⁶⁷⁸⁹); never use bullet points (• or - or *) in References.
+- References section: plain numbers only ([1]. [2]. [3]. — do not use superscript in References); never use bullet points (• or - or *) in References.
 - Single blank line between paragraphs and between reference entries (space after); no double returns.
 - Output ONLY the raw markdown document. No code fences, no preamble, no explanation.""",
         },
@@ -1392,14 +1392,16 @@ Examples:
 
 STEP 3: DISPLAY URLS IN REFERENCES SECTION
 
-Format for public URLs (use superscript in bracket):
-[¹] Source Name, "Document Title," Year, Complete_URL
+Use plain citation numbers [1], [2], [3] in References (no superscript). Inline citations use superscript [¹], [²], [³]; References list uses [1], [2], [3].
+
+Format for public URLs:
+[1] Source Name, "Document Title," Year, Complete_URL
 
 Format for PwC internal URLs:
-[²] Source Name, "Document Title," Complete_URL (PwC Internal - Authentication Required)
+[2] Source Name, "Document Title," Complete_URL (PwC Internal - Authentication Required)
 
 Format for no URL:
-[³] Source Name, "Document Title" (No URL available)
+[3] Source Name, "Document Title" (No URL available)
 
 CRITICAL: NEVER write "(no public URL)" when a URL exists in the metadata
 
@@ -1409,10 +1411,10 @@ REFERENCE LIST REQUIREMENTS
 
 MANDATORY:
 - Include "References" section at the end
-- Number sequentially; display as superscript in brackets: ¹, ², ³, ⁴... (Unicode ¹²³⁴⁵⁶⁷⁸⁹)
+- Number sequentially (1, 2, 3, 4...) in References — use plain [1], [2], [3], not superscript
 - NO gaps in numbering
 - NO duplicate numbers
-- Every inline citation [ⁿ] MUST have corresponding reference entry [ⁿ] (same superscript number ¹²³⁴⁵⁶⁷⁸⁹)
+- Every inline citation [ⁿ] (superscript ¹²³ in body) MUST have corresponding reference entry [n] (plain 1, 2, 3 in References list); same order: first ref = [1] / [¹], second = [2] / [²], etc.
 - URLs in inline citations MUST match URLs in References
 
 ═══════════════════════════════════════════════════════════════
