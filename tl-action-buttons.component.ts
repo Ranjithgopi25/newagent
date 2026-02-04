@@ -1747,13 +1747,13 @@ Examples:
 CRITICAL — URL PRESERVATION:
 - When converting citation markers, ONLY convert the marker itself (e.g., "[1]" or "(Ref. 1)")
 - DO NOT remove or modify any text that follows the citation marker, including URLs
-- If a citation marker is followed by "https:" or a URL, wrap the URL in parentheses
+- If a citation marker is followed by "https:" or a URL, the superscript MUST be CLICKABLE and MUST link to that URL using markdown link format with the superscript as the link text.
+- Use: `[¹](https://example.com)` (and similarly for ², ³, etc.)
 - Examples:
-  - "[1]https://example.com" → "¹(https://example.com)" (URL in parentheses)
-  - "[1]https:" → "¹(https:)" (URL prefix in parentheses)
-  - "Text [1]https://example.com more text" → "Text ¹(https://example.com) more text" (URL in parentheses)
-  - "(Ref. 1) https://example.com" → "¹ (https://example.com)" (URL in parentheses with space)
-  - "[1]http://example.com" → "¹(http://example.com)" (URL in parentheses)
+  - "[1]https://example.com" → "[¹](https://example.com)"
+  - "Text [1]https://example.com more text" → "Text [¹](https://example.com) more text"
+  - "(Ref. 1) https://example.com" → "[¹](https://example.com)" (keep surrounding text; the superscript itself is the clickable link)
+  - "[1]http://example.com" → "[¹](http://example.com)"
 
 IMPORTANT:
 - Remove parentheses and "Ref." text
@@ -2289,43 +2289,55 @@ REFERENCES/SOURCES LIST AT END — NUMBERING:
 REFERENCE FORMAT CONVERSION — MANDATORY
 ============================================================
 
-INLINE CITATIONS (in paragraph body) — CLICKABLE SUPERSCRIPT:
-- Convert ALL inline reference markers to clickable superscript so the citation links to the source URL.
-- Use this EXACT format for inline citations: <sup>[ [ⁿ](URL) ]</sup> where n is Unicode superscript ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ (NOT plain 1, 2, 3).
-- Get the URL from the matching entry in the References section (ref 1 → [¹](URL), ref 2 → [²](URL)). If no URL, use "#": <sup>[ [¹](#) ]</sup>.
+Convert ALL reference markers to superscript format using Unicode superscript digits.
 
-Conversion rules for INLINE (body) text:
-- "(Ref. 1)" or "[1]" → <sup>[ [¹](URL) ]</sup> (use URL from References entry 1)
-- "(Ref. 2)" or "[2]" → <sup>[ [²](URL) ]</sup>
-- "(Ref. 1; Ref. 2)" → <sup>[ [¹](URL1) ]</sup><sup>[ [²](URL2) ]</sup> (one superscript per reference)
+Conversion rules:
+- "(Ref. 1)" → "¹"
+- "(Ref. 2)" → "²"
+- "(Ref. 3)" → "³"
+- "[1]" → "¹" (bracket format)
+- "[2]" → "²" (bracket format)
+- "[3]" → "³" (bracket format)
+- "(Ref. 1; Ref. 2)" → "¹²" or "¹,²" (use comma if multiple distinct references)
+- "(Ref. 1, Ref. 2, Ref. 3)" → "¹,²,³"
+- "(Ref. 1; Ref. 2; Ref. 3)" → "¹²³" or "¹,²,³" (use comma for clarity with multiple references)
 
-REFERENCES SECTION (end of document) — PLAIN NUMBERS:
-- Keep the References list as plain [1], [2], [3]. Do NOT use superscript ¹²³ in the References section.
-- Format: [1]. Source, "Title", URL — one per line.
+Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
 
-Examples (inline only):
-- "According to research (Ref. 1), the findings show..." → "According to research<sup>[ [¹](https://example.com) ]</sup>, the findings show..."
-- "The data [1] supports..." → "The data<sup>[ [¹](URL_from_ref_1) ]</sup> supports..."
+Examples:
+- "According to research (Ref. 1), the findings show..." → "According to research¹, the findings show..."
+- "Multiple studies (Ref. 1; Ref. 2) indicate..." → "Multiple studies¹² indicate..." or "Multiple studies¹,² indicate..."
+- "The data (Ref. 1, Ref. 2, Ref. 3) supports..." → "The data¹,²,³ supports..."
 
-CRITICAL:
-- Inline citations MUST be clickable (link to URL). Do NOT output plain "¹" or "¹(URL)" — always use <sup>[ [¹](URL) ]</sup>.
-- If the body already contains plain superscript ¹, ², ³ (no link), replace each with <sup>[ [ⁿ](URL) ]</sup> using the URL from the matching References entry.
-- References section: keep [1]. [2]. [3]. (plain numbers only).
-- Match each inline marker to its References entry to get the correct URL. NEVER remove URLs.
+CRITICAL — URL PRESERVATION:
+- When converting citation markers, ONLY convert the marker itself (e.g., "[1]" or "(Ref. 1)")
+- DO NOT remove or modify any text that follows the citation marker, including URLs
+- If a citation marker is followed by "https:" or a URL, wrap the URL in parentheses
+- Examples:
+  - "[1]https://example.com" → "¹(https://example.com)" (URL in parentheses)
+  - "[1]https:" → "¹(https:)" (URL prefix in parentheses)
+  - "Text [1]https://example.com more text" → "Text ¹(https://example.com) more text" (URL in parentheses)
+  - "(Ref. 1) https://example.com" → "¹ (https://example.com)" (URL in parentheses with space)
+  - "[1]http://example.com" → "¹(http://example.com)" (URL in parentheses)
+
+IMPORTANT:
+- Remove parentheses and "Ref." text
+- Remove square brackets from "[1]" format
+- Convert numbers to superscripts
+- Place superscripts immediately after the referenced text (no space before superscript)
+- For multiple references, combine superscripts or use comma-separated format for clarity
+- NEVER remove URLs or any text that appears after citation markers
 
 ============================================================
 CITATION LINK FORMAT CONVERSION — MANDATORY
 ============================================================
 
-EXCEPTION — DO NOT convert inline citation links:
-- Inline reference links in format <sup>[ [¹](URL) ]</sup>, [¹](URL), [²](URL), etc. (superscript digits ¹²³⁴⁵⁶⁷⁸⁹ as link text) MUST remain as clickable links. Do NOT convert these to "¹ [URL]" or strip the link.
-- Only convert narrative/source links where the link text is a title or phrase (e.g. [PwC research](URL)), not a single superscript digit.
-
-CRITICAL: You MUST convert ALL other markdown links to the required format: Title as plain text (NO brackets), URL in square brackets ONLY.
+CRITICAL: You MUST convert ALL markdown links to the required format: Title as plain text (NO brackets), URL in square brackets ONLY.
 
 CONVERSION RULES — ABSOLUTE:
-- Convert markdown links `[Title](URL)` to format: `Title [URL]` (when Title is NOT a superscript citation digit)
+- Convert markdown links `[Title](URL)` to format: `Title [URL]`
 - Convert backend format `[Title](URL: https://...)` to format: `Title [https://...]`
+- EXCEPTION (MANDATORY): Do NOT convert citation superscript links of the form `[¹](https://...)`, `[²](https://...)`, etc. These MUST remain as markdown links so the superscript is clickable.
 - Extract the URL from parentheses and place it in square brackets `[URL]` after the title
 - Keep the title as plain text with NO brackets (remove all square brackets from title)
 - Square brackets `[]` are ONLY for URLs (https://... or url), NEVER for titles
@@ -2403,11 +2415,12 @@ VALIDATION — REQUIRED BEFORE OUTPUT
 Before responding, verify:
 - The formatted output has the SAME number of logical blocks (title/paragraphs/headings/bullet_list) as the input, in the SAME order, so block-level formatting stays aligned.
 - All numbered/lettered list prefixes are preserved
-- All inline reference markers are converted to clickable superscript format <sup>[ [¹](URL) ]</sup> (superscript ¹²³⁴⁵⁶⁷⁸⁹ in brackets, linking to URL); References section keeps plain [1], [2], [3]
-- ALL markdown links `[Title](URL)` (where Title is not a superscript citation digit) have been converted to format `Title [URL]`; inline citation links <sup>[ [¹](URL) ]</sup> must remain as clickable links
+- All reference markers are converted to superscripts
+- ALL markdown links `[Title](URL)` and `[Title](URL: https://...)` have been converted to format `Title [URL]` (title as plain text, URL in brackets)
 - No link URLs have been removed or converted to HTML
-- Inline citation links are preserved and clickable; other links use Title [URL] format
-- All URLs are preserved (in square brackets for non-citation links, or in citation link href for inline refs)
+- No link titles have been removed (leaving only `[URL]`)
+- All URLs are preserved in square brackets `[URL]` format
+- Links in citation sections, inline in paragraphs, and elsewhere are all converted to the required format
 - Spacing is consistent (no extra spaces)
 - Paragraph spacing is appropriate (not excessive)
 - Alignment is correct (paragraphs justified, headings left-aligned)
