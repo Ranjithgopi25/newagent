@@ -1,6 +1,4 @@
 
-from typing import List, Dict
-
 BASE_OUTPUT_FORMAT = """
 ### BASE OUTPUT FORMAT (MANDATORY)
 
@@ -2334,6 +2332,7 @@ CONVERSION RULES — ABSOLUTE:
 - Square brackets `[]` are ONLY for URLs (https://... or url), NEVER for titles
 - Preserve the full URL exactly as written
 - Links can appear ANYWHERE: in citation sections, inline in paragraphs, in lists, etc.
+- In paragraphs that contain BOTH a citation superscript and an inline link, preserve BOTH. Do not remove or drop the inline link (Title [URL]) when a superscript is present in the same paragraph. Example: "According to research<sup>[ [¹](URL) ]</sup>, see PwC report [https://...]." must keep both the superscript and the inline [https://...].
 
 Examples of CORRECT conversion:
 - Citation section: `1. [PwC Global CEO Survey](https://www.pwc.com/ceosurvey)` → `1. PwC Global CEO Survey [https://www.pwc.com/ceosurvey]`
@@ -2412,6 +2411,7 @@ Before responding, verify:
 - No link titles have been removed (leaving only `[URL]`)
 - All URLs are preserved in square brackets `[URL]` format
 - Links in citation sections, inline in paragraphs, and elsewhere are all converted to the required format
+- In every paragraph that has both a citation and an inline link, both the clickable superscript and the inline Title [URL] are present; no inline URLs removed.
 - Spacing is consistent (no extra spaces)
 - Paragraph spacing is appropriate (not excessive)
 - Alignment is correct (paragraphs justified, headings left-aligned)
@@ -2428,49 +2428,30 @@ Return ONLY the formatted article text. No extra text, explanations, or commenta
 """
 
 
+# Combined prompt: formatting + markdown structure in one LLM call (used by generate_final_article).
+FINAL_FORMATTING_AND_MARKDOWN_PROMPT = (
+    FINAL_FORMATTING_PROMPT.rstrip()[: FINAL_FORMATTING_PROMPT.rstrip().rfind("============================================================\nNOW FORMAT THE FOLLOWING ARTICLE:")]
+    + """============================================================
+MARKDOWN STRUCTURE — APPLY TO OUTPUT
+============================================================
 
-# ------------------------------------------------------------
-# MARKDOWN STRUCTURE (edit content -> standard markdown for UI and export)
-# ------------------------------------------------------------
-
-
-def build_markdown_structure_prompt_edit_content(content: str) -> List[Dict[str, str]]:
-    """Build prompt for converting final-formatted edit content into standard markdown (title, headings, lists, citations) for UI and export. Preserves citation format; References numbered only, no bullets."""
-    return [
-        {
-            "role": "system",
-            "content": """You convert final-formatted article text into correctly formatted markdown that maps to document styles. The input is already formatted (superscripts, Title [URL], spacing). Add ONLY markdown structure; do not add or remove content.
-
-STYLE REFERENCE (structure only; renderer applies size/spacing):
+Apply the following markdown structure to your output (in addition to the formatting rules above):
 - Body Text: normal paragraphs. Single blank line between blocks; no double returns.
 - Heading 1–4: # ## ### #### (one title, then main sections, sub-sections, sub-points).
 - List Bullet: - or * for content lists only. Do NOT use bullets for References.
-- List Number: 1. 2. 3. for numbered content lists.
-- List Alpha: A. B. C. or a. b. c. for alphabetical lists.
+- List Number: 1. 2. 3. for numbered content lists. List Alpha: A. B. C. or a. b. c. for alphabetical lists.
 - Quote: > for blockquote.
-- Inline citations: preserve existing format — <sup>[ [¹](URL) ]</sup>, <sup>[ [²](URL) ]</sup> (Unicode ¹²³⁴⁵⁶⁷⁸⁹, same as refine content). Do not remove or break links. Keep Title [URL] as-is.
-
-REFERENCES SECTION (mandatory — numbered only, no bullets):
-- Use "## References" (or ## Sources / ## Bibliography) then numbered entries only: 1. 2. 3.
-- Do NOT use bullet points (• or - or *) in References. Use plain numbers 1., 2., 3. only. If the input has bullets in References, convert them to 1. 2. 3.
-- Each reference: number then source, title, URL. One blank line between entries.
-- If the input already has citation numbers (superscript ¹²³ or Ref. 1, [1]), preserve them; same numbers in body and in References list. If there are no numbers in References, add 1. 2. 3. in order and ensure body citations match.
-
-OUTPUT FORMAT (use only these elements; preserve all content):
-- One level-1 title: # Title
-- Main sections: ## Heading; sub-sections: ### and ####
-- Content bullet lists: - or * (one item per line). Do not use bullets in References.
-- Numbered content lists: 1. 2. 3. Alphabetical: A. B. C. or a. b. c.
-- Paragraphs: normal text. Quotes: > quoted text
-- References: ## References then 1. ... 2. ... 3. ... (numbered only, no bullets, single blank line between entries).
+- Inline citations: preserve <sup>[ [ⁿ](URL) ]</sup> and Title [URL] exactly.
+- References: Use "## References" (or ## Sources / ## Bibliography) then numbered entries only: 1. 2. 3. Do NOT use bullet points in References. Each reference: number then source, title, URL. One blank line between entries.
 - Single blank line between blocks; no double returns.
+- Preserve every sentence and citation; only add markdown structure. Do not add or remove content. Output ONLY the raw markdown document. No code fences, no preamble, no explanation.
 
-RULES:
-- Preserve every sentence and citation; only add markdown structure.
-- Do not add or remove content.
-- References section: plain numbers 1. 2. 3. only; never use bullet points (• or - or *) in References.
-- Preserve inline citation format (<sup>[ [ⁿ](URL) ]</sup>, same as refine content) exactly as in the input; URLs must remain intact for UI and export.
-- Output ONLY the raw markdown document. No code fences, no preamble, no explanation.""",
-        },
-        {"role": "user", "content": content},
-    ]
+============================================================
+NOW FORMAT THE FOLLOWING ARTICLE:
+============================================================
+
+{article_text}
+
+Return ONLY the formatted article text with both formatting fixes and markdown structure applied. No extra text, explanations, or commentary.
+"""
+)
