@@ -1,558 +1,797 @@
-@if (isOpen) {
-  <div class="flow-backdrop">
-    <div class="flow-container" (click)="$event.stopPropagation()">
-      <div class="flow-header">
-        <h2 class="flow-title">Edit Content</h2>
-        <div class="header-buttons">
-          <button class="back-btn" (click)="back()" aria-label="Back">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-              <path d="M15 18l-6-6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                stroke-linejoin="round" />
-              </svg>
-            </button>
-            <button class="close-btn" (click)="onClose()" aria-label="Close">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-              </svg>
-            </button>
-          </div>
-        </div>
-        <div class="flow-content">
-          <h3 class="panel-title">Great! To get started, please upload your existing content and let me know which editorial services you need</h3>
-          <div class="upload-item">
-            <label class="form-label">
-              Upload draft
-              <span class="required">(required)</span>
-            </label>
-            <p class="helper-text">
-            Supported formats: .pdf,.docx,.txt,.md,.doc
-            </p>
-            <app-file-upload
-              accept=".pdf,.docx,.txt,.md,.doc"
-              label="Upload Document"
-              (fileSelected)="onFileSelect($event)"
-              (fileRemoved)="onFileRemoved()">
-            </app-file-upload>
-          </div>
-          <div class="form-section">
-            <label class="form-label">
-              Choose the editing service(s) to apply
-            </label>
-            <div class="services-checklist">
-              @for (editor of selectableEditors; track editor) {
-                <label class="toggle-item">
-            <input 
-              type="checkbox" 
-              [checked]="isEditorSelected(editor.id)"
-              (change)="toggleEditor(editor.id)"
-              [id]="editor.id">
-            <span class="toggle-switch">
-              <span class="toggle-indicator"></span>
-              <span class="toggle-label">{{editor.name}}</span>
-            </span>
-          </label>
-                }
-                @if (brandAlignmentEditor) {
-                  <label class="toggle-item disabled">
-            <input 
-              type="checkbox" 
-              [checked]="true"
-              id="brand-alignment"
-              disabled>
-            <span class="toggle-switch disabled">
-              <span class="toggle-indicator"></span>
-              <span class="toggle-label">{{brandAlignmentEditor.name}}</span>
-            </span>
-          </label>
-                  }
-        </div>
-      </div>
+/**
+ * Shared utility functions for Edit Content workflow
+ * Ensures deterministic results across Quick Start and Guided Journey flows
+ * 
+ * NOTE: EDITOR_ORDER and EDITOR_NAME_MAP must match backend constants in
+ * edit_content_service.py for consistent behavior between frontend and backend
+ */
+import { environment } from "../../../environments/environment";
+import { marked } from 'marked';
+// Editor processing order (must match backend EDITOR_ORDER in edit_content_service.py)
+export const EDITOR_ORDER = ['development', 'content', 'line', 'copy', 'brand-alignment'] as const;
 
-      <!-- Display upload error -->
-              @if (fileUploadError) {
-                <div class="error-message">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>
-        <span>{{ fileUploadError }}</span>
-        <button class="error-close-btn" (click)="clearUploadError()" aria-label="Close error">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
-      </div>
-              }
-      <!-- Display file read error -->
-              @if (fileReadError) {
-                <div class="error-message">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>
-        <span>{{ fileReadError }}</span>
-        <button class="error-close-btn" (click)="clearReadError()" aria-label="Close error">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
-      </div>
-              }
-      <button 
-        class="apply-btn" 
-        (click)="editContent()"
-        [disabled]="!canEdit() || isGenerating">
-                @if (isGenerating) {
-                  <span class="spinner"></span>
-                }
-        <span>{{ isGenerating ? 'Editing...' : 'Edit Content' }}</span>
-      </button>
+export type EditorType = 'development' | 'content' | 'line' | 'copy' | 'brand-alignment';
 
-      <!-- Per-paragraph feedback UI -->
-              @if (paragraphFeedbackData && paragraphFeedbackData.length) {
-                <div id="paragraph-feedback-section">
-                  @if (paragraphFeedbackData && paragraphFeedbackData.length && !showFinalOutput && !hasNoParagraphFeedback) {
-                    <div class="bulk-actions">
-          <button class="ef-approve-btn" (click)="approveAllFeedback()">Approve All</button>
-          <button class="ef-reject-btn" (click)="rejectAllFeedback()">Reject All</button>
-        </div>
-                  }
-
-                  @if (hasNoParagraphFeedback) {
-                    <div class="paragraph-no-feedback">
-                      <p>
-                        There are no feedback changes from
-                        <strong>{{ getEditorDisplayName(currentEditor) }}</strong>.
-                      </p>
-                    </div>
-                  }
-        <!-- <div *ngIf="autoApprovedFeedbackCount > 0" class="auto-approved-info">
-          <span>{{ autoApprovedFeedbackText }}</span>
-        </div> -->
-                @for (para of getParagraphsForFeedbackReview; track para) {
-                  <div
-            class="paragraph-feedback-section">
-          <div class="paragraph-row">
-            <div class="paragraph-col">
-              <h5>Original</h5>
-                <div class="paragraph-text-box"
-                    [innerHTML]="highlightAllFeedbacks(
-                      para,
-                      hoveredFeedback && hoveredFeedback.paraIndex === para.index ? hoveredFeedback : undefined
-                    ).original">
-                </div>
-            </div>
-            <div class="paragraph-col"
-                [ngClass]="{
-                  'approved-section': para.approved === true,
-                  'rejected-section': para.approved === false
-                }">
-              <h5>Edited</h5>
-              <div class="paragraph-text-box"
-                  [innerHTML]="highlightAllFeedbacks(
-                    para,
-                    hoveredFeedback && hoveredFeedback.paraIndex === para.index ? hoveredFeedback : undefined
-                  ).edited">
-              </div>
-            </div>
-          </div>
-
-          <div class="editorial-feedback-list">
-            @for (editorType of objectKeys(para.editorial_feedback); track editorType) {
-              @if ($any(para.editorial_feedback)[editorType]?.length) {
-                <div class="editor-type-label">
-                  {{ editorType | titlecase }} Editor Feedback
-                </div>
-
-                @for (
-                  fb of $any(para.editorial_feedback)[editorType];
-                  track fb;
-                  let fbIndex = $index
-                ) {
-                  <div
-                    class="ef-card"
-                    [attr.id]="'fb-' + para.index + '-' + editorType + '-' + fbIndex"
-                    (mouseenter)="onFeedbackHover(para.index, editorType, fbIndex)"
-                    (mouseleave)="onFeedbackLeave()"
-                  >
-                    <div class="ef-header">
-                      <span class="ef-issue">{{ fb.issue }}</span>
-                      <span
-                        class="ef-priority"
-                        [ngClass]="{
-                          'priority-critical': fb.priority === 'Critical',
-                          'priority-important': fb.priority === 'Important',
-                          'priority-enhancement': fb.priority === 'Enhancement'
-                        }"
-                      >
-                        {{ fb.priority }}
-                      </span>
-                    </div>
-
-                    <div class="ef-body">
-                      <div class="ef-row ef-fix">
-                        <span class="ef-label">Fix:</span>
-                        <span class="ef-value">{{ fb.fix }}</span>
-                      </div>
-
-                      <div class="ef-row ef-rule">
-                        <span class="ef-label-small">Rule:</span>
-                        <span class="ef-value-small">{{ fb.rule_used || fb.rule }}</span>
-                      </div>
-
-                      <div class="ef-row ef-impact">
-                        <span class="ef-label-small">Impact:</span>
-                        <span class="ef-value-small">{{ fb.impact }}</span>
-                      </div>
-
-                      @if (!showFinalOutput) {
-                        <div class="ef-actions">
-                          <button
-                            class="ef-approve-btn"
-                            (click)="applyEditorialFix(para, editorType, fb)"
-                            [disabled]="fb.approved || showFinalOutput"
-                          >
-                            ✓ Approve
-                          </button>
-                          <button
-                            class="ef-reject-btn"
-                            (click)="rejectEditorialFix(para, editorType, fb)"
-                            [disabled]="fb.approved === false || showFinalOutput"
-                          >
-                            ✗ Reject
-                          </button>
-                        </div>
-                      }
-
-                      @if (fb.approved === true) {
-                        <div class="ef-status">
-                          <span class="ef-approved">✓ Approved</span>
-                        </div>
-                      }
-
-                      @if (fb.approved === false) {
-                        <div class="ef-status">
-                          <span class="ef-rejected">✗ Rejected</span>
-                        </div>
-                      }
-                    </div>
-                  </div>
-                }
-              }
-            }
-          </div>
-
-
-          <!-- <div *ngIf="para.tags?.length" class="paragraph-tags">
-            <strong>Services Used:</strong>
-            <span *ngFor="let tag of para.tags" class="tag-badge">{{ tag }}</span>
-          </div> -->
-        </div>
-      }
-
-        <!-- Sequential Workflow Progress Indicator -->
-        @if (isSequentialMode && currentEditor) {
-          <div class="sequential-progress">
-            <div class="progress-header">
-              <h4 class="progress-title">Editor Progress</h4>
-              <span class="progress-badge">
-                {{ currentEditorIndex + 1 }} of {{ totalEditors }}
-              </span>
-            </div>
-            <!-- <div class="progress-bar-container">
-              <div class="progress-bar" [style.width.%]="((currentEditorIndex + 1) / totalEditors) * 100"></div>
-            </div>
-            <p class="progress-text">
-              Current Editor: <strong>{{ getEditorDisplayName(currentEditor) }}</strong>
-            </p> -->
-
-            <!-- Horizontal Editor Timeline -->
-            @if (totalEditors > 0 && selectedEditorsForTimeline.length > 0) {
-              <div class="editor-timeline horizontal">
-                @for (editor of selectedEditorsForTimeline; track editor.id; let i = $index; let last = $last) {
-                  @if (editorProgressList[i]) {
-                    <div
-                      class="timeline-item"
-                      [ngClass]="{
-                        'completed': editorProgressList[i].status === 'completed',
-                        'active': editorProgressList[i].status === 'processing' || editorProgressList[i].status === 'review-pending',
-                        'upcoming': editorProgressList[i].status === 'pending'
-                      }"
-                    >
-                      <div class="timeline-marker" [ngClass]="{ 'blink-marker': editorProgressList[i].status === 'processing' }">
-                        @if (editorProgressList[i].status === 'completed') {
-                          ✓
-                        } @else {
-                          <span [ngClass]="{ 'blink-number': editorProgressList[i].status === 'processing' }">{{ i + 1 }}</span>
-                        }
-                      </div>
-                      <div class="timeline-editor-name">
-                        {{ editor.name }}
-                      </div>
-                      <div class="timeline-status" [ngClass]="{ 'loading-status': editorProgressList[i].status === 'processing' }">
-                        @if (editorProgressList[i].status === 'completed') { Completed }
-                        @if (editorProgressList[i].status === 'processing') {
-                          <span class="blink-animation">In Progress</span>
-                        }
-                        @if (editorProgressList[i].status === 'review-pending') {
-                          Review Pending
-                        }
-                        @if (editorProgressList[i].status === 'pending') { Not Started }
-                      </div>
-                    </div>
-                    
-                    <!-- Connector line -->
-                    @if (!last) {
-                      <div 
-                        class="timeline-connector"
-                        [ngClass]="{ 'completed': editorProgressList[i].status === 'completed' }">
-                      </div>
-                    }
-                  }
-                }
-              </div>
-            }
-
-            @if (paragraphFeedbackData && paragraphFeedbackData.length) {
-              <div class="paragraph-status-summary">
-                <h5 class="status-summary-title">Feedback Summary</h5>
-                <div class="feedback-pills">
-                  <button
-                    type="button"
-                    class="status-pill approved"
-                    (click)="scrollToFirstFeedbackByStatus('approved')"
-                    [disabled]="approvedFeedbackCount === 0">
-                    Approved: <strong>{{ approvedFeedbackCount }}</strong>
-                  </button>
-
-                  <button
-                    type="button"
-                    class="status-pill rejected"
-                    (click)="scrollToFirstFeedbackByStatus('rejected')"
-                    [disabled]="rejectedFeedbackCount === 0">
-                    Rejected: <strong>{{ rejectedFeedbackCount }}</strong>
-                  </button>
-
-                  <button
-                    type="button"
-                    class="status-pill pending"
-                    (click)="scrollToFirstFeedbackByStatus('pending')"
-                    [disabled]="pendingFeedbackCount === 0">
-                    Pending: <strong>{{ pendingFeedbackCount }}</strong>
-                  </button>
-                </div>
-              </div>
-            }
-          </div>
-        }
-
-        <!-- Sequential Workflow: Show both Next Editor and Generate Final Output options -->
-        @if (isSequentialMode && paragraphFeedbackData.length > 0 && !showFinalOutput) {
-          <div class="sequential-actions-container">
-            <div class="final-output-actions">
-              <button 
-                type="button"
-                class="final-output-btn"
-                (click)="generateFinalOutput()"
-                [disabled]="!allParagraphsDecided || isGeneratingFinal || isGenerating">
-                @if (isGeneratingFinal) {
-                  <span class="spinner"></span>
-                }
-                {{ isGeneratingFinal ? 'Generating Final Output...' : 'Generate Final Output' }}
-              </button>
-              @if (!allParagraphsDecided) {
-                <p class="final-output-hint">
-                  Please approve or reject all paragraph edits and feedback to generate the final article.
-                </p>
-              }
-            </div>
-
-            <!-- Next Editor Button (only if not last editor) -->
-            @if (!isLastEditor) {
-              <div class="next-editor-actions">
-                <button 
-                  type="button"
-                  class="next-editor-btn"
-                  (click)="nextEditor()"
-                  [disabled]="!allParagraphsDecided || isGenerating">
-                  @if (isGenerating) {
-                    <span class="spinner"></span>
-                  }
-                  {{ isGenerating ? 'Loading Next Editor...' : 'Next Editor →' }}
-                </button>
-                @if (!allParagraphsDecided) {
-                  <p class="next-editor-hint">
-                    Please approve or reject all paragraph edits before proceeding to the next editor.
-                  </p>
-                }
-              </div>
-            }
-
-            <!-- Generate Final Output Button (always available in sequential mode) -->
-            <!-- <div class="final-output-actions">
-              <button 
-                type="button"
-                class="final-output-btn"
-                (click)="generateFinalOutput()"
-                [disabled]="!allParagraphsDecided || isGeneratingFinal">
-                @if (isGeneratingFinal) {
-                  <span class="spinner"></span>
-                }
-                {{ isGeneratingFinal ? 'Generating Final Output...' : 'Generate Final Output' }}
-              </button>
-              @if (!allParagraphsDecided) {
-                <p class="final-output-hint">
-                  Please approve or reject all paragraph edits and feedback to generate the final article.
-                </p>
-              }
-            </div> -->
-          </div>
-        }
-
-        <!-- Non-sequential mode: Show only Generate Final Output -->
-        @if (!isSequentialMode && !showFinalOutput && paragraphFeedbackData.length > 0) {
-          <div class="final-output-actions">
-            <button 
-              type="button"
-              class="final-output-btn"
-              (click)="generateFinalOutput()"
-              [disabled]="!allParagraphsDecided || isGeneratingFinal || isGenerating">
-              @if (isGeneratingFinal) {
-                <span class="spinner"></span>
-              }
-              {{ isGeneratingFinal ? 'Generating Final Output...' : 'Generate Final Output' }}
-            </button>
-            @if (!allParagraphsDecided) {
-              <p class="final-output-hint">
-                Please approve or reject all paragraph edits and feedback to generate the final article.
-              </p>
-            }
-          </div>
-        }
-
-        <!-- Final Output Display -->
-              @if (showFinalOutput && finalArticle) {
-                <div class="final-output-section">
-          <!-- <h3 class="final-output-title">Final Article</h3> -->
-          <div class="final-output-content revised-content-formatted" [innerHTML]="finalArticleDisplay"></div>
-          
-          <!-- Export Actions -->
-          <div class="export-actions">
-            <button 
-              type="button"
-              class="export-btn pdf-btn"
-              (click)="downloadRevised('pdf')"
-              title="Export as PDF">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-                <line x1="16" y1="13" x2="8" y2="13"></line>
-                <line x1="16" y1="17" x2="8" y2="17"></line>
-              </svg>
-              Export PDF
-            </button>
-            <button 
-              type="button"
-              class="export-btn docx-btn"
-              (click)="downloadRevised('docx')"
-              title="Export as DOCX">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-                <line x1="16" y1="13" x2="8" y2="13"></line>
-                <line x1="16" y1="17" x2="8" y2="17"></line>
-              </svg>
-              Export DOCX
-            </button>
-            <button 
-              type="button"
-              class="export-btn copy-btn"
-              (click)="copyToClipboard()"
-              [title]="isCopied ? 'Copied!' : 'Copy to clipboard'">
-              @if (isCopied) {
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                Copied !
-              } @else {
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-                Copy
-              }
-            </button>
-          </div>
-                  <!-- Satisfaction Prompt -->
-                  <!-- @if (showSatisfactionPrompt) {
-                    <div class="satisfaction-prompt">
-            <p class="satisfaction-question">{{ getSatisfactionPromptText() }}</p>
-            <div class="satisfaction-buttons">
-              <button 
-                class="satisfaction-btn satisfied-btn"
-                (click)="onSatisfactionResponse(true)">
-                ✓ Satisfied
-              </button>
-              <button 
-                class="satisfaction-btn improve-btn"
-                (click)="onSatisfactionResponse(false)">
-                ✗ Need Improvement
-              </button>
-            </div>
-          </div>
-                  } -->
-          <!-- Improvement Input -->
-                  <!-- @if (showImprovementInput) {
-                    <div class="improvement-input">
-            <label class="improvement-label">What improvements would you like?</label>
-            <textarea 
-              class="improvement-textarea"
-              [(ngModel)]="improvementRequestText"
-              placeholder="Describe the improvements you'd like to see..."></textarea>
-            <div class="improvement-actions">
-              <button 
-                class="improvement-submit-btn"
-                (click)="submitImprovementRequest()"
-                [disabled]="!isImprovementRequestValid || isGenerating">
-                {{ isGenerating ? 'Processing...' : 'Submit' }}
-              </button>
-              <button 
-                class="improvement-cancel-btn"
-                (click)="cancelImprovementRequest()">
-                Cancel
-              </button>
-            </div>
-          </div>
-                  } -->
-        </div>
-              }
-            </div>
-          }
-    </div>
-  </div>
-  <!-- Notification Toast -->
-@if (showNotification) {
-  <div class="notification-toast" [attr.data-type]="notificationType">
-    <div class="notification-content">
-      @if (notificationType === 'success') {
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      }
-      @if (notificationType === 'error') {
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>
-      }
-      <span>{{ notificationMessage }}</span>
-    </div>
-  </div>
+/**
+ * Normalize editor IDs to ensure consistent ordering for deterministic results.
+ * Ensures brand-alignment is always included and editors are in the correct order.
+ * 
+ * @param editorIds - Array of editor IDs to normalize
+ * @returns Normalized array of editor IDs in EDITOR_ORDER sequence
+ */
+export function normalizeEditorOrder(editorIds: string[]): string[] {
+  // Create a copy to avoid mutating the input
+  let normalized = [...editorIds];
+  
+  // Ensure brand-alignment is always included
+  if (!normalized.includes('brand-alignment')) {
+    normalized.push('brand-alignment');
+  }
+  
+  // Filter and order according to EDITOR_ORDER for deterministic results
+  return EDITOR_ORDER.filter(editor => normalized.includes(editor));
 }
-</div>
+
+/**
+ * Normalize content text to ensure consistent processing.
+ * Trims whitespace and normalizes line endings.
+ * 
+ * @param content - Content text to normalize
+ * @returns Normalized content text
+ */
+export function normalizeContent(content: string): string {
+  if (!content) {
+    return '';
+  }
+  
+  // Trim leading/trailing whitespace
+  let normalized = content.trim();
+  
+  // Normalize line endings to \n (Unix-style)
+  normalized = normalized.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  
+  // Remove trailing whitespace from each line (but preserve structure)
+  // This ensures consistent processing without changing content meaning
+  normalized = normalized.split('\n')
+    .map(line => line.trimEnd())
+    .join('\n');
+  
+  return normalized;
+}
+
+/**
+ * Compute a simple hash of content for verification purposes.
+ * Used to verify identical inputs are being processed.
+ * 
+ * @param content - Content to hash
+ * @returns Hash string
+ */
+export function hashContent(content: string): string {
+  if (!content) {
+    return 'empty';
+  }
+  
+  // Simple hash function for verification
+  let hash = 0;
+  for (let i = 0; i < content.length; i++) {
+    const char = content.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  
+  return Math.abs(hash).toString(36);
+}
+
+/**
+ * Extract document title from content.
+ * Checks for H1 heading first, then first line if it looks like a title,
+ * otherwise falls back to filename.
+ * 
+ * @param content - Document content text
+ * @param filename - Optional filename to use as fallback
+ * @returns Extracted title
+ */
+export function extractDocumentTitle(content: string, filename?: string): string {
+  if (!content || !content.trim()) {
+    // Fallback to filename if no content
+    if (filename) {
+      return filename.replace(/\.[^/.]+$/, '').trim();
+    }
+    return 'Revised Article';
+  }
+
+  const normalizedContent = normalizeContent(content);
+  const lines = normalizedContent.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+
+  if (lines.length === 0) {
+    // Fallback to filename if no content lines
+    if (filename) {
+      return filename.replace(/\.[^/.]+$/, '').trim();
+    }
+    return 'Revised Article';
+  }
+
+  // Check for H1 heading at the start (# Title)
+  const firstLine = lines[0];
+  const h1Match = firstLine.match(/^#\s+(.+)$/);
+  if (h1Match && h1Match[1]) {
+    return h1Match[1].trim();
+  }
+
+  // Check if first line looks like a title
+  // Criteria: short (less than 100 chars), starts with capital, no ending punctuation (except ? or !)
+  if (firstLine.length > 0 && firstLine.length < 100) {
+    const firstChar = firstLine[0];
+    const lastChar = firstLine[firstLine.length - 1];
+    
+    // Check if starts with capital letter or number
+    const startsWithCapital = /^[A-Z0-9]/.test(firstChar);
+    
+    // Check if doesn't end with period, comma, or semicolon (but allow ? or !)
+    const endsWithPunctuation = /[.,;]$/.test(lastChar);
+    
+    // Check if it's not a list item or code block
+    const isListItem = /^[-*+\d.]\s/.test(firstLine);
+    const isCodeBlock = firstLine.startsWith('```') || firstLine.startsWith('`');
+    
+    if (startsWithCapital && !endsWithPunctuation && !isListItem && !isCodeBlock) {
+      return firstLine;
+    }
+  }
+
+  // Fallback to filename
+  if (filename) {
+    return filename.replace(/\.[^/.]+$/, '').trim();
+  }
+
+  return 'Revised Article';
+}
+
+/** Editor name mapping (must match backend EDITOR_NAMES in edit_content_service.py) */
+const EDITOR_NAME_MAP: { [key: string]: string } = {
+  'development': 'Development Editor',
+  'content': 'Content Editor',
+  'line': 'Line Editor',
+  'copy': 'Copy Editor',
+  'brand-alignment': 'PwC Brand Alignment Editor'
+};
+
+/** Get editor display name by ID */
+export function getEditorDisplayName(editorId: string): string {
+  return EDITOR_NAME_MAP[editorId] || editorId;
+}
+
+/** Format markdown text to HTML for basic formatting (bold, italic, line breaks) */
+export function formatMarkdown(text: string): string {
+  let formatted = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  formatted = formatted.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  formatted = formatted.replace(/\n/g, '<br>');
+  return formatted;
+}
+
+/** Render markdown the same way as Quick Start / chat (marked.parse + list styles + link target + citation superscript in <p> only). Use this for final article display instead of convertMarkdownToHtml. */
+export function renderMarkdownForDisplay(markdown: string): string {
+  if (!markdown || !markdown.trim()) return '';
+  let html = (marked.parse(markdown) as string) || '';
+  html = html.replace(/<ul>\n?/g, '<ul style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+  html = html.replace(/<ol>\n?/g, '<ol style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+  html = html.replace(/<li>/g, '<li style="margin: 0; padding: 0; line-height: 1.4;">');
+  html = html.replace(/<\/li>\n?/g, '</li>');
+  html = html.replace(/<a\s+([^>]*?)href=(["'])(.*?)\2([^>]*)>/gi, (_m: string, pre: string, quote: string, url: string, post: string) => {
+    const attrs = (pre + ' ' + post).toLowerCase();
+    if (/\btarget\s*=/.test(attrs) || /\brel\s*=/.test(attrs)) return _m;
+    return `<a ${pre}href=${quote}${url}${quote}${post} target="_blank" rel="noopener noreferrer">`;
+  });
+  html = html.replace(/<p>([\s\S]*?)<\/p>/gi, (_pMatch: string, inner: string) => {
+    let paragraphHtml = inner;
+    paragraphHtml = paragraphHtml.replace(/<a\s+([^>]*?)href=(["'])([^"']*)\2([^>]*)>([^<]*)<\/a>/gi, (match: string, pre: string, quote: string, url: string, post: string, linkText: string) => {
+      const trimmed = (linkText || '').trim();
+      if (/^\[?[⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+\]?$/.test(trimmed) && /[⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(trimmed)) {
+        return `<sup><a ${pre}href=${quote}${url}${quote}${post} target="_blank" rel="noopener noreferrer" class="citation-superscript">${trimmed}</a></sup>`;
+      }
+      return match;
+    });
+    paragraphHtml = paragraphHtml.replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((https?:\/\/[^)]+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, url: string) => {
+      const text = (superscriptText || '').trim();
+      const esc = (s: string) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return `<sup><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">[${text}]</a></sup>`;
+    });
+    return `<p>${paragraphHtml}</p>`;
+  });
+  return html;
+}
+
+/** Convert markdown text to HTML with proper formatting for headings, lists, paragraphs, etc. */
+export function convertMarkdownToHtml(markdown: string): string {
+  if (!markdown || !markdown.trim()) {
+    return '';
+  }
+
+  let html = markdown;
+
+  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+
+  html = html.replace(/^---$/gm, '<hr>');
+  html = html.replace(/^\*\*\*$/gm, '<hr>');
+
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Links:
+  // - Standard markdown: [text](https://example.com)
+  // - Backend citation variant: [Title](URL: https://example.com)
+  //   If we don't strip "URL:", the href becomes invalid ("URL: https://...").
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, linkText, rawHref) => {
+    const textRaw = String(linkText ?? '');
+    const hrefRaw = String(rawHref ?? '').trim();
+
+    // Minimal escaping to avoid breaking attributes / HTML structure.
+    // Note: this utility already does simplistic markdown->HTML transforms elsewhere.
+    const escHtml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escAttr = (s: string) => escHtml(s).replace(/"/g, '&quot;');
+    const text = escHtml(textRaw);
+
+    // Handle "(URL: https://...)" (case-insensitive). URL can wrap across newlines so long citation URLs are fully clickable.
+    const citationUrlMatch = hrefRaw.match(/^url:\s*(https?:\/\/[^\s)]*(?:\n[^\s)]*)*)\s*$/i);
+    if (citationUrlMatch && citationUrlMatch[1]) {
+      const url = citationUrlMatch[1].replace(/\n/g, '').trim();
+      const urlAttr = escAttr(url);
+      const urlText = escHtml(url);
+      // Show both the title and the URL (common expectation for citation blocks)
+      // return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(${urlText})</span>`;
+      return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${urlText}</a>)</span>`;
+    }
+
+    // Standard markdown link
+    return `<a href="${escAttr(hrefRaw)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+  });
+
+  // Spacing: ensure one space before (https:// when preceded by ), ], or superscript (e.g. )²(https:// -> )² (https://)
+  html = html.replace(/([)\]⁰¹²³⁴⁵⁶⁷⁸⁹])(\s*)(\()(https?:\/\/)/g, '$1 $3$4');
+
+  // Plain URLs: in References "Title [https://...]", in-paragraph "(https://...)" or "[https://...]" -> one full clickable link
+  // Match "[https://...]" so the entire URL is one <a> (no break in middle); class citation-url-link for styling.
+  const escAttr = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const escHtml = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Format "[https://...]" as [<a>full URL</a>] so the whole URL is one clickable link when it wraps
+  html = html.replace(/\[(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)\]/g, (_match, url) => {
+    const urlTrimmed = url.replace(/\n/g, ' ').trim();
+    return `[<a class="citation-url-link" href="${escAttr(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${escHtml(urlTrimmed)}</a>]`;
+  });
+  // Standalone https:// (no brackets) -> clickable; do not match when URL is already inside an <a> (before would be ">")
+  html = html.replace(/(^|[\s.)])(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)/g, (_match, before, url) => {
+    const urlTrimmed = url.replace(/\n/g, ' ').trim();
+    return before + `<a class="citation-url-link" href="${escAttr(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${escHtml(urlTrimmed)}</a>`;
+  });
+
+  // List styles: match paragraph/export (11pt, Helvetica/Arial, line-height 1.5), tight spacing between list items (citations)
+  const listBlockStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.25em; margin-bottom: 0.5em;";
+  const listBlockStyleAfterHeading = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.2em; margin-bottom: 0.5em;";
+  const listItemStyle = "display: list-item; margin: 0.05em 0 0.2em 0;";
+
+  const lines = html.split('\n');
+  const processedLines: string[] = [];
+  let inUnorderedList = false;
+  let inOrderedList = false;
+  let lastOrderedNumber = 0; // Track last number to detect gaps
+
+  const lastProcessedLineIsHeading = () => {
+    for (let j = processedLines.length - 1; j >= 0; j--) {
+      const s = processedLines[j].trim();
+      if (!s) continue;
+      return /<\/h[1-6]>$/i.test(s) || /^<h[1-6]\b/i.test(s);
+    }
+    return false;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmedLine = line.trim();
+
+    const unorderedMatch = trimmedLine.match(/^[-*]\s+(.+)$/);
+    const orderedMatch = trimmedLine.match(/^(\d+)\.\s+(.+)$/);
+
+    if (unorderedMatch) {
+      if (!inUnorderedList) {
+        if (inOrderedList) {
+          processedLines.push('</ol>');
+          inOrderedList = false;
+          lastOrderedNumber = 0; // Reset counter when closing ordered list
+        }
+        processedLines.push(`<ul style="${listBlockStyle}">`);
+        inUnorderedList = true;
+      }
+      processedLines.push(`<li style="${listItemStyle}">${unorderedMatch[1]}</li>`);
+    } else if (orderedMatch) {
+      const originalNumber = parseInt(orderedMatch[1], 10);
+      const itemText = orderedMatch[2];
+      
+      // Check if this is a new ordered list (gap in numbering or first item)
+      const isNewList = !inOrderedList || (lastOrderedNumber > 0 && originalNumber < lastOrderedNumber);
+      
+      if (isNewList) {
+        if (inUnorderedList) {
+          processedLines.push('</ul>');
+          inUnorderedList = false;
+        }
+        if (inOrderedList) {
+          processedLines.push('</ol>');
+        }
+        const olStyle = lastProcessedLineIsHeading() ? listBlockStyleAfterHeading : listBlockStyle;
+        processedLines.push(`<ol style="${olStyle}">`);
+        inOrderedList = true;
+        lastOrderedNumber = 0; // Reset counter for new list
+      }
+      
+      // Preserve original number using value attribute to maintain correct citation order
+      // This is critical for citations which must maintain their original numbering (1, 2, 3...)
+      processedLines.push(`<li value="${originalNumber}" style="${listItemStyle}">${itemText}</li>`);
+      lastOrderedNumber = originalNumber;
+    } else {
+      if (inUnorderedList) {
+        processedLines.push('</ul>');
+        inUnorderedList = false;
+      }
+      if (inOrderedList) {
+        processedLines.push('</ol>');
+        inOrderedList = false;
+        lastOrderedNumber = 0; // Reset counter when closing ordered list
+      }
+
+      if (trimmedLine) {
+        if (trimmedLine.startsWith('<')) {
+          processedLines.push(line);
+        } else {
+          processedLines.push(`<p>${trimmedLine}</p>`);
+        }
+      } else {
+        processedLines.push('');
+      }
+    }
+  }
+
+  if (inUnorderedList) {
+    processedLines.push('</ul>');
+  }
+  if (inOrderedList) {
+    processedLines.push('</ol>');
+    lastOrderedNumber = 0; // Reset counter when closing ordered list
+  }
+
+  html = processedLines.join('\n');
+  html = html.replace(/(<p><\/p>\n?)+/g, '<p></p>');
+  html = html.replace(/<p>\s*<\/p>/g, '');
+
+  return html;
+}
+
+/** 
+ * Extract text from uploaded file
+ * Note: This uses fetch() without auth headers. For authenticated requests,
+ * callers should use their injected HttpClient or AuthFetchService instead.
+ * This function is kept for backward compatibility but may not work if
+ * backend requires authentication.
+ * 
+ * @deprecated Use HttpClient or AuthFetchService in components/services instead
+ */
+export async function extractFileText(file: File): Promise<string> {
+  const formData = new FormData();
+  formData.append('file', file);
+  
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  
+  // Get auth token if available (for non-Angular contexts)
+  const headers: HeadersInit = {};
+  
+  // Try to get token from sessionStorage (MSAL stores it there)
+  // This is a workaround since we can't inject AuthService in a utility function
+  try {
+    // Check if we're in a browser environment
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      // Look for MSAL tokens in sessionStorage
+      // MSAL stores tokens with keys like: "<clientId>.<tenantId>.<idtoken/accesstoken>"
+      const keys = Object.keys(sessionStorage);
+      const idTokenKey = keys.find(key => 
+        key.includes('idtoken') && 
+        key.includes(environment.clientId || '')
+      );
+      
+      if (idTokenKey) {
+        const tokenData = sessionStorage.getItem(idTokenKey);
+        if (tokenData) {
+          try {
+            const parsed = JSON.parse(tokenData);
+            const secret = parsed.secret;
+            if (secret) {
+              headers['Authorization'] = `Bearer ${secret}`;
+              console.log('[extractFileText] Added auth token from sessionStorage');
+            }
+          } catch (e) {
+            console.warn('[extractFileText] Failed to parse token from sessionStorage:', e);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[extractFileText] Failed to get auth token:', e);
+  }
+  
+  const response = await fetch(`${apiUrl}/api/v1/export/extract-text`, {
+    method: 'POST',
+    headers: headers,
+    body: formData
+  });
+  
+  if (!response.ok) {
+    throw new Error('Failed to extract text from file');
+  }
+  
+  const data = await response.json();
+  return data.text || '';
+}
+
+export interface EditorialFeedbackItem {
+  issue: string;
+  rule?: string;
+  impact?: string;
+  fix?: string;
+  priority?: string;
+}
+
+/**
+ * Parse editorial feedback text into structured items.
+ * Handles lines that start with "- Issue:", "- Rule:", "- Impact:", "- Fix:", "- Priority:".
+ */
+export function parseEditorialFeedback(text: string): EditorialFeedbackItem[] {
+  if (!text) return [];
+
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
+
+  const items: EditorialFeedbackItem[] = [];
+  let current: EditorialFeedbackItem | null = null;
+
+  const stripQuotes = (s: string) => s.trim().replace(/^["“]+|["”]+$/g, '').trim();
+
+  for (let raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    const issueMatch = line.match(/^-+\s*\*{0,2}Issue\*{0,2}:\s*(.*)/i);
+    const ruleMatch = line.match(/^-+\s*\*{0,2}Rule\*{0,2}:\s*(.*)/i);
+    const impactMatch = line.match(/^-+\s*\*{0,2}Impact\*{0,2}:\s*(.*)/i);
+    const fixMatch = line.match(/^-+\s*\*{0,2}Fix\*{0,2}:\s*(.*)/i);
+    const priorityMatch = line.match(/^-+\s*\*{0,2}Priority\*{0,2}:\s*(.*)/i);
+
+    if (issueMatch) {
+      // push previous
+      if (current) items.push(current);
+      current = { issue: stripQuotes(issueMatch[1] || '') };
+      continue;
+    }
+
+    if (!current) {
+      // ignore lines outside an issue block
+      continue;
+    }
+
+    if (ruleMatch) {
+      current.rule = ruleMatch[1].trim();
+      continue;
+    }
+    if (impactMatch) {
+      current.impact = impactMatch[1].trim();
+      continue;
+    }
+    if (fixMatch) {
+      current.fix = fixMatch[1].trim();
+      continue;
+    }
+    if (priorityMatch) {
+      current.priority = priorityMatch[1].trim();
+      continue;
+    }
+
+    // If line starts with '-' but no recognized label, try to append to last field (fix or impact)
+    const dashContent = line.replace(/^-+\s*/, '');
+    if (dashContent) {
+      // prefer appending to fix > impact > rule
+      if (current.fix) current.fix += ' ' + dashContent;
+      else if (current.impact) current.impact += ' ' + dashContent;
+      else if (current.rule) current.rule += ' ' + dashContent;
+    }
+  }
+
+  if (current) items.push(current);
+  return items;
+}
+
+/**
+ * Render editorial feedback items into a simple HTML string (escaped).
+ * Use ngFor in templates if possible instead of innerHTML.
+ */
+export function renderEditorialFeedbackHtml(items: EditorialFeedbackItem[]): string {
+  if (!items || items.length === 0) return '';
+
+  const esc = (s?: string) =>
+    (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const cards = items.map(it => {
+    const badge = it.priority ? `<span class="ef-priority">${esc(it.priority)}</span>` : '';
+    return `
+      <div class="ef-card">
+        <div class="ef-header">
+          <div class="ef-issue">${esc(it.issue)}</div>
+          ${badge}
+        </div>
+        <div class="ef-body">
+          ${it.rule ? `<div class="ef-row"><strong>Rule:</strong> ${esc(it.rule)}</div>` : ''}
+          ${it.impact ? `<div class="ef-row"><strong>Impact:</strong> ${esc(it.impact)}</div>` : ''}
+          ${it.fix ? `<div class="ef-row"><strong>Fix:</strong> ${esc(it.fix)}</div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('\n');
+
+  return `<div class="ef-container">${cards}</div>`;
+}
+
+
+/**
+ * Block type information for formatting
+ */
+export interface BlockTypeInfo {
+  index: number;
+  type: string;
+  level?: number;
+}
+
+
+/**
+ * Format final article with block type information to produce semantic HTML.
+ * Groups consecutive bullet_item blocks into proper <ul> or <ol> lists.
+ * 
+ * @param article - The article content (markdown or plain text)
+ * @param blockTypes - Array of block type information with index, type, and optional level
+ * @returns Formatted HTML with proper semantic structure
+ */
+export function formatFinalArticleWithBlockTypes(
+  article: string, 
+  blockTypes: BlockTypeInfo[]
+): string {
+  if (!blockTypes || blockTypes.length === 0) {
+    // If no block types, just convert markdown to HTML
+    return convertMarkdownToHtml(article);
+  }
+
+  // Split article into paragraphs (assuming double newline separation)
+  const paragraphs = article.split(/\n\n+/);
+  
+  // Create a map of index to block type
+  const blockTypeMap = new Map<number, {type: string, level?: number}>();
+  blockTypes.forEach(bt => {
+    blockTypeMap.set(bt.index, {type: bt.type, level: bt.level});
+  });
+
+  // First pass: format individual paragraphs
+  /** 'numbered' = preserve 1., 2., A., i. etc. (use <ol>); 'bullet' = use • (use <ul>) */
+  type ListKind = 'numbered' | 'bullet';
+  interface ParagraphBlock {
+    type: string;
+    content: string;
+    level: number;
+    rawContent?: string;
+    hasBulletIcon?: boolean;
+    listKind?: ListKind;   // For bullet_item: preserve numbers/letters vs force bullet
+    listValue?: number;   // For numbered: value for <li value="..."> (1, 2, 3...)
+  }
+
+  const formattedParagraphs = paragraphs
+    .map((para, idx): ParagraphBlock | null => {
+      const trimmedPara = para.trim();
+      if (!trimmedPara) return null; // Filter out empty paragraphs
+
+      const blockInfo = blockTypeMap.get(idx);
+      if (!blockInfo) {
+        // Default to paragraph if no block type info
+        const formatted = convertMarkdownToHtml(trimmedPara);
+        const content = formatted.startsWith('<') ? formatted : `<p>${formatted}</p>`;
+        return {
+          type: 'paragraph',
+          content: content,
+          level: 0
+        };
+      }
+
+      // Convert markdown in the paragraph first
+      let formatted = convertMarkdownToHtml(trimmedPara);
+      
+      // Remove wrapping <p> tags if they exist at the start/end (we'll add our own based on block type)
+      // Only remove if the entire content is wrapped in a single <p> tag
+      formatted = formatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+
+      // Apply block type formatting (matches backend export formatting)
+      switch (blockInfo.type) {
+        case 'title':
+          // Title: 24pt font (matches PDF), bold, center aligned, spacing matches backend
+          // Note: Title is typically on cover page in export, but for UI display we show it
+          return {
+            type: 'title',
+            content: `<h1 style="font-size: 24pt; font-weight: 700; font-family: 'Helvetica', 'Arial', sans-serif; display: block; margin-top: 1.25em; margin-bottom: 0.35em; text-align: center; color: #D04A02;">${formatted}</h1>`,
+            level: 0
+          };
+        
+        case 'heading':
+          // Heading: 14pt font, bold (Helvetica-Bold), black, spacing matches backend (0.9em top, 0.2em bottom)
+          const headingLevel = blockInfo.level || 1;
+          const headingTag = `h${Math.min(Math.max(headingLevel, 1), 6)}`;
+          return {
+            type: 'heading',
+            content: `<${headingTag} style="font-size: 14pt; font-weight: 700; font-family: 'Helvetica-Bold', 'Arial Bold', sans-serif; display: block; margin-top: 0.9em; margin-bottom: 0.2em; color: #000000;">${formatted}</${headingTag}>`,
+            level: headingLevel
+          };
+        
+        case 'bullet_item': {
+          // Preserve numbered/lettered list prefixes (match backend FINAL_FORMATTING_PROMPT).
+          // Only use bullet icon (•) when content has bullet prefix (•, -, *) or no prefix.
+          const numPrefixMatch = trimmedPara.match(/^(\d+)[.)]\s+(.+)$/s);
+          const romanPrefixMatch = trimmedPara.match(/^([ivxlcdmIVXLCDM]+)[.)]\s+(.+)$/i);
+          const letterPrefixMatch = trimmedPara.match(/^([A-Za-z])[.)]\s+(.+)$/s);
+          const bulletPrefixMatch = trimmedPara.match(/^[•\-\*]\s+(.+)$/s);
+
+          let listKind: ListKind = 'bullet';
+          let listValue: number | undefined;
+          let processedContent: string;
+          let prefix = '';
+
+          if (numPrefixMatch) {
+            listKind = 'numbered';
+            listValue = parseInt(numPrefixMatch[1], 10);
+            prefix = numPrefixMatch[1] + '. ';
+            processedContent = numPrefixMatch[2].trim();
+          } else if (romanPrefixMatch) {
+            listKind = 'numbered';
+            prefix = romanPrefixMatch[1] + '. ';
+            processedContent = romanPrefixMatch[2].trim();
+          } else if (letterPrefixMatch) {
+            listKind = 'numbered';
+            prefix = letterPrefixMatch[1] + '. ';
+            processedContent = letterPrefixMatch[2].trim();
+          } else if (bulletPrefixMatch) {
+            prefix = '• ';
+            processedContent = bulletPrefixMatch[1].trim();
+          } else {
+            prefix = '• ';
+            processedContent = trimmedPara;
+          }
+
+          // Format text before ":" as bold, after ":" as normal (for both numbered and bullet)
+          const colonIndex = processedContent.indexOf(':');
+          if (colonIndex > 0) {
+            const beforeColon = processedContent.substring(0, colonIndex).trim();
+            const afterColon = processedContent.substring(colonIndex + 1).trim();
+            let beforeFormatted = convertMarkdownToHtml(beforeColon);
+            let afterFormatted = convertMarkdownToHtml(afterColon);
+            beforeFormatted = beforeFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+            afterFormatted = afterFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+            processedContent = `${prefix}<strong>${beforeFormatted}</strong>: ${afterFormatted}`;
+          } else {
+            processedContent = convertMarkdownToHtml(processedContent);
+            processedContent = processedContent.replace(/^<p>(.*)<\/p>$/s, '$1');
+            processedContent = prefix + processedContent;
+          }
+
+          return {
+            type: 'bullet_item',
+            content: processedContent,
+            level: blockInfo.level || 0,
+            rawContent: trimmedPara,
+            hasBulletIcon: listKind === 'bullet',
+            listKind,
+            listValue
+          };
+        }
+        
+        case 'paragraph':
+        default:
+          // Paragraph: 11pt font, line-height 1.5 (matches backend), justify alignment, spacing matches backend
+          // margin-top: 0.15em (2pt), margin-bottom: 0.7em (8pt)
+          return {
+            type: 'paragraph',
+            content: `<p style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; display: block; text-align: justify; margin-top: 0.15em; margin-bottom: 0.7em; line-height: 1.5;">${formatted}</p>`,
+            level: 0
+          };
+      }
+    })
+    .filter((para): para is ParagraphBlock => para !== null);
+
+  // Second pass: group consecutive bullet_item blocks into <ol> (numbered) or <ul> (bullet)
+  const finalOutput: string[] = [];
+  type ListItem = { content: string; level: number; rawContent: string; hasBulletIcon?: boolean; listKind?: ListKind; listValue?: number };
+  let currentList: ListItem[] = [];
+  let prevBlockType: string | null = null;
+  let prevBlockIndex: number = -1;
+
+  const flushList = (list: ListItem[], marginTop: string, marginBottom: string) => {
+    if (list.length === 0) return;
+    const isNumbered = list.every(item => item.listKind === 'numbered');
+    // Tighter spacing for citations/references: less gap between list and heading, and between list items
+    const listStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; padding-left: 1.5em; margin-top: " + marginTop + "; margin-bottom: " + marginBottom + "; line-height: 1.4;";
+    const liStyle = "display: list-item; margin: 0.15em 0; line-height: 1.4;";
+    if (isNumbered) {
+      // Preserve numbered/lettered prefixes (content already has "1. ", "A. ", "i. " etc.)
+      finalOutput.push(`<ol style="${listStyle} list-style-type: none;">`);
+      list.forEach(item => finalOutput.push(`<li style="${liStyle}">${item.content}</li>`));
+      finalOutput.push('</ol>');
+    } else {
+      finalOutput.push(`<ul style="${listStyle} list-style-type: none;">`);
+      list.forEach(item => finalOutput.push(`<li style="${liStyle}">${item.content}</li>`));
+      finalOutput.push('</ul>');
+    }
+  };
+
+  for (let i = 0; i < formattedParagraphs.length; i++) {
+    const para = formattedParagraphs[i];
+    const nextPara = i < formattedParagraphs.length - 1 ? formattedParagraphs[i + 1] : null;
+    
+    if (para.type === 'bullet_item') {
+      currentList.push({
+        content: para.content,
+        level: para.level,
+        rawContent: para.rawContent || '',
+        hasBulletIcon: para.hasBulletIcon,
+        listKind: para.listKind,
+        listValue: para.listValue
+      });
+      prevBlockType = 'bullet_item';
+      prevBlockIndex = i;
+    } else {
+      // Close any open list before processing non-list item
+      if (currentList.length > 0) {
+        const listMarginTop = prevBlockType === 'heading' ? '0.1em' : (prevBlockType === 'paragraph' ? '0.2em' : '0.4em');
+        const listMarginBottom = nextPara && nextPara.type === 'paragraph' ? '0.2em' : '0.4em';
+        flushList(currentList, listMarginTop, listMarginBottom);
+        currentList = [];
+      }
+
+      // Adjust paragraph margins based on context (matches backend export)
+      if (para.type === 'paragraph') {
+        // Reduce bottom margin if followed by bullet list (0.25em/3pt matches backend)
+        if (nextPara && nextPara.type === 'bullet_item') {
+          para.content = para.content.replace(/margin-bottom:\s*[^;]+;?/g, 'margin-bottom: 0.25em;');
+        }
+        // Reduce top margin if following heading - decrease line spacing between heading and paragraph
+        if (prevBlockType === 'heading') {
+          para.content = para.content.replace(/margin-top:\s*[^;]+;?/g, 'margin-top: 0.05em;');
+        }
+      }
+
+      // Add non-list paragraph
+      finalOutput.push(para.content);
+      prevBlockType = para.type;
+      prevBlockIndex = i;
+    }
+  }
+
+  // Close any remaining open list
+  if (currentList.length > 0) {
+    const listMarginTop = prevBlockType === 'heading' ? '0.1em' : (prevBlockType === 'paragraph' ? '0.2em' : '0.4em');
+    flushList(currentList, listMarginTop, '0.4em');
+  }
+
+  return finalOutput.join('\n');
 }
