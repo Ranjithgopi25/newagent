@@ -2294,31 +2294,31 @@ REFERENCES/SOURCES LIST AT END — NUMBERING:
 REFERENCE FORMAT CONVERSION — MANDATORY
 ============================================================
 
-Convert ALL reference markers to CLICKABLE superscript format (same as refine content).
+Convert ALL reference markers to CLICKABLE superscript format.
 
-Use EXACT format: <sup>[ [ⁿ](URL) ]</sup> — n = Unicode superscript: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ (NOT plain 1, 2, 3)
+Use EXACT format: <sup>[ [ⁿ] ]</sup>(ACTUAL_URL) — n = Unicode superscript: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ (NOT plain 1, 2, 3). Put the REAL URL in parentheses immediately after the closing </sup>.
 
 Conversion rules:
-- "(Ref. 1)" / "[1]" with URL available → <sup>[ [¹](URL) ]</sup>
-- "(Ref. 2)" / "[2]" with URL available → <sup>[ [²](URL) ]</sup>
-- When NO URL exists → <sup>[ [¹](#) ]</sup>
+- "(Ref. 1)" / "[1]" with URL available → <sup>[ [¹] ]</sup>(https://example.com)
+- "(Ref. 2)" / "[2]" with URL available → <sup>[ [²] ]</sup>(https://example.com)
+- When NO URL exists → <sup>[ [¹] ]</sup>(#)
 - Resolve URLs from the References section when converting (Ref. N) or [N]
-- "(Ref. 1; Ref. 2)" → <sup>[ [¹²](URL) ]</sup> or separate tags if different URLs
-- "(Ref. 1, Ref. 2, Ref. 3)" → <sup>[ [¹,²,³](URL) ]</sup> or separate tags per reference
+- "(Ref. 1; Ref. 2)" → <sup>[ [¹²] ]</sup>(url) or separate tags if different URLs
 
 Examples:
-- "[1]https://example.com" → <sup>[ [¹](https://example.com) ]</sup>
-- "(Ref. 1) https://example.com" → <sup>[ [¹](https://example.com) ]</sup>
-- "According to research (Ref. 1), the findings show..." (Ref 1 has URL in References) → "According to research<sup>[ [¹](URL) ]</sup>, the findings show..."
-- "Text [1] more text" (no URL in doc) → Text <sup>[ [¹](#) ]</sup> more text
+- "[1]https://example.com" → <sup>[ [¹] ]</sup>(https://example.com)
+- "(Ref. 1) https://example.com" → <sup>[ [¹] ]</sup>(https://example.com)
+- "According to research (Ref. 1), the findings show..." (Ref 1 = https://pwc.com/doc) → "According to research<sup>[ [¹] ]</sup>(https://pwc.com/doc), the findings show..."
+- "Text [1] more text" (no URL in doc) → Text <sup>[ [¹] ]</sup>(#) more text
 
-DO NOT use ¹(URL) or ¹ (URL) — only <sup>[ [ⁿ](URL) ]</sup> is clickable.
+CRITICAL: Replace ACTUAL_URL with the real URL (e.g. https://www.pwc.com/...) from the References section. Never output literal "URL" — always use the actual https:// or http:// link.
 
 IMPORTANT:
 - Remove parentheses and "Ref." text from the marker
 - Convert numbers to Unicode superscripts (¹²³ not 123)
 - Place citation immediately after the referenced text (no space before)
 - NEVER remove URLs; resolve them from the References section when converting (Ref. N) or [N]
+- DO NOT use ¹(URL) or <sup>[ [ⁿ](URL) ]</sup> — use <sup>[ [ⁿ] ]</sup>(actual_url) only
 
 ============================================================
 CITATION LINK FORMAT CONVERSION — MANDATORY
@@ -2406,7 +2406,7 @@ VALIDATION — REQUIRED BEFORE OUTPUT
 Before responding, verify:
 - The formatted output has the SAME number of logical blocks (title/paragraphs/headings/bullet_list) as the input, in the SAME order, so block-level formatting stays aligned.
 - All numbered/lettered list prefixes are preserved
-- All reference markers are converted to clickable superscripts (<sup>[ [ⁿ](URL) ]</sup>)
+- All reference markers are converted to clickable superscripts (<sup>[ [ⁿ] ]</sup>(actual_url))
 - ALL markdown links `[Title](URL)` and `[Title](URL: https://...)` have been converted to format `Title [URL]` (title as plain text, URL in brackets)
 - No link URLs have been removed or converted to HTML
 - No link titles have been removed (leaving only `[URL]`)
@@ -2448,7 +2448,7 @@ STYLE REFERENCE (structure only; renderer applies size/spacing):
 - List Number: 1. 2. 3. for numbered content lists.
 - List Alpha: A. B. C. or a. b. c. for alphabetical lists.
 - Quote: > for blockquote.
-- Inline citations: preserve existing format — <sup>[ [¹](URL) ]</sup>, <sup>[ [²](URL) ]</sup> (Unicode ¹²³⁴⁵⁶⁷⁸⁹, same as refine content). Do not remove or break links. Keep Title [URL] as-is.
+- Inline citations: preserve existing format — <sup>[ [¹] ]</sup>(url), <sup>[ [²] ]</sup>(url) (Unicode ¹²³⁴⁵⁶⁷⁸⁹). Do not remove or break links. Keep Title [URL] as-is.
 
 REFERENCES SECTION (mandatory — numbered only, no bullets):
 - Use "## References" (or ## Sources / ## Bibliography) then numbered entries only: 1. 2. 3.
@@ -2469,7 +2469,7 @@ RULES:
 - Preserve every sentence and citation; only add markdown structure.
 - Do not add or remove content.
 - References section: plain numbers 1. 2. 3. only; never use bullet points (• or - or *) in References.
-- Preserve inline citation format (<sup>[ [ⁿ](URL) ]</sup>, same as refine content) exactly as in the input; URLs must remain intact for UI and export.
+- Preserve inline citation format (<sup>[ [ⁿ] ]</sup>(url)) exactly as in the input; URLs must remain intact for UI and export.
 - Output ONLY the raw markdown document. No code fences, no preamble, no explanation.""",
         },
         {"role": "user", "content": content},
