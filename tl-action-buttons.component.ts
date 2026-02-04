@@ -1,1870 +1,2170 @@
-import { Component, OnInit, ChangeDetectorRef  } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
-import { TlFlowService } from '../../../core/services/tl-flow.service';
-import { ChatService } from '../../../core/services/chat.service';
-import { TlChatBridgeService } from '../../../core/services/tl-chat-bridge.service';
-import { AuthFetchService } from '../../../core/services/auth-fetch.service';
-import { ThoughtLeadershipMetadata } from '../../../core/models';
-import { FileUploadComponent } from '../../../shared/ui/components/file-upload/file-upload.component';
-import { EditorProgressItem } from '../../../shared/ui/components/editor-progress/editor-progress.component'; // EditorProgressComponent removed - not used in template
-import { normalizeEditorOrder, normalizeContent, EditorType, extractDocumentTitle, getEditorDisplayName, formatMarkdown, convertMarkdownToHtml, extractFileText, parseEditorialFeedback, renderEditorialFeedbackHtml, EditorialFeedbackItem, formatFinalArticleWithBlockTypes, BlockTypeInfo } from '../../../core/utils/edit-content.utils';
-import { 
-  createParagraphEditsFromComparison, 
-  allParagraphsDecided,
-  validateStringEquality
-} from '../../../core/utils/paragraph-edit.utils';
-import { ParagraphEdit } from '../../../core/models/message.model';
-import { environment } from '../../../../environments/environment';
-interface EditForm {
-  selectedEditors: EditorType[];
-  uploadedFile: File | null;
+import { Injectable } from '@angular/core';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { Observable, from, switchMap } from 'rxjs';
+import { Message, ChatRequest, DraftRequest, ThoughtLeadershipRequest, ResearchRequest, ArticleRequest, BestPracticesRequest, PodcastRequest, UpdateSectionRequest } from '../models';
+import { environment } from '../../../environments/environment';
+import { MsalService } from '@azure/msal-angular';
+
+// Chat History Models
+export interface ChatSessionSummary {
+  session_id: string;
+  source: string;
+  title?: string;
+  preview: string;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
 }
 
-interface ParagraphFeedback {
-  index: number;
-  original: string;
-  edited: string;
-  tags: string[];
-  autoApproved: boolean;
-  approved?: boolean | null;
-  block_type?: string;
-  level?: number;
-  editorial_feedback: {
-    development?: any[];
-    content?: any[];
-    copy?: any[];
-    line?: any[];
-    brand?: any[];
+export interface ChatSessionDetail {
+  session_id: string;
+  source: string;
+  title?: string;
+  conversation: {
+    messages: Message[];
   };
-  displayOriginal?: string;
-  displayEdited?: string;
+  created_at: string;
+  updated_at: string;
 }
 
-@Component({
-  selector: 'app-edit-content-flow',
-  standalone: true,
-  imports: [CommonModule, FormsModule, FileUploadComponent], // EditorProgressComponent removed - not used in template
-  templateUrl: './edit-content-flow.component.html',
-  styleUrls: ['./edit-content-flow.component.scss']
+@Injectable({
+  providedIn: 'root'
 })
-export class EditContentFlowComponent implements OnInit {
-  isGenerating: boolean = false;
-  editFeedback: string = '';
-  feedbackItems: EditorialFeedbackItem[] = [];
-  feedbackHtml: string = '';
-  revisedContent: string = '';
-  originalContent: string = '';
-  iterationCount: number = 0;
-  showSatisfactionPrompt: boolean = false;
-  showImprovementInput: boolean = false;
-  improvementRequestText: string = '';
-  fileUploadError: string = '';
-  uploadedFileSize: string = '';
-  MAX_FILE_SIZE_MB: number = 5;
-  editorProgressList: EditorProgressItem[] = [];
-  currentEditorIndex: number = 0;
-  totalEditors: number = 0;
-  currentEditorId: string = '';
+export class ChatService {
+  private get apiUrl(): string {
+    // Support runtime configuration via window._env (for production)
+    return (window as any)._env?.apiUrl || environment.apiUrl || '';
+  }
   
-  // Sequential workflow properties
-  threadId: string | null = null;
-  currentEditor: string | null = null;
-  isSequentialMode: boolean = false;
-  isLastEditor: boolean = false;
-  isEditorLoading: boolean = false; // Track if current editor is loading
-  
-  paragraphFeedbackData: ParagraphFeedback[] = [];
-  paragraphEdits: ParagraphEdit[] = [];
-  showFinalOutput: boolean = false;
-  finalArticle: string = '';
-  isGeneratingFinal: boolean = false;
-
-  /** Paragraphs that require review (exclude autoApproved) */
-  private get reviewParagraphs(): ParagraphFeedback[] {
-    return (this.paragraphFeedbackData || [])
-      .filter(p => p.autoApproved !== true)
-      .sort((a, b) => a.index - b.index);
-  }
-
-  /** Flatten all editorial feedback items across paragraphs */
-  private getAllFeedbackItems(): Array<{
-    paraIndex: number;
-    editorType: string;
-    fbIndex: number;
-    fb: any;
-  }> {
-    const items: Array<{ paraIndex: number; editorType: string; fbIndex: number; fb: any }> = [];
-
-    for (const para of this.reviewParagraphs) {
-      const types = Object.keys(para.editorial_feedback || {});
-      for (const editorType of types) {
-        const arr = (para.editorial_feedback as any)[editorType] || [];
-        arr.forEach((fb: any, fbIndex: number) => {
-          items.push({ paraIndex: para.index, editorType, fbIndex, fb });
-        });
-      }
-    }
-
-    return items;
-  }
-
-  /** Count of feedback items approved (fb.approved === true) */
-  get approvedFeedbackCount(): number {
-    return this.getAllFeedbackItems().filter(x => x.fb?.approved === true).length;
-  }
-
-  /** Count of feedback items rejected (fb.approved === false) */
-  get rejectedFeedbackCount(): number {
-    return this.getAllFeedbackItems().filter(x => x.fb?.approved === false).length;
-  }
-
-  /** Count of feedback items pending (fb.approved is null/undefined) */
-  get pendingFeedbackCount(): number {
-    return this.getAllFeedbackItems().filter(
-      x => x.fb?.approved === null || x.fb?.approved === undefined
-    ).length;
-  }
-
-  /** Scroll to the first feedback card with the requested status */
-  scrollToFirstFeedbackByStatus(status: 'pending' | 'approved' | 'rejected'): void {
-    const match = this.getAllFeedbackItems().find(x => {
-      if (status === 'approved') return x.fb?.approved === true;
-      if (status === 'rejected') return x.fb?.approved === false;
-      return x.fb?.approved === null || x.fb?.approved === undefined;
-    });
-
-    if (!match) return;
-
-    const el = document.getElementById(`fb-${match.paraIndex}-${match.editorType}-${match.fbIndex}`);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
-    }
-  }
-
-  
-  formData: EditForm = {
-    selectedEditors: ['development', 'content', 'line', 'copy', 'brand-alignment'],
-    uploadedFile: null
-  };
-  
-  fileReadError: string = '';
-
-  // Notification properties
-  showNotification: boolean = false;
-  notificationMessage: string = '';
-  notificationType: 'success' | 'error' = 'success';
-
-  isCopied: boolean = false;
-
-
-  editorTypes: { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] = [
-    { 
-      id: 'development' as EditorType, 
-      name: 'Development Editor', 
-      icon: '🚀', 
-      description: 'Reviews and restructures content for alignment and coherence',
-      details: 'Reviews: thought leadership quality, competitive differentiation, risk words (guarantee/promise/always), China terminology',
-      disabled: false
-    },
-    { 
-      id: 'content' as EditorType, 
-      name: 'Content Editor', 
-      icon: '📄', 
-      description: "Refines language to align with author's key objectives",
-      details: 'Validates: mutually exclusive/collectively exhaustive structure, source citations, evidence quality, argument logic',
-      disabled: false
-    },
-    { 
-      id: 'line' as EditorType, 
-      name: 'Line Editor', 
-      icon: '📝', 
-      description: 'Improves sentence flow, readability, and style preserving voice',
-      details: 'Improves: active voice throughout, sentence length, precise word choice, paragraph structure, transitional phrases',
-      disabled: false
-    },
-    { 
-      id: 'copy' as EditorType, 
-      name: 'Copy Editor', 
-      icon: '✏️', 
-      description: 'Corrects grammar, punctuation, and typos',
-      details: 'Enforces: Oxford commas, apostrophes, em dashes, sentence case headlines, date formats, abbreviations, active voice',
-      disabled: false
-    },
-    { 
-      id: 'brand-alignment' as EditorType, 
-      name: 'PwC Brand Alignment Editor', 
-      icon: '🎯', 
-      description: 'Aligns content writing standards with PwC brand',
-      details: 'Checks: we/you language, contractions, active voice, prohibited words (catalyst, PwC Network), China references, brand messaging',
-      disabled: true
-    }
-  ];
 
   constructor(
-    public tlFlowService: TlFlowService,
-    private chatService: ChatService,
-    private tlChatBridge: TlChatBridgeService,
-    private cdr: ChangeDetectorRef,
-    private authFetchService: AuthFetchService
-  ) {}
-
-  ngOnInit(): void {
-    // this.paragraphFeedbackData.forEach(para => {
-    //   // Add these properties so Angular/TypeScript knows they exist
-    //   para.displayOriginal = para.original;
-    //   para.displayEdited = para.edited;
-    // });
+    private http: HttpClient,
+    private msalService: MsalService
+  ) {
+    console.log('[ChatService] Constructor - apiUrl:', this.apiUrl);
+    console.log('[ChatService] window._env:', (window as any)._env);
+    console.log('[ChatService] environment.apiUrl:', environment.apiUrl);
   }
 
-  get isOpen(): boolean {
-    return this.tlFlowService.currentFlow === 'edit-content';
-  }
-
-  onClose(): void {
-    this.resetForm();
-    this.tlFlowService.closeFlow();
-  }
-
-  back(): void{
-    this.resetForm();
-    this.tlFlowService.closeFlow();
-    this.tlFlowService.openGuidedDialog();
-  }
-
-  resetForm(): void {
-    this.isGenerating = false;
-    this.editFeedback = '';
-    this.feedbackItems = [];
-    this.feedbackHtml = '';
-    this.revisedContent = '';
-    this.originalContent = '';
-    this.fileReadError = '';
-    this.fileUploadError = '';
-    this.uploadedFileSize = '';
-    this.iterationCount = 0;
-    this.showSatisfactionPrompt = false;
-    this.showImprovementInput = false;
-    this.improvementRequestText = '';
-    this.paragraphEdits = [];
-    this.paragraphFeedbackData = [];
-    this.showFinalOutput = false;
-    this.finalArticle = '';
-    this.isGeneratingFinal = false;
-    this.editorProgressList = [];
-    this.currentEditorIndex = 0;
-    this.totalEditors = 0;
-    this.currentEditorId = '';
-    this.isCopied = false;
-    this.isEditorLoading = false;
-    this.formData = {
-      selectedEditors: ['development', 'content', 'line', 'copy', 'brand-alignment'],
-      uploadedFile: null
+  /**
+   * Get authentication headers for JSON requests
+   * MSAL interceptor only works with HttpClient, so we need to manually add headers for fetch()
+   */
+  private async getAuthHeaders(): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
     };
-  }
 
-  canEdit(): boolean {
-    return this.formData.uploadedFile !== null && this.formData.selectedEditors.length > 0;
-  }
-
-  clearUploadError(): void {
-    this.fileUploadError = '';
-  }
-
-  clearReadError(): void {
-    this.fileReadError = '';
-  }
-  
-  onFileSelect(file: File): void {
-    if (file) {
-      // Reset error states
-      this.fileReadError = '';
-      this.fileUploadError = '';
-      
-      // Calculate and display file size
-      this.uploadedFileSize = this.formatFileSize(file.size);
-      this.formData.uploadedFile = file;
-    }
-  }
-
-  onFileRemoved(): void {
-    this.formData.uploadedFile = null;
-    this.fileUploadError = '';
-    this.fileReadError = '';
-    this.uploadedFileSize = '';
-  }
-
-  formatFileSize(bytes: number): string {
-     if (bytes === 0) return '0 Bytes';
-    
-    // Show exact size in KB (no rounding)
-    if (bytes < 1024) {
-      return bytes + ' Bytes';
-    } else if (bytes < 1024 * 1024) {
-      // Exact KB with decimal precision
-      const kb = bytes / 1024;
-      return kb.toFixed(2) + ' KB';
-    } else {
-      // For MB and above, show with 2 decimal places
-      const mb = bytes / (1024 * 1024);
-      return mb.toFixed(2) + ' MB';
-    }
-  }
-
-  /** Toggle editor selection, ensuring brand-alignment is always included */
-  toggleEditor(type: EditorType): void {
-    if (type === 'brand-alignment') {
-      return;
-    }
-    
-    const index = this.formData.selectedEditors.indexOf(type);
-    if (index > -1) {
-      this.formData.selectedEditors.splice(index, 1);
-    } else {
-      this.formData.selectedEditors.push(type);
-    }
-    
-    if (!this.formData.selectedEditors.includes('brand-alignment')) {
-      this.formData.selectedEditors.push('brand-alignment');
-    }
-  }
-
-  isEditorSelected(type: EditorType): boolean {
-    return this.formData.selectedEditors.includes(type);
-  }
-
-  /** Get selectable editors (excluding brand-alignment which is always enabled) */
-  get selectableEditors(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] {
-    return this.editorTypes.filter(editor => editor.id !== 'brand-alignment');
-  }
-
-  /** Get brand alignment editor info */
-  get brandAlignmentEditor(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean } | undefined {
-    return this.editorTypes.find(editor => editor.id === 'brand-alignment');
-  }
-
-  /** Get selected editors in normalized order (for timeline display) */
-  get selectedEditorsForTimeline(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] {
-    if (!this.formData.selectedEditors || this.formData.selectedEditors.length === 0) {
-      return [];
-    }
-    
-    // Normalize order to match processing order
-    const normalizedOrder = normalizeEditorOrder([...this.formData.selectedEditors]) as EditorType[];
-    
-    // Map to full editor info objects
-    return normalizedOrder.map(editorId => {
-      const editor = this.editorTypes.find(e => e.id === editorId);
-      return editor || {
-        id: editorId,
-        name: getEditorDisplayName(editorId),
-        icon: '',
-        description: '',
-        details: '',
-        disabled: false
-      };
-    });
-  }
-
-  /** Steps array for editor timeline (0..totalEditors-1) */
-  get editorSteps(): number[] {
-    const total = this.totalEditors || 0;
-    if (total <= 0) return [];
-    return Array.from({ length: total }, (_, i) => i);
-  }
-
-
-  getEditorNames(): string {
-    if (this.formData.selectedEditors.length === 0) return '';
-    if (this.formData.selectedEditors.length === 1) {
-      const editor = this.editorTypes.find(e => e.id === this.formData.selectedEditors[0]);
-      return editor ? editor.name : '';
-    }
-    return `${this.formData.selectedEditors.length} editors`;
-  }
-  
-  getSatisfactionPromptText(): string {
-    if (this.iterationCount === 1) {
-      return 'Are you satisfied with the edited document output, or do you need additional updates?';
-    }
-    return `Are you satisfied with this revision (Iteration ${this.iterationCount}), or do you need additional updates?`;
-  }
-
-  async editContent(): Promise<void> {
-    this.isGenerating = true;
-    this.isEditorLoading = true; // Initial editor loading starts
-    this.fileReadError = '';
-    this.fileUploadError = '';
-    this.editFeedback = '';
-    this.revisedContent = '';
-    this.editorProgressList = [];
-    this.currentEditorIndex = 0;
-    this.totalEditors = 0;
-    this.currentEditorId = '';
-    
-    let contentText = '';
-    
-    if (this.formData.uploadedFile) {
-      // Validate file is not empty
-      if (this.formData.uploadedFile.size === 0) {
-        this.fileUploadError = 'The uploaded file is empty. Please upload a valid document with content.';
-        this.isGenerating = false;
-        return;
-      }
-      
-      // Validate minimum file size (10 bytes)
-      const MIN_FILE_SIZE = 10;
-      if (this.formData.uploadedFile.size < MIN_FILE_SIZE) {
-        this.fileUploadError = 'The uploaded file appears to be empty or corrupted. Please upload a valid document.';
-        this.isGenerating = false;
-        return;
-      }
-      
-      // Validate maximum file size (5MB)
-      const fileSizeMB = this.formData.uploadedFile.size / (1024 * 1024);
-      if (fileSizeMB > this.MAX_FILE_SIZE_MB) {
-        this.fileUploadError = `File size exceeds the maximum limit of ${this.MAX_FILE_SIZE_MB}MB. Please upload a smaller file.`;
-        this.isGenerating = false;
-        return;
-      }
-      
+    if (environment.useAuth) {
       try {
-        const extractedText = await extractFileText(this.formData.uploadedFile);
-        contentText = normalizeContent(extractedText);
-        
-        // Validate extracted content is not empty
-        if (!contentText || contentText.trim().length === 0) {
-          this.fileUploadError = 'The uploaded document appears to be empty or contains no readable text. Please upload a document with content.';
-          this.isGenerating = false;
-          return;
+        const account = this.msalService.instance.getActiveAccount();
+        if (account) {
+          const response = await this.msalService.instance.acquireTokenSilent({
+            scopes: ['User.Read'], // Use the same scope as in protectedResourceMap
+            account: account
+          });
+          
+          if (response.idToken) {
+            headers['Authorization'] = `Bearer ${response.idToken}`;
+            console.log('[ChatService] Added auth header (ID token) to fetch() call');
+          }
         }
-        
-        // Validate minimum content length (50 characters for meaningful content)
-        const MIN_CONTENT_LENGTH = 50;
-        if (contentText.trim().length < MIN_CONTENT_LENGTH) {
-          this.fileUploadError = `The uploaded document contains insufficient content (minimum ${MIN_CONTENT_LENGTH} characters required). Please upload a document with more text.`;
-          this.isGenerating = false;
-          return;
-        }
-        
-        this.originalContent = contentText;
       } catch (error) {
-        console.error('Error extracting file:', error);
-        this.fileReadError = 'Error reading uploaded file. Please try again or upload a different format.';
-        this.isGenerating = false;
-        return;
+        console.error('[ChatService] Failed to acquire token for fetch():', error);
       }
     }
-    
-    const messages = [{
-      role: 'user' as const,
-      content: contentText
-    }];
 
-    let fullResponse = '';
-    const editorsToUse = normalizeEditorOrder(this.formData.selectedEditors) as EditorType[];
+    return headers;
+  }
 
-    this.editorProgressList = editorsToUse.map((id, index) => ({
-      editorId: id,
-      editorName: getEditorDisplayName(id),
-      status: 'pending' as const,
-      current: index + 1,
-      total: editorsToUse.length
-    }));
-    this.totalEditors = editorsToUse.length;
+  /**
+   * Get authentication headers for FormData requests (no Content-Type header)
+   * Browser will automatically set Content-Type with multipart boundary
+   */
+  private async getAuthHeadersForFormData(): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {};
 
-    this.chatService.streamEditContent(messages, editorsToUse).subscribe({
-      next: (data: any) => {
-        if (data.type === 'editor_progress') {
-          // Backend sends 1-based index, convert to 0-based for our array
-          const backendCurrentIndex = data.current || 1;
-          this.currentEditorIndex = backendCurrentIndex - 1; // Convert to 0-based
-          this.totalEditors = data.total || editorsToUse.length;
-          this.currentEditorId = data.editor || '';
-          
-          // Set loading state when editor starts processing
-          this.isEditorLoading = true;
-          
-          // Update editor statuses (using 0-based index)
-          this.editorProgressList.forEach((editor, index) => {
-            if (index < this.currentEditorIndex) {
-              editor.status = 'completed';
-            } else if (index === this.currentEditorIndex) {
-              editor.status = 'processing'; // In Progress when loading
-              editor.current = backendCurrentIndex; // Keep 1-based for display
-              editor.total = this.totalEditors;
-            } else {
-              editor.status = 'pending';
-            }
+    if (environment.useAuth) {
+      try {
+        const account = this.msalService.instance.getActiveAccount();
+        if (account) {
+          const response = await this.msalService.instance.acquireTokenSilent({
+            scopes: ['User.Read'],
+            account: account
           });
+          
+          if (response.idToken) {
+            headers['Authorization'] = `Bearer ${response.idToken}`;
+            console.log('[ChatService] Added auth header (ID token) to FormData fetch() call');
+          }
+        }
+      } catch (error) {
+        console.error('[ChatService] Failed to acquire token for FormData fetch():', error);
+      }
+    }
 
-          this.cdr.detectChanges();
-        } else if (data.type === 'editor_content') {
-          if (data.content) {
-            fullResponse += data.content;
-          }
-        } else if (data.type === 'editor_complete') {
-          // Sequential workflow: Handle single editor completion
-          console.log('[EditContentFlow] Editor complete:', data);
-          
-          // Store thread_id for sequential workflow
-          if (data.thread_id) {
-            this.threadId = data.thread_id;
-            this.isSequentialMode = true;
-          }
-          
-          // Store current editor info
-          if (data.current_editor) {
-            this.currentEditor = data.current_editor;
-            this.currentEditorIndex = data.editor_index || 0;
-            this.totalEditors = data.total_editors || this.totalEditors;
-            this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || 1) - 1;
-          }
-          
-          // Update editor progress - change to review-pending after generation
-          const completedEditor = this.editorProgressList.find(e => e.editorId === data.current_editor);
-          if (completedEditor) {
-            completedEditor.status = 'review-pending';
-          }
-          
-          // Process paragraph edits (same structure as final_complete)
-          if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
-            console.log('[EditContentFlow] Paragraph edits received:', data.paragraph_edits);
-            this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
-          }
-          
-          // Update content
-          if (data.original_content) {
-            this.originalContent = data.original_content;
-          }
-          
-          if (data.final_revised) {
-            const trimmedRevised = data.final_revised.trim();
-            fullResponse = trimmedRevised;
-            this.revisedContent = convertMarkdownToHtml(trimmedRevised);
-          }
-          
-          // Process feedback (only current editor's feedback)
-          if (data.combined_feedback) {
-            const feedbackContent = data.combined_feedback.trim();
-            this.feedbackItems = parseEditorialFeedback(feedbackContent);
-            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
-            this.editFeedback = this.feedbackHtml;
-          }
-          
-          this.isGenerating = false;
-          this.isEditorLoading = false; // Editor loaded, now in review pending state
-          this.cdr.detectChanges();
-        } else if (data.type === 'editor_error') {
-          console.error(`${data.editor} editor error:`, data.error);
-        } else if (data.type === 'final_complete') {
-          this.editorProgressList.forEach(editor => {
-            if (editor.status !== 'error') {
-              editor.status = 'completed';
-            }
+    return headers;
+  }
+
+  /**
+   * Wrapper around fetch() that automatically adds authentication headers for JSON requests
+   * Use this instead of fetch() for all API calls with JSON body
+   */
+  private async authenticatedFetch(url: string, options: RequestInit = {}): Promise<Response> {
+    const authHeaders = await this.getAuthHeaders();
+    
+    // Merge auth headers with any existing headers
+    const headers: Record<string, string> = {
+      ...authHeaders,
+      ...(options.headers as Record<string, string> || {})
+    };
+
+    console.log('[ChatService] authenticatedFetch - URL:', url);
+    console.log('[ChatService] authenticatedFetch - Has Authorization:', !!headers['Authorization']);
+
+    return fetch(url, {
+      ...options,
+      headers
+    });
+  }
+
+  /**
+   * Wrapper around fetch() for FormData requests - doesn't set Content-Type (browser sets it with boundary)
+   * Use this for file uploads and multipart form data
+   */
+  private async authenticatedFetchFormData(url: string, options: RequestInit = {}): Promise<Response> {
+    const authHeaders = await this.getAuthHeadersForFormData();
+    
+    // Merge auth headers with any existing headers
+    const headers: Record<string, string> = {
+      ...authHeaders,
+      ...(options.headers as Record<string, string> || {})
+    };
+
+    console.log('[ChatService] authenticatedFetchFormData - URL:', url);
+    console.log('[ChatService] authenticatedFetchFormData - Has Authorization:', !!headers['Authorization']);
+
+    return fetch(url, {
+      ...options,
+      headers
+    });
+  }
+
+  detectEditIntent(input: string): Observable<{is_edit_intent: boolean, confidence: number, detected_editors?: string[]}> {
+    const fullUrl = `${this.apiUrl}/api/v1/chat/detect-edit-intent`;
+    console.log('[ChatService] detectEditIntent - Full URL:', fullUrl);
+    console.log('[ChatService] detectEditIntent - this.apiUrl:', this.apiUrl);
+    console.log('[ChatService] detectEditIntent - Expected to match: http://localhost:8000/api/v1/');
+    
+    return this.http.post<{is_edit_intent: boolean, confidence: number, detected_editors?: string[]}>(
+      fullUrl,
+      { input: input.trim() }
+    );
+  }
+
+  detectDraftIntent(input: string): Observable<{ is_draft_intent: boolean, confidence: number, detected_topic?: string, detected_content_type?: string[] }> {
+    return this.http.post<{ is_draft_intent: boolean, confidence: number, detected_topic?: string, detected_content_type?: string[] }>(
+      `${this.apiUrl}/api/v1/chat/detect-draft-intent`,
+      { input: input.trim() }
+    );
+  }
+
+  /**
+   * DDC Chat Agent
+   * Posts FormData to `/api/v1/ddc/ddc_chat_agent`.
+   * - Accepts a message string, optional conversation id, and optional PPT file.
+   * - Handles PPTX blob responses (sanitized/improved presentations) and JSON responses.
+   */
+  ddcChatAgent(message: string, conversationId?: string, file?: File, userId?: string, sessionId?: string): Observable<any> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      formData.append('message', message);
+      // Always append conversation_id (blank on first message, backend ID on subsequent messages)
+      formData.append('conversation_id', conversationId || '');
+      if (file) {
+        formData.append('file', file, file.name);
+      }
+      
+      // Add chat history fields for persistence
+      if (userId) {
+        formData.append('user_id', userId);
+      }
+      if (sessionId) {
+        formData.append('session_id', sessionId);
+      }
+      formData.append('source', 'DDDC');
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ddc/ddc_chat_agent`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`Network response was not ok: ${response.status} ${response.statusText}`);
+        }
+
+        const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
+        const convId = response.headers.get('X-Conversation-ID') || undefined;
+        const summaryHeader = response.headers.get('X-Sanitization-Summary');
+        let summary = null;
+        if (summaryHeader) {
+          try { summary = JSON.parse(summaryHeader); } catch (e) { /* ignore parse errors */ }
+        }
+
+        if (contentType.includes('application/vnd.openxmlformats-officedocument.presentationml.presentation') || contentType.includes('application/octet-stream')) {
+          return response.blob().then(blob => {
+            observer.next({ blob, conversation_id: convId, summary });
           });
-          this.currentEditorId = 'completed';
-          this.cdr.detectChanges();
-          
-          if (data.combined_feedback) {
-            const feedbackContent = data.combined_feedback.trim();
-            // parse and render structured feedback; keep legacy fallback in editFeedback
-            this.feedbackItems = parseEditorialFeedback(feedbackContent);
-            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
-            this.editFeedback = this.feedbackHtml;
-          }
-          
-          if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
-            console.log('Paragraph edits received:', data.paragraph_edits);
-            this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
-          } else if (data.final_revised && data.original_content) {
-            this.paragraphEdits = this.createParagraphEditsFromComparison(
-              data.original_content,
-              data.final_revised
-            );
-          }
-          
-          if (data.original_content) {
-            this.originalContent = data.original_content;
-          }
-          
-          if (data.final_revised) {
-            const trimmedRevised = data.final_revised.trim();
-            fullResponse = trimmedRevised;
-            this.revisedContent = convertMarkdownToHtml(trimmedRevised);
-          }
-          
-          this.isGenerating = false;
-        } else if (data?.type === 'content' && data.content) {
-          fullResponse += data.content;
-        } else if (data?.type === 'done' || data?.done) {
-          return;
-        } else if (data?.error) {
-          this.editFeedback = `❌ Error: ${data.error}`;
-          this.isGenerating = false;
-          return;
-        } else if (typeof data === 'string') {
-          fullResponse += data;
         }
-      },
-      error: (error: any) => {
-        console.error('[EditContentFlow] Streaming error:', error);
-        this.editFeedback = 'Sorry, there was an error editing your content. Please try again.';
-        this.isGenerating = false;
-      },
-      complete: () => {
-        this.iterationCount++;
-        if (this.revisedContent && this.revisedContent.trim()) {
-          this.showSatisfactionPrompt = true;
-        }
-      }
+
+        return response.json().then(json => {
+          if (convId && !json.conversation_id) json.conversation_id = convId;
+          if (summary && !json.sanitization_summary) json.sanitization_summary = summary;
+          observer.next(json);
+        });
+      })
+      .then(() => observer.complete())
+      .catch(error => observer.error(error));
     });
   }
+ 
 
-  /** Parse edit response (fallback method for old format or improvement requests) */
-  private parseEditResponse(response: string): void {
-    if (!response || !response.trim()) {
-      return;
-    }
-
-    const feedbackMatch = response.match(/===\s*FEEDBACK\s*===\s*([\s\S]*?)(?====\s*REVISED ARTICLE\s*===|$)/i);
-    const revisedMatch = response.match(/===\s*REVISED ARTICLE\s*===\s*([\s\S]*?)$/i);
+  sendMessage(messages: Message[], userId?: string, sessionId?: string, threadId?: string, source?: string): Observable<any> {
+    const request: ChatRequest = {
+      messages: messages,
+      stream: false,
+      user_id: userId,
+      session_id: sessionId,
+      thread_id: threadId,
+      source: source || "Chat"
+    };
     
-    if (feedbackMatch && feedbackMatch[1]) {
-      const feedbackContent = feedbackMatch[1].trim();
-      this.feedbackItems = parseEditorialFeedback(feedbackContent);
-      this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
-      this.editFeedback = this.feedbackHtml;
-    } else if (!revisedMatch && response.trim()) {
-      const feedbackContent = response.trim();
-      this.feedbackItems = parseEditorialFeedback(feedbackContent);
-      this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
-      this.editFeedback = this.feedbackHtml;
-    }
-    
-    if (revisedMatch && revisedMatch[1]) {
-      let revisedText = revisedMatch[1].trim();
-      revisedText = revisedText
-        .replace(/===\s*FEEDBACK\s*===/gi, '')
-        .replace(/##\s*📝\s*Editorial\s*Feedback/gi, '')
-        .trim();
-      this.revisedContent = convertMarkdownToHtml(revisedText);
-    }
+    console.log('[ChatService] sendMessage - URL:', `${this.apiUrl}/api/v1/chat`);
+    console.log('[ChatService] sendMessage - Request:', request);
+    console.log("Calling from sendMessage Chat");
+    return this.http.post(`${this.apiUrl}/api/v1/chat`, request);
   }
 
-  /** Convert markdown to HTML (public method for template) */
-  convertMarkdownToHtml(markdown: string): string {
-    return convertMarkdownToHtml(markdown);
+  createDraft(draftRequest: DraftRequest): Observable<any> {
+    return this.http.post(`${this.apiUrl}/api/draft`, draftRequest);
   }
 
-  /** Copy content to clipboard */
-  async copyToClipboard(): Promise<void>  {
-    let content = '';
-    if (this.showFinalOutput && this.finalArticle) {
-      content = this.finalArticle;
-    } else {
-      content = this.revisedContent || this.editFeedback;
-    }
-    const plainText = content.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
-    try {
-      await navigator.clipboard.writeText(plainText);
+  streamChat(messages: Message[], userId?: string, sessionId?: string, threadId?: string, source?: string): Observable<string> {
+    return new Observable(observer => {
+      let endpointUrl = '';
+      let actualSource = source || 'Chat';
       
-      this.isCopied = true;
-      this.cdr.detectChanges();
-
-      setTimeout(() => {
-        this.isCopied = false;
-        this.cdr.detectChanges();
-      },2000);
-    } catch (error) {
-      console.error('Failed to copy to clipboard:', error);
-      this.showNotificationMessage('Failed to copy ', 'error');
-    }
-
-  }
-
-  /** Download revised content as DOCX or PDF */
-  async downloadRevised(format: 'docx' | 'pdf'): Promise<void> {
-    let contentToDownload = '';
-    if (this.showFinalOutput && this.finalArticle) {
-      contentToDownload = this.finalArticle;
-    } else if (this.revisedContent) {
-      contentToDownload = this.revisedContent.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
-    } else {
-      this.showNotificationMessage('article is not available yet.', 'error');
-      return;
-    }
-
-    const plainText = contentToDownload.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
-    const endpoint = format === 'docx' ? '/api/v1/export/word' : '/api/v1/export/pdf-pwc';
-    const extension = format === 'docx' ? 'docx' : 'pdf';
-    const title = 'revised-article';
-    
-    // Extract first line as subtitle
-    const lines = plainText.split('\n').filter(line => line.trim());
-    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : ''; // First line, max 150 chars
-
-    // Get API URL from environment (supports runtime config via window._env)
-    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-    const fullEndpoint = `${apiUrl}${endpoint}`;
-
-    try {
-      const response = await this.authFetchService.authenticatedFetch(fullEndpoint, {
-        method: 'POST',
-        body: JSON.stringify({
-          content: plainText,
-          title,
-          subtitle
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
-      }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${title}.${extension}`;
-      link.click();
-      window.URL.revokeObjectURL(url);
-      this.showNotificationMessage(`${extension.toUpperCase()} downloaded successfully!`, 'success');
-    } catch (error) {
-      console.error(`Error generating ${extension.toUpperCase()}:`, error);
-      this.showNotificationMessage(`Failed to generate ${extension.toUpperCase()} file. Please try again.`, 'error');
-    }
-  }
-  
-  /** Handle satisfaction response - send to chat or show improvement input */
-  // onSatisfactionResponse(isSatisfied: boolean): void {
-  //   if (isSatisfied) {
-  //     const contentToSend = (this.showFinalOutput && this.finalArticle) 
-  //       ? this.finalArticle 
-  //       : this.revisedContent;
-      
-  //     if (contentToSend && contentToSend.trim()) {
-  //       let plainText = contentToSend;
-  //       if (contentToSend.includes('<')) {
-  //         const tempDiv = document.createElement('div');
-  //         tempDiv.innerHTML = contentToSend;
-  //         plainText = tempDiv.textContent || tempDiv.innerText || '';
-  //       }
-  //       plainText = plainText.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
-        
-  //       const headerLines: string[] = ['### Guided Journey – Edit Content'];
-  //       const uploadedFileName = this.formData.uploadedFile?.name;
-  //       if (uploadedFileName) {
-  //         headerLines.push(`_Source: ${uploadedFileName}_`);
-  //       }
-        
-  //       const selectedEditorNames = this.formData.selectedEditors
-  //         .map(id => {
-  //           const editor = this.editorTypes.find(e => e.id === id);
-  //           return editor ? editor.name : id;
-  //         })
-  //         .join(', ');
-        
-  //       if (selectedEditorNames) {
-  //         headerLines.push(`_Editors Applied: ${selectedEditorNames}_`);
-  //       }
-        
-  //       const articleTitle = this.showFinalOutput ? 'Final Revised Article' : 'Revised Article';
-  //       headerLines.push('', `**${articleTitle}**`, '');
-        
-  //       const documentTitle = extractDocumentTitle(
-  //         this.originalContent || '',
-  //         uploadedFileName
-  //       );
-        
-  //       if (documentTitle && documentTitle !== articleTitle) {
-  //         headerLines.push(`**${documentTitle}**`, '');
-  //       }
-        
-  //       const headerHtml = convertMarkdownToHtml(headerLines.join('\n'));
-  //       const contentHtml = this.showFinalOutput && this.finalArticle
-  //         ? convertMarkdownToHtml(this.finalArticle)
-  //         : this.revisedContent;
-  //       const combinedHtml = `${headerHtml}${contentHtml}`;
-        
-  //       const revisedMetadata: ThoughtLeadershipMetadata = {
-  //         contentType: 'article',
-  //         topic: documentTitle || articleTitle,
-  //         fullContent: plainText,
-  //         showActions: true
-  //       };
-        
-  //       this.tlChatBridge.sendMessage({
-  //         role: 'assistant',
-  //         content: combinedHtml,
-  //         timestamp: new Date(),
-  //         isHtml: true,
-  //         thoughtLeadership: revisedMetadata
-  //       });
-  //     }
-      
-  //     this.onClose();
-  //   } else {
-  //     this.showImprovementInput = true;
-  //     this.showSatisfactionPrompt = false;
-  //   }
-  // }
-  
-  submitImprovementRequest(): void {
-    if (!this.improvementRequestText?.trim()) {
-      return;
-    }
-    
-    const nextIteration = this.iterationCount + 1;
-    if (nextIteration > 5) {
-      alert('You have reached the maximum number of iterations (5). Please start a new edit workflow if you need further changes.');
-      this.cancelImprovementRequest();
-      return;
-    }
-    
-    const revisedPlainText = this.revisedContent.replace(/<br>/g, '\n');
-    const improvementMessage = `Please review the following revised article and apply these additional improvements:\n\n${this.improvementRequestText.trim()}\n\nRevised Article:\n${revisedPlainText}`;
-    
-    const messages = [{
-      role: 'user' as const,
-      content: improvementMessage
-    }];
-    
-    this.isGenerating = true;
-    this.showImprovementInput = false;
-    this.improvementRequestText = '';
-    this.editFeedback = '';
-    this.revisedContent = '';
-    
-    let fullResponse = '';
-    const editorsToUse = normalizeEditorOrder(this.formData.selectedEditors) as EditorType[];
-
-    this.chatService.streamEditContent(messages, editorsToUse).subscribe({
-      next: (data: any) => {
-        if (data.type === 'editor_progress') {
-        } else if (data.type === 'editor_content') {
-          if (data.content) {
-            fullResponse += data.content;
-          }
-        } else if (data.type === 'editor_complete') {
-          if (data.revised_content) {
-            fullResponse = data.revised_content;
-            this.revisedContent = convertMarkdownToHtml(fullResponse);
-          }
-        } else if (data.type === 'editor_error') {
-          console.error(`${data.editor} editor error:`, data.error);
-        } else if (data.type === 'final_complete') {
-          if (data.final_revised) {
-            fullResponse = data.final_revised;
-            this.revisedContent = convertMarkdownToHtml(fullResponse);
-          }
-          if (data.combined_feedback) {
-            const feedbackContent = data.combined_feedback.trim();
-            this.feedbackItems = parseEditorialFeedback(feedbackContent);
-            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
-            this.editFeedback = this.feedbackHtml;
-          }
-        } else if (data.type === 'content' && data.content) {
-          fullResponse += data.content;
-        } else if (typeof data === 'string') {
-          fullResponse += data;
-        }
-      },
-      error: (error: any) => {
-        console.error('Error improving content:', error);
-        this.editFeedback = 'Sorry, there was an error processing your improvement request. Please try again.';
-        this.isGenerating = false;
-        this.revisedContent = revisedPlainText.replace(/\n/g, '<br>');
-        this.showSatisfactionPrompt = true;
-      },
-      complete: () => {
-        if (!this.revisedContent && fullResponse) {
-          this.parseEditResponse(fullResponse);
-        }
-        this.isGenerating = false;
-        this.iterationCount = nextIteration;
-        if (!this.revisedContent || !this.revisedContent.trim()) {
-          this.revisedContent = revisedPlainText.replace(/\n/g, '<br>');
-        }
-        this.showSatisfactionPrompt = true;
-      }
-    });
-  }
-  
-  cancelImprovementRequest(): void {
-    this.showImprovementInput = false;
-    this.improvementRequestText = '';
-    this.showSatisfactionPrompt = true;
-  }
-  
-  /** Create paragraph edits by comparing original and edited content */
-  private createParagraphEditsFromComparison(original: string, edited: string): ParagraphEdit[] {
-    const allEditorNames = this.formData.selectedEditors.map(editorId => {
-      const editor = this.editorTypes.find(e => e.id === editorId);
-      return editor ? editor.name : editorId;
-    });
-    
-    return createParagraphEditsFromComparison(original, edited, allEditorNames);
-  }
-  
-  /** Approve a paragraph edit */
-  approveParagraph(index: number): void {
-    const paragraph = this.paragraphEdits.find(p => p.index === index);
-    if (!paragraph) {
-      return;
-    }
-    paragraph.approved = true; 
-  }
-  
-  /** Decline a paragraph edit */
-  declineParagraph(index: number): void {
-    const paragraph = this.paragraphEdits.find(p => p.index === index);
-    if (!paragraph) {
-      return;
-    }
-    paragraph.approved = false;
-  }
-
-  /** Get paragraphs that require user review (excludes auto-approved), sorted by index */
-  get getParagraphsForReview(): ParagraphEdit[] {
-    return this.paragraphEdits
-      .filter(p => p.autoApproved !== true)
-      .sort((a, b) => a.index - b.index);
-  }
-  
-  /** Get count of auto-approved paragraphs */
-  get autoApprovedCount(): number {
-    return this.paragraphEdits.filter(p => p.autoApproved === true).length;
-  }
-  
-  /** Get auto-approved count text with proper pluralization */
-  get autoApprovedText(): string {
-    const count = this.autoApprovedCount;
-    if (count === 0) {
-      return '';
-    }
-    return `(${count} paragraph${count !== 1 ? 's' : ''} auto-approved)`;
-  }
-
-  /** Get paragraphs that require user review (excludes auto-approved), sorted by index */
-  get getParagraphsForFeedbackReview(): ParagraphFeedback[] {
-    return this.paragraphFeedbackData
-      .filter(p => p.autoApproved !== true)
-      .sort((a, b) => a.index - b.index);
-  }
-
-  /** Get count of auto-approved paragraphs in feedback data */
-  get autoApprovedFeedbackCount(): number {
-    return this.paragraphFeedbackData.filter(
-      p => p.autoApproved === true
-    ).length;
-  }
-
-  /** Get auto-approved count text for feedback data */
-  get autoApprovedFeedbackText(): string {
-    const count = this.autoApprovedFeedbackCount;
-
-    if (count === 0) {
-      return '';
-    }
-
-    return `(${count} paragraph${count !== 1 ? 's' : ''} auto-approved)`;
-  }
-  
-  /** Check if all paragraphs have been decided */
-  get allParagraphsDecided(): boolean {
-    // Check both paragraphEdits and paragraphFeedbackData
-    const editsDecided = this.paragraphEdits.length === 0 || allParagraphsDecided(this.paragraphEdits);
-    const feedbackDecided = this.allParagraphFeedbackDecided;
-    return editsDecided && feedbackDecided;
-  }
-
-  /** Check if all paragraph feedback items are decided */
-  get allParagraphFeedbackDecided(): boolean {
-    if (!this.paragraphFeedbackData || this.paragraphFeedbackData.length === 0) {
-      return true; // No feedback to decide
-    }
-    
-    return this.paragraphFeedbackData.every(para => {
-      // Check if paragraph itself is decided
-      if (para.approved === null || para.approved === undefined) {
-        return false;
+      if (source === 'Market_Intelligence') {
+        endpointUrl = '/api/v1/tl/mi_chat_agent';
+        actualSource = 'Market_Intelligence';
+      } else if (source === 'Cortex' || source === 'Thought_Leadership') {
+        endpointUrl = '/api/v1/tl/tl_chat_agent';
+        actualSource = 'Cortex';
+      } else {
+        endpointUrl = '/api/v1/tl/tl_chat_agent';
+        actualSource = 'Cortex';
       }
       
-      // Check if all editorial feedback items are decided
-      const feedbackTypes = Object.keys(para.editorial_feedback || {});
-      for (const editorType of feedbackTypes) {
-        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-        for (const fb of feedbacks) {
-          if (fb.approved === null || fb.approved === undefined) {
-            return false;
-          }
-        }
-      }
-      
-      return true;
-    });
-  }
-
-  /** Check if all paragraphs are approved */
-  get allParagraphsApproved(): boolean {
-    return this.paragraphEdits.length > 0 && 
-           this.paragraphEdits.every(p => p.approved === true);
-  }
-  
-  /** Check if all paragraphs are declined */
-  get allParagraphsDeclined(): boolean {
-    return this.paragraphEdits.length > 0 && 
-           this.paragraphEdits.every(p => p.approved === false);
-  }
-
-  get isImprovementRequestValid(): boolean {
-    return !!this.improvementRequestText && this.improvementRequestText.trim().length > 0;
-  }
-  
-  /** Approve all paragraph edits */
-  approveAllParagraphs(): void {
-    if (this.paragraphEdits.length === 0) {
-      return;
-    }
-    
-    this.paragraphEdits.forEach(paragraph => {
-      paragraph.approved = true;
-    });
-  }
-  
-  /** Decline all paragraph edits */
-  declineAllParagraphs(): void {
-    if (this.paragraphEdits.length === 0) {
-      return;
-    }
-    
-    this.paragraphEdits.forEach(paragraph => {
-      paragraph.approved = false;
-    });
-  }
-
-  
-  /** Generate final article using approved edits */
-  async runFinalOutput(): Promise<void> {
-    if (!this.allParagraphsDecided) {
-      alert('Please approve or decline all paragraph edits before generating the final article.');
-      return;
-    }
-    
-    this.isGeneratingFinal = true;
-    
-    try {
-      const decisions = this.paragraphEdits.map(p => ({
-        index: p.index,
-        approved: p.approved === true
-      }));
-      
-      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
-        method: 'POST',
-        body: JSON.stringify({
-          original_content: this.originalContent,
-          paragraph_edits: this.paragraphEdits.map(p => ({
-            index: p.index,
-            original: p.original,
-            edited: p.edited,
-            tags: p.tags,
-            autoApproved: p.autoApproved
-          })),
-          decisions: decisions
-        })
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
-        throw new Error(`Failed to generate final article: ${response.status} ${errorText}`);
-      }
-      
-      const data = await response.json();
-      const finalArticle = data.final_article || '';
-      
-      if (!finalArticle) {
-        throw new Error('No final article returned from server');
-      }
-      
-      // Final article is markdown; render via markdown-to-HTML (no block_types)
-      this.finalArticle = formatFinalArticleWithBlockTypes(finalArticle, []);
-      this.showFinalOutput = true;
-      this.showSatisfactionPrompt = true;
-    } catch (error) {
-      console.error('Error generating final article:', error);
-      const errorMessage = error instanceof Error 
-        ? `Failed to generate final article: ${error.message}` 
-        : 'Failed to generate final article. Please try again.';
-      alert(errorMessage);
-    } finally {
-      this.isGeneratingFinal = false;
-    }
-  }
-
-  /** Generate final article using approved edits and feedback */
-  async generateFinalOutput(): Promise<void> {
-    if (!this.allParagraphsDecided) {
-      alert('Please approve or reject all paragraph edits and feedback before generating the final article.');
-      return;
-    }
-    
-    this.isGeneratingFinal = true;
-    
-    try {
-      // Collect all approved/rejected decisions from paragraphFeedbackData
-      const paragraphDecisions = this.paragraphFeedbackData.map(para => ({
-        index: para.index,
-        approved: para.approved === true,
-        editorial_feedback_decisions: this.collectFeedbackDecisions(para)
-      }));
-      
-      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
-        method: 'POST',
-        body: JSON.stringify({
-          original_content: this.originalContent,
-          paragraph_edits: this.paragraphFeedbackData.map(p => ({
-            index: p.index,
-            original: p.original,
-            edited: p.edited,
-            tags: p.tags,
-            autoApproved: p.autoApproved,
-            block_type: p.block_type || 'paragraph',
-            level: p.level || 0,
-            editorial_feedback: p.editorial_feedback
-          })),
-          decisions: paragraphDecisions,
-          include_quality_checks: true,
-          include_copy_check: true
-        })
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
-        throw new Error(`Failed to generate final article: ${response.status} ${errorText}`);
-      }
-      
-      const data = await response.json();
-      const finalArticle = data.final_article || '';
-      
-      if (!finalArticle) {
-        throw new Error('No final article returned from server');
-      }
-      
-      // Final article is markdown; render via markdown-to-HTML (no block_types)
-      const formattedContentHtml = formatFinalArticleWithBlockTypes(finalArticle.trim(), []);
-      
-      let plainText = finalArticle;
-      if (finalArticle.includes('<')) {
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = finalArticle;
-        plainText = tempDiv.textContent || tempDiv.innerText || '';
-      }
-      plainText = plainText.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
-      
-      // Build header with metadata
-      const headerLines: string[] = ['### Guided Journey – Edit Content'];
-      const uploadedFileName = this.formData.uploadedFile?.name;
-      if (uploadedFileName) {
-        headerLines.push(`_Source: ${uploadedFileName}_`);
-      }
-      
-      headerLines.push('', '---', '');
-      
-      const documentTitle = extractDocumentTitle(
-        this.originalContent || '',
-        uploadedFileName
-      );
-      
-      const headerHtml = convertMarkdownToHtml(headerLines.join('\n'));
-      
-      const combinedHtml = `${headerHtml}${formattedContentHtml}`;
-      
-      const revisedMetadata: ThoughtLeadershipMetadata = {
-        contentType: 'edit-article',
-        topic: documentTitle || 'Final Revised Article',
-        fullContent: plainText,
-        showActions: true
+      const request: ChatRequest = {
+        messages: messages,
+        stream: true,
+        user_id: userId,
+        session_id: sessionId,
+        thread_id: threadId,
+        source: actualSource
       };
-      
-      // Send to chat
-      this.tlChatBridge.sendMessage({
-        role: 'assistant',
-        content: combinedHtml,
-        timestamp: new Date(),
-        isHtml: true,
-        thoughtLeadership: revisedMetadata
-      });
-      
-      // Close the edit-content-flow component
-      this.onClose();
-    } catch (error) {
-      console.error('Error generating final article:', error);
-      const errorMessage = error instanceof Error 
-        ? `Failed to generate final article: ${error.message}` 
-        : 'Failed to generate final article. Please try again.';
-      alert(errorMessage);
-    } finally {
-      this.isGeneratingFinal = false;
-    }
-  }
-
-
-
-  /** Collect feedback decisions from a paragraph */
-  private collectFeedbackDecisions(para: ParagraphFeedback): any {
-    const decisions: any = {};
-    const feedbackTypes = Object.keys(para.editorial_feedback || {});
-    
-    for (const editorType of feedbackTypes) {
-      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-      decisions[editorType] = feedbacks.map((fb: any) => ({
-        issue: fb.issue,
-        approved: fb.approved === true
-      }));
-    }
-    
-    return decisions;
-  }
-
-  /** Process paragraph edits from backend response (reusable helper) */
-  private processParagraphEdits(paragraph_edits: any[]): ParagraphFeedback[] {
-    // If API returned no paragraph edits at all, just clear the data array.
-    // The template can show an inline "no feedback" message inside the paragraph box.
-    if (!paragraph_edits || !Array.isArray(paragraph_edits) || paragraph_edits.length === 0) {
-      return [];
-    }
-
-    const feedbackData: ParagraphFeedback[] = paragraph_edits.map((edit: any) => {
-      const editorial_feedback = {
-        development: edit.editorial_feedback?.development || [],
-        content: edit.editorial_feedback?.content || [],
-        copy: edit.editorial_feedback?.copy || [],
-        line: edit.editorial_feedback?.line || [],
-        brand: edit.editorial_feedback?.brand || []
-      };
-
-      return {
-        index: edit.index || 0,
-        original: edit.original || '',
-        edited: edit.edited || '',
-        tags: edit.tags || [],
-        autoApproved: edit.autoApproved ?? false,
-        approved: edit.approved ?? null,
-        block_type: edit.block_type || 'paragraph',
-        level: edit.level || 0,
-        editorial_feedback
-      };
-    });
-
-    return feedbackData;
-  }
-
-  /** True when there are no feedback items inside paragraphFeedbackData */
-  get hasNoParagraphFeedback(): boolean {
-    if (!this.paragraphFeedbackData || this.paragraphFeedbackData.length === 0) {
-      return true;
-    }
-
-    // No editorial feedback items across all paragraphs
-    return this.paragraphFeedbackData.every(para => {
-      const types = Object.keys(para.editorial_feedback || {});
-      return types.every(t => {
-        const arr = (para.editorial_feedback as any)[t] || [];
-        return !arr || arr.length === 0;
-      });
-    });
-  }
-
-  /** Move to next editor in sequential workflow */
-  async nextEditor(): Promise<void> {
-    if (!this.threadId) {
-      console.error('[EditContentFlow] No thread_id available for next editor');
-      return;
-    }
-
-    if (!this.allParagraphsDecided) {
-      alert('Please approve or reject all paragraph edits before proceeding to the next editor.');
-      return;
-    }
-
-    this.isGenerating = true;
-    this.isEditorLoading = true; // Mark that we're loading the next editor
-
-    // Mark current editor as completed when moving to next
-    const currentEditorItem = this.editorProgressList.find(e => e.editorId === this.currentEditor);
-    if (currentEditorItem && currentEditorItem.status === 'review-pending') {
-      currentEditorItem.status = 'completed';
-    }
-
-    // Immediately update next editor to 'processing' status for visual feedback
-    const nextEditorIndex = this.currentEditorIndex + 1;
-    if (nextEditorIndex < this.editorProgressList.length) {
-      const nextEditorItem = this.editorProgressList[nextEditorIndex];
-      if (nextEditorItem && (nextEditorItem.status === 'pending' || nextEditorItem.status === 'review-pending')) {
-        nextEditorItem.status = 'processing';
-        // Update currentEditor to match the next editor
-        this.currentEditor = nextEditorItem.editorId;
-        this.currentEditorIndex = nextEditorIndex;
-        this.cdr.detectChanges();
-      }
-    }
-
-    try {
-      // Collect decisions from paragraphFeedbackData
-      const decisions = this.paragraphFeedbackData.map(para => ({
-        index: para.index,
-        approved: para.approved === true
-      }));
-
-      // Prepare paragraph_edits
-      const paragraph_edits = this.paragraphFeedbackData.map(para => ({
-        index: para.index,
-        original: para.original,
-        edited: para.edited,
-        tags: para.tags || [],
-        autoApproved: para.autoApproved || false,
-        approved: para.approved
-      }));
-
-      // Call /next endpoint via ChatService
-      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/next`, {
+      console.log("Calling from Stream Chat Source is:", actualSource, "Endpoint:", endpointUrl);
+      this.authenticatedFetch(`${this.apiUrl}${endpointUrl}`, {
         method: 'POST',
-        body: JSON.stringify({
-          thread_id: this.threadId,
-          paragraph_edits: paragraph_edits,
-          decisions: decisions,
-          accept_all: false,
-          reject_all: false
-        })
-      });
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
-        throw new Error(`Failed to proceed to next editor: ${response.status} ${errorText}`);
-      }
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
 
-      // Handle streaming response
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
 
-      if (!reader) {
-        throw new Error('No response body reader available');
-      }
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const dataStr = line.slice(6).trim();
-            if (dataStr && dataStr !== '[DONE]') {
-              try {
-                const data = JSON.parse(dataStr);
-                
-                // Handle editor_progress - show In Progress
-                if (data.type === 'editor_progress') {
-                  // Backend sends 1-based index, convert to 0-based for our array
-                  const backendCurrentIndex = data.current || 1;
-                  this.currentEditorIndex = backendCurrentIndex - 1; // Convert to 0-based
-                  this.totalEditors = data.total || this.totalEditors;
-                  this.currentEditorId = data.editor || '';
-                  this.isEditorLoading = true;
-                  
-                  // Update editor statuses (using 0-based index)
-                  this.editorProgressList.forEach((editor, index) => {
-                    if (index < this.currentEditorIndex) {
-                      editor.status = 'completed';
-                    } else if (index === this.currentEditorIndex) {
-                      editor.status = 'processing'; // In Progress
-                      editor.current = backendCurrentIndex; // Keep 1-based for display
-                      editor.total = this.totalEditors;
-                    } else {
-                      editor.status = 'pending';
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.content) {
+                      observer.next(parsed.content);
+                    } else if (parsed.done) {
+                      observer.complete();
+                    } else if (parsed.error) {
+                      observer.error(new Error(parsed.error));
                     }
-                  });
-                  
-                  this.cdr.detectChanges();
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  streamDraft(draftRequest: DraftRequest): Observable<string> {
+    return new Observable(observer => {
+      this.authenticatedFetch(`${this.apiUrl}/api/draft`, {
+        method: 'POST',
+        body: JSON.stringify(draftRequest)
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.content) {
+                      observer.next(parsed.content);
+                    } else if (parsed.done) {
+                      observer.complete();
+                    } else if (parsed.error) {
+                      observer.error(new Error(parsed.error));
+                    }
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  streamThoughtLeadership(tlRequest: ThoughtLeadershipRequest): Observable<string> {
+    return new Observable(observer => {
+      this.authenticatedFetch(`${this.apiUrl}/api/thought-leadership`, {
+        method: 'POST',
+        body: JSON.stringify(tlRequest)
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.content) {
+                      observer.next(parsed.content);
+                    } else if (parsed.done) {
+                      observer.complete();
+                    } else if (parsed.error) {
+                      observer.error(new Error(parsed.error));
+                    }
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  improvePPT(originalFile: File, referenceFile: File | null): Observable<Blob> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      formData.append('original_ppt', originalFile);
+      if (referenceFile) {
+        formData.append('reference_ppt', referenceFile);
+      }
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ppt/improve`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        return response.blob();
+      })
+      .then(blob => {
+        observer.next(blob);
+        observer.complete();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  downloadDdcFormatted(formData: FormData) {
+    // Use HttpClient to get response with headers and blob body
+    // Return an Observable of the full HttpResponse containing the blob
+    return this.http.post(`${this.apiUrl}/api/v1/ddc/brand-format/format-file`, formData, {
+      responseType: 'blob',
+      observe: 'response' as 'body'
+    });
+  }
+
+  streamSanitizationConversation(
+    messages: Message[], 
+    uploadedFileName?: string,
+    clientIdentity?: string,
+    pageRange?: string,
+    tier1Services?: string[],
+    tier2Services?: string[]
+  ): Observable<string> {
+    return new Observable(observer => {
+      const request = {
+        messages: messages,
+        uploaded_file_name: uploadedFileName,
+        client_identity: clientIdentity,
+        page_range: pageRange,
+        tier1_services: tier1Services,
+        tier2_services: tier2Services,
+        stream: true
+      };
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/ppt/sanitize/conversation`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.content) {
+                      observer.next(parsed.content);
+                    } else if (parsed.done) {
+                      observer.complete();
+                    } else if (parsed.error) {
+                      observer.error(new Error(parsed.error));
+                    }
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  sanitizePPT(file: File, clientName: string, products: string, options?: any): Observable<{blob: Blob, stats: any}> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      formData.append('original_ppt', file);
+      if (clientName) {
+        formData.append('client_name', clientName);
+      }
+      if (products) {
+        formData.append('client_products', products);
+      }
+      if (options) {
+        // Convert camelCase to snake_case for backend
+        const backendOptions = {
+          numeric_data: options.numericData,
+          personal_info: options.personalInfo,
+          financial_data: options.financialData,
+          locations: options.locations,
+          identifiers: options.identifiers,
+          names: options.names,
+          logos: options.logos,
+          metadata: options.metadata,
+          llm_detection: options.llmDetection,
+          hyperlinks: options.hyperlinks,
+          embedded_objects: options.embeddedObjects
+        };
+        formData.append('sanitization_options', JSON.stringify(backendOptions));
+      }
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ppt/sanitize`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        const statsHeader = response.headers.get('X-Sanitization-Stats');
+        let stats = null;
+        if (statsHeader) {
+          try {
+            stats = JSON.parse(statsHeader);
+          } catch (e) {
+            console.warn('Could not parse sanitization stats');
+          }
+        }
+        return response.blob().then(blob => ({blob, stats}));
+      })
+      .then(result => {
+        observer.next(result);
+        observer.complete();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  streamDdcWorkflow(workflow: 'brand-format' | 'professional-polish' | 'sanitization' | 'client-customization' | 'rfp-response' | 'ddc-format-translator' | 'slide-creation' | 'slide-creation-prompt', formData: FormData): Observable<string> {
+    return this.streamFormData(`${this.apiUrl}/api/v1/ddc/${workflow}`, formData);
+  }
+
+  streamDdcBrandFormat(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('brand-format', formData);
+  }
+
+  streamDdcProfessionalPolish(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('professional-polish', formData);
+  }
+
+  streamDdcSanitization(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('sanitization', formData);
+  }
+
+  streamDdcClientCustomization(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('client-customization', formData);
+  }
+
+  streamDdcRfpResponse(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('rfp-response', formData);
+  }
+
+  streamDdcFormatTranslator(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('ddc-format-translator', formData);
+  }
+
+  streamDdcSlideCreation(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('slide-creation', formData);
+  }
+  streamDdcSlideCreationPrompt(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('slide-creation-prompt', formData);
+  }
+
+  createDdcSlide(formData: FormData): Observable<any> {
+  return this.http.post(`${this.apiUrl}/api/v1/ddc/slide-creation`, formData);
+  }
+
+      createPhoenixRequest(formData: FormData): Observable<any> {
+  return this.http.post(
+    `${this.apiUrl}/api/v1/ddc/phoenix/create-request`,formData);
+  } 
+
+  getPhoenixRequestConfigDdc(): Observable<any> {
+  return this.http.get(
+    `${this.apiUrl}/api/v1/ddc/phoenix/request-config-ddc`
+  );
+}
+
+  getPhoenixRequestConfigTl(): Observable<any> {
+  return this.http.get(
+    `${this.apiUrl}/api/v1/ddc/phoenix/request-config-tl`
+  );
+}
+
+ getUserProfile(email: string): Observable<any> {
+  return this.http.get(
+    `${this.apiUrl}/api/v1/profile/details/user/${email}`);
+  }
+  private streamFormData(endpoint: string, formData: FormData): Observable<string> {
+    return new Observable(observer => {
+      this.authenticatedFetchFormData(endpoint, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`Network response was not ok: ${response.status}`);
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.content) {
+                      observer.next(parsed.content);
+                    } else if (parsed.done) {
+                      observer.complete();
+                    } else if (parsed.error) {
+                      observer.error(new Error(parsed.error));
+                    }
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  exportDocument(content: string, title: string, format: string): Observable<Blob> {
+    return new Observable(observer => {
+      const endpoint = format === 'pdf' ? '/api/v1/export/pdf-pwc' : '/api/v1/export/word';
+      
+      this.authenticatedFetch(`${this.apiUrl}${endpoint}`, {
+        method: 'POST',
+        body: JSON.stringify({ content, title, format })
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`Export failed: ${response.statusText}`);
+        }
+        return response.blob();
+      })
+      .then(blob => {
+        observer.next(blob);
+        observer.complete();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  streamResearch(researchRequest: any): Observable<string> {
+    return new Observable(observer => {
+      this.authenticatedFetch(`${this.apiUrl}/api/research`, {
+        method: 'POST',
+        body: JSON.stringify(researchRequest)
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.content) {
+                      observer.next(parsed.content);
+                    } else if (parsed.done) {
+                      observer.complete();
+                    } else if (parsed.error) {
+                      observer.error(new Error(parsed.error));
+                    }
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  draftArticle(articleData: any, outlineFile?: File, supportingDocs?: File[]): Observable<string> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      formData.append('topic', articleData.topic);
+      formData.append('content_type', articleData.content_type);
+      formData.append('desired_length', articleData.desired_length.toString());
+      formData.append('tone', articleData.tone);
+      
+      if (articleData.outline_text) {
+        formData.append('outline_text', articleData.outline_text);
+      }
+      if (articleData.additional_context) {
+        formData.append('additional_context', articleData.additional_context);
+      }
+      if (outlineFile) {
+        formData.append('outline_file', outlineFile);
+      }
+      if (supportingDocs && supportingDocs.length > 0) {
+        supportingDocs.forEach(doc => {
+          formData.append('supporting_docs', doc);
+        });
+      }
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/draft-article`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.content) {
+                      observer.next(parsed.content);
+                    } else if (parsed.done) {
+                      observer.complete();
+                    } else if (parsed.error) {
+                      observer.error(new Error(parsed.error));
+                    }
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  streamBestPractices(file: File, categories?: string[]): Observable<string> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (categories && categories.length > 0) {
+        formData.append('categories', categories.join(','));
+      }
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ppt/validate-best-practices`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.content) {
+                      observer.next(parsed.content);
+                    } else if (parsed.done) {
+                      observer.complete();
+                    } else if (parsed.error) {
+                      observer.error(new Error(parsed.error));
+                    }
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  generatePodcast(
+    files: File[] | null, 
+    contentText: string | null, 
+    customization: string | null, 
+    podcastStyle: string = 'dialogue',
+    speaker1Name?: string,
+    speaker1Voice?: string,
+    speaker1Accent?: string,
+    speaker2Name?: string,
+    speaker2Voice?: string,
+    speaker2Accent?: string
+  ): Observable<any> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      
+      if (files && files.length > 0) {
+        files.forEach(file => {
+          formData.append('files', file);
+        });
+      }
+      
+      if (contentText) {
+        formData.append('content_text', contentText);
+      }
+      
+      if (customization) {
+        formData.append('customization', customization);
+      }
+      
+      formData.append('podcast_style', podcastStyle);
+      
+      if (speaker1Name) formData.append('speaker1_name', speaker1Name);
+      if (speaker1Voice) formData.append('speaker1_voice', speaker1Voice);
+      if (speaker1Accent) formData.append('speaker1_accent', speaker1Accent);
+      if (speaker2Name) formData.append('speaker2_name', speaker2Name);
+      if (speaker2Voice) formData.append('speaker2_voice', speaker2Voice);
+      if (speaker2Accent) formData.append('speaker2_accent', speaker2Accent);
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/generate-podcast`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    observer.next(parsed);
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  streamResearchWithMaterials(
+    files: File[] | null,
+    links: string[] | null,
+    query: string,
+    focusAreas: string[],
+    additionalContext: string | null
+  ): Observable<any> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      
+      if (files && files.length > 0) {
+        files.forEach(file => {
+          formData.append('files', file);
+        });
+      }
+      
+      if (links && links.length > 0) {
+        links.forEach(link => {
+          formData.append('links', link);
+        });
+      }
+      
+      formData.append('query', query);
+      
+      if (focusAreas && focusAreas.length > 0) {
+        formData.append('focus_areas', JSON.stringify(focusAreas));
+      }
+      
+      if (additionalContext) {
+        formData.append('additional_context', additionalContext);
+      }
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/research-with-materials`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    observer.next(parsed);
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  // NEW: Thought Leadership Section Methods (5 Sections)
+
+  streamDraftContent(
+    payload: Message[] | {
+      messages: Message[],
+      content_type?: string,
+      topic?: string,
+      word_limit?: string,
+      audience_tone?: string,
+      outline?: { type: string, content: string },
+      supporting_documents?: { content: string },
+      research?: any,
+      stream: boolean
+    },
+    improvementPrompt?: string,
+    draftParams?: any
+  ): Observable<any> {
+    return new Observable(observer => {
+      let request: any;
+
+      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
+      if (Array.isArray(payload)) {
+        // Old format: Message[] for improvement iterations
+        request = { messages: payload, stream: true };
+        
+        // Add improvement_prompt to request if provided
+        if (improvementPrompt) {
+          request.improvement_prompt = improvementPrompt;
+        }
+        
+        // Add draft parameters for improvement iterations
+        if (draftParams) {
+          if (draftParams.contentType) request.content_type = draftParams.contentType;
+          if (draftParams.topic) request.topic = draftParams.topic;
+          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
+          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
+          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
+          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
+          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
+        }
+      } else {
+        // New format: Structured payload object with all fields
+        request = payload;
+      }
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/draft-content`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    observer.next(JSON.parse(data));
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  /**
+   * Stream POV (Point of View) content generation
+   * Routes to /api/v1/tl/pov endpoint instead of draft-content
+   */
+  streamPOVContent(
+    payload: Message[] | {
+      messages: Message[],
+      content_type?: string,
+      topic?: string,
+      word_limit?: string,
+      audience_tone?: string,
+      outline?: { type: string, content: string },
+      supporting_documents?: { content: string },
+      research?: any,
+      stream: boolean
+    },
+    improvementPrompt?: string,
+    draftParams?: any
+  ): Observable<any> {
+    return new Observable(observer => {
+      let request: any;
+
+      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
+      if (Array.isArray(payload)) {
+        // Old format: Message[] for improvement iterations
+        request = { messages: payload, stream: true };
+        
+        // Add improvement_prompt to request if provided
+        if (improvementPrompt) {
+          request.improvement_prompt = improvementPrompt;
+        }
+        
+        // Add draft parameters for improvement iterations
+        if (draftParams) {
+          if (draftParams.contentType) request.content_type = draftParams.contentType;
+          if (draftParams.topic) request.topic = draftParams.topic;
+          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
+          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
+          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
+          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
+          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
+        }
+      } else {
+        // New format: Structured payload object with all fields
+        request = payload;
+      }
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/pov`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    observer.next(JSON.parse(data));
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  /**
+   * Analyze user satisfaction with generated draft content using LLM backend
+   */
+  analyzeSatisfaction(request: {
+    user_input: string,
+    generated_content: string,
+    content_type: string,
+    topic: string
+  }): Observable<any> {
+    return this.http.post<any>(`${this.apiUrl}/api/v1/tl/draft-content/analyze-satisfaction`, request);
+  }
+
+  // streamConductResearch(messages: Message[], sourceGroups?: string[]): Observable<any> {
+  streamConductResearch(formData: FormData): Observable<any> {  
+  return new Observable(observer => {
+      // const request: any = { messages, stream: true };
+      // if (sourceGroups && sourceGroups.length > 0) {
+      //   request.source_groups = sourceGroups;
+      // }
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/conduct-research`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    observer.next(JSON.parse(data));
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  /** Stream edit content workflow with specified editor types */
+  streamEditContent(
+    messages: Message[], 
+    editorTypes?: string[], 
+    temperature: number = 0,
+    maxTokens: number = 32000
+  ): Observable<any> {
+    if (temperature < 0 || temperature > 2) {
+      console.warn(`[ChatService] Temperature ${temperature} is outside valid range (0.0-2.0), using default 0`);
+      temperature = 0;
+    }
+    
+    if (maxTokens < 1000 || maxTokens > 128000) {
+      console.warn(`[ChatService] maxTokens ${maxTokens} is outside valid range (1000-128000), using default 32000`);
+      maxTokens = 32000;
+    }
+    
+    return new Observable(observer => {
+      const request: any = { 
+        messages, 
+        stream: true,
+        editor_types: editorTypes || [],
+        temperature: temperature,
+        max_tokens: maxTokens
+      };
+// streamEditContent(messages: Message[], editorTypes?: string[], temperature: number = 0.0): Observable<any> {
+//     return new Observable(observer => {
+//       const request = { 
+//         messages, 
+//         stream: true,
+//         editor_types: editorTypes || [],
+//         temperature: temperature
+//       };
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/edit-content`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    observer.next(JSON.parse(data));
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  // Accept either an array of messages OR a structured payload { messages, original_content, services, stream }
+  streamRefineContent(payload: Message[] | { messages: Message[]; original_content?: string; services?: any[]; stream?: boolean }): Observable<any> {
+    return new Observable(observer => {
+      const request = Array.isArray(payload)
+        ? { messages: payload, stream: true }
+        : { messages: payload.messages || [], original_content: (payload as any).original_content, services: (payload as any).services, stream: (payload as any).stream ?? true };
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/refine-content`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    observer.next(JSON.parse(data));
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  streamFormatTranslator(params: {
+    content: string;
+    uploadedFile: File;
+    sourceFormat: string;
+    targetFormat: string;
+    customization?: string;
+    podcastStyle?: string;
+    speaker1Name?: string;
+    speaker1Voice?: string;
+    speaker1Accent?: string;
+    speaker2Name?: string;
+    speaker2Voice?: string;
+    speaker2Accent?: string;
+    wordLimit?: string;
+  }): Observable<any> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      formData.append('content', params.content);
+      formData.append('source_format', params.sourceFormat);
+      formData.append('target_format', params.targetFormat);
+      formData.append('uploadedFile', params.uploadedFile, params.uploadedFile.name);
+      
+      if (params.customization) formData.append('customization', params.customization);
+      if (params.podcastStyle) formData.append('podcast_style', params.podcastStyle);
+      if (params.speaker1Name !== undefined) formData.append('speaker1_name', params.speaker1Name);
+      if (params.speaker1Voice !== undefined) formData.append('speaker1_voice', params.speaker1Voice);
+      if (params.speaker1Accent !== undefined) formData.append('speaker1_accent', params.speaker1Accent);
+      if (params.speaker2Name !== undefined) formData.append('speaker2_name', params.speaker2Name);
+      if (params.speaker2Voice !== undefined) formData.append('speaker2_voice', params.speaker2Voice);
+      if (params.speaker2Accent !== undefined) formData.append('speaker2_accent', params.speaker2Accent);
+      if (params.wordLimit) formData.append('word_limit', params.wordLimit);
+
+      console.log('[ChatService] Format Translator Request:', {
+        sourceFormat: params.sourceFormat,
+        targetFormat: params.targetFormat,
+        hasSpeaker1: !!params.speaker1Name,
+        hasSpeaker2: !!params.speaker2Name
+      });
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/format-translator`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          console.error('[ChatService] Format translator response not OK:', response.status, response.statusText);
+          throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        console.log(response.body)
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            console.log(buffer)
+
+            if(buffer.includes("placemat"))
+            {
+              const parsed = JSON.parse(buffer);
+               observer.next({ type: 'placemat', content: buffer, url:parsed.download_url, status:parsed.status});
+
+            }
+           
+
+            lines.forEach(line => {
+              console.log(lines)
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                console.log(data)
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    console.log('[ChatService] Format Translator SSE data:', parsed);
+                    observer.next(parsed);
+                  } catch (e) {
+                    console.error('[ChatService] Error parsing SSE data:', e, 'Raw data:', data);
+                    // If parsing fails, try to send as string content
+                    observer.next({ type: 'content', content: data });
+                  }
                 }
                 
-                // Handle all_complete
-                if (data.type === 'all_complete') {
-                  this.isGenerating = false;
-                  // Mark as last editor to show "Generate Final Output" button
-                  this.isLastEditor = true;
-                  this.currentEditorIndex = this.totalEditors;
-                  this.cdr.detectChanges();
+                  
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  streamSectionUpdate(request: UpdateSectionRequest): Observable<string> {
+    return new Observable(observer => {
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/update-section`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.content) {
+                      observer.next(parsed.content);
+                    } else if (parsed.done) {
+                      observer.complete();
+                    } else if (parsed.error) {
+                      observer.error(new Error(parsed.error));
+                    }
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  streamPrepareClientMeeting(
+    payload: Message[] | {
+      messages: Message[],
+      content_type?: string,
+      topic?: string,
+      word_limit?: string,
+      audience_tone?: string,
+      outline?: { type: string, content: string },
+      supporting_documents?: { content: string },
+      research?: any,
+      stream: boolean
+    },
+    improvementPrompt?: string,
+    draftParams?: any
+  ): Observable<any> {
+    return new Observable(observer => {
+      let request: any;
+
+      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
+      if (Array.isArray(payload)) {
+        // Old format: Message[] for improvement iterations
+        request = { messages: payload, stream: true };
+        
+        // Add improvement_prompt to request if provided
+        if (improvementPrompt) {
+          request.improvement_prompt = improvementPrompt;
+        }
+        
+        // Add draft parameters for improvement iterations
+        if (draftParams) {
+          if (draftParams.contentType) request.content_type = draftParams.contentType;
+          if (draftParams.topic) request.topic = draftParams.topic;
+          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
+          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
+          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
+          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
+          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
+        }
+      } else {
+        // New format: Structured payload object with all fields
+        request = payload;
+      }
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/prep-client-meeting`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    observer.next(JSON.parse(data));
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  streamProposalInsights(
+    payload: Message[] | {
+      messages: Message[],
+      content_type?: string,
+      topic?: string,
+      word_limit?: string,
+      audience_tone?: string,
+      outline?: { type: string, content: string },
+      supporting_documents?: { content: string },
+      research?: any,
+      stream: boolean
+    },
+    improvementPrompt?: string,
+    draftParams?: any
+  ): Observable<any> {
+    return new Observable(observer => {
+      let request: any;
+
+      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
+      if (Array.isArray(payload)) {
+        // Old format: Message[] for improvement iterations
+        request = { messages: payload, stream: true };
+        
+        // Add improvement_prompt to request if provided
+        if (improvementPrompt) {
+          request.improvement_prompt = improvementPrompt;
+        }
+        
+        // Add draft parameters for improvement iterations
+        if (draftParams) {
+          if (draftParams.contentType) request.content_type = draftParams.contentType;
+          if (draftParams.topic) request.topic = draftParams.topic;
+          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
+          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
+          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
+          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
+          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
+        }
+      } else {
+        // New format: Structured payload object with all fields
+        request = payload;
+      }
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/proposal_insights`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    observer.next(JSON.parse(data));
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  streamIndustryInsights(
+    payload: Message[] | {
+      messages: Message[],
+      content_type?: string,
+      topic?: string,
+      word_limit?: string,
+      audience_tone?: string,
+      outline?: { type: string, content: string },
+      supporting_documents?: { content: string },
+      research?: any,
+      stream: boolean
+    },
+    improvementPrompt?: string,
+    draftParams?: any
+  ): Observable<any> {
+    return new Observable(observer => {
+      let request: any;
+
+      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
+      if (Array.isArray(payload)) {
+        // Old format: Message[] for improvement iterations
+        request = { messages: payload, stream: true };
+        
+        // Add improvement_prompt to request if provided
+        if (improvementPrompt) {
+          request.improvement_prompt = improvementPrompt;
+        }
+        
+        // Add draft parameters for improvement iterations
+        if (draftParams) {
+          if (draftParams.contentType) request.content_type = draftParams.contentType;
+          if (draftParams.topic) request.topic = draftParams.topic;
+          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
+          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
+          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
+          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
+          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
+        }
+      } else {
+        // New format: Structured payload object with all fields
+        request = payload;
+      }
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/industry_insights`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    observer.next(JSON.parse(data));
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  // exportToWord(data: { content: string; title: string }): Observable<Blob> {
+  //   return this.http.post(`${this.apiUrl}/api/v1/export/word`, data, {
+
+  exportToWord(data: { content: string; title: string; content_type?: string }): Observable<Blob> {
+        return this.http.post(`${this.apiUrl}/api/v1/export/word`, data, {
+      responseType: 'blob'
+    });
+  }
+
+  exportToPDF(data: { content: string; title: string }): Observable<Blob> {
+    return this.http.post(`${this.apiUrl}/api/v1/export/pdf-pwc`, data, {
+      responseType: 'blob'
+    });
+  }
+  exportPdfWithBullets(payload: {content: string;title: string;}): Observable<Blob> {
+    return this.http.post(`${this.apiUrl}/api/v1/export/pdf-pwc-bullets`,payload,
+      { responseType: 'blob' }
+    );
+  }
+  exportToText(data: { content: string; title: string }): Observable<Blob> {
+    return this.http.post(`${this.apiUrl}/api/v1/export/text`, data, {
+      responseType: 'blob'
+    });
+  }
+
+
+  exportEditContentToWord(data: { 
+    content: string; 
+    title: string; 
+    block_types?: Array<{index: number; type: string; level?: number}>;
+    subtitle?: string;
+    references?: Array<Record<string, any>> | null;
+  }): Observable<Blob> {
+      return this.http.post(`${this.apiUrl}/api/v1/export/edit-content/word`, data, {
+        responseType: 'blob'
+      });
+    }
+
+
+  exportEditContentToPDF(data: { 
+    content: string; 
+    title: string; 
+    block_types?: Array<{index: number; type: string; level?: number}>;
+    subtitle?: string;
+    references?: Array<Record<string, any>> | null;
+  }): Observable<Blob> {
+      return this.http.post(`${this.apiUrl}/api/v1/export/edit-content/pdf`, data, {
+        responseType: 'blob'
+      });
+    }
+
+
+  // ===== Chat History Management Methods =====
+  // These methods manage chat history retrieval from database (lazy loading)
+
+  /**
+   * Get all chat session summaries for a user.
+   * Returns only titles and metadata, NOT full conversations.
+   * @param userId User email or identifier
+   * @param source Optional source filter (Chat, DDDC, Cortex, etc.)
+   * @returns List of session summaries
+   */
+  getUserSessions(userId: string, source?: string): Observable<ChatSessionSummary[]> {
+    let url = `${this.apiUrl}/api/v1/chat-history/sessions?user_id=${encodeURIComponent(userId)}`;
+    if (source) {
+      url += `&source=${encodeURIComponent(source)}`;
+    }
+    return this.http.get<ChatSessionSummary[]>(url);
+  }
+
+  /**
+   * Get full conversation for a specific session.
+   * Call this only when user clicks on a session to load the conversation.
+   * @param sessionId Session identifier
+   * @returns Complete session data with conversation messages
+   */
+  getSessionConversation(sessionId: string): Observable<ChatSessionDetail> {
+    return this.http.get<ChatSessionDetail>(
+      `${this.apiUrl}/api/v1/chat-history/sessions/${encodeURIComponent(sessionId)}`
+    );
+  }
+
+  /**
+   * Delete a chat session (soft delete).
+   * @param sessionId Session identifier
+   * @returns Deletion confirmation
+   */
+  deleteSession(sessionId: string): Observable<any> {
+    return this.http.delete(
+      `${this.apiUrl}/api/v1/chat-history/sessions/${encodeURIComponent(sessionId)}`
+    );
+  }
+  exportWordStandalone(payload: {
+  content: string;
+  title: string;
+  content_type?: string;
+}): Observable<Blob> {
+  return this.http.post(
+    `${this.apiUrl}/api/v1/export/word-standalone`,
+    payload,
+    { responseType: 'blob' }
+  );
+}
+exportWordUI(data: { content: string; title: string }): Observable<Blob> {
+  return this.http.post(
+    `${this.apiUrl}/api/v1/export/word-ui`,
+    data,
+    { responseType: 'blob' }
+  );
+}
+
+exportPdfStandalone(payload: {
+  content: string;
+  title: string;
+}): Observable<Blob> {
+  return this.http.post(
+    `${this.apiUrl}/api/v1/export/pdf-pwc`,
+    payload,
+    { responseType: 'blob' }
+  );
+}
+
+/**
+ * Stream from tl_chat_agent endpoint which can return:
+ * 1. JSON response with edit intent workflow data -> trigger edit workflow
+ * 2. Streaming response for normal chat -> stream content
+ */
+streamTlChatAgent(
+  messages: Array<{role: string, content: string}>,
+  userId?: string,
+  sessionId?: string,
+  threadId?: string,
+  source?: string
+): Observable<any> {
+  return new Observable(observer => {
+    const apiUrl = `${this.apiUrl}/api/v1/tl/tl_chat_agent`;
+    console.log('[ChatService] streamTlChatAgent - URL:', apiUrl);
+
+    const payload = {
+      messages: messages,
+      user_id: userId,
+      session_id: sessionId,
+      thread_id: threadId,
+      source: source || 'Cortex'
+    };
+
+    this.authenticatedFetch(apiUrl, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`API responded with status: ${response.status}`);
+        }
+
+        const contentType = response.headers.get('content-type');
+        console.log('[ChatService] streamTlChatAgent - Content-Type:', contentType);
+
+        // Check if response is JSON (edit intent workflow)
+        if (contentType && contentType.includes('application/json')) {
+          return response.json().then(data => {
+            console.log('[ChatService] Received JSON response:', data);
+            observer.next({ ...data, isStreamChunk: false });
+            observer.complete();
+          });
+        }
+
+        // Otherwise, stream text content
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('Response body is not readable');
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        const processChunk = ({ done, value }: ReadableStreamReadResult<Uint8Array>) => {
+          if (done) {
+            observer.complete();
+            return;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+
+          // Keep the last incomplete line in the buffer
+          buffer = lines[lines.length - 1];
+
+          // Process complete lines
+          for (let i = 0; i < lines.length - 1; i++) {
+            const line = lines[i].trim();
+            if (line.startsWith('data: ')) {
+              const dataStr = line.slice(6); // Remove 'data: ' prefix
+              try {
+                const parsedData = JSON.parse(dataStr);
+                console.log('[ChatService] Parsed streaming data:', parsedData);
+
+                // Handle content chunks
+                if (parsedData.type === 'content' && parsedData.content) {
+                  observer.next(parsedData.content);
+                }
+                // Handle webpage_ready signal with optional content and URL
+                else if (parsedData.type === 'webpage_ready' && parsedData.content === 'completed') {
+                  console.log('[ChatService] Received webpage_ready signal:', parsedData);
+                  observer.next({ type: 'webpage_ready', isWebpageReady: true, url: parsedData.url || null });
+                }
+                // Handle done signal
+                else if (parsedData.type === 'done' && parsedData.done) {
+                  observer.complete();
                   return;
                 }
-
-                // Handle editor_complete (same as initial flow)
-                if (data.type === 'editor_complete') {
-                  const scrollContainer = document.querySelector('.flow-content') || 
-                                         document.querySelector('.flow-container') || 
-                                         document.documentElement;
-                  const scrollPosition = scrollContainer === document.documentElement
-                    ? window.scrollY || window.pageYOffset 
-                    : (scrollContainer as HTMLElement).scrollTop;
-
-                  // Store thread_id
-                  if (data.thread_id) {
-                    this.threadId = data.thread_id;
-                  }
-
-                  // Store current editor info
-                  if (data.current_editor) {
-                    this.currentEditor = data.current_editor;
-                    this.currentEditorIndex = data.editor_index || 0;
-                    this.totalEditors = data.total_editors || this.totalEditors;
-                    this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || 1) - 1;
-                  }
-
-                  // Mark previous editor as completed when moving to next editor
-                  if (this.currentEditorIndex > 0) {
-                    const previousEditorIndex = this.currentEditorIndex - 1;
-                    const previousEditor = this.editorProgressList[previousEditorIndex];
-                    if (previousEditor && previousEditor.status === 'review-pending') {
-                      previousEditor.status = 'completed';
-                    }
-                  }
-
-                  // Update current editor to review-pending after generation completes
-                  const currentEditorItem = this.editorProgressList.find(e => e.editorId === data.current_editor);
-                  if (currentEditorItem) {
-                    currentEditorItem.status = 'review-pending';
-                  }
-
-                  // Process paragraph edits
-                  if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
-                    this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
-                  }
-
-                  // Update content
-                  if (data.original_content) {
-                    this.originalContent = data.original_content;
-                  }
-
-                  if (data.final_revised) {
-                    this.revisedContent = convertMarkdownToHtml(data.final_revised.trim());
-                  }
-
-                  // Process feedback
-                  if (data.combined_feedback) {
-                    const feedbackContent = data.combined_feedback.trim();
-                    this.feedbackItems = parseEditorialFeedback(feedbackContent);
-                    this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
-                    this.editFeedback = this.feedbackHtml;
-                  }
-
-                  this.isGenerating = false;
-                  this.isEditorLoading = false; // Loading complete, now in review pending state
-                  
-                  this.cdr.detectChanges();
-
-                  setTimeout(() => {
-                    const paragraphSection = document.getElementById('paragraph-feedback-section');
-                    if (paragraphSection) {
-                      paragraphSection.scrollIntoView({ 
-                        behavior: 'smooth', 
-                        block: 'start',
-                        inline: 'nearest'
-                      });
-                    }
-                  }, 100);
-
-
-                }
-
-                // Handle errors
-                if (data.type === 'error') {
-                  throw new Error(data.error || 'Unknown error');
+                // Skip metadata chunks for normal streaming (they're already processed)
+                else if (parsedData.type === 'metadata') {
+                  console.log('[ChatService] Received metadata in stream:', parsedData);
+                  // Don't emit metadata to observer for normal chat streaming
                 }
               } catch (e) {
-                console.error('[EditContentFlow] Error parsing SSE data:', e);
+                console.error('[ChatService] Error parsing streaming data:', dataStr, e);
               }
             }
           }
-        }
-      }
-    } catch (error) {
-      console.error('[EditContentFlow] Error in nextEditor:', error);
-      const errorMessage = error instanceof Error 
-        ? `Failed to proceed to next editor: ${error.message}` 
-        : 'Failed to proceed to next editor. Please try again.';
-      alert(errorMessage);
-      this.isGenerating = false;
-      this.isEditorLoading = false; // Reset loading state on error
-    }
-  }
 
-  objectKeys = Object.keys;
+          reader.read().then(processChunk).catch(err => observer.error(err));
+        };
 
-  /** Get display name for editor */
-  getEditorDisplayName(editorId: string | null): string {
-    if (!editorId) return '';
-    
-    // Map editor IDs to display names
-    const editorMap: { [key: string]: string } = {
-      'development': 'Development Editor',
-      'content': 'Content Editor',
-      'line': 'Line Editor',
-      'copy': 'Copy Editor',
-      // 'brand': 'PwC Brand Alignment Editor',
-      'brand-alignment': 'PwC Brand Alignment Editor'
-    };
-    
-    return editorMap[editorId] || editorId;
-  }
-
-  /** Update paragraph's approved status based on its feedback items */
-  private updateParagraphApprovedStatus(para: ParagraphFeedback): void {
-    // Check if all feedback items in this paragraph are decided
-    const feedbackTypes = Object.keys(para.editorial_feedback || {});
-    let allDecided = true;
-    let allApproved = true;
-    let hasAnyFeedback = false;
-    
-    for (const editorType of feedbackTypes) {
-      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-      for (const fb of feedbacks) {
-        hasAnyFeedback = true;
-        if (fb.approved === null || fb.approved === undefined) {
-          allDecided = false;
-          break;
-        } else if (fb.approved === false) {
-          allApproved = false;
-        }
-      }
-      if (!allDecided) break;
-    }
-    
-    // If no feedback items exist, paragraph doesn't need approval
-    if (!hasAnyFeedback) {
-      para.approved = true; // No feedback means nothing to approve/reject
-      return;
-    }
-    
-    // If all feedback items are decided, set paragraph's approved status
-    if (allDecided) {
-      // Set to true if all are approved, false if any are rejected
-      para.approved = allApproved;
-    } else {
-      // If not all feedback items are decided, reset paragraph approval to null
-      // This ensures the getter properly reflects that decisions are incomplete
-      para.approved = null;
-    }
-  }
-
-
-  approveEditorialFeedback(para: any, editorType: string, fb: any) {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
-    }
-    
-    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
-    if (fb.approved === true) {
-      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
-    } else {
-      fb.approved = true; // Approve (green/strikeout)
-    }
-    
-    // Clear display properties so highlightAllFeedbacks() handles all highlighting
-    para.displayOriginal = undefined;
-    para.displayEdited = undefined;
-
-    this.updateParagraphApprovedStatus(para);
-    
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
-
-  rejectEditorialFeedback(para: any, editorType: string, fb: any) {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
-    }
-    
-    // Toggle: If already rejected, uncheck it (set to null for unreviewed/yellow)
-    if (fb.approved === false) {
-      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
-    } else {
-      fb.approved = false; // Reject (green/strikeout opposite)
-    }
-    
-    // Clear display properties so highlightAllFeedbacks() handles all highlighting
-    para.displayOriginal = undefined;
-    para.displayEdited = undefined;
-
-    this.updateParagraphApprovedStatus(para);
-    
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
-
-  applyEditorialFix(para: any, editorType: string, fb: any) {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
-    }
-    
-    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
-    if (fb.approved === true) {
-      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
-    } else {
-      fb.approved = true; // Approve (green/strikeout)
-    }
-    
-    // Clear display properties so highlightAllFeedbacks() handles all highlighting
-    para.displayOriginal = undefined;
-    para.displayEdited = undefined;
-
-    this.updateParagraphApprovedStatus(para);
-    
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
-
-  rejectEditorialFix(para: any, editorType: string, fb: any) {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
-    }
-    
-    // Toggle: If already rejected, uncheck it (set to null for unreviewed/yellow)
-    if (fb.approved === false) {
-      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
-    } else {
-      fb.approved = false; // Reject (green/strikeout opposite)
-    }
-    
-    // Clear display properties so highlightAllFeedbacks() handles all highlighting
-    para.displayOriginal = undefined;
-    para.displayEdited = undefined;
-
-    this.updateParagraphApprovedStatus(para);
-    
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
-
-  highlightAllFeedbacks(
-    para: ParagraphFeedback,
-    hovered?: { editorType: string; fbIndex: number }
-  ): { original: string; edited: string } {
-
-    let highlightedOriginal = para.original;
-    let highlightedEdited = para.edited;
-
-    type HighlightItem = {
-      text: string;
-      approved: boolean | null;
-      start: number;
-      end: number;
-      hovered: boolean;
-    };
-
-    const originalItems: HighlightItem[] = [];
-    const editedItems: HighlightItem[] = [];
-
-    // ------------------------------------------------------------
-    // STEP 1: Collect ALL highlight metadata (NO string mutation)
-    // ------------------------------------------------------------
-    Object.keys(para.editorial_feedback).forEach(editorType => {
-      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-
-      feedbacks.forEach((fb: any, idx: number) => {
-        const issueText = fb.issue?.trim();
-        const fixText = fb.fix?.trim();
-
-        const isHovered =
-          !!hovered &&
-          hovered.editorType === editorType &&
-          hovered.fbIndex === idx;
-
-        const approved: boolean | null =
-          fb.approved === true ? true : fb.approved === false ? false : null;
-
-        // ---- ORIGINAL (issue) ----
-        if (issueText) {
-          const regex = new RegExp(this.escapeRegex(issueText), 'g');
-          let match: RegExpExecArray | null;
-
-          while ((match = regex.exec(highlightedOriginal)) !== null) {
-            originalItems.push({
-              text: issueText,
-              approved,
-              start: match.index,
-              end: match.index + issueText.length,
-              hovered: isHovered
-            });
-          }
-        }
-
-        // ---- EDITED (fix) ----
-        if (fixText) {
-          const regex = new RegExp(this.escapeRegex(fixText), 'g');
-          let match: RegExpExecArray | null;
-
-          while ((match = regex.exec(highlightedEdited)) !== null) {
-            editedItems.push({
-              text: fixText,
-              approved,
-              start: match.index,
-              end: match.index + fixText.length,
-              hovered: isHovered
-            });
-          }
-        }
+        reader.read().then(processChunk).catch(err => observer.error(err));
+        return Promise.resolve();
+      })
+      .catch(error => {
+        console.error('[ChatService] Error in streamTlChatAgent:', error);
+        observer.error(error);
       });
-    });
-
-    // ------------------------------------------------------------
-    // STEP 2: Apply highlights (END → START to keep indexes valid)
-    // ------------------------------------------------------------
-    const applyHighlights = (
-      source: string,
-      items: HighlightItem[],
-      mode: 'original' | 'edited'
-    ): string => {
-
-      items
-        .sort((a, b) => b.start - a.start)
-        .forEach(item => {
-          let cssClass = '';
-
-          if (mode === 'original') {
-            if (item.approved === true) {
-              cssClass = 'strikeout highlight-yellow';
-            } else if (item.approved === false) {
-              cssClass = 'highlight-green';
-            } else {
-              cssClass = 'highlight-yellow';
-            }
-          } else {
-            if (item.approved === true) {
-              cssClass = 'highlight-green';
-            } else if (item.approved === false) {
-              cssClass = 'strikeout highlight-yellow';
-            } else {
-              cssClass = 'highlight-yellow';
-            }
-          }
-
-          if (item.hovered) {
-            cssClass += ' highlight-border';
-          }
-
-          const wrapped = `<span class="${cssClass}">${item.text}</span>`;
-
-          source =
-            source.substring(0, item.start) +
-            wrapped +
-            source.substring(item.end);
-        });
-
-      return source;
-    };
-
-    highlightedOriginal = applyHighlights(
-      highlightedOriginal,
-      originalItems,
-      'original'
-    );
-
-    highlightedEdited = applyHighlights(
-      highlightedEdited,
-      editedItems,
-      'edited'
-    );
-
-    return {
-      original: highlightedOriginal,
-      edited: highlightedEdited
-    };
-  }
-
-
-  // Helper method to escape special regex characters
-  private escapeRegex(str: string): string {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-
-  approveAllFeedback(): void {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
-    }
-    this.paragraphFeedbackData.forEach(para => {
-
-      para.approved = true;
-
-
-      Object.keys(para.editorial_feedback).forEach(editorType => {
-        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-        feedbacks.forEach((fb: any) => {
-          // Set all to approved (don't toggle)
-          fb.approved = true;
-        });
-      });
-      // Clear display properties so highlightAllFeedbacks() handles all highlighting
-      para.displayOriginal = undefined;
-      para.displayEdited = undefined;
-    });
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
-
-  rejectAllFeedback(): void {
-    // Prevent changes after final output is generated
-    if (this.showFinalOutput) {
-      return;
-    }
-    this.paragraphFeedbackData.forEach(para => {
-      para.approved = false;
-      Object.keys(para.editorial_feedback).forEach(editorType => {
-        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-        feedbacks.forEach((fb: any) => {
-          // Set all to rejected (don't toggle)
-          fb.approved = false;
-        });
-      });
-      // Clear display properties so highlightAllFeedbacks() handles all highlighting
-      para.displayOriginal = undefined;
-      para.displayEdited = undefined;
-    });
-    // Force change detection to update the view
-    this.cdr.detectChanges();
-  }
-
-    /** Show notification message */
-  private showNotificationMessage(message: string, type: 'success' | 'error' = 'success'): void {
-    this.notificationMessage = message;
-    this.notificationType = type;
-    this.showNotification = true;
-    
-    // Auto-hide after 3 seconds
-    setTimeout(() => {
-      this.showNotification = false;
-    }, 3000);
-  }
-
-  hoveredFeedback: { paraIndex: number, editorType: string, fbIndex: number } | null = null;
-
-  onFeedbackHover(paraIndex: number, editorType: string, fbIndex: number) {
-    this.hoveredFeedback = { paraIndex, editorType, fbIndex };
-  }
-
-  onFeedbackLeave() {
-    this.hoveredFeedback = null;
-  }
+  });
+}
 }
