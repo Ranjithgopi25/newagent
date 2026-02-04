@@ -2465,13 +2465,14 @@ STYLE REFERENCE (structure only; renderer applies size/spacing):
 - List Number: 1. 2. 3. for numbered content lists.
 - List Alpha: A. B. C. or a. b. c. for alphabetical lists.
 - Quote: > for blockquote.
-- Inline citations: preserve existing format (superscript ¹²³⁴⁵⁶⁷⁸⁹, [¹](URL) markdown — do not remove or break links). Keep Title [URL] as-is.
+- Inline citations: output as markdown superscript format <sup>[1]</sup>, <sup>[2]</sup>, etc. (normal digits in brackets inside <sup>). If a citation has a URL, use <sup>[1](URL)</sup>. Convert any existing Unicode superscript (¹²³) or [¹](URL) in the input to this format. Keep Title [URL] as-is.
+- CRITICAL — PRESERVE INLINE CITATION URLs: When the input contains inline citations with URLs (e.g. [³](https://...), [⁵](https://...)), you MUST preserve each URL in the output. Output them exactly as <sup>[3](same-URL)</sup>, <sup>[5](same-URL)</sup>. Never output only the superscript or only <sup>[3]</sup> when the input had a URL; never remove or drop the URL.
 
 REFERENCES SECTION (mandatory — numbered only, no bullets):
 - Use "## References" (or ## Sources / ## Bibliography) then numbered entries only: 1. 2. 3.
 - Do NOT use bullet points (• or - or *) in References. Use plain numbers 1., 2., 3. only. If the input has bullets in References, convert them to 1. 2. 3.
 - Each reference: number then source, title, URL. One blank line between entries.
-- If the input already has citation numbers (superscript ¹²³ or Ref. 1, [1]), preserve them; same numbers in body and in References list. If there are no numbers in References, add 1. 2. 3. in order and ensure body citations match.
+- If the input already has citation numbers (superscript ¹²³ or Ref. 1, [1], or <sup>[1]</sup>), preserve them; same numbers in body and in References list. Output body citations as <sup>[1]</sup>, <sup>[2]</sup>, etc. If there are no numbers in References, add 1. 2. 3. in order and ensure body citations match.
 
 OUTPUT FORMAT (use only these elements; preserve all content):
 - One level-1 title: # Title
@@ -2486,7 +2487,8 @@ RULES:
 - Preserve every sentence and citation; only add markdown structure.
 - Do not add or remove content.
 - References section: plain numbers 1. 2. 3. only; never use bullet points (• or - or *) in References.
-- Preserve inline citation format (superscript, [¹](URL) markdown) exactly as in the input; URLs must remain intact for UI and export.
+- Inline citations in output: use <sup>[1]</sup>, <sup>[2]</sup>, or <sup>[1](URL)</sup> when URL present; preserve citation numbers and URLs for UI and export.
+- Do NOT remove inline URLs from citations. Input like [³](https://ema...)[⁵](https://fda...) must become <sup>[3](https://ema...)</sup><sup>[5](https://fda...)</sup> (same URLs kept).
 - Output ONLY the raw markdown document. No code fences, no preamble, no explanation.""",
         },
         {"role": "user", "content": content},
