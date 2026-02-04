@@ -2313,6 +2313,12 @@ Examples:
 
 CRITICAL: Replace ACTUAL_URL with the real URL (e.g. https://www.pwc.com/...) from the References section. Never output literal "URL" — always use the actual https:// or http:// link.
 
+FORBIDDEN (these produce plain non-clickable superscript — NEVER use):
+- ¹ or ¹(https://...) or ¹ (https://...)
+- <sup>¹</sup> or <sup>¹</sup>(https://...)
+- [¹] or [¹](https://...) without the <sup>[ ⁿ ]</sup> wrapper
+- Any format other than <sup>[ ⁿ ]</sup>(actual_url)
+
 IMPORTANT:
 - Remove parentheses and "Ref." text from the marker
 - Convert numbers to Unicode superscripts (¹²³ not 123)
