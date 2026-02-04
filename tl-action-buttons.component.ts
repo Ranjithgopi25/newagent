@@ -1,1147 +1,869 @@
-import { Injectable, inject } from '@angular/core';
-import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { BehaviorSubject, Observable, Subject, firstValueFrom } from 'rxjs';
-import { Message, EditWorkflowMetadata, ParagraphEdit, EditorialFeedbackItem } from '../models';
-import { ChatService } from './chat.service';
-import { normalizeEditorOrder, normalizeContent, extractDocumentTitle, getEditorDisplayName, formatMarkdown, convertMarkdownToHtml, extractFileText, formatFinalArticleWithBlockTypes, BlockTypeInfo } from '../utils/edit-content.utils';
+import { Component, OnInit, ChangeDetectorRef  } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { TlFlowService } from '../../../core/services/tl-flow.service';
+import { ChatService } from '../../../core/services/chat.service';
+import { TlChatBridgeService } from '../../../core/services/tl-chat-bridge.service';
+import { AuthFetchService } from '../../../core/services/auth-fetch.service';
+import { ThoughtLeadershipMetadata } from '../../../core/models';
+import { FileUploadComponent } from '../../../shared/ui/components/file-upload/file-upload.component';
+import { EditorProgressItem } from '../../../shared/ui/components/editor-progress/editor-progress.component'; // EditorProgressComponent removed - not used in template
+import { normalizeEditorOrder, normalizeContent, EditorType, extractDocumentTitle, getEditorDisplayName, formatMarkdown, convertMarkdownToHtml, extractFileText, parseEditorialFeedback, renderEditorialFeedbackHtml, EditorialFeedbackItem, formatFinalArticleWithBlockTypes, BlockTypeInfo } from '../../../core/utils/edit-content.utils';
 import { 
-  splitIntoParagraphs, 
   createParagraphEditsFromComparison, 
   allParagraphsDecided,
   validateStringEquality
-} from '../utils/paragraph-edit.utils';
-import { MsalService } from '@azure/msal-angular';
-import { environment } from '../../../environments/environment';
-
-export type EditWorkflowStep = 'idle' | 'awaiting_editors' | 'awaiting_content' | 'processing' | 'awaiting_approval';
-
-export interface EditWorkflowState {
-  step: EditWorkflowStep;
+} from '../../../core/utils/paragraph-edit.utils';
+import { ParagraphEdit } from '../../../core/models/message.model';
+import { environment } from '../../../../environments/environment';
+interface EditForm {
+  selectedEditors: EditorType[];
   uploadedFile: File | null;
-  selectedEditors: string[];
-  originalContent: string;
-  paragraphEdits: ParagraphEdit[];
 }
 
-export interface EditWorkflowMessage {
-  type: 'prompt' | 'result' | 'update';
-  message: Message;
-  metadata?: any;
+interface ParagraphFeedback {
+  index: number;
+  original: string;
+  edited: string;
+  tags: string[];
+  autoApproved: boolean;
+  approved?: boolean | null;
+  block_type?: string;
+  level?: number;
+  editorial_feedback: {
+    development?: any[];
+    content?: any[];
+    copy?: any[];
+    line?: any[];
+    brand?: any[];
+  };
+  displayOriginal?: string;
+  displayEdited?: string;
 }
 
-export interface EditorOption {
-  id: string;
-  name: string;
-  icon: string;
-  description: string;
-  selected: boolean;
-  disabled?: boolean;
-  alwaysSelected?: boolean;
-}
-
-@Injectable({
-  providedIn: 'root'
+@Component({
+  selector: 'app-edit-content-flow',
+  standalone: true,
+  imports: [CommonModule, FormsModule, FileUploadComponent], // EditorProgressComponent removed - not used in template
+  templateUrl: './edit-content-flow.component.html',
+  styleUrls: ['./edit-content-flow.component.scss']
 })
-export class ChatEditWorkflowService {
-  private chatService = inject(ChatService);
-  private sanitizer = inject(DomSanitizer);
-  private msalService = inject(MsalService);
+export class EditContentFlowComponent implements OnInit {
+  isGenerating: boolean = false;
+  editFeedback: string = '';
+  feedbackItems: EditorialFeedbackItem[] = [];
+  feedbackHtml: string = '';
+  revisedContent: string = '';
+  originalContent: string = '';
+  iterationCount: number = 0;
+  showSatisfactionPrompt: boolean = false;
+  showImprovementInput: boolean = false;
+  improvementRequestText: string = '';
+  fileUploadError: string = '';
+  uploadedFileSize: string = '';
+  MAX_FILE_SIZE_MB: number = 5;
+  editorProgressList: EditorProgressItem[] = [];
+  currentEditorIndex: number = 0;
+  totalEditors: number = 0;
+  currentEditorId: string = '';
+  
+  // Sequential workflow properties
+  threadId: string | null = null;
+  currentEditor: string | null = null;
+  isSequentialMode: boolean = false;
+  isLastEditor: boolean = false;
+  isEditorLoading: boolean = false; // Track if current editor is loading
+  
+  paragraphFeedbackData: ParagraphFeedback[] = [];
+  paragraphEdits: ParagraphEdit[] = [];
+  showFinalOutput: boolean = false;
+  finalArticle: string = '';
+  isGeneratingFinal: boolean = false;
 
-  private stateSubject = new BehaviorSubject<EditWorkflowState>({
-    step: 'idle',
-    uploadedFile: null,
-    selectedEditors: ['brand-alignment'],
-    originalContent: '',
-    paragraphEdits: []
-  });
-
-  public state$: Observable<EditWorkflowState> = this.stateSubject.asObservable();
-
-  private messageSubject = new Subject<EditWorkflowMessage>();
-  public message$: Observable<EditWorkflowMessage> = this.messageSubject.asObservable();
-
-  private workflowCompletedSubject = new Subject<void>();
-  public workflowCompleted$: Observable<void> = this.workflowCompletedSubject.asObservable();
-
-  private workflowStartedSubject = new Subject<void>();
-  public workflowStarted$: Observable<void> = this.workflowStartedSubject.asObservable();
-
-  // Track final article generation state
-  private isGeneratingFinalSubject = new BehaviorSubject<boolean>(false);
-  public isGeneratingFinal$: Observable<boolean> = this.isGeneratingFinalSubject.asObservable();
-  public get isGeneratingFinal(): boolean {
-    return this.isGeneratingFinalSubject.value;
+  /** Paragraphs that require review (exclude autoApproved) */
+  private get reviewParagraphs(): ParagraphFeedback[] {
+    return (this.paragraphFeedbackData || [])
+      .filter(p => p.autoApproved !== true)
+      .sort((a, b) => a.index - b.index);
   }
 
-  // Track next editor generation state
-  private isGeneratingNextEditorSubject = new BehaviorSubject<boolean>(false);
-  public isGeneratingNextEditor$: Observable<boolean> = this.isGeneratingNextEditorSubject.asObservable();
-  public get isGeneratingNextEditor(): boolean {
-    return this.isGeneratingNextEditorSubject.value;
+  /** Flatten all editorial feedback items across paragraphs */
+  private getAllFeedbackItems(): Array<{
+    paraIndex: number;
+    editorType: string;
+    fbIndex: number;
+    fb: any;
+  }> {
+    const items: Array<{ paraIndex: number; editorType: string; fbIndex: number; fb: any }> = [];
+
+    for (const para of this.reviewParagraphs) {
+      const types = Object.keys(para.editorial_feedback || {});
+      for (const editorType of types) {
+        const arr = (para.editorial_feedback as any)[editorType] || [];
+        arr.forEach((fb: any, fbIndex: number) => {
+          items.push({ paraIndex: para.index, editorType, fbIndex, fb });
+        });
+      }
+    }
+
+    return items;
   }
 
-  // Sequential workflow state tracking
-  private threadId: string | null = null;
-  private currentEditor: string | null = null;
-  private isSequentialMode: boolean = false;
-  private isLastEditor: boolean = false;
-  private currentEditorIndex: number = 0;
-  private totalEditors: number = 0;
-  private editorOrder: string[] = []; // Normalized editor order (source of truth)
+  /** Count of feedback items approved (fb.approved === true) */
+  get approvedFeedbackCount(): number {
+    return this.getAllFeedbackItems().filter(x => x.fb?.approved === true).length;
+  }
 
-  private readonly MAX_FILE_SIZE_MB = 5;
+  /** Count of feedback items rejected (fb.approved === false) */
+  get rejectedFeedbackCount(): number {
+    return this.getAllFeedbackItems().filter(x => x.fb?.approved === false).length;
+  }
 
-  readonly editorOptions: EditorOption[] = [
+  /** Count of feedback items pending (fb.approved is null/undefined) */
+  get pendingFeedbackCount(): number {
+    return this.getAllFeedbackItems().filter(
+      x => x.fb?.approved === null || x.fb?.approved === undefined
+    ).length;
+  }
+
+  /** Scroll to the first feedback card with the requested status */
+  scrollToFirstFeedbackByStatus(status: 'pending' | 'approved' | 'rejected'): void {
+    const match = this.getAllFeedbackItems().find(x => {
+      if (status === 'approved') return x.fb?.approved === true;
+      if (status === 'rejected') return x.fb?.approved === false;
+      return x.fb?.approved === null || x.fb?.approved === undefined;
+    });
+
+    if (!match) return;
+
+    const el = document.getElementById(`fb-${match.paraIndex}-${match.editorType}-${match.fbIndex}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    }
+  }
+
+  
+  formData: EditForm = {
+    selectedEditors: ['development', 'content', 'line', 'copy', 'brand-alignment'],
+    uploadedFile: null
+  };
+  
+  fileReadError: string = '';
+
+  // Notification properties
+  showNotification: boolean = false;
+  notificationMessage: string = '';
+  notificationType: 'success' | 'error' = 'success';
+
+  isCopied: boolean = false;
+
+
+  editorTypes: { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] = [
     { 
-      id: 'development', 
+      id: 'development' as EditorType, 
       name: 'Development Editor', 
       icon: '🚀', 
       description: 'Reviews and restructures content for alignment and coherence',
-      selected: false
+      details: 'Reviews: thought leadership quality, competitive differentiation, risk words (guarantee/promise/always), China terminology',
+      disabled: false
     },
     { 
-      id: 'content', 
+      id: 'content' as EditorType, 
       name: 'Content Editor', 
       icon: '📄', 
-      description: "Refines language to align with the author's objectives",
-      selected: false
+      description: "Refines language to align with author's key objectives",
+      details: 'Validates: mutually exclusive/collectively exhaustive structure, source citations, evidence quality, argument logic',
+      disabled: false
     },
     { 
-      id: 'line', 
+      id: 'line' as EditorType, 
       name: 'Line Editor', 
       icon: '📝', 
-      description: 'Improves sentence flow, readability and style preserving voice',
-      selected: false
+      description: 'Improves sentence flow, readability, and style preserving voice',
+      details: 'Improves: active voice throughout, sentence length, precise word choice, paragraph structure, transitional phrases',
+      disabled: false
     },
     { 
-      id: 'copy', 
+      id: 'copy' as EditorType, 
       name: 'Copy Editor', 
       icon: '✏️', 
-      description: 'Corrects grammar, punctuation and typos',
-      selected: false
+      description: 'Corrects grammar, punctuation, and typos',
+      details: 'Enforces: Oxford commas, apostrophes, em dashes, sentence case headlines, date formats, abbreviations, active voice',
+      disabled: false
     },
     { 
-      id: 'brand-alignment', 
+      id: 'brand-alignment' as EditorType, 
       name: 'PwC Brand Alignment Editor', 
       icon: '🎯', 
       description: 'Aligns content writing standards with PwC brand',
-      selected: true
+      details: 'Checks: we/you language, contractions, active voice, prohibited words (catalyst, PwC Network), China references, brand messaging',
+      disabled: true
     }
   ];
 
-  get currentState(): EditWorkflowState {
-    return this.stateSubject.value;
+  constructor(
+    public tlFlowService: TlFlowService,
+    private chatService: ChatService,
+    private tlChatBridge: TlChatBridgeService,
+    private cdr: ChangeDetectorRef,
+    private authFetchService: AuthFetchService
+  ) {}
+
+  ngOnInit(): void {
+    // this.paragraphFeedbackData.forEach(para => {
+    //   // Add these properties so Angular/TypeScript knows they exist
+    //   para.displayOriginal = para.original;
+    //   para.displayEdited = para.edited;
+    // });
   }
 
-  get isActive(): boolean {
-    return this.currentState.step !== 'idle';
+  get isOpen(): boolean {
+    return this.tlFlowService.currentFlow === 'edit-content';
   }
 
-  /**
-   * Get authentication headers for fetch() requests
-   * MSAL interceptor only works with HttpClient, so we need to manually add headers for fetch()
-   */
-  public async getAuthHeaders(): Promise<Record<string, string>> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
+  onClose(): void {
+    this.resetForm();
+    this.tlFlowService.closeFlow();
+  }
+
+  back(): void{
+    this.resetForm();
+    this.tlFlowService.closeFlow();
+    this.tlFlowService.openGuidedDialog();
+  }
+
+  resetForm(): void {
+    this.isGenerating = false;
+    this.editFeedback = '';
+    this.feedbackItems = [];
+    this.feedbackHtml = '';
+    this.revisedContent = '';
+    this.originalContent = '';
+    this.fileReadError = '';
+    this.fileUploadError = '';
+    this.uploadedFileSize = '';
+    this.iterationCount = 0;
+    this.showSatisfactionPrompt = false;
+    this.showImprovementInput = false;
+    this.improvementRequestText = '';
+    this.paragraphEdits = [];
+    this.paragraphFeedbackData = [];
+    this.showFinalOutput = false;
+    this.finalArticle = '';
+    this.isGeneratingFinal = false;
+    this.editorProgressList = [];
+    this.currentEditorIndex = 0;
+    this.totalEditors = 0;
+    this.currentEditorId = '';
+    this.isCopied = false;
+    this.isEditorLoading = false;
+    this.formData = {
+      selectedEditors: ['development', 'content', 'line', 'copy', 'brand-alignment'],
+      uploadedFile: null
     };
+  }
 
-    if (environment.useAuth) {
+  canEdit(): boolean {
+    return this.formData.uploadedFile !== null && this.formData.selectedEditors.length > 0;
+  }
+
+  clearUploadError(): void {
+    this.fileUploadError = '';
+  }
+
+  clearReadError(): void {
+    this.fileReadError = '';
+  }
+  
+  onFileSelect(file: File): void {
+    if (file) {
+      // Reset error states
+      this.fileReadError = '';
+      this.fileUploadError = '';
+      
+      // Calculate and display file size
+      this.uploadedFileSize = this.formatFileSize(file.size);
+      this.formData.uploadedFile = file;
+    }
+  }
+
+  onFileRemoved(): void {
+    this.formData.uploadedFile = null;
+    this.fileUploadError = '';
+    this.fileReadError = '';
+    this.uploadedFileSize = '';
+  }
+
+  formatFileSize(bytes: number): string {
+     if (bytes === 0) return '0 Bytes';
+    
+    // Show exact size in KB (no rounding)
+    if (bytes < 1024) {
+      return bytes + ' Bytes';
+    } else if (bytes < 1024 * 1024) {
+      // Exact KB with decimal precision
+      const kb = bytes / 1024;
+      return kb.toFixed(2) + ' KB';
+    } else {
+      // For MB and above, show with 2 decimal places
+      const mb = bytes / (1024 * 1024);
+      return mb.toFixed(2) + ' MB';
+    }
+  }
+
+  /** Toggle editor selection, ensuring brand-alignment is always included */
+  toggleEditor(type: EditorType): void {
+    if (type === 'brand-alignment') {
+      return;
+    }
+    
+    const index = this.formData.selectedEditors.indexOf(type);
+    if (index > -1) {
+      this.formData.selectedEditors.splice(index, 1);
+    } else {
+      this.formData.selectedEditors.push(type);
+    }
+    
+    if (!this.formData.selectedEditors.includes('brand-alignment')) {
+      this.formData.selectedEditors.push('brand-alignment');
+    }
+  }
+
+  isEditorSelected(type: EditorType): boolean {
+    return this.formData.selectedEditors.includes(type);
+  }
+
+  /** Get selectable editors (excluding brand-alignment which is always enabled) */
+  get selectableEditors(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] {
+    return this.editorTypes.filter(editor => editor.id !== 'brand-alignment');
+  }
+
+  /** Get brand alignment editor info */
+  get brandAlignmentEditor(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean } | undefined {
+    return this.editorTypes.find(editor => editor.id === 'brand-alignment');
+  }
+
+  /** Get selected editors in normalized order (for timeline display) */
+  get selectedEditorsForTimeline(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] {
+    if (!this.formData.selectedEditors || this.formData.selectedEditors.length === 0) {
+      return [];
+    }
+    
+    // Normalize order to match processing order
+    const normalizedOrder = normalizeEditorOrder([...this.formData.selectedEditors]) as EditorType[];
+    
+    // Map to full editor info objects
+    return normalizedOrder.map(editorId => {
+      const editor = this.editorTypes.find(e => e.id === editorId);
+      return editor || {
+        id: editorId,
+        name: getEditorDisplayName(editorId),
+        icon: '',
+        description: '',
+        details: '',
+        disabled: false
+      };
+    });
+  }
+
+  /** Steps array for editor timeline (0..totalEditors-1) */
+  get editorSteps(): number[] {
+    const total = this.totalEditors || 0;
+    if (total <= 0) return [];
+    return Array.from({ length: total }, (_, i) => i);
+  }
+
+
+  getEditorNames(): string {
+    if (this.formData.selectedEditors.length === 0) return '';
+    if (this.formData.selectedEditors.length === 1) {
+      const editor = this.editorTypes.find(e => e.id === this.formData.selectedEditors[0]);
+      return editor ? editor.name : '';
+    }
+    return `${this.formData.selectedEditors.length} editors`;
+  }
+  
+  getSatisfactionPromptText(): string {
+    if (this.iterationCount === 1) {
+      return 'Are you satisfied with the edited document output, or do you need additional updates?';
+    }
+    return `Are you satisfied with this revision (Iteration ${this.iterationCount}), or do you need additional updates?`;
+  }
+
+  async editContent(): Promise<void> {
+    this.isGenerating = true;
+    this.isEditorLoading = true; // Initial editor loading starts
+    this.fileReadError = '';
+    this.fileUploadError = '';
+    this.editFeedback = '';
+    this.revisedContent = '';
+    this.editorProgressList = [];
+    this.currentEditorIndex = 0;
+    this.totalEditors = 0;
+    this.currentEditorId = '';
+    
+    let contentText = '';
+    
+    if (this.formData.uploadedFile) {
+      // Validate file is not empty
+      if (this.formData.uploadedFile.size === 0) {
+        this.fileUploadError = 'The uploaded file is empty. Please upload a valid document with content.';
+        this.isGenerating = false;
+        return;
+      }
+      
+      // Validate minimum file size (10 bytes)
+      const MIN_FILE_SIZE = 10;
+      if (this.formData.uploadedFile.size < MIN_FILE_SIZE) {
+        this.fileUploadError = 'The uploaded file appears to be empty or corrupted. Please upload a valid document.';
+        this.isGenerating = false;
+        return;
+      }
+      
+      // Validate maximum file size (5MB)
+      const fileSizeMB = this.formData.uploadedFile.size / (1024 * 1024);
+      if (fileSizeMB > this.MAX_FILE_SIZE_MB) {
+        this.fileUploadError = `File size exceeds the maximum limit of ${this.MAX_FILE_SIZE_MB}MB. Please upload a smaller file.`;
+        this.isGenerating = false;
+        return;
+      }
+      
       try {
-        const account = this.msalService.instance.getActiveAccount();
-        if (account) {
-          const response = await this.msalService.instance.acquireTokenSilent({
-            scopes: ['User.Read'],
-            account: account
-          });
-          
-          if (response.idToken) {
-            headers['Authorization'] = `Bearer ${response.idToken}`;
-            console.log('[ChatEditWorkflowService] Added auth header (ID token) to fetch() call');
-          }
+        const extractedText = await extractFileText(this.formData.uploadedFile);
+        contentText = normalizeContent(extractedText);
+        
+        // Validate extracted content is not empty
+        if (!contentText || contentText.trim().length === 0) {
+          this.fileUploadError = 'The uploaded document appears to be empty or contains no readable text. Please upload a document with content.';
+          this.isGenerating = false;
+          return;
         }
+        
+        // Validate minimum content length (50 characters for meaningful content)
+        const MIN_CONTENT_LENGTH = 50;
+        if (contentText.trim().length < MIN_CONTENT_LENGTH) {
+          this.fileUploadError = `The uploaded document contains insufficient content (minimum ${MIN_CONTENT_LENGTH} characters required). Please upload a document with more text.`;
+          this.isGenerating = false;
+          return;
+        }
+        
+        this.originalContent = contentText;
       } catch (error) {
-        console.error('[ChatEditWorkflowService] Failed to acquire token for fetch():', error);
-      }
-    }
-
-    return headers;
-  }
-
-  /** Detect edit intent using LLM agent via backend API */
-  async detectEditIntent(input: string): Promise<{hasEditIntent: boolean, detectedEditors?: string[]}> {
-    if (!input || !input.trim()) {
-      return { hasEditIntent: false };
-    }
-
-    try {
-      const result = await firstValueFrom(
-        this.chatService.detectEditIntent(input.trim())
-      );
-      
-      const hasEditIntent = result.is_edit_intent && result.confidence >= 0.7;
-      const detectedEditors = result.detected_editors && result.detected_editors.length > 0 
-        ? result.detected_editors 
-        : undefined;
-      
-      return { 
-        hasEditIntent, 
-        detectedEditors 
-      };
-    } catch (error) {
-      console.error('Error in LLM intent detection:', error);
-      return { hasEditIntent: false };
-    }
-  }
-
-  beginWorkflow(file?: File): void {
-    const defaultState = this.getDefaultState();
-    const storedFile = file && this.isValidEditWorkflowFile(file) ? file : null;
-    this.updateState({
-      ...defaultState,
-      uploadedFile: storedFile,
-      step: 'awaiting_editors'
-    });
-
-    this.workflowStartedSubject.next();
-
-    const promptMessage = this.createEditorSelectionMessage(
-      `I'll help you edit your content! 📝\n\n**Select the editing services you'd like to use:**`
-    );
-
-    this.messageSubject.next({
-      type: 'prompt',
-      message: promptMessage
-    });
-  }
-
-  /** Begin workflow with pre-selected editors (Path 1: Direct Editor Detection) */
-  beginWorkflowWithEditors(editorIds: string[], file?: File): void {
-    if (!editorIds || editorIds.length === 0) {
-      this.beginWorkflow(file);
-      return;
-    }
-
-    const validEditorIds = this.editorOptions.map(e => e.id);
-    const validatedEditors = editorIds.filter(id => validEditorIds.includes(id));
-
-    if (validatedEditors.length === 0) {
-      this.beginWorkflow(file);
-      return;
-    }
-
-    const editorsWithBrand = [...validatedEditors];
-    if (!editorsWithBrand.includes('brand-alignment')) {
-      editorsWithBrand.push('brand-alignment');
-    }
-
-    if (file && this.isValidEditWorkflowFile(file)) {
-      const defaultState = this.getDefaultState();
-      this.updateState({
-        ...defaultState,
-        step: 'awaiting_content',
-        selectedEditors: editorsWithBrand,
-        uploadedFile: file
-      });
-      this.workflowStartedSubject.next();
-      void this.processWithContent();
-      return;
-    }
-
-    const defaultState = this.getDefaultState();
-    this.updateState({
-      ...defaultState,
-      step: 'awaiting_content',
-      selectedEditors: editorsWithBrand
-    });
-
-    this.workflowStartedSubject.next();
-
-    const editorNamesText = this.getSelectedEditorNames(validatedEditors);
-
-    const editWorkflowMetadata: EditWorkflowMetadata = {
-      step: 'awaiting_content',
-      showFileUpload: true,
-      showCancelButton: false,
-      showSimpleCancelButton: true
-    };
-
-    const contentRequestMessage: Message = {
-      role: 'assistant',
-      content: `✅ **Using ${editorNamesText} to edit your content**\n\n**Now, please upload your document:**`,
-      timestamp: new Date(),
-      editWorkflow: editWorkflowMetadata
-    };
-
-    this.messageSubject.next({
-      type: 'prompt',
-      message: contentRequestMessage
-    });
-  }
-
-  /** Get editor names from editor IDs */
-  private getEditorNamesFromIds(editorIds: string[]): string[] {
-    return editorIds
-      .map(id => this.editorOptions.find(e => e.id === id)?.name)
-      .filter((name): name is string => !!name);
-  }
-
-  /** Get selected editor names as a formatted string */
-  private getSelectedEditorNames(editorIds: string[]): string {
-    const names = this.getEditorNamesFromIds(editorIds);
-    if (names.length === 0) {
-      return '';
-    }
-    if (names.length === 1) {
-      return names[0];
-    }
-    if (names.length === 2) {
-      return names.join(' and ');
-    }
-    return names.slice(0, -1).join(', ') + ', and ' + names[names.length - 1];
-  }
-
-  private getNumberedEditorList(editorOptions?: EditorOption[]): string {
-    const editors = editorOptions || this.editorOptions;
-    const currentSelectedIds = this.currentState.selectedEditors;
-    
-    return editors.map((editor, index) => {
-      const num = index + 1;
-      const isSelected = currentSelectedIds.includes(editor.id);
-      const selected = isSelected ? ' ✓' : '';
-      return `${num}. **${editor.name}** — ${editor.description}${selected}`;
-    }).join('\n');
-  }
-
-  handleFileUpload(file: File): void {
-    if (this.currentState.step !== 'awaiting_content') {
-      return;
-    }
-
-    this.updateState({
-      ...this.currentState,
-      uploadedFile: file
-    });
-    
-    this.processWithContent();
-  }
-
-  async handleChatInput(input: string, file?: File): Promise<void> {
-    const trimmedInput = input.trim();
-    const workflowActive = this.isActive;
-
-    if (!workflowActive) {
-      const intentResult = await this.detectEditIntent(trimmedInput);
-      if (intentResult.hasEditIntent) {
-        // Path 1: Direct Editor Detection - editors detected
-        if (intentResult.detectedEditors && intentResult.detectedEditors.length > 0) {
-          this.beginWorkflowWithEditors(intentResult.detectedEditors, file);
-        } else {
-          // Path 2: Standard Flow - show editor selection
-          this.beginWorkflow(file);
-        }
+        console.error('Error extracting file:', error);
+        this.fileReadError = 'Error reading uploaded file. Please try again or upload a different format.';
+        this.isGenerating = false;
         return;
       }
     }
-
-    if (!workflowActive) {
-      return;
-    }
-
-    if (this.currentState.step === 'awaiting_editors') {
-      if (trimmedInput) {
-        const lowerInput = trimmedInput.toLowerCase();
-        
-        // Check for "proceed" keywords
-        if (lowerInput.includes('proceed') || lowerInput.includes('continue') || lowerInput.includes('yes') || lowerInput === 'ok' || lowerInput === 'done') {
-          console.log('[ChatEditWorkflow] User requested to proceed with current selection');
-          this.proceedToContentStep();
-          return;
-        }
-        
-        // Check for "cancel" keywords
-        if (lowerInput.includes('cancel')) {
-          console.log('[ChatEditWorkflow] User requested to cancel workflow');
-          this.cancelWorkflow();
-          return;
-        }
-        
-        // Parse numeric selection (e.g., "1", "1,3", "1-3")
-        console.log('[ChatEditWorkflow] Attempting to parse numeric selection from input');
-        const selectionResult = this.parseNumericSelection(trimmedInput);
-        
-        if (selectionResult.selectedIndices.length > 0 || selectionResult.hasInput) {
-          console.log('[ChatEditWorkflow] Valid numeric input detected, handling selection');
-          this.handleNumericSelection(selectionResult);
-          return;
-        }
-        
-        // If no valid input pattern matched, show error
-        if (trimmedInput.trim().length > 0) {
-          this.showInvalidSelectionError();
-          return;
-        }
-      }
-      return;
-    }
-
-    if (this.currentState.step === 'awaiting_content') {
-      if (file) {
-        this.handleFileUpload(file);
-        return;
-      }
-      
-      if (trimmedInput) {
-        const errorMessage: Message = {
-          role: 'assistant',
-          content: '⚠️ **Please upload a document file** (Word, PDF, Text, or Markdown). Text pasting is not available in this workflow.',
-          timestamp: new Date(),
-          editWorkflow: {
-            step: 'awaiting_content',
-            showCancelButton: false,
-            showSimpleCancelButton: true
-          }
-        };
-        this.messageSubject.next({ type: 'prompt', message: errorMessage });
-        return;
-      }
-    }
-  }
-
-  private parseNumericSelection(input: string): { selectedIndices: number[], invalidIndices: number[], hasInput: boolean } {
-    const selectedIndices: number[] = [];
-    const invalidIndices: number[] = [];
-    let hasInput = false;
     
-    const cleanedInput = input.replace(/(?:select|choose|pick|use|want|need|editor|editors)/gi, '').trim();
-    
-    if (!/\d/.test(cleanedInput)) {
-      return { selectedIndices: [], invalidIndices: [], hasInput: cleanedInput.length > 0 };
-    }
-    
-    hasInput = true;
-    const parts = cleanedInput.split(/[,;\s]+/).filter(part => part.trim().length > 0);
-    
-    for (const part of parts) {
-      const trimmedPart = part.trim();
-      if (!trimmedPart) continue;
-      
-      const rangeMatch = trimmedPart.match(/^(\d+)\s*-\s*(\d+)$/);
-      if (rangeMatch) {
-        const start = parseInt(rangeMatch[1]);
-        const end = parseInt(rangeMatch[2]);
-        
-        if (start > end) {
-          continue;
-        }
-        
-        for (let i = start; i <= end; i++) {
-          if (i >= 1 && i <= 5) {
-            if (!selectedIndices.includes(i)) {
-              selectedIndices.push(i);
-            }
-          } else {
-            if (!invalidIndices.includes(i)) {
-              invalidIndices.push(i);
-            }
-          }
-        }
-        continue;
-      }
-      
-      const numberMatch = trimmedPart.match(/^(\d+)$/);
-      if (numberMatch) {
-        const num = parseInt(numberMatch[1]);
-        if (num >= 1 && num <= 5) {
-          if (!selectedIndices.includes(num)) {
-            selectedIndices.push(num);
-          }
-        } else {
-          if (!invalidIndices.includes(num)) {
-            invalidIndices.push(num);
-          }
-        }
-        continue;
-      }
-    }
-    
-    selectedIndices.sort((a, b) => a - b);
-    invalidIndices.sort((a, b) => a - b);
-    
-    return { selectedIndices, invalidIndices, hasInput };
-  }
-
-  private handleNumericSelection(result: { selectedIndices: number[], invalidIndices: number[], hasInput: boolean }): void {
-    if (result.invalidIndices.length > 0) {
-      const editorList = this.getNumberedEditorList();
-      const errorMessage = this.createEditorSelectionMessage(
-        `⚠️ **Invalid editor number(s):** ${result.invalidIndices.join(', ')}\n\n**Valid editor numbers are 1-5.**\n\n**Editor List:**\n\n${editorList}\n\nPlease provide valid editor numbers (1-5) or type "proceed" to continue with defaults.`
-      );
-      this.messageSubject.next({ type: 'prompt', message: errorMessage });
-      return;
-    }
-    
-    if (result.selectedIndices.length === 0 && result.hasInput) {
-      this.showInvalidSelectionError();
-      return;
-    }
-    
-    if (result.selectedIndices.length > 0) {
-      const updatedEditors = this.editorOptions.map((editor, index) => {
-        const editorNum = index + 1;
-        return {
-          ...editor,
-          selected: result.selectedIndices.includes(editorNum)
-        };
-      });
-      
-      const selectedIds = updatedEditors.filter(e => e.selected).map(e => e.id);
-      
-      // Ensure brand-alignment is always included
-      if (!selectedIds.includes('brand-alignment')) {
-        selectedIds.push('brand-alignment');
-      }
-      
-      this.updateState({
-        ...this.currentState,
-        selectedEditors: selectedIds
-      });
-      
-      const selectedNames = updatedEditors
-        .filter(e => e.selected)
-        .map((e, idx) => {
-          const num = this.editorOptions.findIndex(opt => opt.id === e.id) + 1;
-          return `${num}. ${e.name}`;
-        })
-        .join(', ');
-      
-      console.log('[ChatEditWorkflow] Selected editor names:', selectedNames);
-      
-      // Auto-proceed to content upload step after confirming selection
-      const confirmMessage: Message = {
-        role: 'assistant',
-        content: `✅ **Selected editors:** ${selectedNames}\n\nProceeding to content upload...`,
-        timestamp: new Date()
-      };
-      
-      console.log('[ChatEditWorkflow] Sending confirmation message and auto-proceeding to content step');
-      this.messageSubject.next({ type: 'prompt', message: confirmMessage });
-      
-      // Automatically proceed to content step after brief delay (for UX smoothness)
-      setTimeout(() => {
-        console.log('[ChatEditWorkflow] Auto-advancing to content upload step');
-        this.proceedToContentStep();
-      }, 500);
-    }
-  }
-
-  private showInvalidSelectionError(): void {
-    const editorList = this.getNumberedEditorList();
-    const errorMessage = this.createEditorSelectionMessage(
-      `⚠️ **Please provide valid editor numbers (1-5).**\n\n**Editor List:**\n\n${editorList}\n\nOr type "proceed" to continue with defaults.`
-    );
-    this.messageSubject.next({ type: 'prompt', message: errorMessage });
-  }
-
-  private parseOptOutInput(input: string): { optedOut: number[], sections: string[] } {
-    const lowerInput = input.toLowerCase();
-    const optedOut: number[] = [];
-    const sections: string[] = [];
-    
-    const optOutPattern = /(?:remove|skip|exclude|without|opt\s*out|deselect|don't\s*use|do\s*not\s*use)\s+(\d+(?:\s*[,\s]?\s*(?:and\s*)?\d+)*)/gi;
-    
-    let match;
-    while ((match = optOutPattern.exec(lowerInput)) !== null) {
-      const numbersStr = match[1];
-      const numberMatches = numbersStr.match(/\d+/g);
-      if (numberMatches) {
-        numberMatches.forEach(numStr => {
-          const num = parseInt(numStr);
-          if (num >= 1 && num <= 5 && !optedOut.includes(num)) {
-            optedOut.push(num);
-          }
-        });
-      }
-    }
-    
-    const sectionPatterns = [
-      /(?:edit|review|focus\s*on)\s+(?:pages?|sections?)\s+(\d+(?:\s*-\s*\d+)?)/gi,
-      /(?:edit|review)\s+(?:the\s+)?(introduction|conclusion|summary|abstract|body|content)/gi
-    ];
-    
-    sectionPatterns.forEach(pattern => {
-      let match;
-      while ((match = pattern.exec(input)) !== null) {
-        if (match[1] && !sections.includes(match[1])) {
-          sections.push(match[1]);
-        }
-      }
-    });
-    
-    return { optedOut, sections };
-  }
-
-  private handleOptOutAndProceed(result: { optedOut: number[], sections: string[] }): void {
-    const currentEditors = [...this.editorOptions];
-    // Find brand-alignment editor index to prevent it from being opted out
-    const brandAlignmentIndex = currentEditors.findIndex(e => e.id === 'brand-alignment');
-    const brandAlignmentNum = brandAlignmentIndex >= 0 ? brandAlignmentIndex + 1 : -1;
-    
-    const selectedEditors = currentEditors.map((editor, index) => {
-      const editorNum = index + 1;
-      // Brand alignment is always selected, cannot be opted out
-      if (editor.id === 'brand-alignment') {
-        return {
-          ...editor,
-          selected: true
-        };
-      }
-      return {
-        ...editor,
-        selected: !result.optedOut.includes(editorNum)
-      };
-    });
-    
-    const selectedIds = selectedEditors.filter(e => e.selected).map(e => e.id);
-    
-    // Ensure brand-alignment is always included
-    if (!selectedIds.includes('brand-alignment')) {
-      selectedIds.push('brand-alignment');
-    }
-    
-    this.updateState({
-      ...this.currentState,
-      selectedEditors: selectedIds
-    });
-    
-    let responseMessage = '';
-    if (result.optedOut.length > 0) {
-      const optedOutNames = result.optedOut.map(num => {
-        const editor = this.editorOptions[num - 1];
-        return `${num}. ${editor.name}`;
-      }).join(', ');
-      responseMessage += `✅ **Opted out:** ${optedOutNames}\n\n`;
-    }
-    
-    if (result.sections.length > 0) {
-      responseMessage += `📄 **Sections to edit:** ${result.sections.join(', ')}\n\n`;
-    }
-    
-    const remainingEditors = selectedEditors.filter(e => e.selected);
-    if (remainingEditors.length === 0) {
-      responseMessage += `⚠️ **No editors selected.** Please keep at least one editor active.`;
-      const errorMessage = this.createEditorSelectionMessage(responseMessage, selectedEditors);
-      this.messageSubject.next({ type: 'prompt', message: errorMessage });
-      return;
-    }
-    
-    responseMessage += `**Selected ${remainingEditors.length} editor${remainingEditors.length > 1 ? 's' : ''}:** ${remainingEditors.map(e => e.name).join(', ')}\n\nWhen you're ready, click "Continue" or type "proceed" to move to the next step.`;
-    
-    const confirmMessage = this.createEditorSelectionMessage(responseMessage, selectedEditors);
-    
-    this.messageSubject.next({
-      type: 'prompt',
-      message: confirmMessage
-    });
-  }
-
-  private proceedToContentStep(): void {
-    // Ensure brand-alignment is always included
-    const selectedIds = [...this.currentState.selectedEditors];
-    if (!selectedIds.includes('brand-alignment')) {
-      selectedIds.push('brand-alignment');
-    }
-    
-    if (selectedIds.length === 0) {
-      this.createNoEditorsErrorMessage();
-      return;
-    }
-    
-    this.updateState({
-      ...this.currentState,
-      selectedEditors: selectedIds
-    });
-
-    this.updateState({
-      ...this.currentState,
-      step: 'awaiting_content'
-    });
-
-    // Selector + file: skip "Upload document" UI, process immediately after editor selection
-    if (this.currentState.uploadedFile) {
-      void this.processWithContent();
-      return;
-    }
-
-    const editorNamesText = this.getSelectedEditorNames(selectedIds);
-    const editWorkflowMetadata: EditWorkflowMetadata = {
-      step: 'awaiting_content',
-      showFileUpload: true,
-      showCancelButton: false,
-      showSimpleCancelButton: true
-    };
-    const contentRequestMessage: Message = {
-      role: 'assistant',
-      content: `✅ **Using ${editorNamesText} to edit your content**\n\n**Now, please upload your document:**`,
-      timestamp: new Date(),
-      editWorkflow: editWorkflowMetadata
-    };
-    this.messageSubject.next({
-      type: 'prompt',
-      message: contentRequestMessage
-    });
-  }
-
-  private async processWithContent(): Promise<void> {
-    // Ensure brand-alignment is always included
-    const selectedIds = [...this.currentState.selectedEditors];
-    if (!selectedIds.includes('brand-alignment')) {
-      selectedIds.push('brand-alignment');
-    }
-    const selectedNames = this.getSelectedEditorNames(selectedIds);
-
-    try {
-      // Show "Processing your content" UI immediately (before file extraction) so user sees feedback as soon as they proceed
-      this.updateState({
-        ...this.currentState,
-        step: 'processing'
-      });
-      const processingMessage: Message = {
-        role: 'assistant',
-        content: `Processing your content with: **${selectedNames}**\n\nPlease wait while I analyze and edit your content...`,
-        timestamp: new Date(),
-        editWorkflow: {
-          step: 'processing',
-          showCancelButton: false
-        }
-      };
-      this.messageSubject.next({ type: 'prompt', message: processingMessage });
-
-      let contentText = this.currentState.originalContent;
-      if (this.currentState.uploadedFile && !contentText) {
-        contentText = await extractFileText(this.currentState.uploadedFile);
-        contentText = normalizeContent(contentText);
-        this.updateState({
-          ...this.currentState,
-          originalContent: contentText
-        });
-      }
-
-      if (!contentText || !contentText.trim()) {
-        throw new Error('No content to process');
-      }
-
-      await this.processContent(contentText, selectedIds, selectedNames);
-    } catch (error) {
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: 'Sorry, there was an error processing your content. Please try again.',
-        timestamp: new Date()
-      };
-      this.messageSubject.next({ type: 'result', message: errorMessage });
-      this.completeWorkflow();
-    }
-  }
-
-  handleEditorSelection(selectedIds: string[]): void {
-    if (this.currentState.step !== 'awaiting_editors') {
-      return;
-    }
-
-    // Ensure brand-alignment is always included
-    const editorsWithBrand = [...selectedIds];
-    if (!editorsWithBrand.includes('brand-alignment')) {
-      editorsWithBrand.push('brand-alignment');
-    }
-
-    if (editorsWithBrand.length === 0) {
-      this.createNoEditorsErrorMessage();
-      return;
-    }
-
-    this.updateState({
-      ...this.currentState,
-      selectedEditors: editorsWithBrand
-    });
-
-    this.proceedToContentStep();
-  }
-
-  private async processContent(contentText: string, selectedIds: string[], selectedNames: string): Promise<void> {
     const messages = [{
       role: 'user' as const,
       content: contentText
     }];
 
-    const normalizedEditorIds = normalizeEditorOrder(selectedIds);
-
     let fullResponse = '';
-    let combinedFeedback = '';
-    let finalRevisedContent = '';
-    let currentEditorProgress: {current: number, total: number, currentEditor: string} | null = null;
-    let editorErrors: Array<{editor: string, error: string}> = [];
-    
-    const editorProgressList: Array<{editorId: string, editorName: string, status: 'pending' | 'processing' | 'completed' | 'error', current?: number, total?: number}> = normalizedEditorIds.map((id, index) => ({
+    const editorsToUse = normalizeEditorOrder(this.formData.selectedEditors) as EditorType[];
+
+    this.editorProgressList = editorsToUse.map((id, index) => ({
       editorId: id,
       editorName: getEditorDisplayName(id),
       status: 'pending' as const,
       current: index + 1,
-      total: normalizedEditorIds.length
+      total: editorsToUse.length
     }));
-    // 🔒 LOCK totalEditors ONCE - NEVER UPDATE FROM BACKEND
-    // This represents the original editor count and must remain constant throughout the workflow
-    this.totalEditors = normalizedEditorIds.length;
-    this.editorOrder = normalizedEditorIds; // Store normalized editor order (source of truth)
+    this.totalEditors = editorsToUse.length;
 
-    // Use default temperature (0.15) - optimal for editing: allows minor improvements while staying deterministic
-    this.chatService.streamEditContent(messages, normalizedEditorIds).subscribe({
+    this.chatService.streamEditContent(messages, editorsToUse).subscribe({
       next: (data: any) => {
         if (data.type === 'editor_progress') {
-          currentEditorProgress = {
-            current: data.current || 0,
-            total: data.total || 0,
-            currentEditor: data.editor || ''
-          };
+          // Backend sends 1-based index, convert to 0-based for our array
+          const backendCurrentIndex = data.current || 1;
+          this.currentEditorIndex = backendCurrentIndex - 1; // Convert to 0-based
+          this.totalEditors = data.total || editorsToUse.length;
+          this.currentEditorId = data.editor || '';
           
-          const currentIndex = data.current || 0;
-          editorProgressList.forEach((editor, index) => {
-            const editorIndex = index + 1;
-            if (editorIndex < currentIndex) {
+          // Set loading state when editor starts processing
+          this.isEditorLoading = true;
+          
+          // Update editor statuses (using 0-based index)
+          this.editorProgressList.forEach((editor, index) => {
+            if (index < this.currentEditorIndex) {
               editor.status = 'completed';
-            } else if (editorIndex === currentIndex) {
-              editor.status = 'processing';
-              editor.current = currentIndex;
-              editor.total = data.total || selectedIds.length;
+            } else if (index === this.currentEditorIndex) {
+              editor.status = 'processing'; // In Progress when loading
+              editor.current = backendCurrentIndex; // Keep 1-based for display
+              editor.total = this.totalEditors;
             } else {
               editor.status = 'pending';
             }
           });
-          
-          const progressMessage: Message = {
-            role: 'assistant',
-            content: '',
-            timestamp: new Date(),
-            editWorkflow: {
-              step: 'processing',
-              showCancelButton: false,
-              editorProgress: currentEditorProgress || undefined,
-              editorProgressList: [...editorProgressList]
-            }
-          };
-          this.messageSubject.next({ type: 'prompt', message: progressMessage });
+
+          this.cdr.detectChanges();
         } else if (data.type === 'editor_content') {
           if (data.content) {
             fullResponse += data.content;
           }
         } else if (data.type === 'editor_complete') {
-          console.log('[ChatEditWorkflowService] Editor complete:', data);
+          // Sequential workflow: Handle single editor completion
+          console.log('[EditContentFlow] Editor complete:', data);
           
+          // Store thread_id for sequential workflow
           if (data.thread_id) {
             this.threadId = data.thread_id;
             this.isSequentialMode = true;
           }
           
+          // Store current editor info
           if (data.current_editor) {
             this.currentEditor = data.current_editor;
             this.currentEditorIndex = data.editor_index || 0;
             this.totalEditors = data.total_editors || this.totalEditors;
-            this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || this.totalEditors || 1) - 1;
+            this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || 1) - 1;
           }
           
-          const completedEditor = editorProgressList.find(e => e.editorId === data.current_editor || e.editorId === data.editor);
+          // Update editor progress - change to review-pending after generation
+          const completedEditor = this.editorProgressList.find(e => e.editorId === data.current_editor);
           if (completedEditor) {
-            completedEditor.status = 'completed';
+            completedEditor.status = 'review-pending';
           }
           
-          if (data.revised_content || data.final_revised) {
-            fullResponse = data.revised_content || data.final_revised || '';
-          }
-          
-          let paragraphEdits: ParagraphEdit[] = [];
+          // Process paragraph edits (same structure as final_complete)
           if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
-            console.log('[ChatEditWorkflowService] Paragraph edits received:', data.paragraph_edits);
-            const allEditorNames = selectedIds.map(editorId => {
-              return getEditorDisplayName(editorId);
-            });
-            
-            // Get original content - prioritize data.original_content, then currentState
-            const originalContent = data.original_content || this.currentState.originalContent || '';
-            const originalParagraphs = originalContent ? splitIntoParagraphs(originalContent) : [];
-            
-            paragraphEdits = data.paragraph_edits.map((edit: any, arrayIndex: number) => {
-              const existingTags = edit.tags || [];
-              
-              const existingEditorNames = new Set<string>(
-                existingTags.map((tag: string) => {
-                  const match = tag.match(/^(.+?)\s*\(/);
-                  return match ? match[1].trim() : tag;
-                })
-              );
-              
-              const allTags = [...existingTags];
-              allEditorNames.forEach(editorName => {
-                const existingNamesArray = Array.from(existingEditorNames) as string[];
-                if (!existingNamesArray.some((existing: string) => 
-                  existing.toLowerCase().includes(editorName.toLowerCase()) || 
-                  editorName.toLowerCase().includes(existing.toLowerCase())
-                )) {
-                  allTags.push(`${editorName} (Reviewed)`);
-                }
-              });
-              
-              const paragraphIndex = (edit.index !== undefined && edit.index !== null) ? edit.index : arrayIndex;
-              const originalText = (edit.original && edit.original.trim()) || (originalParagraphs.length > paragraphIndex && paragraphIndex >= 0 ? (originalParagraphs[paragraphIndex] && originalParagraphs[paragraphIndex].trim()) || '' : '');
-              const editedText = (edit.edited && edit.edited.trim()) || '';
-              const isIdentical = validateStringEquality(originalText, editedText);
-              const autoApproved = edit.autoApproved !== undefined ? edit.autoApproved : isIdentical;
-              const approved = autoApproved ? true : (edit.approved !== undefined ? edit.approved : null);
-
-              const editorial_feedback = edit.editorial_feedback ? {
-                development: edit.editorial_feedback.development || [],
-                content: edit.editorial_feedback.content || [],
-                copy: edit.editorial_feedback.copy || [],
-                line: edit.editorial_feedback.line || [],
-                brand: edit.editorial_feedback.brand || []
-              } : undefined;
-
-              // Preserve block_type from backend - only default if truly missing (undefined/null/empty)
-              // Backend sends block_type from DocumentBlock.type (title, heading, paragraph, bullet_item)
-              const blockType = (edit.block_type !== undefined && edit.block_type !== null && edit.block_type !== '') 
-                ? edit.block_type 
-                : 'paragraph';
-              
-              return {
-                index: paragraphIndex,
-                original: originalText,
-                edited: editedText,
-                tags: allTags,
-                autoApproved: autoApproved,
-                approved: approved,
-                block_type: blockType,
-                level: edit.level || 0,
-                editorial_feedback: editorial_feedback,
-                displayOriginal: originalText,
-                displayEdited: editedText
-              } as ParagraphEdit;
-            });
-            
-            // Debug: Log block_type distribution from backend
-            const blockTypeCounts = paragraphEdits.reduce((acc, p) => {
-              const bt = p.block_type || 'undefined';
-              acc[bt] = (acc[bt] || 0) + 1;
-              return acc;
-            }, {} as Record<string, number>);
-            console.log('[ChatEditWorkflowService] Received paragraph_edits block_type distribution:', blockTypeCounts);
-            
-            // Update state with paragraph edits
-            const preservedOriginalContent = data.original_content || this.currentState.originalContent || '';
-            this.updateState({
-              ...this.currentState,
-              paragraphEdits: paragraphEdits,
-              originalContent: preservedOriginalContent
-            });
-            
-            const paragraphMessage: Message = {
-              role: 'assistant',
-              content: '',
-              timestamp: new Date(),
-              isHtml: false,
-              editWorkflow: {
-                step: 'awaiting_approval',
-                paragraphEdits: paragraphEdits,
-                showCancelButton: false,
-                showSimpleCancelButton: true,
-                threadId: this.threadId,
-                currentEditor: this.currentEditor,
-                isSequentialMode: this.isSequentialMode,
-                isLastEditor: this.isLastEditor,
-                currentEditorIndex: this.currentEditorIndex,
-                totalEditors: this.totalEditors,
-                editorOrder: this.editorOrder // ✅ Send normalized editor order (source of truth)
-              }
-            };
-            this.messageSubject.next({ type: 'result', message: paragraphMessage });
+            console.log('[EditContentFlow] Paragraph edits received:', data.paragraph_edits);
+            this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
           }
           
+          // Update content
           if (data.original_content) {
-            this.updateState({
-              ...this.currentState,
-              originalContent: data.original_content
-            });
+            this.originalContent = data.original_content;
           }
           
-          const progressMessage: Message = {
-            role: 'assistant',
-            content: '',
-            timestamp: new Date(),
-            editWorkflow: {
-              step: 'processing',
-              showCancelButton: false,
-              editorProgress: currentEditorProgress || undefined,
-              editorProgressList: [...editorProgressList]
-            }
-          };
-          this.messageSubject.next({ type: 'prompt', message: progressMessage });
+          if (data.final_revised) {
+            const trimmedRevised = data.final_revised.trim();
+            fullResponse = trimmedRevised;
+            this.revisedContent = convertMarkdownToHtml(trimmedRevised);
+          }
+          
+          // Process feedback (only current editor's feedback)
+          if (data.combined_feedback) {
+            const feedbackContent = data.combined_feedback.trim();
+            this.feedbackItems = parseEditorialFeedback(feedbackContent);
+            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+            this.editFeedback = this.feedbackHtml;
+          }
+          
+          this.isGenerating = false;
+          this.isEditorLoading = false; // Editor loaded, now in review pending state
+          this.cdr.detectChanges();
         } else if (data.type === 'editor_error') {
-          const errorEditor = editorProgressList.find(e => e.editorId === data.editor);
-          if (errorEditor) {
-            errorEditor.status = 'error';
-          }
-          
-          editorErrors.push({
-            editor: data.editor || 'Unknown',
-            error: data.error || 'Unknown error'
-          });
-          
-          const editorName = getEditorDisplayName(data.editor);
-          const errorMessage: Message = {
-            role: 'assistant',
-            content: `⚠️ **${editorName} encountered an error:** ${data.error}\n\nContinuing with remaining editors...`,
-            timestamp: new Date(),
-            editWorkflow: {
-              step: 'processing',
-              showCancelButton: false,
-              editorProgress: currentEditorProgress || undefined,
-              editorProgressList: [...editorProgressList]
-            }
-          };
-          this.messageSubject.next({ type: 'prompt', message: errorMessage });
+          console.error(`${data.editor} editor error:`, data.error);
         } else if (data.type === 'final_complete') {
-          // Defensive: Ensure isLastEditor is set even if all_complete was missed
-          // This hardens against backend event reordering or missing events
-          this.isLastEditor = true;
-          this.currentEditorIndex = this.totalEditors;
-          
-          combinedFeedback = data.combined_feedback || '';
-          finalRevisedContent = data.final_revised || '';
-          
-          let paragraphEdits: ParagraphEdit[] = [];
-          if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
-            const allEditorNames = selectedIds.map(editorId => {
-              return getEditorDisplayName(editorId);
-            });
-            
-            // Get original content - prioritize data.original_content, then currentState
-            const originalContent = data.original_content || this.currentState.originalContent || '';
-            const originalParagraphs = originalContent ? splitIntoParagraphs(originalContent) : [];
-            
-            paragraphEdits = data.paragraph_edits.map((edit: any, arrayIndex: number) => {
-              const existingTags = edit.tags || [];
-              
-              const existingEditorNames = new Set<string>(
-                existingTags.map((tag: string) => {
-                  const match = tag.match(/^(.+?)\s*\(/);
-                  return match ? match[1].trim() : tag;
-                })
-              );
-              
-              const allTags = [...existingTags];
-              allEditorNames.forEach(editorName => {
-                const existingNamesArray = Array.from(existingEditorNames) as string[];
-                if (!existingNamesArray.some((existing: string) => 
-                  existing.toLowerCase().includes(editorName.toLowerCase()) || 
-                  editorName.toLowerCase().includes(existing.toLowerCase())
-                )) {
-                  allTags.push(`${editorName} (Reviewed)`);
-                }
-              });
-              
-              // Use edit.index if provided, otherwise use array index
-              // This ensures each paragraph has a unique index
-              const paragraphIndex = (edit.index !== undefined && edit.index !== null) ? edit.index : arrayIndex;
-
-              // Get original text - prioritize edit.original, then try to get from original content by index
-              const originalText = (edit.original && edit.original.trim()) || (originalParagraphs.length > paragraphIndex && paragraphIndex >= 0 ? (originalParagraphs[paragraphIndex] && originalParagraphs[paragraphIndex].trim()) || '' : '');
-
-              // Ensure edited text is available
-              const editedText = (edit.edited && edit.edited.trim()) || '';
-
-              // Determine whether original and edited are identical (helper function imported)
-              const isIdentical = validateStringEquality(originalText, editedText);
-
-              // If the backend provided autoApproved flag, respect it; otherwise auto-approve when texts are identical
-              const autoApproved = edit.autoApproved !== undefined ? edit.autoApproved : isIdentical;
-              const approved = autoApproved ? true : (edit.approved !== undefined ? edit.approved : null);
-
-              // Preserve editorial_feedback from backend (same structure as guided journey)
-              const editorial_feedback = edit.editorial_feedback ? {
-                development: edit.editorial_feedback.development || [],
-                content: edit.editorial_feedback.content || [],
-                copy: edit.editorial_feedback.copy || [],
-                line: edit.editorial_feedback.line || [],
-                brand: edit.editorial_feedback.brand || []
-              } : undefined;
-
-              return {
-                index: paragraphIndex,
-                original: originalText,
-                edited: editedText,
-                tags: allTags,
-                autoApproved: autoApproved,
-                approved: approved,
-                block_type: (edit.block_type !== undefined && edit.block_type !== null && edit.block_type !== '') ? edit.block_type : 'paragraph',
-                level: edit.level || 0,
-                editorial_feedback: editorial_feedback,
-                displayOriginal: originalText,
-                displayEdited: editedText
-              } as ParagraphEdit;
-            });
-          } else if (data.final_revised && data.original_content) {
-            paragraphEdits = this.createParagraphEditsFromComparison(
-              data.original_content,
-              data.final_revised,
-              selectedIds
-            );
-          }
-          
-          // Ensure originalContent is preserved - prioritize data.original_content, but keep existing if not provided
-          const preservedOriginalContent = data.original_content || this.currentState.originalContent || '';
-          
-          this.updateState({
-            ...this.currentState,
-            paragraphEdits: paragraphEdits,
-            originalContent: preservedOriginalContent
-          });
-          
-          editorProgressList.forEach(editor => {
+          this.editorProgressList.forEach(editor => {
             if (editor.status !== 'error') {
               editor.status = 'completed';
             }
           });
+          this.currentEditorId = 'completed';
+          this.cdr.detectChanges();
           
-          const completedProgress: {current: number, total: number, currentEditor: string} = {
-            current: currentEditorProgress?.total || editorProgressList.length,
-            total: currentEditorProgress?.total || editorProgressList.length,
-            currentEditor: 'completed'
-          };
-          
-          const completionMessage: Message = {
-            role: 'assistant',
-            content: '',
-            timestamp: new Date(),
-            editWorkflow: {
-              step: 'processing',
-              showCancelButton: false,
-              editorProgress: completedProgress,
-              editorProgressList: [...editorProgressList]
-            }
-          };
-          this.messageSubject.next({ type: 'prompt', message: completionMessage });
-          
-          if (editorErrors.length > 0) {
-            const errorSummary = editorErrors.map(e => {
-              const editorName = getEditorDisplayName(e.editor);
-              return `⚠️ ${editorName} encountered an error: ${e.error}. Processing continued with previous editor's output.`;
-            }).join('\n\n');
-            
-            if (combinedFeedback) {
-              combinedFeedback = errorSummary + '\n\n' + combinedFeedback;
-            } else {
-              combinedFeedback = errorSummary;
-            }
+          if (data.combined_feedback) {
+            const feedbackContent = data.combined_feedback.trim();
+            // parse and render structured feedback; keep legacy fallback in editFeedback
+            this.feedbackItems = parseEditorialFeedback(feedbackContent);
+            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+            this.editFeedback = this.feedbackHtml;
           }
           
-          this.dispatchResultsToChat('', selectedIds, selectedNames, combinedFeedback, finalRevisedContent, paragraphEdits);
+          if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
+            console.log('Paragraph edits received:', data.paragraph_edits);
+            this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
+          } else if (data.final_revised && data.original_content) {
+            this.paragraphEdits = this.createParagraphEditsFromComparison(
+              data.original_content,
+              data.final_revised
+            );
+          }
+          
+          if (data.original_content) {
+            this.originalContent = data.original_content;
+          }
+          
+          if (data.final_revised) {
+            const trimmedRevised = data.final_revised.trim();
+            fullResponse = trimmedRevised;
+            this.revisedContent = convertMarkdownToHtml(trimmedRevised);
+          }
+          
+          this.isGenerating = false;
+        } else if (data?.type === 'content' && data.content) {
+          fullResponse += data.content;
+        } else if (data?.type === 'done' || data?.done) {
+          return;
+        } else if (data?.error) {
+          this.editFeedback = `❌ Error: ${data.error}`;
+          this.isGenerating = false;
+          return;
+        } else if (typeof data === 'string') {
+          fullResponse += data;
+        }
+      },
+      error: (error: any) => {
+        console.error('[EditContentFlow] Streaming error:', error);
+        this.editFeedback = 'Sorry, there was an error editing your content. Please try again.';
+        this.isGenerating = false;
+      },
+      complete: () => {
+        this.iterationCount++;
+        if (this.revisedContent && this.revisedContent.trim()) {
+          this.showSatisfactionPrompt = true;
+        }
+      }
+    });
+  }
+
+  /** Parse edit response (fallback method for old format or improvement requests) */
+  private parseEditResponse(response: string): void {
+    if (!response || !response.trim()) {
+      return;
+    }
+
+    const feedbackMatch = response.match(/===\s*FEEDBACK\s*===\s*([\s\S]*?)(?====\s*REVISED ARTICLE\s*===|$)/i);
+    const revisedMatch = response.match(/===\s*REVISED ARTICLE\s*===\s*([\s\S]*?)$/i);
+    
+    if (feedbackMatch && feedbackMatch[1]) {
+      const feedbackContent = feedbackMatch[1].trim();
+      this.feedbackItems = parseEditorialFeedback(feedbackContent);
+      this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+      this.editFeedback = this.feedbackHtml;
+    } else if (!revisedMatch && response.trim()) {
+      const feedbackContent = response.trim();
+      this.feedbackItems = parseEditorialFeedback(feedbackContent);
+      this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+      this.editFeedback = this.feedbackHtml;
+    }
+    
+    if (revisedMatch && revisedMatch[1]) {
+      let revisedText = revisedMatch[1].trim();
+      revisedText = revisedText
+        .replace(/===\s*FEEDBACK\s*===/gi, '')
+        .replace(/##\s*📝\s*Editorial\s*Feedback/gi, '')
+        .trim();
+      this.revisedContent = convertMarkdownToHtml(revisedText);
+    }
+  }
+
+  /** Convert markdown to HTML (public method for template) */
+  convertMarkdownToHtml(markdown: string): string {
+    return convertMarkdownToHtml(markdown);
+  }
+
+  /** Copy content to clipboard */
+  async copyToClipboard(): Promise<void>  {
+    let content = '';
+    if (this.showFinalOutput && this.finalArticle) {
+      content = this.finalArticle;
+    } else {
+      content = this.revisedContent || this.editFeedback;
+    }
+    const plainText = content.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    try {
+      await navigator.clipboard.writeText(plainText);
+      
+      this.isCopied = true;
+      this.cdr.detectChanges();
+
+      setTimeout(() => {
+        this.isCopied = false;
+        this.cdr.detectChanges();
+      },2000);
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+      this.showNotificationMessage('Failed to copy ', 'error');
+    }
+
+  }
+
+  /** Download revised content as DOCX or PDF */
+  async downloadRevised(format: 'docx' | 'pdf'): Promise<void> {
+    let contentToDownload = '';
+    if (this.showFinalOutput && this.finalArticle) {
+      contentToDownload = this.finalArticle;
+    } else if (this.revisedContent) {
+      contentToDownload = this.revisedContent.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    } else {
+      this.showNotificationMessage('article is not available yet.', 'error');
+      return;
+    }
+
+    const plainText = contentToDownload.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    const endpoint = format === 'docx' ? '/api/v1/export/word' : '/api/v1/export/pdf-pwc';
+    const extension = format === 'docx' ? 'docx' : 'pdf';
+    const title = 'revised-article';
+    
+    // Extract first line as subtitle
+    const lines = plainText.split('\n').filter(line => line.trim());
+    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : ''; // First line, max 150 chars
+
+    // Get API URL from environment (supports runtime config via window._env)
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const fullEndpoint = `${apiUrl}${endpoint}`;
+
+    try {
+      const response = await this.authFetchService.authenticatedFetch(fullEndpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          content: plainText,
+          title,
+          subtitle
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${title}.${extension}`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+      this.showNotificationMessage(`${extension.toUpperCase()} downloaded successfully!`, 'success');
+    } catch (error) {
+      console.error(`Error generating ${extension.toUpperCase()}:`, error);
+      this.showNotificationMessage(`Failed to generate ${extension.toUpperCase()} file. Please try again.`, 'error');
+    }
+  }
+  
+  /** Handle satisfaction response - send to chat or show improvement input */
+  // onSatisfactionResponse(isSatisfied: boolean): void {
+  //   if (isSatisfied) {
+  //     const contentToSend = (this.showFinalOutput && this.finalArticle) 
+  //       ? this.finalArticle 
+  //       : this.revisedContent;
+      
+  //     if (contentToSend && contentToSend.trim()) {
+  //       let plainText = contentToSend;
+  //       if (contentToSend.includes('<')) {
+  //         const tempDiv = document.createElement('div');
+  //         tempDiv.innerHTML = contentToSend;
+  //         plainText = tempDiv.textContent || tempDiv.innerText || '';
+  //       }
+  //       plainText = plainText.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
+        
+  //       const headerLines: string[] = ['### Guided Journey – Edit Content'];
+  //       const uploadedFileName = this.formData.uploadedFile?.name;
+  //       if (uploadedFileName) {
+  //         headerLines.push(`_Source: ${uploadedFileName}_`);
+  //       }
+        
+  //       const selectedEditorNames = this.formData.selectedEditors
+  //         .map(id => {
+  //           const editor = this.editorTypes.find(e => e.id === id);
+  //           return editor ? editor.name : id;
+  //         })
+  //         .join(', ');
+        
+  //       if (selectedEditorNames) {
+  //         headerLines.push(`_Editors Applied: ${selectedEditorNames}_`);
+  //       }
+        
+  //       const articleTitle = this.showFinalOutput ? 'Final Revised Article' : 'Revised Article';
+  //       headerLines.push('', `**${articleTitle}**`, '');
+        
+  //       const documentTitle = extractDocumentTitle(
+  //         this.originalContent || '',
+  //         uploadedFileName
+  //       );
+        
+  //       if (documentTitle && documentTitle !== articleTitle) {
+  //         headerLines.push(`**${documentTitle}**`, '');
+  //       }
+        
+  //       const headerHtml = convertMarkdownToHtml(headerLines.join('\n'));
+  //       const contentHtml = this.showFinalOutput && this.finalArticle
+  //         ? convertMarkdownToHtml(this.finalArticle)
+  //         : this.revisedContent;
+  //       const combinedHtml = `${headerHtml}${contentHtml}`;
+        
+  //       const revisedMetadata: ThoughtLeadershipMetadata = {
+  //         contentType: 'article',
+  //         topic: documentTitle || articleTitle,
+  //         fullContent: plainText,
+  //         showActions: true
+  //       };
+        
+  //       this.tlChatBridge.sendMessage({
+  //         role: 'assistant',
+  //         content: combinedHtml,
+  //         timestamp: new Date(),
+  //         isHtml: true,
+  //         thoughtLeadership: revisedMetadata
+  //       });
+  //     }
+      
+  //     this.onClose();
+  //   } else {
+  //     this.showImprovementInput = true;
+  //     this.showSatisfactionPrompt = false;
+  //   }
+  // }
+  
+  submitImprovementRequest(): void {
+    if (!this.improvementRequestText?.trim()) {
+      return;
+    }
+    
+    const nextIteration = this.iterationCount + 1;
+    if (nextIteration > 5) {
+      alert('You have reached the maximum number of iterations (5). Please start a new edit workflow if you need further changes.');
+      this.cancelImprovementRequest();
+      return;
+    }
+    
+    const revisedPlainText = this.revisedContent.replace(/<br>/g, '\n');
+    const improvementMessage = `Please review the following revised article and apply these additional improvements:\n\n${this.improvementRequestText.trim()}\n\nRevised Article:\n${revisedPlainText}`;
+    
+    const messages = [{
+      role: 'user' as const,
+      content: improvementMessage
+    }];
+    
+    this.isGenerating = true;
+    this.showImprovementInput = false;
+    this.improvementRequestText = '';
+    this.editFeedback = '';
+    this.revisedContent = '';
+    
+    let fullResponse = '';
+    const editorsToUse = normalizeEditorOrder(this.formData.selectedEditors) as EditorType[];
+
+    this.chatService.streamEditContent(messages, editorsToUse).subscribe({
+      next: (data: any) => {
+        if (data.type === 'editor_progress') {
+        } else if (data.type === 'editor_content') {
+          if (data.content) {
+            fullResponse += data.content;
+          }
+        } else if (data.type === 'editor_complete') {
+          if (data.revised_content) {
+            fullResponse = data.revised_content;
+            this.revisedContent = convertMarkdownToHtml(fullResponse);
+          }
+        } else if (data.type === 'editor_error') {
+          console.error(`${data.editor} editor error:`, data.error);
+        } else if (data.type === 'final_complete') {
+          if (data.final_revised) {
+            fullResponse = data.final_revised;
+            this.revisedContent = convertMarkdownToHtml(fullResponse);
+          }
+          if (data.combined_feedback) {
+            const feedbackContent = data.combined_feedback.trim();
+            this.feedbackItems = parseEditorialFeedback(feedbackContent);
+            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+            this.editFeedback = this.feedbackHtml;
+          }
         } else if (data.type === 'content' && data.content) {
           fullResponse += data.content;
         } else if (typeof data === 'string') {
@@ -1149,405 +871,131 @@ export class ChatEditWorkflowService {
         }
       },
       error: (error: any) => {
-        const errorMsg: Message = {
-          role: 'assistant',
-          content: 'Sorry, there was an error editing your content. Please try again.',
-          timestamp: new Date()
-        };
-        this.messageSubject.next({ type: 'result', message: errorMsg });
-        this.completeWorkflow();
+        console.error('Error improving content:', error);
+        this.editFeedback = 'Sorry, there was an error processing your improvement request. Please try again.';
+        this.isGenerating = false;
+        this.revisedContent = revisedPlainText.replace(/\n/g, '<br>');
+        this.showSatisfactionPrompt = true;
       },
       complete: () => {
-        this.completeWorkflow();
+        if (!this.revisedContent && fullResponse) {
+          this.parseEditResponse(fullResponse);
+        }
+        this.isGenerating = false;
+        this.iterationCount = nextIteration;
+        if (!this.revisedContent || !this.revisedContent.trim()) {
+          this.revisedContent = revisedPlainText.replace(/\n/g, '<br>');
+        }
+        this.showSatisfactionPrompt = true;
       }
     });
   }
-
+  
+  cancelImprovementRequest(): void {
+    this.showImprovementInput = false;
+    this.improvementRequestText = '';
+    this.showSatisfactionPrompt = true;
+  }
+  
   /** Create paragraph edits by comparing original and edited content */
-  private createParagraphEditsFromComparison(original: string, edited: string, editorIds?: string[]): ParagraphEdit[] {
-    const editorIdsToUse = editorIds || this.currentState.selectedEditors;
-    const allEditorNames = editorIdsToUse.map(editorId => {
-      return getEditorDisplayName(editorId);
+  private createParagraphEditsFromComparison(original: string, edited: string): ParagraphEdit[] {
+    const allEditorNames = this.formData.selectedEditors.map(editorId => {
+      const editor = this.editorTypes.find(e => e.id === editorId);
+      return editor ? editor.name : editorId;
     });
     
     return createParagraphEditsFromComparison(original, edited, allEditorNames);
   }
   
-  private dispatchResultsToChat(
-    rawResponse: string,
-    selectedEditorIds: string[],
-    selectedEditorNames: string,
-    combinedFeedback?: string,
-    finalRevisedContent?: string,
-    paragraphEdits?: ParagraphEdit[],
-    extractedTitle?: string
-  ): void {
-    let feedbackMatch: RegExpMatchArray | null = null;
-    if (combinedFeedback) {
-      feedbackMatch = [null, combinedFeedback] as any;
-    } else {
-      feedbackMatch = rawResponse.match(/===\s*FEEDBACK\s*===\s*([\s\S]*?)(?====\s*REVISED ARTICLE\s*===|$)/i);
-    }
-    
-    let revisedContent = '';
-    if (finalRevisedContent && finalRevisedContent.trim()) {
-      revisedContent = finalRevisedContent.trim();
-    }
-    const uploadedFileName = this.currentState.uploadedFile?.name;
-    
-    // Extract title from original content (use provided extractedTitle or extract from content)
-    const documentTitle = extractedTitle || extractDocumentTitle(
-      this.currentState.originalContent || '',
-      uploadedFileName
-    );
-    const cleanTopic = documentTitle.trim() || 'Revised Article';
-    
-    let cleanFullContent = revisedContent || 'No revised article returned.';
-    cleanFullContent = cleanFullContent.replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '').trim();
-    
-    const metadata = {
-      contentType: 'article' as const,
-      topic: cleanTopic,
-      fullContent: cleanFullContent,
-      showActions: !!revisedContent && cleanFullContent.length > 0
-    };
-    
-    // Send editorial feedback FIRST (matches Guided Journey display order)
-    if (feedbackMatch && feedbackMatch[1]) {
-      const feedbackPlainText = feedbackMatch[1].trim();
-      const feedbackTitle = '**📝 Editorial Feedback**';
-      const feedbackContent = feedbackPlainText;
-      const combinedFeedback = `${feedbackTitle}\n\n${feedbackContent}`;
-      const feedbackHtml = formatMarkdown(combinedFeedback);
-      
-      const feedbackMessage: Message = {
-        role: 'assistant',
-        content: feedbackHtml,
-        timestamp: new Date(),
-        isHtml: true, // Flag to indicate content is already HTML
-        thoughtLeadership: {
-          contentType: 'edit-article',
-          topic: 'Editorial Feedback',
-          fullContent: feedbackPlainText,
-          showActions: true
-        }
-      };
-      this.messageSubject.next({ type: 'result', message: feedbackMessage });
-    }
-    
-    // Send paragraph-by-paragraph comparison AFTER editorial feedback (matches Guided Journey display order)
-    if (paragraphEdits && paragraphEdits.length > 0) {
-      const paragraphMessage: Message = {
-        role: 'assistant',
-        content: '', // Content will be rendered by Angular component
-        timestamp: new Date(),
-        isHtml: false,
-      editWorkflow: {
-        step: 'awaiting_approval',
-        paragraphEdits: paragraphEdits,
-        showCancelButton: false,
-        showSimpleCancelButton: true,
-        threadId: this.threadId,
-        currentEditor: this.currentEditor,
-        isSequentialMode: this.isSequentialMode,
-        // ⚠️ UI MUST use isLastEditor flag - DO NOT infer from currentEditorIndex/totalEditors
-        isLastEditor: this.isLastEditor,
-        currentEditorIndex: this.currentEditorIndex,
-        totalEditors: this.totalEditors
-      }
-      };
-      this.messageSubject.next({ type: 'result', message: paragraphMessage });
-    } else if (revisedContent && !paragraphEdits) {
-      const headerLines: string[] = [
-        '### Quick Start Thought Leadership – Edit Content'
-      ];
-      
-      if (uploadedFileName) {
-        headerLines.push(`_Source: ${uploadedFileName}_`);
-      }
-      
-      if (selectedEditorNames) {
-        headerLines.push(`_Editors Applied: ${selectedEditorNames}_`);
-      }
-      
-      headerLines.push('', '**Revised Article**', '');
-      
-      // If we have an extracted title, add it in bold before the content
-      if (extractedTitle && extractedTitle !== 'Revised Article') {
-        headerLines.push(`**${extractedTitle}**`, '');
-      }
-      
-      const headerHtml = convertMarkdownToHtml(headerLines.join('\n'));
-      const revisedHtml = convertMarkdownToHtml(revisedContent);
-      const combinedHtml = `${headerHtml}${revisedHtml}`;
-      
-      const revisedMessage: Message = {
-        role: 'assistant',
-        content: combinedHtml,
-        timestamp: new Date(),
-        isHtml: true,
-        thoughtLeadership: metadata
-      };
-      
-      this.messageSubject.next({ type: 'result', message: revisedMessage });
-    } else {
-      const errorContent = '### Quick Start Thought Leadership – Edit Content\n\n**Revised Article**\n\n_No revised article was returned. Please try again._';
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: convertMarkdownToHtml(errorContent),
-        timestamp: new Date(),
-        isHtml: true,
-        thoughtLeadership: metadata
-      };
-      this.messageSubject.next({ type: 'result', message: errorMessage });
-    }
-  }
-
-  cancelWorkflow(): void {
-    if (this.currentState.step === 'idle') {
-      return;
-    }
-
-    if (this.currentState.step === 'processing') {
-      return;
-    }
-
-    this.updateState(this.getDefaultState());
-    this.workflowCompletedSubject.next();
-
-    const cancelMessage: Message = {
-      role: 'assistant',
-      content: 'Edit workflow cancelled. How else can I help you?',
-      timestamp: new Date()
-    };
-
-    this.messageSubject.next({
-      type: 'prompt',
-      message: cancelMessage
-    });
-  }
-
-  completeWorkflow(): void {
-    // Reset sequential workflow state
-    this.threadId = null;
-    this.currentEditor = null;
-    this.isSequentialMode = false;
-    this.isLastEditor = false;
-    this.currentEditorIndex = 0;
-    this.totalEditors = 0;
-    
-    this.updateState(this.getDefaultState());
-    this.workflowCompletedSubject.next();
-  }
-
-  private updateState(newState: EditWorkflowState): void {
-    this.stateSubject.next(newState);
-  }
-
-  
-  /** Sanitize HTML content using Angular's DomSanitizer */
-  private sanitizeHtml(html: string): SafeHtml {
-    return this.sanitizer.bypassSecurityTrustHtml(html);
-  }
-  
-  private getDefaultState(): EditWorkflowState {
-    return {
-      step: 'idle',
-      uploadedFile: null,
-      selectedEditors: ['brand-alignment'],
-      originalContent: '',
-      paragraphEdits: []
-    };
-  }
-
-  /** Validate file for edit workflow: .doc, .docx, .pdf, .txt, .md, .markdown; max 5MB. */
-  private isValidEditWorkflowFile(file: File): boolean {
-    const validExtensions = ['.doc', '.docx', '.pdf', '.txt', '.md', '.markdown'];
-    const fileName = file.name.toLowerCase();
-    const isValidFormat = validExtensions.some(ext => fileName.endsWith(ext));
-    if (!isValidFormat) return false;
-    const fileSizeMB = file.size / (1024 * 1024);
-    return fileSizeMB <= this.MAX_FILE_SIZE_MB;
-  }
-
-  private cloneEditorOptions(): EditorOption[] {
-    return this.editorOptions.map(opt => ({ ...opt }));
-  }
-
-  private createEditorSelectionMessage(content: string, editorOptions?: EditorOption[]): Message {
-    const editors = editorOptions || this.cloneEditorOptions();
-    // Set default selection state (only brand-alignment selected by default, and always selected)
-    const defaultSelectedIds = ['brand-alignment'];
-    const editorsWithSelection = editors.map(editor => ({
-      ...editor,
-      selected: defaultSelectedIds.includes(editor.id),
-      // Mark brand-alignment as always selected and disabled
-      disabled: editor.id === 'brand-alignment',
-      alwaysSelected: editor.id === 'brand-alignment'
-    }));
-
-    return {
-      role: 'assistant',
-      content,
-      timestamp: new Date(),
-      editWorkflow: {
-        step: 'awaiting_editors',
-        showEditorSelection: true, // Enable visual UI component
-        showCancelButton: false,
-        showSimpleCancelButton: false,
-        editorOptions: editorsWithSelection
-      }
-    };
-  }
-
-  private createNoEditorsErrorMessage(editorOptions?: EditorOption[]): void {
-    const errorMessage = this.createEditorSelectionMessage(
-      `⚠️ **Please select at least one editing service** before proceeding.`,
-      editorOptions
-    );
-    this.messageSubject.next({ type: 'prompt', message: errorMessage });
-  }
-  
   /** Approve a paragraph edit */
   approveParagraph(index: number): void {
-    const paragraphIndex = this.currentState.paragraphEdits.findIndex(p => p.index === index);
-    
-    if (paragraphIndex === -1) {
+    const paragraph = this.paragraphEdits.find(p => p.index === index);
+    if (!paragraph) {
       return;
     }
-    
-    // Create new array with updated paragraph (new object reference for Angular change detection)
-    const updatedParagraphEdits = this.currentState.paragraphEdits.map((p, i) => 
-      i === paragraphIndex 
-        ? { ...p, approved: true as boolean | null }
-        : p
-    );
-    
-    this.updateState({
-      ...this.currentState,
-      paragraphEdits: updatedParagraphEdits
-    });
-    
-    // Emit update message to notify chat component
-    this.emitParagraphUpdateMessage();
+    paragraph.approved = true; 
   }
   
   /** Decline a paragraph edit */
   declineParagraph(index: number): void {
-    const paragraphIndex = this.currentState.paragraphEdits.findIndex(p => p.index === index);
-    
-    if (paragraphIndex === -1) {
+    const paragraph = this.paragraphEdits.find(p => p.index === index);
+    if (!paragraph) {
       return;
     }
-    
-    // Create new array with updated paragraph (new object reference for Angular change detection)
-    const updatedParagraphEdits = this.currentState.paragraphEdits.map((p, i) => 
-      i === paragraphIndex 
-        ? { ...p, approved: false as boolean | null }
-        : p
-    );
-    
-    this.updateState({
-      ...this.currentState,
-      paragraphEdits: updatedParagraphEdits
-    });
-    
-    // Emit update message to notify chat component
-    this.emitParagraphUpdateMessage();
-  }
-  
-  /** Emit update message for paragraph edits */
-  private emitParagraphUpdateMessage(): void {
-    const updateMessage: Message = {
-      role: 'assistant',
-      content: '', // Content rendered by Angular component
-      timestamp: new Date(),
-      isHtml: false,
-      editWorkflow: {
-        step: 'awaiting_approval',
-        paragraphEdits: [...this.currentState.paragraphEdits],
-        showCancelButton: false,
-        showSimpleCancelButton: true,
-        threadId: this.threadId,
-        currentEditor: this.currentEditor,
-        isSequentialMode: this.isSequentialMode,
-        // ⚠️ UI MUST use isLastEditor flag - DO NOT infer from currentEditorIndex/totalEditors
-        isLastEditor: this.isLastEditor,
-        currentEditorIndex: this.currentEditorIndex,
-        totalEditors: this.totalEditors
-      }
-    };
-    
-    this.messageSubject.next({ type: 'update', message: updateMessage });
-  }
-  
-  /** Sync paragraph edits from message to service state (for final article generation) */
-  syncParagraphEditsFromMessage(paragraphEdits: ParagraphEdit[]): void {
-    if (paragraphEdits && paragraphEdits.length > 0) {
-      // Reconstruct originalContent from paragraphEdits if service state doesn't have it
-      let originalContent = this.currentState.originalContent;
-      if (!originalContent || !originalContent.trim()) {
-        originalContent = this.reconstructOriginalContent(paragraphEdits);
-      }
-      
-      this.updateState({
-        ...this.currentState,
-        paragraphEdits: [...paragraphEdits],
-        originalContent: originalContent || this.currentState.originalContent
-      });
-    }
+    paragraph.approved = false;
   }
 
-  /** Sync threadId from message to service state (same as Guided Journey stores it in component) */
-  syncThreadIdFromMessage(threadId: string | null | undefined): void {
-    if (threadId && !this.threadId) {
-      this.threadId = threadId;
+  /** Get paragraphs that require user review (excludes auto-approved), sorted by index */
+  get getParagraphsForReview(): ParagraphEdit[] {
+    return this.paragraphEdits
+      .filter(p => p.autoApproved !== true)
+      .sort((a, b) => a.index - b.index);
+  }
+  
+  /** Get count of auto-approved paragraphs */
+  get autoApprovedCount(): number {
+    return this.paragraphEdits.filter(p => p.autoApproved === true).length;
+  }
+  
+  /** Get auto-approved count text with proper pluralization */
+  get autoApprovedText(): string {
+    const count = this.autoApprovedCount;
+    if (count === 0) {
+      return '';
     }
+    return `(${count} paragraph${count !== 1 ? 's' : ''} auto-approved)`;
+  }
+
+  /** Get paragraphs that require user review (excludes auto-approved), sorted by index */
+  get getParagraphsForFeedbackReview(): ParagraphFeedback[] {
+    return this.paragraphFeedbackData
+      .filter(p => p.autoApproved !== true)
+      .sort((a, b) => a.index - b.index);
+  }
+
+  /** Get count of auto-approved paragraphs in feedback data */
+  get autoApprovedFeedbackCount(): number {
+    return this.paragraphFeedbackData.filter(
+      p => p.autoApproved === true
+    ).length;
+  }
+
+  /** Get auto-approved count text for feedback data */
+  get autoApprovedFeedbackText(): string {
+    const count = this.autoApprovedFeedbackCount;
+
+    if (count === 0) {
+      return '';
+    }
+
+    return `(${count} paragraph${count !== 1 ? 's' : ''} auto-approved)`;
   }
   
   /** Check if all paragraphs have been decided */
   get allParagraphsDecided(): boolean {
-    const paragraphEdits = this.currentState.paragraphEdits;
-    
-    // First check if all feedback is decided (matches component logic)
-    // This allows "Approve All" / "Reject All" to enable buttons when they only affect feedback items
-    const feedbackDecided = this.allParagraphFeedbackDecided(paragraphEdits);
-    if (feedbackDecided) {
-      return true; // Enable buttons when all feedback is decided
-    }
-    
-    // Otherwise, check both paragraph-level and feedback decisions
-    const paragraphsDecided = allParagraphsDecided(paragraphEdits);
-    return paragraphsDecided && feedbackDecided;
+    // Check both paragraphEdits and paragraphFeedbackData
+    const editsDecided = this.paragraphEdits.length === 0 || allParagraphsDecided(this.paragraphEdits);
+    const feedbackDecided = this.allParagraphFeedbackDecided;
+    return editsDecided && feedbackDecided;
   }
 
   /** Check if all paragraph feedback items are decided */
-  private allParagraphFeedbackDecided(paragraphEdits: ParagraphEdit[]): boolean {
-    if (!paragraphEdits || paragraphEdits.length === 0) {
+  get allParagraphFeedbackDecided(): boolean {
+    if (!this.paragraphFeedbackData || this.paragraphFeedbackData.length === 0) {
       return true; // No feedback to decide
     }
     
-    return paragraphEdits.every(para => {
-      // Only check if all editorial feedback items are decided (not paragraph approval)
-      // This allows Next Editor to enable when all feedback is approved/rejected
-      if (!para.editorial_feedback) {
-        return true; // No feedback means nothing to decide
+    return this.paragraphFeedbackData.every(para => {
+      // Check if paragraph itself is decided
+      if (para.approved === null || para.approved === undefined) {
+        return false;
       }
       
-      const feedbackTypes = Object.keys(para.editorial_feedback);
-      // If there are no feedback types, consider it decided
-      if (feedbackTypes.length === 0) {
-        return true;
-      }
-      
+      // Check if all editorial feedback items are decided
+      const feedbackTypes = Object.keys(para.editorial_feedback || {});
       for (const editorType of feedbackTypes) {
         const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-        // If there are no feedbacks for this editor type, skip it
-        if (feedbacks.length === 0) {
-          continue;
-        }
         for (const fb of feedbacks) {
-          // Feedback is decided if approved is true or false (not null/undefined)
           if (fb.approved === null || fb.approved === undefined) {
             return false;
           }
@@ -1558,26 +1006,215 @@ export class ChatEditWorkflowService {
     });
   }
 
-  /** Get paragraphs that require user review (excludes auto-approved) */
-  get getParagraphsForReview(): ParagraphEdit[] {
-    return this.currentState.paragraphEdits.filter(p => p.autoApproved !== true).sort((a, b) => a.index - b.index);
+  /** Check if all paragraphs are approved */
+  get allParagraphsApproved(): boolean {
+    return this.paragraphEdits.length > 0 && 
+           this.paragraphEdits.every(p => p.approved === true);
   }
   
-  /** Reconstruct original content from paragraph edits (like Guided Journey) */
-  public reconstructOriginalContent(paragraphEdits: ParagraphEdit[]): string {
-    if (!paragraphEdits || paragraphEdits.length === 0) {
-      return '';
-    }
-    
-    // Sort by index to ensure correct order
-    const sortedEdits = [...paragraphEdits].sort((a, b) => a.index - b.index);
-    
-    // Combine all original paragraphs
-    return sortedEdits.map(p => p.original).filter(p => p && p.trim()).join('\n\n');
+  /** Check if all paragraphs are declined */
+  get allParagraphsDeclined(): boolean {
+    return this.paragraphEdits.length > 0 && 
+           this.paragraphEdits.every(p => p.approved === false);
   }
 
-  /** Collect editorial feedback decisions for a paragraph (matches guided journey) */
-  public collectFeedbackDecisions(para: ParagraphEdit): any {
+  get isImprovementRequestValid(): boolean {
+    return !!this.improvementRequestText && this.improvementRequestText.trim().length > 0;
+  }
+  
+  /** Approve all paragraph edits */
+  approveAllParagraphs(): void {
+    if (this.paragraphEdits.length === 0) {
+      return;
+    }
+    
+    this.paragraphEdits.forEach(paragraph => {
+      paragraph.approved = true;
+    });
+  }
+  
+  /** Decline all paragraph edits */
+  declineAllParagraphs(): void {
+    if (this.paragraphEdits.length === 0) {
+      return;
+    }
+    
+    this.paragraphEdits.forEach(paragraph => {
+      paragraph.approved = false;
+    });
+  }
+
+  
+  /** Generate final article using approved edits */
+  async runFinalOutput(): Promise<void> {
+    if (!this.allParagraphsDecided) {
+      alert('Please approve or decline all paragraph edits before generating the final article.');
+      return;
+    }
+    
+    this.isGeneratingFinal = true;
+    
+    try {
+      const decisions = this.paragraphEdits.map(p => ({
+        index: p.index,
+        approved: p.approved === true
+      }));
+      
+      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
+        method: 'POST',
+        body: JSON.stringify({
+          original_content: this.originalContent,
+          paragraph_edits: this.paragraphEdits.map(p => ({
+            index: p.index,
+            original: p.original,
+            edited: p.edited,
+            tags: p.tags,
+            autoApproved: p.autoApproved
+          })),
+          decisions: decisions
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Failed to generate final article: ${response.status} ${errorText}`);
+      }
+      
+      const data = await response.json();
+      const finalArticle = data.final_article || '';
+      
+      if (!finalArticle) {
+        throw new Error('No final article returned from server');
+      }
+      
+      // Final article is markdown; render via markdown-to-HTML (no block_types)
+      this.finalArticle = formatFinalArticleWithBlockTypes(finalArticle, []);
+      this.showFinalOutput = true;
+      this.showSatisfactionPrompt = true;
+    } catch (error) {
+      console.error('Error generating final article:', error);
+      const errorMessage = error instanceof Error 
+        ? `Failed to generate final article: ${error.message}` 
+        : 'Failed to generate final article. Please try again.';
+      alert(errorMessage);
+    } finally {
+      this.isGeneratingFinal = false;
+    }
+  }
+
+  /** Generate final article using approved edits and feedback */
+  async generateFinalOutput(): Promise<void> {
+    if (!this.allParagraphsDecided) {
+      alert('Please approve or reject all paragraph edits and feedback before generating the final article.');
+      return;
+    }
+    
+    this.isGeneratingFinal = true;
+    
+    try {
+      // Collect all approved/rejected decisions from paragraphFeedbackData
+      const paragraphDecisions = this.paragraphFeedbackData.map(para => ({
+        index: para.index,
+        approved: para.approved === true,
+        editorial_feedback_decisions: this.collectFeedbackDecisions(para)
+      }));
+      
+      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
+        method: 'POST',
+        body: JSON.stringify({
+          original_content: this.originalContent,
+          paragraph_edits: this.paragraphFeedbackData.map(p => ({
+            index: p.index,
+            original: p.original,
+            edited: p.edited,
+            tags: p.tags,
+            autoApproved: p.autoApproved,
+            block_type: p.block_type || 'paragraph',
+            level: p.level || 0,
+            editorial_feedback: p.editorial_feedback
+          })),
+          decisions: paragraphDecisions,
+          include_quality_checks: true,
+          include_copy_check: true
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Failed to generate final article: ${response.status} ${errorText}`);
+      }
+      
+      const data = await response.json();
+      const finalArticle = data.final_article || '';
+      
+      if (!finalArticle) {
+        throw new Error('No final article returned from server');
+      }
+      
+      // Final article is markdown; render via markdown-to-HTML (no block_types)
+      const formattedContentHtml = formatFinalArticleWithBlockTypes(finalArticle.trim(), []);
+      
+      let plainText = finalArticle;
+      if (finalArticle.includes('<')) {
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = finalArticle;
+        plainText = tempDiv.textContent || tempDiv.innerText || '';
+      }
+      plainText = plainText.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
+      
+      // Build header with metadata
+      const headerLines: string[] = ['### Guided Journey – Edit Content'];
+      const uploadedFileName = this.formData.uploadedFile?.name;
+      if (uploadedFileName) {
+        headerLines.push(`_Source: ${uploadedFileName}_`);
+      }
+      
+      headerLines.push('', '---', '');
+      
+      const documentTitle = extractDocumentTitle(
+        this.originalContent || '',
+        uploadedFileName
+      );
+      
+      const headerHtml = convertMarkdownToHtml(headerLines.join('\n'));
+      
+      const combinedHtml = `${headerHtml}${formattedContentHtml}`;
+      
+      const revisedMetadata: ThoughtLeadershipMetadata = {
+        contentType: 'edit-article',
+        topic: documentTitle || 'Final Revised Article',
+        fullContent: plainText,
+        showActions: true
+      };
+      
+      // Send to chat
+      this.tlChatBridge.sendMessage({
+        role: 'assistant',
+        content: combinedHtml,
+        timestamp: new Date(),
+        isHtml: true,
+        thoughtLeadership: revisedMetadata
+      });
+      
+      // Close the edit-content-flow component
+      this.onClose();
+    } catch (error) {
+      console.error('Error generating final article:', error);
+      const errorMessage = error instanceof Error 
+        ? `Failed to generate final article: ${error.message}` 
+        : 'Failed to generate final article. Please try again.';
+      alert(errorMessage);
+    } finally {
+      this.isGeneratingFinal = false;
+    }
+  }
+
+
+
+  /** Collect feedback decisions from a paragraph */
+  private collectFeedbackDecisions(para: ParagraphFeedback): any {
     const decisions: any = {};
     const feedbackTypes = Object.keys(para.editorial_feedback || {});
     
@@ -1592,107 +1229,113 @@ export class ChatEditWorkflowService {
     return decisions;
   }
 
-  /** Check if a paragraph has any approved editorial feedback items */
-  private hasApprovedEditorialFeedback(para: ParagraphEdit): boolean {
-    if (!para.editorial_feedback) {
-      return false;
+  /** Process paragraph edits from backend response (reusable helper) */
+  private processParagraphEdits(paragraph_edits: any[]): ParagraphFeedback[] {
+    // If API returned no paragraph edits at all, just clear the data array.
+    // The template can show an inline "no feedback" message inside the paragraph box.
+    if (!paragraph_edits || !Array.isArray(paragraph_edits) || paragraph_edits.length === 0) {
+      return [];
     }
-    
-    const feedbackTypes = Object.keys(para.editorial_feedback);
-    for (const editorType of feedbackTypes) {
-      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
-      if (feedbacks.some((fb: any) => fb.approved === true)) {
-        return true;
-      }
-    }
-    
-    return false;
-  }
-  
-  /** Move to next editor in sequential workflow */
-  async nextEditor(paragraphEdits: ParagraphEdit[], threadIdFromMessage?: string | null): Promise<void> {
-    const effectiveThreadId = this.threadId || threadIdFromMessage;
-    
-    if (!effectiveThreadId) {
-      console.error('[ChatEditWorkflowService] No thread_id available for next editor');
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: '⚠️ **No thread ID available.** Cannot proceed to next editor.',
-        timestamp: new Date()
+
+    const feedbackData: ParagraphFeedback[] = paragraph_edits.map((edit: any) => {
+      const editorial_feedback = {
+        development: edit.editorial_feedback?.development || [],
+        content: edit.editorial_feedback?.content || [],
+        copy: edit.editorial_feedback?.copy || [],
+        line: edit.editorial_feedback?.line || [],
+        brand: edit.editorial_feedback?.brand || []
       };
-      this.messageSubject.next({ type: 'prompt', message: errorMessage });
+
+      return {
+        index: edit.index || 0,
+        original: edit.original || '',
+        edited: edit.edited || '',
+        tags: edit.tags || [],
+        autoApproved: edit.autoApproved ?? false,
+        approved: edit.approved ?? null,
+        block_type: edit.block_type || 'paragraph',
+        level: edit.level || 0,
+        editorial_feedback
+      };
+    });
+
+    return feedbackData;
+  }
+
+  /** True when there are no feedback items inside paragraphFeedbackData */
+  get hasNoParagraphFeedback(): boolean {
+    if (!this.paragraphFeedbackData || this.paragraphFeedbackData.length === 0) {
+      return true;
+    }
+
+    // No editorial feedback items across all paragraphs
+    return this.paragraphFeedbackData.every(para => {
+      const types = Object.keys(para.editorial_feedback || {});
+      return types.every(t => {
+        const arr = (para.editorial_feedback as any)[t] || [];
+        return !arr || arr.length === 0;
+      });
+    });
+  }
+
+  /** Move to next editor in sequential workflow */
+  async nextEditor(): Promise<void> {
+    if (!this.threadId) {
+      console.error('[EditContentFlow] No thread_id available for next editor');
       return;
     }
-
-    // Update service's threadId if it was null and we got it from message
-    if (!this.threadId && threadIdFromMessage) {
-      this.threadId = threadIdFromMessage;
-    }
-
-    // 🔒 totalEditors is locked at initialization - DO NOT recalculate here
-    // If it's 0, that means processContent() was never called, which is an error state
-    if (!this.totalEditors || this.totalEditors === 0) {
-      console.error('[ChatEditWorkflowService] totalEditors is 0 - processContent() should have initialized it');
-    }
-
-    if (paragraphEdits && paragraphEdits.length > 0) {
-      this.syncParagraphEditsFromMessage(paragraphEdits);
-    }
-
-    // Use synced paragraph edits from state (ensures we have the latest state)
-    const currentParagraphEdits = this.currentState.paragraphEdits.length > 0 
-      ? this.currentState.paragraphEdits 
-      : paragraphEdits;
 
     if (!this.allParagraphsDecided) {
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: '⚠️ **Please approve or reject all paragraph edits** before proceeding to the next editor.',
-        timestamp: new Date()
-      };
-      this.messageSubject.next({ type: 'prompt', message: errorMessage });
+      alert('Please approve or reject all paragraph edits before proceeding to the next editor.');
       return;
     }
 
-    this.isGeneratingNextEditorSubject.next(true);
+    this.isGenerating = true;
+    this.isEditorLoading = true; // Mark that we're loading the next editor
+
+    // Mark current editor as completed when moving to next
+    const currentEditorItem = this.editorProgressList.find(e => e.editorId === this.currentEditor);
+    if (currentEditorItem && currentEditorItem.status === 'review-pending') {
+      currentEditorItem.status = 'completed';
+    }
+
+    // Immediately update next editor to 'processing' status for visual feedback
+    const nextEditorIndex = this.currentEditorIndex + 1;
+    if (nextEditorIndex < this.editorProgressList.length) {
+      const nextEditorItem = this.editorProgressList[nextEditorIndex];
+      if (nextEditorItem && (nextEditorItem.status === 'pending' || nextEditorItem.status === 'review-pending')) {
+        nextEditorItem.status = 'processing';
+        // Update currentEditor to match the next editor
+        this.currentEditor = nextEditorItem.editorId;
+        this.currentEditorIndex = nextEditorIndex;
+        this.cdr.detectChanges();
+      }
+    }
 
     try {
-      // Collect decisions - check for approved editorial feedback (same logic as generateFinalArticle)
-      // IMPORTANT: If paragraph has approved editorial feedback, set approved=true even if paragraph-level approved is null
-      // This ensures backend uses edited content when moving to next editor
-      const decisions = currentParagraphEdits.map(para => {
-        // Check if paragraph has any approved editorial feedback
-        const hasApprovedFeedback = this.hasApprovedEditorialFeedback(para);
-        // Paragraph is approved if: explicitly approved OR has approved feedback items
-        // This matches generateFinalArticle() logic and ensures backend uses edited content
-        const isApproved = para.approved === true || (para.approved !== false && hasApprovedFeedback);
-        
-        return {
-          index: para.index,
-          approved: isApproved
-        };
-      });
+      // Collect decisions from paragraphFeedbackData
+      const decisions = this.paragraphFeedbackData.map(para => ({
+        index: para.index,
+        approved: para.approved === true
+      }));
 
-      const paragraph_edits_data = currentParagraphEdits.map(para => ({
+      // Prepare paragraph_edits
+      const paragraph_edits = this.paragraphFeedbackData.map(para => ({
         index: para.index,
         original: para.original,
         edited: para.edited,
         tags: para.tags || [],
         autoApproved: para.autoApproved || false,
-        approved: para.approved,
-        editorial_feedback: para.editorial_feedback || {}
+        approved: para.approved
       }));
 
-      // const apiUrl = (window as any)._env?.apiUrl || '';
+      // Call /next endpoint via ChatService
       const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-      const authHeaders = await this.getAuthHeaders();
-      
-      const response = await fetch(`${apiUrl}/api/v1/tl/edit-content/next`, {
+      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/next`, {
         method: 'POST',
-        headers: authHeaders,
         body: JSON.stringify({
-          thread_id: effectiveThreadId,
-          paragraph_edits: paragraph_edits_data,
+          thread_id: this.threadId,
+          paragraph_edits: paragraph_edits,
           decisions: decisions,
           accept_all: false,
           reject_all: false
@@ -1728,397 +1371,500 @@ export class ChatEditWorkflowService {
               try {
                 const data = JSON.parse(dataStr);
                 
+                // Handle editor_progress - show In Progress
+                if (data.type === 'editor_progress') {
+                  // Backend sends 1-based index, convert to 0-based for our array
+                  const backendCurrentIndex = data.current || 1;
+                  this.currentEditorIndex = backendCurrentIndex - 1; // Convert to 0-based
+                  this.totalEditors = data.total || this.totalEditors;
+                  this.currentEditorId = data.editor || '';
+                  this.isEditorLoading = true;
+                  
+                  // Update editor statuses (using 0-based index)
+                  this.editorProgressList.forEach((editor, index) => {
+                    if (index < this.currentEditorIndex) {
+                      editor.status = 'completed';
+                    } else if (index === this.currentEditorIndex) {
+                      editor.status = 'processing'; // In Progress
+                      editor.current = backendCurrentIndex; // Keep 1-based for display
+                      editor.total = this.totalEditors;
+                    } else {
+                      editor.status = 'pending';
+                    }
+                  });
+                  
+                  this.cdr.detectChanges();
+                }
+                
+                // Handle all_complete
                 if (data.type === 'all_complete') {
-                  this.isGeneratingNextEditorSubject.next(false);
+                  this.isGenerating = false;
+                  // Mark as last editor to show "Generate Final Output" button
                   this.isLastEditor = true;
                   this.currentEditorIndex = this.totalEditors;
-                  
-                  // Use the most recent paragraph edits from state (should be updated by last editor_complete)
-                  // If all_complete includes paragraph_edits, process them; otherwise use current state
-                  let paragraphEditsToUse = [...this.currentState.paragraphEdits];
-                  
-                  if (data.paragraph_edits && Array.isArray(data.paragraph_edits) && data.paragraph_edits.length > 0) {
-                    // Process paragraph edits from all_complete if provided
-                    const allEditorNames = this.currentState.selectedEditors.map(editorId => {
-                      return getEditorDisplayName(editorId);
-                    });
-                    
-                    const originalContent = data.original_content || this.currentState.originalContent || '';
-                    const originalParagraphs = originalContent ? splitIntoParagraphs(originalContent) : [];
-                    
-                    paragraphEditsToUse = data.paragraph_edits.map((edit: any, arrayIndex: number) => {
-                      const existingTags = edit.tags || [];
-                      const existingEditorNames = new Set<string>(
-                        existingTags.map((tag: string) => {
-                          const match = tag.match(/^(.+?)\s*\(/);
-                          return match ? match[1].trim() : tag;
-                        })
-                      );
-                      
-                      const allTags = [...existingTags];
-                      allEditorNames.forEach(editorName => {
-                        const existingNamesArray = Array.from(existingEditorNames) as string[];
-                        if (!existingNamesArray.some((existing: string) => 
-                          existing.toLowerCase().includes(editorName.toLowerCase()) || 
-                          editorName.toLowerCase().includes(existing.toLowerCase())
-                        )) {
-                          allTags.push(`${editorName} (Reviewed)`);
-                        }
-                      });
-                      
-                      const paragraphIndex = (edit.index !== undefined && edit.index !== null) ? edit.index : arrayIndex;
-                      const originalText = (edit.original && edit.original.trim()) || (originalParagraphs.length > paragraphIndex && paragraphIndex >= 0 ? (originalParagraphs[paragraphIndex] && originalParagraphs[paragraphIndex].trim()) || '' : '');
-                      const editedText = (edit.edited && edit.edited.trim()) || '';
-                      const isIdentical = validateStringEquality(originalText, editedText);
-                      const autoApproved = edit.autoApproved !== undefined ? edit.autoApproved : isIdentical;
-                      const approved = autoApproved ? true : (edit.approved !== undefined ? edit.approved : null);
-
-                      const editorial_feedback = edit.editorial_feedback ? {
-                        development: edit.editorial_feedback.development || [],
-                        content: edit.editorial_feedback.content || [],
-                        copy: edit.editorial_feedback.copy || [],
-                        line: edit.editorial_feedback.line || [],
-                        brand: edit.editorial_feedback.brand || []
-                      } : undefined;
-
-                      return {
-                        index: paragraphIndex,
-                        original: originalText,
-                        edited: editedText,
-                        tags: allTags,
-                        autoApproved: autoApproved,
-                        approved: approved,
-                        block_type: (edit.block_type !== undefined && edit.block_type !== null && edit.block_type !== '') ? edit.block_type : 'paragraph',
-                        level: edit.level || 0,
-                        editorial_feedback: editorial_feedback,
-                        displayOriginal: undefined,
-                        displayEdited: undefined
-                      } as ParagraphEdit;
-                    });
-                    
-                    // Update state with processed paragraph edits
-                    this.updateState({
-                      ...this.currentState,
-                      paragraphEdits: paragraphEditsToUse
-                    });
-                  }
-                  
-                  const updateMessage: Message = {
-                    role: 'assistant',
-                    content: '',
-                    timestamp: new Date(),
-                    isHtml: false,
-                    editWorkflow: {
-                      step: 'awaiting_approval',
-                      paragraphEdits: paragraphEditsToUse,
-                      showCancelButton: false,
-                      showSimpleCancelButton: true,
-                      threadId: this.threadId,
-                      currentEditor: this.currentEditor,
-                      isSequentialMode: this.isSequentialMode,
-                      isLastEditor: true,
-                      currentEditorIndex: this.currentEditorIndex,
-                      totalEditors: this.totalEditors,
-                      isGeneratingNextEditor: false
-                    }
-                  };
-                  this.messageSubject.next({ type: 'update', message: updateMessage });
+                  this.cdr.detectChanges();
                   return;
                 }
 
+                // Handle editor_complete (same as initial flow)
                 if (data.type === 'editor_complete') {
+                  const scrollContainer = document.querySelector('.flow-content') || 
+                                         document.querySelector('.flow-container') || 
+                                         document.documentElement;
+                  const scrollPosition = scrollContainer === document.documentElement
+                    ? window.scrollY || window.pageYOffset 
+                    : (scrollContainer as HTMLElement).scrollTop;
+
+                  // Store thread_id
                   if (data.thread_id) {
                     this.threadId = data.thread_id;
-                    this.isSequentialMode = true;
                   }
 
+                  // Store current editor info
                   if (data.current_editor) {
                     this.currentEditor = data.current_editor;
                     this.currentEditorIndex = data.editor_index || 0;
                     this.totalEditors = data.total_editors || this.totalEditors;
-                    this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || this.totalEditors || 1) - 1;
+                    this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || 1) - 1;
                   }
 
-                  let newParagraphEdits: ParagraphEdit[] = [];
+                  // Mark previous editor as completed when moving to next editor
+                  if (this.currentEditorIndex > 0) {
+                    const previousEditorIndex = this.currentEditorIndex - 1;
+                    const previousEditor = this.editorProgressList[previousEditorIndex];
+                    if (previousEditor && previousEditor.status === 'review-pending') {
+                      previousEditor.status = 'completed';
+                    }
+                  }
+
+                  // Update current editor to review-pending after generation completes
+                  const currentEditorItem = this.editorProgressList.find(e => e.editorId === data.current_editor);
+                  if (currentEditorItem) {
+                    currentEditorItem.status = 'review-pending';
+                  }
+
+                  // Process paragraph edits
                   if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
-                    const allEditorNames = this.currentState.selectedEditors.map(editorId => {
-                      return getEditorDisplayName(editorId);
-                    });
-                    
-                    const originalContent = data.original_content || this.currentState.originalContent || '';
-                    const originalParagraphs = originalContent ? splitIntoParagraphs(originalContent) : [];
-                    
-                    newParagraphEdits = data.paragraph_edits.map((edit: any, arrayIndex: number) => {
-                      const existingTags = edit.tags || [];
-                      const existingEditorNames = new Set<string>(
-                        existingTags.map((tag: string) => {
-                          const match = tag.match(/^(.+?)\s*\(/);
-                          return match ? match[1].trim() : tag;
-                        })
-                      );
-                      
-                      const allTags = [...existingTags];
-                      allEditorNames.forEach(editorName => {
-                        const existingNamesArray = Array.from(existingEditorNames) as string[];
-                        if (!existingNamesArray.some((existing: string) => 
-                          existing.toLowerCase().includes(editorName.toLowerCase()) || 
-                          editorName.toLowerCase().includes(existing.toLowerCase())
-                        )) {
-                          allTags.push(`${editorName} (Reviewed)`);
-                        }
-                      });
-                      
-                      const paragraphIndex = (edit.index !== undefined && edit.index !== null) ? edit.index : arrayIndex;
-                      const originalText = (edit.original && edit.original.trim()) || (originalParagraphs.length > paragraphIndex && paragraphIndex >= 0 ? (originalParagraphs[paragraphIndex] && originalParagraphs[paragraphIndex].trim()) || '' : '');
-                      const editedText = (edit.edited && edit.edited.trim()) || '';
-                      const isIdentical = validateStringEquality(originalText, editedText);
-                      const autoApproved = edit.autoApproved !== undefined ? edit.autoApproved : isIdentical;
-                      const approved = autoApproved ? true : (edit.approved !== undefined ? edit.approved : null);
-
-                      const editorial_feedback = edit.editorial_feedback ? {
-                        development: edit.editorial_feedback.development || [],
-                        content: edit.editorial_feedback.content || [],
-                        copy: edit.editorial_feedback.copy || [],
-                        line: edit.editorial_feedback.line || [],
-                        brand: edit.editorial_feedback.brand || []
-                      } : undefined;
-
-                      return {
-                        index: paragraphIndex,
-                        original: originalText,
-                        edited: editedText,
-                        tags: allTags,
-                        autoApproved: autoApproved,
-                        approved: approved,
-                        block_type: (edit.block_type !== undefined && edit.block_type !== null && edit.block_type !== '') ? edit.block_type : 'paragraph',
-                        level: edit.level || 0,
-                        editorial_feedback: editorial_feedback,
-                        displayOriginal: undefined,
-                        displayEdited: undefined
-                      } as ParagraphEdit;
-                    });
+                    this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
                   }
 
                   // Update content
                   if (data.original_content) {
-                    this.updateState({
-                      ...this.currentState,
-                      originalContent: data.original_content
-                    });
+                    this.originalContent = data.original_content;
                   }
 
-                  this.updateState({
-                    ...this.currentState,
-                    paragraphEdits: newParagraphEdits
-                  });
+                  if (data.final_revised) {
+                    this.revisedContent = convertMarkdownToHtml(data.final_revised.trim());
+                  }
 
-                  this.isGeneratingNextEditorSubject.next(false);
+                  // Process feedback
+                  if (data.combined_feedback) {
+                    const feedbackContent = data.combined_feedback.trim();
+                    this.feedbackItems = parseEditorialFeedback(feedbackContent);
+                    this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+                    this.editFeedback = this.feedbackHtml;
+                  }
 
-                  const paragraphMessage: Message = {
-                    role: 'assistant',
-                    content: '',
-                    timestamp: new Date(),
-                    isHtml: false,
-                    editWorkflow: {
-                      step: 'awaiting_approval',
-                      paragraphEdits: newParagraphEdits,
-                      showCancelButton: false,
-                      showSimpleCancelButton: true,
-                      threadId: this.threadId,
-                      currentEditor: this.currentEditor,
-                      isSequentialMode: this.isSequentialMode,
-                      // ⚠️ UI MUST use isLastEditor flag - DO NOT infer from currentEditorIndex/totalEditors
-                      isLastEditor: this.isLastEditor,
-                      currentEditorIndex: this.currentEditorIndex,
-                      totalEditors: this.totalEditors,
-                      isGeneratingNextEditor: false
+                  this.isGenerating = false;
+                  this.isEditorLoading = false; // Loading complete, now in review pending state
+                  
+                  this.cdr.detectChanges();
+
+                  setTimeout(() => {
+                    const paragraphSection = document.getElementById('paragraph-feedback-section');
+                    if (paragraphSection) {
+                      paragraphSection.scrollIntoView({ 
+                        behavior: 'smooth', 
+                        block: 'start',
+                        inline: 'nearest'
+                      });
                     }
-                  };
-                  this.messageSubject.next({ type: 'update', message: paragraphMessage });
+                  }, 100);
+
+
                 }
 
+                // Handle errors
                 if (data.type === 'error') {
                   throw new Error(data.error || 'Unknown error');
                 }
               } catch (e) {
-                console.error('[ChatEditWorkflowService] Error parsing SSE data:', e);
+                console.error('[EditContentFlow] Error parsing SSE data:', e);
               }
             }
           }
         }
       }
     } catch (error) {
-      console.error('[ChatEditWorkflowService] Error in nextEditor:', error);
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: `⚠️ **Failed to proceed to next editor.** ${error instanceof Error ? error.message : 'Please try again.'}`,
-        timestamp: new Date()
-      };
-      this.messageSubject.next({ type: 'prompt', message: errorMessage });
-    } finally {
-      // Reset generating state
-      this.isGeneratingNextEditorSubject.next(false);
+      console.error('[EditContentFlow] Error in nextEditor:', error);
+      const errorMessage = error instanceof Error 
+        ? `Failed to proceed to next editor: ${error.message}` 
+        : 'Failed to proceed to next editor. Please try again.';
+      alert(errorMessage);
+      this.isGenerating = false;
+      this.isEditorLoading = false; // Reset loading state on error
     }
   }
-  
-  /** Generate final article using approved edits */
-  async generateFinalArticle(): Promise<void> {
-    if (!this.allParagraphsDecided) {
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: '⚠️ **Please approve or decline all paragraph edits** before generating the final article.',
-        timestamp: new Date()
-      };
-      this.messageSubject.next({ type: 'prompt', message: errorMessage });
+
+  objectKeys = Object.keys;
+
+  /** Get display name for editor */
+  getEditorDisplayName(editorId: string | null): string {
+    if (!editorId) return '';
+    
+    // Map editor IDs to display names
+    const editorMap: { [key: string]: string } = {
+      'development': 'Development Editor',
+      'content': 'Content Editor',
+      'line': 'Line Editor',
+      'copy': 'Copy Editor',
+      // 'brand': 'PwC Brand Alignment Editor',
+      'brand-alignment': 'PwC Brand Alignment Editor'
+    };
+    
+    return editorMap[editorId] || editorId;
+  }
+
+  /** Update paragraph's approved status based on its feedback items */
+  private updateParagraphApprovedStatus(para: ParagraphFeedback): void {
+    // Check if all feedback items in this paragraph are decided
+    const feedbackTypes = Object.keys(para.editorial_feedback || {});
+    let allDecided = true;
+    let allApproved = true;
+    let hasAnyFeedback = false;
+    
+    for (const editorType of feedbackTypes) {
+      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+      for (const fb of feedbacks) {
+        hasAnyFeedback = true;
+        if (fb.approved === null || fb.approved === undefined) {
+          allDecided = false;
+          break;
+        } else if (fb.approved === false) {
+          allApproved = false;
+        }
+      }
+      if (!allDecided) break;
+    }
+    
+    // If no feedback items exist, paragraph doesn't need approval
+    if (!hasAnyFeedback) {
+      para.approved = true; // No feedback means nothing to approve/reject
       return;
     }
     
-    this.isGeneratingFinalSubject.next(true);
-    
-    try {
-      // Collect decisions with feedback decisions (matches guided journey)
-      // IMPORTANT: If paragraph has approved editorial feedback, set approved=true even if paragraph-level approved is null
-      // This matches guided journey's updateParagraphApprovedStatus() logic and ensures backend uses edited content
-      const decisions = this.currentState.paragraphEdits.map(p => {
-        // Check if paragraph has any approved editorial feedback
-        const hasApprovedFeedback = this.hasApprovedEditorialFeedback(p);
-        // Paragraph is approved if: explicitly approved OR has approved feedback items
-        // This matches guided journey's updateParagraphApprovedStatus() logic
-        const isApproved = p.approved === true || (p.approved !== false && hasApprovedFeedback);
-        
-        return {
-          index: p.index,
-          approved: isApproved,
-          editorial_feedback_decisions: this.collectFeedbackDecisions(p)
-        };
-      });
-      
-      // Get originalContent - use service state if available, otherwise reconstruct from paragraphEdits
-      let originalContent = this.currentState.originalContent;
-      
-      if (!originalContent || !originalContent.trim()) {
-        originalContent = this.reconstructOriginalContent(this.currentState.paragraphEdits);
-      }
-      
-      if (!originalContent || !originalContent.trim()) {
-        throw new Error('Original content cannot be empty. Unable to reconstruct from paragraph edits.');
-      }
-      
-      const authHeaders = await this.getAuthHeaders();
-      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-      
-      const response = await fetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({
-          original_content: originalContent,
-          paragraph_edits: this.currentState.paragraphEdits.map(p => ({
-            index: p.index,
-            original: p.original,
-            edited: p.edited,
-            tags: p.tags,
-            autoApproved: p.autoApproved || false,
-            block_type: p.block_type || 'paragraph',
-            level: p.level || 0,
-            editorial_feedback: p.editorial_feedback || {}
-          })),
-          decisions: decisions,
-          include_quality_checks: true,
-          include_copy_check: true
-        })
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
-        throw new Error(`Failed to generate final article: ${response.status} ${errorText}`);
-      }
-      
-      const data = await response.json();
-      const finalArticle = data.final_article || '';
-      
-      if (!finalArticle) {
-        throw new Error('No final article returned from server');
-      }
-      
-      // Update paragraph message to show final output (component will handle display)
-      const updatedParagraphEdits = [...this.currentState.paragraphEdits];
-
-      // const uploadedFileName = this.currentState.uploadedFile?.name;
-      const selectedEditorNames = this.getSelectedEditorNames(this.currentState.selectedEditors);
-      
-      // Final article is markdown; UI renders via markdown-to-HTML (no block_types from backend)
-      const blockTypes: BlockTypeInfo[] = [];
-      const formattedFinalHtml = formatFinalArticleWithBlockTypes(finalArticle, blockTypes);
-      // const finalArticleHtml = `<div class="result-section"><div class="assistant-message revised-content-formatted">${formattedFinalHtml}</div></div>`;
-      const uploadedFileName = this.currentState.uploadedFile?.name;
-      const headerLines: string[] = ['### Quick Start Thought Leadership – Edit Content'];
-      if (uploadedFileName) {
-        headerLines.push(`_Source: ${uploadedFileName}_`);
-      }
-      headerLines.push('');
-      
-      const headerHtml = convertMarkdownToHtml(headerLines.join('\n'));
-      
-      // Combine header and formatted content
-      const combinedHtml = `${headerHtml}${formattedFinalHtml}`;
-      const finalArticleHtml = `<div class="result-section"><div class="assistant-message revised-content-formatted">${combinedHtml}</div></div>`;
-
-      
-
-      // Update paragraph edits message to indicate final output has been generated
-      const updateMessage: Message = {
-        role: 'assistant',
-        content: '',
-        timestamp: new Date(),
-        isHtml: false,
-        editWorkflow: {
-          step: 'awaiting_approval',
-          paragraphEdits: [...this.currentState.paragraphEdits],
-          showCancelButton: false,
-          showSimpleCancelButton: true,
-          threadId: this.threadId,
-          currentEditor: this.currentEditor,
-          isSequentialMode: this.isSequentialMode,
-          isLastEditor: this.isLastEditor,
-          currentEditorIndex: this.currentEditorIndex,
-          totalEditors: this.totalEditors,
-          finalOutputGenerated: true
-        }
-      };
-      this.messageSubject.next({ type: 'update', message: updateMessage });
-      
-      const finalMessage: Message = {
-        role: 'assistant',
-        content: finalArticleHtml,
-        timestamp: new Date(),
-        isHtml: true,
-        thoughtLeadership: {
-          contentType: 'edit-article',
-          topic: 'Final Revised Article',
-          fullContent: finalArticle,
-          showActions: true
-        }
-      };
-      
-      // Send final article message (paragraph edits remain visible in previous message)
-      this.messageSubject.next({ type: 'result', message: finalMessage });
-      
-      // Add small delay before resetting workflow state to prevent race conditions with UI rendering
-      // This ensures the final message is fully rendered before state is cleared
-      setTimeout(() => {
-        this.completeWorkflow();
-      }, 150);
-      
-    } catch (error) {
-      console.error('Error generating final article:', error);
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: `⚠️ **Failed to generate final article.** ${error instanceof Error ? error.message : 'Please try again.'}`,
-        timestamp: new Date()
-      };
-      this.messageSubject.next({ type: 'prompt', message: errorMessage });
-    } finally {
-      this.isGeneratingFinalSubject.next(false);
+    // If all feedback items are decided, set paragraph's approved status
+    if (allDecided) {
+      // Set to true if all are approved, false if any are rejected
+      para.approved = allApproved;
+    } else {
+      // If not all feedback items are decided, reset paragraph approval to null
+      // This ensures the getter properly reflects that decisions are incomplete
+      para.approved = null;
     }
+  }
+
+
+  approveEditorialFeedback(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    
+    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === true) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = true; // Approve (green/strikeout)
+    }
+    
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
+    
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  rejectEditorialFeedback(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    
+    // Toggle: If already rejected, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === false) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = false; // Reject (green/strikeout opposite)
+    }
+    
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
+    
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  applyEditorialFix(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    
+    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === true) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = true; // Approve (green/strikeout)
+    }
+    
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
+    
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  rejectEditorialFix(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    
+    // Toggle: If already rejected, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === false) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = false; // Reject (green/strikeout opposite)
+    }
+    
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
+    
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  highlightAllFeedbacks(
+    para: ParagraphFeedback,
+    hovered?: { editorType: string; fbIndex: number }
+  ): { original: string; edited: string } {
+
+    let highlightedOriginal = para.original;
+    let highlightedEdited = para.edited;
+
+    type HighlightItem = {
+      text: string;
+      approved: boolean | null;
+      start: number;
+      end: number;
+      hovered: boolean;
+    };
+
+    const originalItems: HighlightItem[] = [];
+    const editedItems: HighlightItem[] = [];
+
+    // ------------------------------------------------------------
+    // STEP 1: Collect ALL highlight metadata (NO string mutation)
+    // ------------------------------------------------------------
+    Object.keys(para.editorial_feedback).forEach(editorType => {
+      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+
+      feedbacks.forEach((fb: any, idx: number) => {
+        const issueText = fb.issue?.trim();
+        const fixText = fb.fix?.trim();
+
+        const isHovered =
+          !!hovered &&
+          hovered.editorType === editorType &&
+          hovered.fbIndex === idx;
+
+        const approved: boolean | null =
+          fb.approved === true ? true : fb.approved === false ? false : null;
+
+        // ---- ORIGINAL (issue) ----
+        if (issueText) {
+          const regex = new RegExp(this.escapeRegex(issueText), 'g');
+          let match: RegExpExecArray | null;
+
+          while ((match = regex.exec(highlightedOriginal)) !== null) {
+            originalItems.push({
+              text: issueText,
+              approved,
+              start: match.index,
+              end: match.index + issueText.length,
+              hovered: isHovered
+            });
+          }
+        }
+
+        // ---- EDITED (fix) ----
+        if (fixText) {
+          const regex = new RegExp(this.escapeRegex(fixText), 'g');
+          let match: RegExpExecArray | null;
+
+          while ((match = regex.exec(highlightedEdited)) !== null) {
+            editedItems.push({
+              text: fixText,
+              approved,
+              start: match.index,
+              end: match.index + fixText.length,
+              hovered: isHovered
+            });
+          }
+        }
+      });
+    });
+
+    // ------------------------------------------------------------
+    // STEP 2: Apply highlights (END → START to keep indexes valid)
+    // ------------------------------------------------------------
+    const applyHighlights = (
+      source: string,
+      items: HighlightItem[],
+      mode: 'original' | 'edited'
+    ): string => {
+
+      items
+        .sort((a, b) => b.start - a.start)
+        .forEach(item => {
+          let cssClass = '';
+
+          if (mode === 'original') {
+            if (item.approved === true) {
+              cssClass = 'strikeout highlight-yellow';
+            } else if (item.approved === false) {
+              cssClass = 'highlight-green';
+            } else {
+              cssClass = 'highlight-yellow';
+            }
+          } else {
+            if (item.approved === true) {
+              cssClass = 'highlight-green';
+            } else if (item.approved === false) {
+              cssClass = 'strikeout highlight-yellow';
+            } else {
+              cssClass = 'highlight-yellow';
+            }
+          }
+
+          if (item.hovered) {
+            cssClass += ' highlight-border';
+          }
+
+          const wrapped = `<span class="${cssClass}">${item.text}</span>`;
+
+          source =
+            source.substring(0, item.start) +
+            wrapped +
+            source.substring(item.end);
+        });
+
+      return source;
+    };
+
+    highlightedOriginal = applyHighlights(
+      highlightedOriginal,
+      originalItems,
+      'original'
+    );
+
+    highlightedEdited = applyHighlights(
+      highlightedEdited,
+      editedItems,
+      'edited'
+    );
+
+    return {
+      original: highlightedOriginal,
+      edited: highlightedEdited
+    };
+  }
+
+
+  // Helper method to escape special regex characters
+  private escapeRegex(str: string): string {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  approveAllFeedback(): void {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    this.paragraphFeedbackData.forEach(para => {
+
+      para.approved = true;
+
+
+      Object.keys(para.editorial_feedback).forEach(editorType => {
+        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+        feedbacks.forEach((fb: any) => {
+          // Set all to approved (don't toggle)
+          fb.approved = true;
+        });
+      });
+      // Clear display properties so highlightAllFeedbacks() handles all highlighting
+      para.displayOriginal = undefined;
+      para.displayEdited = undefined;
+    });
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  rejectAllFeedback(): void {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    this.paragraphFeedbackData.forEach(para => {
+      para.approved = false;
+      Object.keys(para.editorial_feedback).forEach(editorType => {
+        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+        feedbacks.forEach((fb: any) => {
+          // Set all to rejected (don't toggle)
+          fb.approved = false;
+        });
+      });
+      // Clear display properties so highlightAllFeedbacks() handles all highlighting
+      para.displayOriginal = undefined;
+      para.displayEdited = undefined;
+    });
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+    /** Show notification message */
+  private showNotificationMessage(message: string, type: 'success' | 'error' = 'success'): void {
+    this.notificationMessage = message;
+    this.notificationType = type;
+    this.showNotification = true;
+    
+    // Auto-hide after 3 seconds
+    setTimeout(() => {
+      this.showNotification = false;
+    }, 3000);
+  }
+
+  hoveredFeedback: { paraIndex: number, editorType: string, fbIndex: number } | null = null;
+
+  onFeedbackHover(paraIndex: number, editorType: string, fbIndex: number) {
+    this.hoveredFeedback = { paraIndex, editorType, fbIndex };
+  }
+
+  onFeedbackLeave() {
+    this.hoveredFeedback = null;
   }
 }
