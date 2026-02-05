@@ -1,7 +1,6 @@
-
-
 import copy
 from csv import writer
+from reportlab.platypus import Preformatted
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -30,6 +29,7 @@ from io import BytesIO
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+import pypandoc
 logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -332,7 +332,21 @@ def _create_new_numbering_instance(doc: Document, list_type: str, level: int = 0
         root.append(num)
     
     return num_id
-
+def _normalize_citation_url_for_word(url: str) -> str:
+    """
+    Normalize a citation URL for Word export so the full URL is preserved as one string.
+    Prevents breaks after dots (e.g. after www.pwc.) by stripping newlines and ensuring
+    the URL is a single contiguous string. Use this for edit content Word citation links.
+    """
+    if not url:
+        return ""
+    s = str(url).strip()
+    # Remove any newlines, carriage returns, or spaces that could cause Word to break the link
+    s = re.sub(r'[\r\n\t\s]+', '', s)
+    return s
+ 
+ 
+ 
 def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str, reset_numbering: bool = False, force_bullet_style: bool = False):
     """
     Add a list of items to Word document with appropriate style based on type and level.
@@ -1307,7 +1321,6 @@ def _format_content_for_pdf(text: str) -> str:
     - *italic* to <i>italic</i>
     - [text](url) to <a href="url" color="blue">text</a>
     - https?://... to <a href="url" color="blue">url</a>
-    - Unicode superscript digits (¹²³ etc.) to <sup>1</sup> so they render correctly (not as bullet)
     - Normalizes all Unicode dash variants to standard hyphen for reliable PDF rendering
     """
     # First, handle special quotation marks and other problematic characters BEFORE processing HTML
@@ -1356,6 +1369,14 @@ def _format_content_for_pdf(text: str) -> str:
     for dash in dash_variants:
         text = text.replace(dash, '-')
     
+    # Convert markdown links [text](url) to <a href="url" color="blue">text</a>
+    # text = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', r'<a href="\2" color="blue">\1</a>', text)
+    text = re.sub(
+    r'\[(?!\d+\])([^\]]+?)\]\(([^)]+?)\)',
+    r'<a href="\2" color="blue">\1</a>',
+    text
+)
+
     # Convert plain URLs to clickable links (but not those already inside HTML tags)
     # Match URLs that are not inside href= attributes or already converted
     text = re.sub(r'(?<![="])(?<![a-zA-Z])(?<!href)(https?://[^\s)>\]]+)', r'<a href="\1" color="blue">\1</a>', text)
@@ -1996,7 +2017,6 @@ def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
         
         elif match_type == 'url':
             url = match.group(0).rstrip('.,;:')
-            # Full URL (regex captures including dots) so entire link is clickable like PDF
             add_hyperlink(paragraph, url, url)
             pos = match_pos + len(url)
 
@@ -2873,24 +2893,51 @@ def _remove_bullets_from_block(text: str) -> str:
 
     return "\n".join(cleaned).strip()
 
+# def add_superscript_hyperlink(paragraph, text, url):
+#     run = paragraph.add_run(text)
+#     run.font.superscript = True
+#     run.bold = False
+
+#     r = run._r
+#     rPr = r.get_or_add_rPr()
+
+#     # Hyperlink XML
+#     hyperlink = OxmlElement('w:hyperlink')
+#     hyperlink.set(qn('r:id'), paragraph.part.relate_to(
+#         url,
+#         docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK,
+#         is_external=True
+#     ))
+
+#     hyperlink.append(r)
+#     paragraph._p.append(hyperlink)
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
+
 def add_superscript_hyperlink(paragraph, text, url):
-    run = paragraph.add_run(text)
-    run.font.superscript = True
-    run.bold = False
-
-    r = run._r
-    rPr = r.get_or_add_rPr()
-
-    # Hyperlink XML
     hyperlink = OxmlElement('w:hyperlink')
-    hyperlink.set(qn('r:id'), paragraph.part.relate_to(
-        url,
-        docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK,
-        is_external=True
-    ))
+    hyperlink.set(
+        qn('r:id'),
+        paragraph.part.relate_to(url, RT.HYPERLINK, is_external=True)
+    )
 
-    hyperlink.append(r)
+    run = OxmlElement('w:r')
+    rPr = OxmlElement('w:rPr')
+
+    vertAlign = OxmlElement('w:vertAlign')
+    vertAlign.set(qn('w:val'), 'superscript')
+    rPr.append(vertAlign)
+
+    run.append(rPr)
+
+    t = OxmlElement('w:t')
+    t.text = text
+    run.append(t)
+
+    hyperlink.append(run)
     paragraph._p.append(hyperlink)
+
 
 def export_to_pdf_with_pwc_template_with_bullets(
     content: str,
@@ -3091,7 +3138,7 @@ def export_to_pdf_with_pwc_template_with_bullets(
     reference_style = ParagraphStyle(
         'PWCReference',
         parent=styles['BodyText'],
-        fontSize=11,
+        fontSize=4,
         leading=13,
         alignment=TA_LEFT,
         spaceAfter=4,  
@@ -3117,6 +3164,8 @@ def export_to_pdf_with_pwc_template_with_bullets(
     # Parse and add content with formatting
     # blocks = content.split('\n')
     blocks = re.split(r'\n\s*\n', content)
+
+
     for block in blocks:
         if not block.strip():
             continue
@@ -3183,63 +3232,6 @@ def export_to_pdf_with_pwc_template_with_bullets(
             continue
             # ===== END TABLE DETECTION =====        
         block = block.strip()
-        if '\n' in block:
-            lines = [l.rstrip() for l in block.split('\n') if l.strip()]
-            first = lines[0].lstrip()
-            rest = lines[1:]
-
-            # ---------- 1️⃣ MARKDOWN HEADINGS ----------
-            if first.startswith('#'):
-                heading_text = re.sub(r'^#+\s*', '', first)
-                heading_text = re.sub(r'\*+', '', heading_text).rstrip(':').strip()
-
-                story.append(Paragraph(heading_text, heading_style))
-
-                # render remaining content normally
-                if rest:
-                    remaining_block = "\n".join(rest).strip()
-
-                    if _is_bullet_list_block(remaining_block):
-                        bullet_items = _parse_bullet_items(remaining_block)
-                        story.append(ListFlowable(
-                            [
-                                ListItem(
-                                    Paragraph(
-                                        _format_content_for_pdf_mi(
-                                            _clean_bullet_text(item)
-                                        ),
-                                        bullet_style
-                                    ),
-                                    leftIndent=24 + indent * 12,
-                                    bulletText='•'
-                                )
-                                for indent, item in bullet_items
-                            ],
-                            bulletType='bullet',
-                            leftIndent=24
-                        ))
-                    else:
-                        story.append(
-                            Paragraph(
-                                _format_content_for_pdf_mi(
-                                    _clean_bullet_text(remaining_block)
-                                ),
-                                body_style
-                            )
-                        )
-                continue
-
-            # ---------- 2️⃣ NON-HEADING MULTI-LINE PARAGRAPHS ----------
-            if not _is_bullet_list_block(block) and "|" not in block:
-                for line in lines:
-                    story.append(
-                        Paragraph(
-                            _format_content_for_pdf_mi(_clean_bullet_text(line)),
-                            body_style
-                        )
-                    )
-                continue
-
         if re.match(r'^\s*[-_]{3,}\s*$', block):
             continue
         # Check for headings (bold text on its own line or markdown style)
@@ -3380,7 +3372,9 @@ def export_to_pdf_with_pwc_template_with_bullets(
         lines = block.split('\n')
         if len(lines) > 1:
             # Check if this looks like a citation/reference block
-            citation_pattern = r'^\s*(\[\d+\]|\d+\.)\s+'
+            # citation_pattern = r'^\s*(\[\d+\]|\d+\.)\s+'
+            citation_pattern = r'^\s*(?:-\s+|\[\d+\.]|\d+\.)|\s*-\s*(?=https://)'
+
             citation_count = sum(1 for line in lines if re.match(citation_pattern, line.strip()))
             
             # If at least 2 lines match citation pattern, treat as citation block
@@ -3390,7 +3384,19 @@ def export_to_pdf_with_pwc_template_with_bullets(
                     line_stripped = line.strip()
                     if line_stripped:
                         clean = _strip_ui_markdown(line_stripped)
-                        para = Paragraph(_format_content_for_pdf_mi(clean), reference_style)
+                        # para = Paragraph(_format_content_for_pdf_mi(clean), reference_style)
+
+
+                        # para = Preformatted(
+                        #     _format_content_for_pdf_mi(clean),
+                        #     reference_style
+                        # )
+                        para = Preformatted(
+                            clean,
+                            reference_style,
+                            maxLineLength=10_000  # disables wrapping
+                        )
+
 
                         # para = Paragraph(_format_content_for_pdf_mi( _strip_ui_markdown(line_stripped))+ " ", reference_style)
                         # para = Paragraph(_strip_ui_markdown(line_stripped), reference_style)
@@ -3398,6 +3404,7 @@ def export_to_pdf_with_pwc_template_with_bullets(
                         
                         story.append(para)
                         story.append(Spacer(1, 6))
+                        
                 continue
         
         # Regular paragraph - intelligently split long paragraphs into smaller chunks
@@ -3512,7 +3519,7 @@ def _add_page_number(canvas, doc):
     )
 
     canvas.restoreState()
-
+ 
 
 def _add_page_number_edit_content_pdf(canvas, doc):
     """
@@ -4693,366 +4700,241 @@ def remove_paragraph_borders(paragraph):
         pBdr.append(elem)
     pPr.append(pBdr)
 
+def force_round_bullets(doc):
+    for p in doc.paragraphs:
+        pPr = p._p.pPr
+        if pPr is None or pPr.numPr is None:
+            continue 
+        logger.info(f"Converting to bullet: {p.text[:30]}... style={p.style.name} numId=1")
+        old_numPr = pPr.numPr
+        ilvl_el = old_numPr.find(qn("w:ilvl"))
+        ilvl_val = ilvl_el.get(qn("w:val")) if ilvl_el is not None else "0"
+        if ilvl_val == "0":
+            num_id_val = "1"  # ● filled
+        else:
+            num_id_val = "2"  # ○ hollow
+        pPr.remove(old_numPr)        
+        # pPr.remove(pPr.numPr)
+        numPr = OxmlElement("w:numPr")
+        ilvl = OxmlElement("w:ilvl")
+        # ilvl.set(qn("w:val"), "0")
+        ilvl.set(qn("w:val"), ilvl_val)
+        numId = OxmlElement("w:numId")
+        # numId.set(qn("w:val"), "1")  # MUST map to round bullet in template
+        numId.set(qn("w:val"), num_id_val)
+        numPr.append(ilvl)
+        numPr.append(numId)
+        pPr.append(numPr)
+
+# def ensure_clickable_links(text: str) -> str:
+#     """
+#     Convert bare URLs into markdown links
+#     without touching existing markdown links.
+#     """
+#     pattern = r'(?<!\])(?<!\))\b(https?://[^\s<>)]+)'
+#     return re.sub(pattern, r'[\1](\1)', text)
+
+def ensure_clickable_links(text: str) -> str:
+    # Skip URLs already inside markdown [text](url)
+    pattern = r'(?<!\])(?<!\()(?<!\[)(https?://[^\s<>)]+)'
+    return re.sub(pattern, r'[\1](\1)', text)
+
+            
+def preprocess_markdown(content: str) -> str:
+    text = content.replace("\\n", "\n")
+    text = re.sub(
+        r"<sup>\s*\[\s*(.*?)\s*\]\s*</sup>",
+        r"^[\1]",
+        text,
+        flags=re.DOTALL
+    )
+    def replace_links(section_title, label_prefix, text):
+        pattern = rf"(### {section_title}[\s\S]*?)(?=\n### |\Z)"
+        match = re.search(pattern, text)
+        if not match:
+            return text
+
+        section = match.group(1)
+        urls = re.findall(r"(https?://\S+)", section)
+
+        new_lines = [
+            f"- [{label_prefix} {i}]({url})"
+            for i, url in enumerate(urls, start=1)
+        ]
+        urls = re.findall(r"^\s*-\s*(https?://\S+)", section, re.MULTILINE)
+        new_section = re.sub(
+            r"^\s*-\s*https?://\S+",
+            lambda _: new_lines.pop(0),
+            section,
+            flags=re.MULTILINE
+        )
+
+        return text.replace(section, new_section)
+
+
+    text = replace_links(
+        "Connected/Internal Sources",
+        "Connected Source",
+        text
+    )
+
+    text = replace_links(
+        "External Web Sources",
+        "External Source",
+        text
+    )
+    
+    text = ensure_clickable_links(text)
+
+    return text
+
 def export_to_word_pwc_no_toc(
     content: str,
     title: str,
     subtitle: str | None = None
 ) -> bytes:
-    # 1. Load PwC template
-    doc = Document(PWC_TEMPLATE_PATH) if os.path.exists(PWC_TEMPLATE_PATH) else Document()
-    # ---- REMOVE ALL FOOTERS (PwC template cleanup) ----
-    for section in doc.sections:
-        footer = section.footer
-        footer.is_linked_to_previous = False
-
-        for p in footer.paragraphs:
-            p.text = ""
-
-        for table in footer.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    cell.text = ""
     
-    for section in doc.sections:
-        footer = section.footer
+    markdown_text = preprocess_markdown(content)
 
-        p = footer.paragraphs[0]
-        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    with tempfile.TemporaryDirectory() as tmpdir:
+        body_path = render_markdown_to_docx(markdown_text, tmpdir)
+        body_doc = Document(body_path)    
 
-        run = p.add_run()
-
-        fldChar1 = OxmlElement('w:fldChar')
-        fldChar1.set(qn('w:fldCharType'), 'begin')
-
-        instrText = OxmlElement('w:instrText')
-        instrText.text = 'PAGE'
-
-        fldChar2 = OxmlElement('w:fldChar')
-        fldChar2.set(qn('w:fldCharType'), 'end')
-
-        run._r.append(fldChar1)
-        run._r.append(instrText)
-        run._r.append(fldChar2)
-    logger.info(f">>>TITLE AND SUBTITLE:{title}>>>>{subtitle}")
-    _set_paragraph_text_with_breaks(doc.paragraphs[1], sanitize_text_for_word(subtitle or ""))
-    # 2. Cover page (CLEAN)
-    clean_title = re.sub(r'^[#\s]*', '', re.sub(r"\*+", "", title)).strip()
-    if doc.paragraphs:
-        doc.paragraphs[0].text = clean_title
-
-    # REMOVE subtitle placeholder completely
-    if len(doc.paragraphs) > 1:
-        doc.paragraphs[1].text = ""
-    logger.info(f">>>TITLE>>>>>>>>>>>:{clean_title}")
-    
-    while len(doc.paragraphs) > 2:
-        p = doc.paragraphs[-1]
-        p._element.getparent().remove(p._element)
-
-    # Single page break after cover
-    doc.add_page_break()
-    # 3. Render generated content properly
-    content = normalize_headings(content)
-    # for raw_line in content.split("\n"):
-    for raw_line in re.split(r"\n\s*\n", content):
-        original_line = raw_line
-        raw_line = re.sub(r"\*+", "", raw_line)
-        line = raw_line.strip()
-        # for line in raw_line.splitlines():
-        if "|" in raw_line and "\n" in raw_line:
-            rows = [
-                r.strip()
-                for r in raw_line.splitlines()
-                if "|" in r and not re.match(r'^\s*\|?\s*-{3,}', r)
-            ]
-
-            if len(rows) < 2:
-                continue
-            table_data = [
-                [re.sub(r"\*+", "", cell).strip()
-                for cell in row.strip("|").split("|")]
-                for row in rows
-            ]
-
-            table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
-            table.autofit = True
-            for i, row in enumerate(table_data):
-                for j, cell in enumerate(row):
-                    table.cell(i, j).text = cell
-
-            doc.add_paragraph("", style="Body Text")
-            continue            
-        if re.match(r'^\s*\|?\s*-{3,}\s*\|?\s*$', raw_line):
-            continue
-        if (
-            "style:" in line.lower()
-            or line.lower().endswith("style")
-            or line.lower() in {...}
-        ):
-            continue
-        if re.fullmatch(r"\s*-{3,}\s*", raw_line):
-            continue
-        if raw_line.strip().startswith("|---"):
-            continue
-        # ---------- Headings ----------
-        first_line = original_line.lstrip().splitlines()[0]
-        # ---------- Handle bullet links under citation headings ----------
-        # if first_line.lstrip().startswith(("###", "##")) and "-" in original_line:
-            # for sub in original_line.splitlines()[1:]:
-            #     sub = sub.strip()
-            #     if sub.startswith("- http"):
-            #         p = doc.add_paragraph(style="List Bullet")
-            #         url = sub.lstrip("- ").strip()
-            #         add_hyperlink_mi(p, url, url, bold=False)
-
-        if first_line.lstrip().startswith("###"):
-        # if original_line.lstrip().startswith("###"):
-            # text = re.sub(r"^#+\s*", "", original_line)
-            text = re.sub(r"^#+\s*", "", first_line)
-            p = doc.add_heading(text.strip(), level=3)
-            for run in p.runs:
-                run.bold = True
-                
-            for sub in original_line.splitlines()[1:]:
-                sub = sub.strip()
-                # if sub.startswith("-"):
-                if sub.lstrip().startswith("-"):
-
-                    url = sub.lstrip("- ").strip()
-                    if re.match(r'^(https?://|www\.)', url):
-                # if sub.startswith("- http"):
-                        bp = doc.add_paragraph(style="List Bullet")
-                        # url = sub.lstrip("- ").strip()
-                        add_hyperlink_mi(bp, url, url, bold=False)
-
-            continue
-        elif first_line.startswith("##"):
-        # elif original_line.lstrip().startswith("##"):
-            # text = re.sub(r"^#+\s*", "", original_line)
-            text = re.sub(r"^#+\s*", "", first_line)
-            p = doc.add_heading(text.strip(), level=2)
-            for run in p.runs:
-                run.bold = True
-            for sub in original_line.splitlines()[1:]:
-                sub = sub.strip()
-                # if sub.startswith("-"):
-                if sub.lstrip().startswith("-"):
-
-                    url = sub.lstrip("- ").strip()
-                    if re.match(r'^(https?://|www\.)', url):
-                # if sub.startswith("- http"):
-                        bp = doc.add_paragraph(style="List Bullet")
-                        # url = sub.lstrip("- ").strip()
-                        add_hyperlink_mi(bp, url, url, bold=False)
-
-            continue
-        elif first_line.startswith("#"):
-        # elif original_line.lstrip().startswith("#"):
-            # text = re.sub(r"^#+\s*", "", original_line)
-            text = re.sub(r"^#+\s*", "", first_line)
-            p = doc.add_heading(text.strip(), level=1)
-            for run in p.runs:
-                run.bold = True
-            continue
-           
-        # Skip template style explanation text completely
-        # REMOVE PwC style explanation content completely
-        # REMOVE ALL PwC template / style description junk (pages 2–4 root cause)
-        # logger.info(f"[LINE CHECK] RAW='{raw_line}' | LINE='{line}'")
-
-        if (
-            "style:" in line.lower()
-            or line.lower().endswith("style")
-            or line.lower() in {
-                "heading 1 style",
-                "heading 2 style",
-                "heading 3 style",
-                "heading 4 style",
-                "chart header",
-                "table header",
-                "table text",
-                "caption",
-                "quote",
-                "hyperlink followed hyperlink",
-                "“",
-                "”",
-            }
-            
-            # or line.startswith(("•", "–"))
-            # or (line.startswith(("•", "–")) and "http" not in line)
-            or (line.startswith(("•", "–")) and not re.search(r'https?://', line, re.I))
-
-        ):   
-            # logger.warning(f"[SKIPPED] '{line}'")
-            continue
+        # 1. Clear template body (remove only body, keep sections)
+        # clear_document_text_only(template_doc)
+        from docx.enum.section import WD_SECTION
+        doc = Document(PWC_TEMPLATE_PATH) if os.path.exists(PWC_TEMPLATE_PATH) else Document()
        
-        # logger.info(f"[HYPERLINK PARSE] '{line}'")
+        logger.info(f">>>TITLE AND SUBTITLE:{title}>>>>{subtitle}")
+        _set_paragraph_text_with_breaks(doc.paragraphs[1], sanitize_text_for_word(subtitle or ""))
+        # 2. Cover page (CLEAN)
+        clean_title = re.sub(r'^[#\s]*', '', re.sub(r"\*+", "", title)).strip()
+        if doc.paragraphs:
+            doc.paragraphs[0].text = clean_title
 
-        if not line:
-            continue  # avoid empty paragraphs → extra pages
-        # if not first_line.lstrip().startswith("#"):
-        line = re.sub(r"^#+\s*", "", line)
-       
-        # elif raw_line.lstrip().startswith(("-", "*")):
-        handled_bullet = False
-        lines = raw_line.splitlines()
-
-        # FIRST line → bullet
-        first = lines[0]
-        # if first.lstrip().startswith(("•", "- ", "* ")):
-        if re.match(r"^[\s•\-*]", first):
-
-            handled_bullet = True
-            text = re.sub(r'^[\s•–-]+', '', first).strip()
-
-            p = doc.add_paragraph(style="List Bullet")
-            p.paragraph_format.keep_together = True
-
-            # clean = re.sub(r"\*+", "", text)
-            # if ":" in clean:
-            #     head, rest = clean.split(":", 1)
-            #     r1 = p.add_run(head.strip() + ": ")
-            #     r1.bold = True
-            #     p.add_run(rest.strip())
-            # else:
-            #     p.add_run(clean)
-            
-            raw = text.strip()
-            # FULLY bold bullet (matches UI)
-            if re.match(r"^\*\*.+\*\*$", raw):
-                run = p.add_run(re.sub(r"\*\*", "", raw))
-                run.bold = True
-
-            else:
-                clean = re.sub(r"\*+", "", raw)
-                if ":" in clean:
-                    head, rest = clean.split(":", 1)
-                    r1 = p.add_run(head.strip() + ": ")
-                    r1.bold = True
-                    p.add_run(rest.strip())
-                else:
-                    p.add_run(clean)
-
-            # 🔑 render remaining lines normally
-            for extra in lines[1:]:
-                extra = extra.strip()
-                if not extra:
-                    continue
-                bp = doc.add_paragraph("", style="Body Text")
-                # tokens = re.split(r'(https?://[^\s]+)', extra + " ")
-                tokens = re.split(r'((?:https?://)?(?:www\.)?\S+\.\S+)', extra + " ")
-
-                for token in tokens:
-                    # if token.startswith("http"):
-                    # if re.match(r'^(https?://|www\.)', token):
-                    if re.match(r'^(https?://|www\.|/)', token):
-                        add_hyperlink_mi(bp, token, token, bold=False)
-                    else:
-                        bp.add_run(token)
-        #  SAFETY: render any leftover non-empty lines
-        # remaining = lines[1:]
-        # for r in remaining:
-        #     if r.strip():
-        #         p = doc.add_paragraph(r.strip(), style="Body Text")
-        # if handled_bullet:
-        if handled_bullet and len(lines) == 1:
-        # if handled_bullet and "http" not in raw_line:
-        # if handled_bullet and not re.search(r'https?://', raw_line, re.I):
-            continue
-
-       
-
-        # ---------- Citations / References ----------
-        if re.match(r'^\s*(\[\d+\]|\d+\.)\s+', line):
-            p = doc.add_paragraph(style="List Bullet")
-            p.paragraph_format.keep_together = True
-
-            # tokens = re.split(r'(https?://[^\s]+)', line + " ")
-            # tokens = re.split(r'(https?://\S+)', line)
-            tokens = re.split(r'((?:https?://)?(?:www\.)?\S+\.\S+)', line)
-
-
-            for token in tokens:
-                # if token.startswith("http"):
-                if re.match(r'^(https?://|www\.)', token):
-
-                    add_hyperlink_mi(p, token, token, bold=False)
-                else:
-                    p.add_run(token)
-
-            remove_paragraph_borders(p)
-            continue
-
-        # ---------- Normal body text ----------
-        else:
-            p = doc.add_paragraph("", style="Body Text")
-            # is_reference = bool(re.match(r'^(\[\d+\]|\d+\.)', line.strip()))
-            is_reference = bool(
-                re.match(r'^(\[\d+\]|\d+\.)', line.strip())
-                or line.strip().startswith("http")
-            )
-            line = re.sub(r'^[\s•–-]+', '', line)
-            # tokens = re.split(r'(https?://[^\s]+)', line)
-            # tokens = re.split(r'(https?://[^\s]+)', line + " ")
-            # tokens = [line]
-            # tokens = re.split(r'(https?://[^\s]+)', line + " ")
-            # tokens = re.split(r'(https?://\S+)', line)
-            tokens = re.split(r'((?:https?://)?(?:www\.)?\S+\.\S+)', line)
-
-            for token in tokens:
-                # if token.startswith("http://") or token.startswith("https://"):
-                # if re.match(r"https?://", token):
-                # if token.startswith("http"):
-                if re.match(r'^(https?://|www\.)', token):
-
-                    add_hyperlink_mi(p, token, token,bold=not is_reference)
-                else:
-                    subparts = [token]
-                    for sub in subparts:
-                        parts = re.split(r"(\[\d+\]\([^)]+\))", sub)
-
-                        for part in parts:
-                            m = re.match(r"\[(\d+)\]\(([^)]+)\)", part)
-                            if m:
-                                num, url = m.groups()
-                                add_superscript_hyperlink(p, f"[{num}]", url)
-                            else:
-                                p.add_run(part)
-
-            remove_paragraph_borders(p)
-    # 4. Save exactly like before
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-    return _fix_docx_encoding(buffer.getvalue())
-
-def normalize_headings(content: str) -> str:
-    lines = content.splitlines()
-    out = []
-
-    for line in lines:
-        l = line.strip()
-
-        # Convert numbered bold headings → markdown heading
-        if re.match(r"^\*\*\d+\.\s+.+\*\*$", l):
-            text = re.sub(r"^\*\*|\*\*$", "", l)
-            text = re.sub(r"^\d+\.\s*", "", text)
-            out.append(f"### {text}")
-            continue
-        # Bold-only headings (UI h3)
-        if re.match(r"^\*\*[^*].+[^*]\*\*$", l):
-            text = re.sub(r"^\*\*|\*\*$", "", l)
-            out.append(f"### {text}")
-            continue
+        # REMOVE subtitle placeholder completely
+        if len(doc.paragraphs) > 1:
+            doc.paragraphs[1].text = ""
+        logger.info(f">>>TITLE>>>>>>>>>>>:{clean_title}")
         
-        # Convert numbered plain headings
-        if re.match(r"^\d+\.\s+[A-Z].+", l):
-            text = re.sub(r"^\d+\.\s*", "", l)
-            out.append(f"### {text}")
-            continue
+        while len(doc.paragraphs) > 2:
+            p = doc.paragraphs[-1]
+            p._element.getparent().remove(p._element)
 
-        out.append(line)
+        # Single page break after cover
+        # doc.add_page_break()
+        from docx.enum.section import WD_SECTION
 
-    return "\n".join(out)
+        doc.add_section(WD_SECTION.NEW_PAGE)
+        doc.sections[1].header.is_linked_to_previous = False
+        doc.sections[1].different_first_page_header_footer = False
 
+        # 3. Append Pandoc-rendered body
+        append_doc_body_with_rels(body_doc, doc)
+         # ---- REMOVE ALL FOOTERS (PwC template cleanup) ----
+        for i, section in enumerate(doc.sections):
+            footer = section.footer
+            footer.is_linked_to_previous = False
+
+            # 🔴 REMOVE ALL EXISTING FOOTER CONTENT
+            for p in footer.paragraphs:
+                p.text = ""
+
+            for table in footer.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        cell.text = ""
+
+            if i == 0:
+                continue  # skip cover page numbering
+
+            # ✅ ADD ONLY PAGE NUMBER
+            p = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            run = p.add_run()
+
+            fldChar_begin = OxmlElement('w:fldChar')
+            fldChar_begin.set(qn('w:fldCharType'), 'begin')
+
+            instrText = OxmlElement('w:instrText')
+            instrText.text = "PAGE"
+
+            fldChar_sep = OxmlElement('w:fldChar')
+            fldChar_sep.set(qn('w:fldCharType'), 'separate')
+
+            fldChar_end = OxmlElement('w:fldChar')
+            fldChar_end.set(qn('w:fldCharType'), 'end')
+
+            run._r.extend([fldChar_begin, instrText, fldChar_sep, fldChar_end])
+
+
+
+        # 4. Force rounded bullets AFTER appending body
+        force_round_bullets(doc)        
+
+        # 6. Save final doc
+        output_path = os.path.join(tmpdir, "final.docx")
+        doc.save(output_path)
+
+        with open(output_path, "rb") as f:
+            return f.read()
+        # output_path = os.path.join(tmpdir, "output.docx")
+
+        # pypandoc.convert_text(
+        #     markdown_text,
+        #     to="docx",
+        #     format="md",
+        #     outputfile=output_path,
+        #     extra_args=["--standalone"]
+        # )
+
+        # with open(output_path, "rb") as f:
+        #     return f.read()
+
+def render_markdown_to_docx(markdown_text: str, tmpdir: str) -> str:
+    body_path = os.path.join(tmpdir, "body.docx")
+
+    pypandoc.convert_text(
+        markdown_text,
+        to="docx",
+        # format="md",
+        format="markdown+pipe_tables+multiline_tables+grid_tables",
+        outputfile=body_path,
+        extra_args=["--standalone"]
+    )
+
+    return body_path
+
+def append_doc_body_with_rels(src_doc, target_doc):
+    src_part = src_doc.part
+    tgt_part = target_doc.part
+ 
+    rel_id_map = {}
+ 
+    # 1️⃣ Copy hyperlink relationships
+    for rel in src_part.rels.values():
+        if rel.reltype.endswith("/hyperlink"):
+            new_rel = tgt_part.relate_to(
+                rel.target_ref,
+                rel.reltype,
+                is_external=True
+            )
+            rel_id_map[rel.rId] = new_rel
+ 
+    # 2️⃣ Copy body and remap hyperlink r:ids
+    for element in src_doc.element.body:
+        new_el = copy.deepcopy(element)
+ 
+        # python-docx SAFE XPath (namespace-agnostic)
+        for hl in new_el.xpath(".//*[local-name()='hyperlink']"):
+            old_rid = hl.get(qn("r:id"))
+            if old_rid in rel_id_map:
+                hl.set(qn("r:id"), rel_id_map[old_rid])
+ 
+        target_doc.element.body.append(new_el)
+
+def clear_document_text_only(doc):
+    body = doc._element.body
+    for child in list(body):
+        body.remove(child)
 
