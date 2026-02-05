@@ -1369,14 +1369,6 @@ def _format_content_for_pdf(text: str) -> str:
     for dash in dash_variants:
         text = text.replace(dash, '-')
     
-    # Convert markdown links [text](url) to <a href="url" color="blue">text</a>
-    # text = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', r'<a href="\2" color="blue">\1</a>', text)
-    text = re.sub(
-    r'\[(?!\d+\])([^\]]+?)\]\(([^)]+?)\)',
-    r'<a href="\2" color="blue">\1</a>',
-    text
-)
-
     # Convert plain URLs to clickable links (but not those already inside HTML tags)
     # Match URLs that are not inside href= attributes or already converted
     text = re.sub(r'(?<![="])(?<![a-zA-Z])(?<!href)(https?://[^\s)>\]]+)', r'<a href="\1" color="blue">\1</a>', text)
@@ -3725,6 +3717,15 @@ def html_to_marked_text(text: str) -> str:
     text = re.sub(r"<\s*/\s*(em|i)\s*>", "*", text, flags=re.IGNORECASE)
     text = re.sub(r"<\s*(em|i)[^>]*>", "*", text, flags=re.IGNORECASE)
 
+    # Convert <a href="url">text</a> to [text](url) BEFORE tag stripping so inline
+    # citation URLs are preserved for PDF/Word export (fixes "inline url removed" in PDF)
+    text = re.sub(
+        r'<a\s+[^>]*href=(["\'])([^"\']+)\1[^>]*>([\s\S]*?)</a>',
+        r'[\3](\2)',
+        text,
+        flags=re.IGNORECASE | re.DOTALL
+    )
+
     # Drop all remaining tags (div, span, p with style, etc.)
     text = re.sub(r"<[^>]+>", "", text)
 
@@ -4937,4 +4938,3 @@ def clear_document_text_only(doc):
     body = doc._element.body
     for child in list(body):
         body.remove(child)
-
