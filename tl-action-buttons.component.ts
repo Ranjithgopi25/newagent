@@ -1,3 +1,4 @@
+
 from typing import List, Dict
 
 BASE_OUTPUT_FORMAT = """
@@ -1727,9 +1728,6 @@ Numbered reference markers (Ref. N) — EXCLUDED
 
 REFERENCE FORMAT CONVERSION — MANDATORY
 ------------------------------------------------------------
-
-Convert ALL reference markers to superscript format using Unicode superscript digits.
-
 Conversion rules:
 - "(Ref. 1)" → "¹"
 - "(Ref. 2)" → "²"
@@ -2293,8 +2291,6 @@ REFERENCES/SOURCES LIST AT END — NUMBERING:
 REFERENCE FORMAT CONVERSION — MANDATORY
 ============================================================
 
-Convert ALL reference markers to superscript format using Unicode superscript digits.
-
 Conversion rules:
 - "(Ref. 1)" → "¹"
 - "(Ref. 2)" → "²"
@@ -2371,6 +2367,15 @@ APPLIES TO ALL LINKS IN THE DOCUMENT:
 - Links in bullet points or lists
 - Links anywhere else in the document
 - Both standard format `[Title](URL)` and backend format `[Title](URL: https://...)`
+
+============================================================
+SUPERSCRIPT CLICKABILITY — CLARIFICATION (MANDATORY)
+============================================================
+
+- Unicode superscript reference markers (¹ ² ³ etc.) are VISUAL INDICATORS ONLY.
+- Superscript markers MUST NOT be made clickable.
+- Do NOT attempt to embed links, markdown, or HTML into superscript characters.
+- Clickable access to sources is provided EXCLUSIVELY via URLs in the numbered References/Sources list.
 
 ============================================================
 SPACING FIXES — REQUIRED
