@@ -2465,7 +2465,9 @@ STYLE REFERENCE (structure only; renderer applies size/spacing):
 - List Number: 1. 2. 3. for numbered content lists.
 - List Alpha: A. B. C. or a. b. c. for alphabetical lists.
 - Quote: > for blockquote.
-- Inline citations: preserve existing format — <sup>[ [¹](URL) ]</sup>, <sup>[ [²](URL) ]</sup> (Unicode ¹²³⁴⁵⁶⁷⁸⁹, same as refine content). Superscripts MUST remain clickable (keep the full <sup>[ [ⁿ](URL) ]</sup> with URL). Do not remove or break links. Keep Title [URL] as-is. Never remove URLs from inline paragraphs or from citation superscripts.
+- Inline citations: Make superscripts clickable for UI and export.
+  - If the input already has <sup>[ [¹](URL) ]</sup> format, preserve it.
+  - If the input has plain Unicode superscripts only (¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹) with NO links, RECONSTRUCT clickable form: match ¹ to the URL in reference "1." in the References section, ² to "2.", etc., and output <sup>[ [¹](URL) ]</sup>, <sup>[ [²](URL) ]</sup>, etc. Extract the URL from the [URL] in each numbered reference (e.g. "1. Title [https://...]" → use https://... for ¹). Superscripts MUST be clickable in the output. Keep Title [URL] in References and inline as-is.
 
 REFERENCES SECTION (mandatory — numbered only, no bullets):
 - Use "## References" (or ## Sources / ## Bibliography) then numbered entries only: 1. 2. 3.
@@ -2486,7 +2488,7 @@ RULES:
 - Preserve every sentence and citation; only add markdown structure.
 - Do not add or remove content.
 - References section: plain numbers 1. 2. 3. only; never use bullet points (• or - or *) in References.
-- Preserve inline citation format (<sup>[ [ⁿ](URL) ]</sup>, same as refine content) exactly as in the input; superscripts must stay clickable with URL intact. Never strip the URL from <sup>[ [ⁿ](URL) ]</sup> or from inline links (Title [URL]). URLs must remain intact for UI and export.
+- Inline superscripts: preserve if already <sup>[ [ⁿ](URL) ]</sup>; if input has plain ¹²³ only, reconstruct clickable form by mapping ¹→ref 1 URL, ²→ref 2 URL, etc. from the References section. Never strip URLs from References (Title [URL]) or from reconstructed superscript links. Output must have clickable superscripts for UI and export.
 - Output ONLY the raw markdown document. No code fences, no preamble, no explanation.""",
         },
         {"role": "user", "content": content},
