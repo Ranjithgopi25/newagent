@@ -1,3 +1,4 @@
+
 from typing import Optional, List, Dict, Tuple
 import logging
 
@@ -202,7 +203,7 @@ STYLE REFERENCE (font 11pt, 1.5 line spacing, space after — apply via structur
 - List Number: 1. 2. 3. for numbered content lists.
 - List Alpha: A. B. C. or a. b. c. for alphabetical lists.
 - Quote: > for blockquote.
-- Inline citations: use superscript numerals in brackets: <sup>[ [1](URL) ]</sup>, <sup>[ [2](URL) ]</sup>, <sup>[ [3](URL) ]</sup> (Unicode 123 — not plain 1,2,3). Keep [Title](URL) as-is. Do not remove or break links.
+- Inline citations: use superscript numerals in brackets: <sup>[ [1](URL) ]</sup>, <sup>[ [2](URL) ]</sup> when URL exists; when a reference has no public URL use plain superscript only in the paragraph: <sup>[3]</sup> — no link, no (#), no "(no public URL)" inline. Keep [Title](URL) as-is. Do not remove or break links.
 
 REFERENCES SECTION (mandatory format — no bullets):
 - Use a "References" or "## References" heading, then numbered entries only.
@@ -596,7 +597,7 @@ CITATION TYPES (EXPLICIT):
 - INTERNAL SOURCE:
   → MAY include a URL if one exists in source metadata
   → MUST NOT be hyperlinked
-  → If NO URL exists, use "#" only as the link target (e.g. [n](#)); citation number stays 1, 2, 3 — never "#".
+  → If NO URL exists: in the inline paragraph use plain superscript only — <sup>[n]</sup> — no link, no (#), no "(no public URL)" text. "(no public URL)" appears ONLY in the References section, never inline.
 
 SOURCE CLASSIFICATION RULE (MANDATORY):
 
@@ -1465,7 +1466,7 @@ Format: <sup>[ [n](COMPLETE_URL) ]</sup>. Use complete URL (no truncation); inli
 Examples:
 - Public URL: <sup>[ [1](https://www.pwc.com/us/en/library/article.html) ]</sup>
 - Internal URL: <sup>[ [2](https://connectedsource.pwcinternal.com/doc/abc123) ]</sup>
-- No URL: <sup>[ [3](#) ]</sup>
+- No URL (inline paragraph): use plain superscript only — <sup>[3]</sup> — no link, no (#), no "(no public URL)" in the paragraph. "(no public URL)" or "(No URL available)" appears ONLY in the References section.
 
 STEP 3: DISPLAY URLS IN REFERENCES SECTION
 
@@ -1477,8 +1478,8 @@ Format for public URLs:
 Format for PwC internal URLs:
 [2] Source Name, "Document Title," Complete_URL (PwC Internal - Authentication Required)
 
-Format for no URL:
-[3] Source Name, "Document Title" (No URL available)
+Format for no URL (References section only; in inline paragraph use <sup>[3]</sup> only, no link):
+[3] Source Name, "Document Title" (no public URL)
 
 CRITICAL: NEVER write "(no public URL)" when a URL exists in the metadata
 
@@ -1512,7 +1513,7 @@ CITATION FORMAT:
 □ Every citation uses <sup>[ [n](URL) ]</sup> format with superscript numerals (123) in brackets
 □ NO citations use plain [1] or [2] format
 □ NO citations use <sup>[1]</sup> format
-□ Citation numbers are always 1, 2, 3, ... never "#" as the number (use "#" only as link target when no URL: [1](#))
+□ When a reference has no public URL, inline citation is plain superscript only: <sup>[n]</sup> — no link, no (#), no "(no public URL)" in the paragraph
 
 SINGLE CITATION RULE:
 □ NO sentence contains [n][m] pattern
