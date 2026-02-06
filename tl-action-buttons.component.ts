@@ -202,7 +202,7 @@ STYLE REFERENCE (font 11pt, 1.5 line spacing, space after — apply via structur
 - List Number: 1. 2. 3. for numbered content lists.
 - List Alpha: A. B. C. or a. b. c. for alphabetical lists.
 - Quote: > for blockquote.
-- Inline citations: use superscript numerals in brackets: <sup>[ [1](URL) ]</sup>, <sup>[ [2](URL) ]</sup>, <sup>[ [3](URL) ]</sup> (Unicode 123 — not plain 1,2,3). Keep [Title](URL) as-is. Do not remove or break links.
+- Inline citations: <sup>[ [1](URL) ]</sup>, <sup>[ [2](URL) ]</sup>, <sup>[ [3](URL) ]</sup> (superscript 123). Use complete URLs; do not truncate or break. Keep [Title](URL) as-is.
 
 REFERENCES SECTION (mandatory format — no bullets):
 - Use a "References" or "## References" heading, then numbered entries only.
@@ -222,6 +222,7 @@ OUTPUT FORMAT (use only these elements; preserve all content):
 RULES:
 - Preserve every sentence and citation; only add markdown structure.
 - Do not add or remove content.
+- Preserve citation links (full URL, no truncation; inline URL must match References [n]) and body lists (bullets, numbered); only References section has no bullets.
 - References section: plain numbers only ([1]. [2]. [3]. — do not use superscript in References); never use bullet points (• or - or *) in References.
 - Single blank line between paragraphs and between reference entries (space after); no double returns.
 - Output ONLY the raw markdown document. No code fences, no preamble, no explanation.""",
@@ -426,6 +427,8 @@ SUPPORTING DOCUMENT (FOR EXPANSION ONLY):
 
 SUPPORTING DOCUMENT INSTRUCTIONS:
 {supporting_doc_instructions}
+
+PRESERVE SUPPORTING DOCUMENT STRUCTURE: When using content from the Supporting Document, keep its list structure—bullets (- or * or •) and numbered lists. Do not strip bullets or convert to plain paragraphs. (Only the References section must not use bullets.)
 """
     if research_topics:
         user_prompt += f"""
@@ -569,6 +572,8 @@ SUPPORTING DOCUMENT CITATION RULE (MANDATORY):
   • MUST follow the same numbering sequence as existing references.
   • MUST be included in the References section.
   • MUST NOT be hyperlinked unless a valid public URL is explicitly provided.
+
+- When using content from the Supporting Document: keep bullets and numbered lists; do not convert to plain paragraphs.
 
 
 URL SAFETY RULE (ABSOLUTE):
@@ -1169,6 +1174,7 @@ CRITICAL INSTRUCTION:
 The research data below contains URL information in metadata fields.
 You MUST extract URLs from fields named 'url', 'source_url', or similar and include them
 in BOTH inline citations and the References section.
+- Use complete URL; inline citation URL must match References entry [n].
 
 IMPORTANT:
 The research content below may contain MULTIPLE RESEARCH STREAMS.
@@ -1454,11 +1460,11 @@ Look for these field names in the source data:
 - 'href'
 - Any field containing 'http://' or 'https://'
 
-Extract the COMPLETE URL exactly as provided.
+Extract the COMPLETE URL exactly as provided. Do not truncate.
 
 STEP 2: USE URLS IN INLINE CITATIONS
 
-Format: <sup>[ [n](COMPLETE_URL) ]</sup> (use Unicode superscript 1, 2, 3... in the bracket)
+Format: <sup>[ [n](COMPLETE_URL) ]</sup>. Use complete URL (no truncation); inline URL must match References entry [n].
 
 Examples:
 - Public URL: <sup>[ [1](https://www.pwc.com/us/en/library/article.html) ]</sup>
@@ -1495,10 +1501,8 @@ MANDATORY:
 MANDATORY NORMALIZATION STEP (BEFORE FINALIZING):
 
 Before producing your final output, you MUST:
-- Scan the entire document for ANY numeric or superscript citation
-  not in <sup>[ [n](URL) ]</sup> format
-- Replace EVERY such instance with the required format
-- Verify that each replacement maps to a valid reference entry
+- DEDUPLICATE REFERENCES: Merge identical sources (same URL or title+publisher) into one entry, renumber References 1,2,3... with no gaps, update all in-text citations. No duplicate URLs in References.
+- Normalize citations: replace any citation not in <sup>[ [n](URL) ]</sup> format; verify each maps to a valid reference; inline citation URL must match References entry [n] (complete URL, no truncation).
 
 ═══════════════════════════════════════════════════════════════
 FINAL PRE-SUBMISSION CHECKLIST
@@ -1526,9 +1530,11 @@ URL DISPLAY:
 □ Never used "(no public URL)" when URL exists
 
 NUMBERING:
-□ Sequential (1, 2, 3, 4...)
-□ No gaps
+□ Sequential (1, 2, 3, 4...), no gaps; no duplicate sources/URLs in References; in-text citations updated after any merge/renumber
 □ Inline numbers match Reference numbers
+
+CITATION LINKS:
+□ Complete URL in every inline citation; URL in <sup>[ [n](URL) ]</sup> matches References entry [n]
 
 QUALIFICATION:
 □ Vendor claims are qualified appropriately
