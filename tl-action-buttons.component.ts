@@ -563,7 +563,7 @@ SUPPORTING DOCUMENT CITATION RULE (MANDATORY):
 
 - If the Supporting Document includes ANY URL (public or internal):
   • Use that URL exactly as provided
-- Use "#" ONLY if no URL exists in the document metadata
+- If no URL exists in the document metadata: use "#" only as the link target (e.g. [1](#)). The visible citation must always be the number [1], [2], [3] — never "#".
 
 - Supporting Document citations:
   • MUST follow the same numbering sequence as existing references.
@@ -595,7 +595,7 @@ CITATION TYPES (EXPLICIT):
 - INTERNAL SOURCE:
   → MAY include a URL if one exists in source metadata
   → MUST NOT be hyperlinked
-  → If NO URL exists, use "#" as placeholder
+  → If NO URL exists, use "#" only as the link target (e.g. [n](#)); citation number stays 1, 2, 3 — never "#".
 
 SOURCE CLASSIFICATION RULE (MANDATORY):
 
@@ -1236,8 +1236,8 @@ Every citation MUST use this EXACT format: <sup>[ [n](URL) ]</sup> where the num
 
 WHERE:
 - n = citation number as Unicode superscript: 1, 2, 3 (NOT plain 1, 2, 3). So display is [1], [2], [3].
-- URL = complete URL from source metadata
-- If no URL exists, use "#" as placeholder
+- Citation numbers are ALWAYS numeric (1, 2, 3, ...). NEVER use "#" as the citation number or label.
+- URL = complete URL from source metadata. If no URL exists, use "#" only as the link target (href), e.g. [1](#). The visible citation must still be the number [1], not "#".
 
 EXAMPLES OF CORRECT FORMAT:
 ✅ "Companies invest in AI"<sup>[ [1](https://www.pwc.com/article.html) ]</sup>
@@ -1510,6 +1510,7 @@ CITATION FORMAT:
 □ Every citation uses <sup>[ [n](URL) ]</sup> format with superscript numerals (123) in brackets
 □ NO citations use plain [1] or [2] format
 □ NO citations use <sup>[1]</sup> format
+□ Citation numbers are always 1, 2, 3, ... never "#" as the number (use "#" only as link target when no URL: [1](#))
 
 SINGLE CITATION RULE:
 □ NO sentence contains [n][m] pattern
@@ -1545,6 +1546,7 @@ FAILURE CONDITIONS (WILL CAUSE AUTOMATIC REJECTION)
 Your output will be REJECTED if:
 - ANY sentence contains [n][m] or [n,m] (multiple citations)
 - ANY citation uses [1] or [2] instead of <sup>[ [1](URL) ]</sup> / <sup>[ [2](URL) ]</sup> (must use superscript 123 in brackets)
+- ANY citation displays "#" as the citation number or label (numbers must be 1, 2, 3, ...; "#" is allowed only as the link target when no URL exists, e.g. [1](#))
 - ANY reference shows "(no public URL)" when URL exists in metadata
 - Numbering is not sequential
 - Duplicate references in References (merge, renumber, update in-text)
