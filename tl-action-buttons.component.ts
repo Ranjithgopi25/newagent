@@ -249,18 +249,45 @@ async def market_insights_node(state: RefineGraphState):
 
     research_input = state.research_input or {}
 
-    # If FE selected research but didn't send topic → derive it
-    if not research_input.get("research_topics"):
-        topic = await derive_research_topic_from_content(state.original_content)
-        research_input["research_topics"] = topic
+    # Always derive content-based topic
+    derived_topic = await derive_research_topic_from_content(
+        state.original_content
+    )
 
-    insights = get_market_insights(research_input)
-    logger.info("[MARKET_INSIGHTS ********************* ] %s", insights)
-    logger.info("[MARKET_INSIGHTS] Fetched")
+    provided_topic = research_input.get("research_topics")
+
+    insights_payload = {}
+
+    # 1️⃣ Research using PROVIDED topic (if exists)
+    if provided_topic:
+        research_input_provided = {
+            **research_input,
+            "research_topics": provided_topic,
+        }
+        insights_payload["provided_topic_insights"] = get_market_insights(
+            research_input_provided
+        )
+
+    # 2️⃣ Research using DERIVED topic
+    research_input_derived = {
+        **research_input,
+        "research_topics": derived_topic,
+    }
+    insights_payload["derived_content_insights"] = get_market_insights(
+        research_input_derived
+    )
+
+    logger.info(
+        "[MARKET_INSIGHTS] provided=%s derived=%s",
+        bool(provided_topic),
+        derived_topic,
+    )
+
     return {
-        "market_insights": json.dumps(insights, indent=2),
+        "market_insights": json.dumps(insights_payload, indent=2),
         "next_step": "RESEARCH_ENRICH",
     }
+
 
 
 # ============================================================
@@ -275,7 +302,6 @@ async def research_enrich_node(state: RefineGraphState, config: RunnableConfig):
             content=state.cleaned_content,
             research_topics=state.research_topics,
             market_insights=state.market_insights,
-            supporting_doc=state.expand_supporting_doc if state.is_expand else None,
         )
     )).content
     print("research enrich node output ============ ", enriched)
