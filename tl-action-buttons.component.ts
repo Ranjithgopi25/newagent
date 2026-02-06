@@ -543,11 +543,9 @@ In all cases:
 - Original content may be clarified or woven, but NOT used as the primary source of expansion
 - All externally derived content MUST be cited
 
+When both supporting document and research are provided: retain citations for BOTH; References MUST include the supporting-document entry AND research entries (never omit the supporting document). Cite each sentence by the source actually used.
+
 If both supporting document and research are present, citations MUST reflect the actual source used for each added sentence.
-- Content taken from the supporting document MUST be cited with a supporting-document reference; do NOT replace or remove supporting-document citations when adding research citations.
-- Content taken from research/market insights MUST be cited with the research citation.
-- The References section MUST include BOTH supporting-document entries and research entries; do NOT drop supporting-document references in favor of research-only references.
-- When both supporting document and research are provided, you MUST retain and output citations for BOTH sources where each is used; never use only research citations and omit supporting document citations.
 
 CRITICAL: CITATION PRESERVATION (MANDATORY)
 - DO NOT remove, modify, or delete any citations from the original content.
@@ -560,8 +558,7 @@ CRITICAL: CITATION PRESERVATION (MANDATORY)
 
 SUPPORTING DOCUMENT CITATION RULE (MANDATORY):
 
-- The Supporting Document is an APPROVED citation source when provided.
-- When both supporting document and research are provided, you MUST retain and output citations for BOTH sources where each is used; never use only research citations and omit supporting document citations.
+- The Supporting Document is an APPROVED citation source when provided. It MUST appear as exactly one reference entry when used; do not omit it when research is also cited.
 - If content from the Supporting Document is used:
   • You MUST create a corresponding numbered citation.
   • You MUST add a reference entry in the References section.
@@ -675,8 +672,7 @@ Before submitting output:
 - Verify that every in-text citation maps to exactly one reference
 - Verify that every reference is cited at least once
 
-If any duplication exists, you MUST fix it before finalizing.
-
+If any duplication exists: keep one entry per unique source (same URL or title+publisher = duplicate); renumber References sequentially; update all in-text citations to the kept number.
 
 CRITICAL: COMPETITOR PROHIBITION (ABSOLUTE)
 - UNDER NO CIRCUMSTANCES may you use, cite, reference, or mention content, frameworks, research, case studies, tools, or examples from:
@@ -1533,6 +1529,8 @@ NUMBERING:
 □ Sequential (1, 2, 3, 4...)
 □ No gaps
 □ Inline numbers match Reference numbers
+□ No duplicate references (one entry per URL/title+publisher; renumber and update in-text if needed)
+□ When both supporting doc and research provided: References include both; neither omitted
 
 QUALIFICATION:
 □ Vendor claims are qualified appropriately
@@ -1552,6 +1550,8 @@ Your output will be REJECTED if:
 - ANY citation uses [1] or [2] instead of <sup>[ [1](URL) ]</sup> / <sup>[ [2](URL) ]</sup> (must use superscript 123 in brackets)
 - ANY reference shows "(no public URL)" when URL exists in metadata
 - Numbering is not sequential
+- Duplicate references in References (merge, renumber, update in-text)
+- When both supporting doc and research provided: References omit either (both must appear)
 - Vendor/capability claims lack proper qualification
 
 ═══════════════════════════════════════════════════════════════
