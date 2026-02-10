@@ -1,4 +1,3 @@
-
 from typing import Optional, List, Dict, Tuple
 import logging
 
@@ -223,29 +222,11 @@ OUTPUT FORMAT (use only these elements; preserve all content):
 RULES:
 - Preserve every sentence and citation; only add markdown structure.
 - Do not add or remove content.
-- Do not include a table of contents, a "Contents" section, or a standalone numbered list of section titles at the beginning. Start with # Title followed immediately by the first main section (## …); no list of section headings in between.
+- Do not include a "Contents" section.
 - Preserve citation links (full URL, no truncation; inline URL must match References [n]) and body lists (bullets, numbered); only References section has no bullets.
 - References section: plain numbers only ([1]. [2]. [3]. — do not use superscript in References); never use bullet points (• or - or *) in References.
 - Single blank line between paragraphs and between reference entries (space after); no double returns.
 - Output ONLY the raw markdown document. No code fences, no preamble, no explanation.""",
-        },
-        {"role": "user", "content": content},
-    ]
-
-
-def build_output_check_fix_prompt(content: str) -> List[Dict[str, str]]:
-    """Build prompt to check and fix markdown output (structure, code fences, links) without changing meaning."""
-    return [
-        {
-            "role": "system",
-            "content": """You are a markdown output checker. Your job is to fix the given markdown ONLY for:
-1. Remove any code fence wrappers (```markdown, ``` at start/end) — output raw markdown only.
-2. Remove any table of contents, "Contents" heading, or standalone numbered list of section titles that appears after the main title and before the first ## section. The document must start with # Title then go straight to the first ## section body.
-3. Fix broken or inconsistent heading levels (# ## ### ####) so they follow a single title then sections.
-4. Ensure References section has no bullets (plain numbers [1]. [2]. only); fix if bullets appear.
-5. Preserve all content, links, and citations; do not add or remove sentences.
-6. Single blank line between blocks; no double returns or extra blank lines at start/end.
-7. Output ONLY the corrected markdown. No preamble, no explanation.""",
         },
         {"role": "user", "content": content},
     ]
