@@ -1,3 +1,4 @@
+
 from typing import Optional, List, Dict, Tuple
 import logging
 
@@ -193,6 +194,8 @@ def build_markdown_structure_prompt(content: str) -> List[Dict[str, str]]:
             "role": "system",
             "content": """You convert refined article text into correctly formatted markdown that maps to the following document styles.
 
+BODY vs REFERENCES: In the body (everything before the References section), list-like content must be formatted as bullet or numbered lists (-, *, or 1. 2. 3.); do not convert body lists to plain paragraphs. In the References section only, use numbered entries [1]. [2]. … and no bullet points.
+
 STYLE REFERENCE (font 11pt, 1.5 line spacing, space after — apply via structure; renderer applies size/spacing):
 - Body Text: 11pt, 1.5 line spacing, space after. Use normal paragraphs. Single blank line between blocks; no double returns.
 - Heading 1–4: # ## ### #### (one title, then main sections, sub-sections, sub-points).
@@ -218,13 +221,15 @@ OUTPUT FORMAT (use only these elements; preserve all content):
 - Paragraphs: normal text (Body Text). Quotes: > quoted text
 - References: ## References then [1]. Source, "Title", URL — one entry per number (keep plain numbers [1], [2], [3] in References; do not use superscript here), no bullets, single blank line between entries.
 - Single blank line between blocks; no double returns (space after is applied by style).
+- Example: body lists use "- Item one" / "- Item two"; References use "[1]. Source, Title, URL" (no - or * in References).
 
 RULES:
 - Preserve every sentence and citation; only add markdown structure.
 - Do not add or remove content.
 - Do not include a "Contents" section.
-- Preserve citation links (full URL, no truncation; inline URL must match References [n]) and body lists (bullets, numbered); only References section has no bullets.
-- References section: plain numbers only ([1]. [2]. [3]. — do not use superscript in References); never use bullet points (• or - or *) in References.
+- Body lists: always use bullets (- or *) or numbers (1. 2. 3.) for list content in the body; never turn body lists into plain paragraphs.
+- Preserve citation links (full URL, no truncation; inline URL must match References [n]). Preserve body lists (bullets, numbered); the rule "no bullets" applies only to the References section, not to the body.
+- References section only: plain numbers ([1]. [2]. [3]. — do not use superscript in References); never use bullet points (• or - or *) in References.
 - Single blank line between paragraphs and between reference entries (space after); no double returns.
 - Output ONLY the raw markdown document. No code fences, no preamble, no explanation.""",
         },
