@@ -27,27 +27,29 @@ class Source:
         return f"[{self.id}]"
     
     def get_reference(self) -> str:
-        """Get full reference formatted like Draft Content citations
+        """Get full reference formatted like Draft Content citations (refine_content style)
         
-        Format for Factiva: 1. Title | Source | Date | By Author (URL: url)
-        Format for web: 1. Title (URL: url)
+        Format: 1. [Title](URL) (clickable markdown link)
+        Factiva adds optional metadata before the link: | Source | Date | By Author
         """
         # Check if this is a Factiva source using the flag
         if hasattr(self, 'is_factiva') and self.is_factiva:
-            # Format: 1. Title | Source | Date | By Author (URL: url)
-            citation = f"{self.id}. {self.title}"
+            # Format: 1. [Title](URL) with optional metadata before link
+            citation = f"{self.id}. "
             if hasattr(self, 'source_name') and self.source_name:
-                citation += f" | {self.source_name}"
+                citation += f"{self.source_name} | "
             if hasattr(self, 'publication_date') and self.publication_date:
-                citation += f" | {self.publication_date}"
+                citation += f"{self.publication_date} | "
             if hasattr(self, 'byline') and self.byline:
-                citation += f" | By {self.byline}"
+                citation += f"By {self.byline} | "
             if self.url:
-                citation += f" (URL: {self.url})"
+                citation += f"[{self.title}]({self.url})"
+            else:
+                citation += self.title
             return citation
         else:
-            # Format: 1. Title (URL: url)
-            return f"{self.id}. {self.title} (URL: {self.url})"
+            # Format: 1. [Title](URL) - clickable markdown link
+            return f"{self.id}. [{self.title}]({self.url})"
 
 class ConductResearchService(BaseTLStreamingService):
     """Service for Conduct Research workflow with source retrieval and citations"""
@@ -498,6 +500,10 @@ class ConductResearchService(BaseTLStreamingService):
                 - At very end of the report create a Citiations section and list down all citations with links and in md format 
                 - ALWAYS PROVIDE ALL THE CITATIONS MENTIONED IN AGENT DATA UNDER **Sources** OR ANY URL MENTIONED IN AGENT DATA.
                 - Place ALL citations and sources at the end under a "Citations & References" section with proper attribution
+
+            REFERENCES SECTION FORMAT (align with refine_content):
+                - Reference list format: [n]. [Title](URL) — use markdown link so Title is clickable
+                - Example: 1. [Article Title](https://example.com/article) — keep [Title](URL) as-is; do not remove or break links
 
             Don't:
                 ## Citations & References Section:
