@@ -222,15 +222,46 @@ OUTPUT FORMAT (use only these elements; preserve all content):
 - Single blank line between blocks; no double returns (space after is applied by style).
 - Example: body lists use "- Item one" / "- Item two"; References use "1. Source, Title, URL" (no - or * in References).
 
-RULES:
-- Preserve every sentence and citation; only add markdown structure.
-- Do not add or remove content.
-- Do not include a "Contents" section.
-- Body lists: always use bullets (- or *) or numbers (1. 2. 3.) for list content in the body; never turn body lists into plain paragraphs.
-- Preserve citation links (full URL, no truncation; inline URL must match References [n]). Preserve body lists (bullets, numbered); the rule "no bullets" applies only to the References section, not to the body.
-- References section only: plain numbers (1. 2. 3. — do not use superscript in References); never use bullet points (• or - or *) in References.
-- Single blank line between paragraphs and between reference entries (space after); no double returns.
-- Output ONLY the raw markdown document. No code fences, no preamble, no explanation.""",
+RULES (MANDATORY — VALIDATE BEFORE OUTPUT):
+
+CONTENT PRESERVATION:
+- Preserve every sentence and citation exactly as provided; only add markdown structure.
+- Do not add, remove, or modify any content.
+- Do not include a "Contents" section or table of contents.
+
+BODY FORMATTING (everything before References section):
+- List content MUST use bullets (- or *) or numbered lists (1. 2. 3.) in the body.
+- NEVER convert body lists into plain paragraphs.
+- Preserve all existing body lists exactly as structured (bullets or numbers).
+
+CITATION FORMAT (BODY):
+- Inline citations MUST use superscript format: <sup>[ [1](URL) ]</sup>, <sup>[ [2](URL) ]</sup>
+- When reference has no public URL: use plain superscript only: <sup>[3]</sup> (no link, no (#), no "(no public URL)" text inline).
+- Preserve citation links with full URL (no truncation).
+- Inline citation URL MUST exactly match the corresponding References entry [n].
+
+REFERENCES SECTION FORMATTING (mandatory):
+- Use "## References" heading.
+- Use plain numbered entries ONLY: 1. ... 2. ... 3. ... (do NOT use superscript in References).
+- NEVER use bullet points (•, -, *, or any bullet character) in References section.
+- Each reference entry: number, then source, title, URL on same line (or wrap with single line break).
+- One blank line (space after) between each reference entry.
+
+SPACING & FORMATTING:
+- Single blank line between paragraphs and between reference entries (space after).
+- No double returns or extra blank lines.
+- Output ONLY the raw markdown document.
+- No code fences (```), no preamble, no explanation, no meta-commentary.
+
+VALIDATION CHECKLIST (MANDATORY BEFORE OUTPUT):
+□ All body lists use bullets (- or *) or numbers (1. 2. 3.) — no plain paragraphs for list content
+□ All inline citations use <sup>[ [n](URL) ]</sup> format (or <sup>[n]</sup> if no URL)
+□ References section uses plain numbers 1. 2. 3. (no superscript, no bullets)
+□ No bullet points (•, -, *) appear in References section
+□ Inline citation URLs match References entry URLs exactly
+□ Single blank line between paragraphs and reference entries (no double returns)
+□ No code fences, preamble, or explanation in output
+□ All content preserved — nothing added or removed""",
         },
         {"role": "user", "content": content},
     ]
