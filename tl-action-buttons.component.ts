@@ -1,4 +1,3 @@
-
 from typing import Optional, List, Dict, Tuple
 import logging
 
@@ -194,14 +193,7 @@ def build_markdown_structure_prompt(content: str) -> List[Dict[str, str]]:
             "role": "system",
             "content": """You convert refined article text into correctly formatted markdown that maps to the following document styles.
 
-⚠️ CRITICAL VALIDATION REQUIREMENTS (READ FIRST):
-- Preserve ALL content exactly; only add markdown structure
-- Body lists MUST use bullets/numbers; NEVER convert to paragraphs
-- References section MUST use plain numbers [1]. [2]. [3]. with NO bullets
-- Output ONLY raw markdown; NO code fences, NO explanations
-- See VALIDATION RULES section below for complete requirements
-
-BODY vs REFERENCES: In the body (everything before the References section), list-like content must be formatted as bullet or numbered lists (-, *, or 1. 2. 3.); do not convert body lists to plain paragraphs. In the References section only, use numbered entries [1]. [2]. … and no bullet points.
+BODY vs REFERENCES: In the body (everything before the References section), list-like content must be formatted as bullet or numbered lists (-, *, or 1. 2. 3.); do not convert body lists to plain paragraphs. In the References section only, use numbered entries 1. 2. … and no bullet points.
 
 STYLE REFERENCE (font 11pt, 1.5 line spacing, space after — apply via structure; renderer applies size/spacing):
 - Body Text: 11pt, 1.5 line spacing, space after. Use normal paragraphs. Single blank line between blocks; no double returns.
@@ -216,7 +208,7 @@ STYLE REFERENCE (font 11pt, 1.5 line spacing, space after — apply via structur
 
 REFERENCES SECTION (mandatory format — no bullets):
 - Use a "References" or "## References" heading, then numbered entries only.
-- Do NOT use bullet points (• or - or *) in References. Use plain numbers only: [1]. ... [2]. ... [3]. ... (citation numbers in References stay as 1, 2, 3 — no superscript).
+- Do NOT use bullet points (• or - or *) in References. Use plain numbers only: 1. ... 2. ... 3. ... (citation numbers in References stay as 1, 2, 3 — no superscript).
 - Each reference: number then source, title, URL on same line (or wrap with single line break; Body Text style, 1.5 spacing).
 - One blank line (space after) between each reference entry. Same font and line spacing as Body Text.
 
@@ -226,48 +218,19 @@ OUTPUT FORMAT (use only these elements; preserve all content):
 - Content bullet lists: - or * (one item per line; indent for nested). Do not use bullets in References.
 - Numbered content lists: 1. 2. 3. Alphabetical: A. B. C. or a. b. c.
 - Paragraphs: normal text (Body Text). Quotes: > quoted text
-- References: ## References then [1]. Source, "Title", URL — one entry per number (keep plain numbers [1], [2], [3] in References; do not use superscript here), no bullets, single blank line between entries.
+- References: ## References then 1. Source, "Title", URL — one entry per number (keep plain numbers 1, 2, 3 in References; do not use superscript here), no bullets, single blank line between entries.
 - Single blank line between blocks; no double returns (space after is applied by style).
-- Example: body lists use "- Item one" / "- Item two"; References use "[1]. Source, Title, URL" (no - or * in References).
+- Example: body lists use "- Item one" / "- Item two"; References use "1. Source, Title, URL" (no - or * in References).
 
-============================================================
-VALIDATION RULES (MANDATORY — STRICTLY ENFORCED)
-============================================================
-
-CRITICAL: These validation rules MUST be followed. Failure to comply will result in invalid output.
-
-1. CONTENT PRESERVATION (ABSOLUTE):
-   ✓ Preserve EVERY sentence and citation exactly as provided
-   ✓ ONLY add markdown structure; DO NOT modify, add, or remove content
-   ✓ DO NOT include a "Contents" or "Table of Contents" section
-
-2. BODY LIST FORMATTING (MANDATORY):
-   ✓ Body lists MUST use bullets (- or *) or numbers (1. 2. 3.)
-   ✓ NEVER convert body lists into plain paragraphs
-   ✓ Preserve all existing list structures in the body
-
-3. CITATION PRESERVATION (ABSOLUTE):
-   ✓ Preserve ALL citation links with full URLs (no truncation)
-   ✓ Inline citation URLs MUST match References section numbering [n]
-   ✓ DO NOT modify, remove, or break any citation links
-
-4. REFERENCES SECTION FORMATTING (STRICT):
-   ✓ Use plain numbers ONLY: [1]. [2]. [3]. (NO superscript in References)
-   ✓ NEVER use bullet points (• or - or *) in References section
-   ✓ The "no bullets" rule applies ONLY to References, NOT to body content
-
-5. SPACING & FORMATTING (REQUIRED):
-   ✓ Single blank line between paragraphs
-   ✓ Single blank line between reference entries
-   ✓ NO double returns or extra blank lines
-
-6. OUTPUT FORMAT (NON-NEGOTIABLE):
-   ✓ Output ONLY the raw markdown document
-   ✓ NO code fences (```markdown or ```)
-   ✓ NO preamble, explanation, or commentary
-   ✓ NO meta-text about the task
-
-COMPLIANCE CHECK: Before submitting, verify ALL 6 validation rules are met.""",
+RULES:
+- Preserve every sentence and citation; only add markdown structure.
+- Do not add or remove content.
+- Do not include a "Contents" section.
+- Body lists: always use bullets (- or *) or numbers (1. 2. 3.) for list content in the body; never turn body lists into plain paragraphs.
+- Preserve citation links (full URL, no truncation; inline URL must match References [n]). Preserve body lists (bullets, numbered); the rule "no bullets" applies only to the References section, not to the body.
+- References section only: plain numbers (1. 2. 3. — do not use superscript in References); never use bullet points (• or - or *) in References.
+- Single blank line between paragraphs and between reference entries (space after); no double returns.
+- Output ONLY the raw markdown document. No code fences, no preamble, no explanation.""",
         },
         {"role": "user", "content": content},
     ]
@@ -606,7 +569,7 @@ SUPPORTING DOCUMENT CITATION RULE (MANDATORY):
 
 - If the Supporting Document includes ANY URL (public or internal):
   • Use that URL exactly as provided
-- If no URL exists in the document metadata: use "#" only as the link target (e.g. [1](#)). The visible citation must always be the number [1], [2], [3] — never "#".
+- If no URL exists in the document metadata: use "#" only as the link target (e.g. [1](#)). The visible citation must always be the number 1., 2., 3. — never "#".
 
 - Supporting Document citations:
   • MUST follow the same numbering sequence as existing references.
@@ -843,7 +806,7 @@ CORE REQUIREMENTS:
   * Narrative attributions: "According to Source..."
 - DO NOT remove, modify, or reformat existing citations
 - When adding new content that references sources, include citations in the same format as existing ones
-- If the original content has numbered citations [1], [2], continue the numbering sequence for new citations (use superscript numerals in brackets)
+- If the original content has numbered citations 1., 2., continue the numbering sequence for new citations (use superscript numerals in brackets)
 - Preserve all hyperlinks and URLs exactly as they appear
 - Citations are critical for credibility and must be maintained throughout expansion
 
@@ -1511,16 +1474,16 @@ Examples:
 
 STEP 3: DISPLAY URLS IN REFERENCES SECTION
 
-Use plain citation numbers [1], [2], [3] in References (no superscript). Inline citations use superscript [1], [2], [3]; References list uses [1], [2], [3].
+Use plain citation numbers 1., 2., 3. in References (no superscript). Inline citations use superscript [1], [2], [3]; References list uses 1., 2., 3.
 
 Format for public URLs:
-[1] Source Name, "Document Title," Year, Complete_URL
+1. Source Name, "Document Title," Year, Complete_URL
 
 Format for PwC internal URLs:
-[2] Source Name, "Document Title," Complete_URL (PwC Internal - Authentication Required)
+2. Source Name, "Document Title," Complete_URL (PwC Internal - Authentication Required)
 
 Format for no URL (References section only; in inline paragraph use <sup>[3]</sup> only, no link):
-[3] Source Name, "Document Title" (no public URL)
+3. Source Name, "Document Title" (no public URL)
 
 CRITICAL: NEVER write "(no public URL)" when a URL exists in the metadata
 
@@ -1530,7 +1493,7 @@ REFERENCE LIST REQUIREMENTS
 
 MANDATORY:
 - Include "References" section at the end
-- Number sequentially (1, 2, 3, 4...) in References — use plain [1], [2], [3], not superscript
+- Number sequentially (1, 2, 3, 4...) in References — use plain 1., 2., 3., not superscript
 - NO gaps in numbering
 - NO duplicate numbers
 - Every inline citation [n] (superscript 123 in body) MUST have corresponding reference entry [n] (plain 1, 2, 3 in References list); same order: first ref = [1] / [1], second = [2] / [2], etc.
@@ -1552,7 +1515,7 @@ Before submitting your output, verify:
 
 CITATION FORMAT:
 □ Every citation uses <sup>[ [n](URL) ]</sup> format with superscript numerals (123) in brackets
-□ NO citations use plain [1] or [2] format
+□ NO citations use plain 1. or 2. format
 □ NO citations use <sup>[1]</sup> format
 □ When a reference has no public URL, inline citation is plain superscript only: <sup>[n]</sup> — no link, no (#), no "(no public URL)" in the paragraph
 
