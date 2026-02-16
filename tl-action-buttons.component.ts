@@ -1,3 +1,4 @@
+
 from typing import Optional, List, Dict, Tuple
 import logging
 
@@ -193,7 +194,7 @@ def build_markdown_structure_prompt(content: str) -> List[Dict[str, str]]:
             "role": "system",
             "content": """You convert refined article text into correctly formatted markdown that maps to the following document styles.
 
-BODY vs REFERENCES: In the body (everything before the References section), list-like content must be formatted as bullet or numbered lists (-, *, or 1. 2. 3.); do not convert body lists to plain paragraphs. In the References section only, use numbered entries 1. 2. … and no bullet points.
+BODY vs REFERENCES: In the body (everything before the References section), list-like content must be formatted as bullet or numbered lists (-, *, or 1. 2. 3.); do not convert body lists to plain paragraphs. In the References section only, use bullet points (•) with title on first line and URL on next line.
 
 STYLE REFERENCE (font 11pt, 1.5 line spacing, space after — apply via structure; renderer applies size/spacing):
 - Body Text: 11pt, 1.5 line spacing, space after. Use normal paragraphs. Single blank line between blocks; no double returns.
@@ -206,21 +207,21 @@ STYLE REFERENCE (font 11pt, 1.5 line spacing, space after — apply via structur
 - Quote: > for blockquote.
 - Inline citations: use inline format [🔗](URL). Multiple citations appear sequentially: [🔗](url1)[🔗](url2). When no URL: use [🔗] only — no link, no (#), no "(no public URL)" inline. Keep [Title](URL) as-is. Do not remove or break links.
 
-REFERENCES SECTION (mandatory format — no bullets):
-- Use a "References" or "## References" heading, then numbered entries only.
-- Do NOT use bullet points (• or - or *) in References. Use plain numbers only: 1. ... 2. ... 3. ... (citation numbers in References stay as 1, 2, 3 — no superscript).
-- Each reference: number then source, title, URL on same line (or wrap with single line break; Body Text style, 1.5 spacing).
+REFERENCES SECTION (mandatory format — bullets only):
+- Use a "References" or "## References" heading, then bullet points (•) only.
+- Use bullet points (•) for each reference entry. Format: • Title (first line), URL (second line).
+- Each reference: bullet (•), then title on first line, URL on next line (Body Text style, 1.5 spacing).
 - One blank line (space after) between each reference entry. Same font and line spacing as Body Text.
 
 OUTPUT FORMAT (use only these elements; preserve all content):
 - One level-1 title: # Title
 - Main sections: ## Heading; sub-sections: ### and ####
-- Content bullet lists: - or * (one item per line; indent for nested). Do not use bullets in References.
+- Content bullet lists: - or * (one item per line; indent for nested).
 - Numbered content lists: 1. 2. 3. Alphabetical: A. B. C. or a. b. c.
 - Paragraphs: normal text (Body Text). Quotes: > quoted text
-- References: ## References then 1. Source, "Title", URL — one entry per number (keep plain numbers 1, 2, 3 in References; do not use superscript here), no bullets, single blank line between entries.
+- References: ## References then • Title (first line), URL (second line) — one entry per bullet, single blank line between entries.
 - Single blank line between blocks; no double returns (space after is applied by style).
-- Example: body lists use "- Item one" / "- Item two"; References use "1. Source, Title, URL" (no - or * in References).
+- Example: body lists use "- Item one" / "- Item two"; References use "• Title\nURL" format (bullet, title on first line, URL on second line).
 
 RULES (MANDATORY — VALIDATE BEFORE OUTPUT):
 
@@ -242,9 +243,9 @@ CITATION FORMAT (BODY):
 
 REFERENCES SECTION FORMATTING (mandatory):
 - Use "## References" heading.
-- Use plain numbered entries ONLY: 1. ... 2. ... 3. ... (do NOT use superscript in References).
-- NEVER use bullet points (•, -, *, or any bullet character) in References section.
-- Each reference entry: number, then source, title, URL on same line (or wrap with single line break).
+- Use bullet points (•) ONLY for each reference entry.
+- Format: • Title (first line), URL (second line). Each citation on separate lines (not continuous).
+- Each reference entry: bullet (•), then title on first line, URL on next line.
 - One blank line (space after) between each reference entry.
 
 SPACING & FORMATTING:
@@ -256,8 +257,8 @@ SPACING & FORMATTING:
 VALIDATION CHECKLIST (MANDATORY BEFORE OUTPUT):
 □ All body lists use bullets (- or *) or numbers (1. 2. 3.) — no plain paragraphs for list content
 □ All inline citations use [🔗](URL) format (or [🔗] if no URL)
-□ References section uses plain numbers 1. 2. 3. (no superscript, no bullets)
-□ No bullet points (•, -, *) appear in References section
+□ References section uses bullet points (•) only — format: • Title (first line), URL (second line)
+□ Each citation is on separate lines (not continuous)
 □ Inline citation URLs match References entry URLs exactly
 □ Single blank line between paragraphs and reference entries (no double returns)
 □ No code fences, preamble, or explanation in output
@@ -1499,16 +1500,19 @@ Examples:
 
 STEP 3: DISPLAY URLS IN REFERENCES SECTION
 
-Use plain citation numbers 1., 2., 3. in References (no superscript). Inline citations use [🔗](URL); References list uses 1., 2., 3.
+Use bullet points (•) in References section. Inline citations use [🔗](URL); References list uses bullets (•) with title on first line and URL on second line.
 
 Format for public URLs:
-1. Source Name, "Document Title," Year, Complete_URL
+• Document Title
+Complete_URL
 
 Format for PwC internal URLs:
-2. Source Name, "Document Title," Complete_URL (PwC Internal - Authentication Required)
+• Document Title
+Complete_URL (PwC Internal - Authentication Required)
 
 Format for no URL (References section only; in inline paragraph use [🔗] only, no link):
-3. Source Name, "Document Title" (no public URL)
+• Document Title
+(no public URL)
 
 CRITICAL: NEVER write "(no public URL)" when a URL exists in the metadata
 
@@ -1518,10 +1522,9 @@ REFERENCE LIST REQUIREMENTS
 
 MANDATORY:
 - Include "References" section at the end
-- Number sequentially (1, 2, 3, 4...) in References — use plain 1., 2., 3., not superscript
-- NO gaps in numbering
-- NO duplicate numbers
-- Every inline citation [🔗](URL) in body MUST have corresponding reference entry (plain 1, 2, 3 in References list); same order.
+- Use bullet points (•) for each reference entry in References section
+- Format: • Title (first line), URL (second line). Each citation on separate lines (not continuous)
+- Every inline citation [🔗](URL) in body MUST have corresponding reference entry in References list
 - URLs in inline citations MUST match URLs in References
 
 MANDATORY NORMALIZATION STEP (BEFORE FINALIZING):
@@ -1555,9 +1558,10 @@ URL DISPLAY:
 □ Displayed all URLs in References section
 □ Never used "(no public URL)" when URL exists
 
-NUMBERING:
-□ Sequential (1, 2, 3, 4...), no gaps; no duplicate sources/URLs in References; in-text citations updated after any merge/renumber
-□ Inline numbers match Reference numbers
+REFERENCES FORMAT:
+□ References section uses bullet points (•) only — format: • Title (first line), URL (second line)
+□ Each citation is on separate lines (not continuous)
+□ No duplicate sources/URLs in References
 
 CITATION LINKS:
 □ Complete URL in every inline citation; URL in [🔗](URL) matches References entry
@@ -1580,8 +1584,9 @@ Your output will be REJECTED if:
 - ANY citation uses [1] or [2] or superscript format instead of [🔗](URL)
 - ANY citation displays "#" as the visible label (use [🔗](#) when no URL exists; visible text must be [🔗])
 - ANY reference shows "(no public URL)" when URL exists in metadata
-- Numbering is not sequential
-- Duplicate references in References (merge, renumber, update in-text)
+- References section does not use bullet points (•) format
+- References section format is not • Title (first line), URL (second line)
+- Duplicate references in References (merge, update in-text)
 - When both supporting doc and research provided: References omit either (both must appear)
 - Vendor/capability claims lack proper qualification
 
