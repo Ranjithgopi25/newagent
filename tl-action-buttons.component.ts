@@ -193,24 +193,23 @@ def build_markdown_structure_prompt(content: str) -> List[Dict[str, str]]:
             "role": "system",
             "content": """You convert refined article text into correctly formatted markdown that maps to the following document styles.
 
-BODY vs REFERENCES: In the body (everything before the References section), list-like content must be formatted as bullet or numbered lists (-, *, or 1. 2. 3.); do not convert body lists to plain paragraphs. In the References section only, use numbered entries 1. 2. … and no bullet points.
+BODY vs REFERENCES: In the body (everything before the References section), list-like content must be formatted as bullet or numbered lists (-, *, or 1. 2. 3.); do not convert body lists to plain paragraphs. In the References section, use bullet (•) entries only: first line = • Title, next line = URL.
 
 STYLE REFERENCE (font 11pt, 1.5 line spacing, space after — apply via structure; renderer applies size/spacing):
 - Body Text: 11pt, 1.5 line spacing, space after. Use normal paragraphs. Single blank line between blocks; no double returns.
 - Heading 1–4: # ## ### #### (one title, then main sections, sub-sections, sub-points).
-- List Bullet: - or * for content lists only; one item per line; hanging indent implied; space after. Do NOT use bullets for References.
+- List Bullet: - or * for content lists only; one item per line; hanging indent implied; space after. References section uses • bullets.
 - List Continue: continuation of list item (indent 2 spaces in markdown for wrap).
 - List Bullet 2 / List Number 2: nested lists (indent 2–4 spaces).
 - List Number: 1. 2. 3. for numbered content lists.
 - List Alpha: A. B. C. or a. b. c. for alphabetical lists.
 - Quote: > for blockquote.
-- Inline citations: use inline format [🔗](URL). Multiple citations appear sequentially: [🔗](url1)[🔗](url2). When no URL: use [🔗] only — no link, no (#), no "(no public URL)" inline. Keep [Title](URL) as-is. Do not remove or break links.
+- Inline citations: use inline format [🔗](URL). Citation links must render in BLUE color. Multiple citations appear sequentially: [🔗](url1)[🔗](url2). When no URL: use [🔗] only — no link, no (#), no "(no public URL)" inline. Keep [Title](URL) as-is. Do not remove or break links.
 
-REFERENCES SECTION (mandatory format — no bullets):
-- Use a "References" or "## References" heading, then numbered entries only.
-- Do NOT use bullet points (• or - or *) in References. Use plain numbers only: 1. ... 2. ... 3. ... (citation numbers in References stay as 1, 2, 3 — no superscript).
-- Each reference: number then source, title, URL on same line (or wrap with single line break; Body Text style, 1.5 spacing).
-- One blank line (space after) between each reference entry. Same font and line spacing as Body Text.
+REFERENCES SECTION (mandatory format — bullets only):
+- Use a "References" or "## References" heading, then bullet entries (•) ONLY.
+- Each reference: • on first line (bullet), then Title (Source Name, "Document Title," Year); URL on the NEXT line.
+- Format: First line = • Title. Second line = URL. One blank line between entries.
 
 OUTPUT FORMAT (use only these elements; preserve all content):
 - One level-1 title: # Title
@@ -218,9 +217,9 @@ OUTPUT FORMAT (use only these elements; preserve all content):
 - Content bullet lists: - or * (one item per line; indent for nested). Do not use bullets in References.
 - Numbered content lists: 1. 2. 3. Alphabetical: A. B. C. or a. b. c.
 - Paragraphs: normal text (Body Text). Quotes: > quoted text
-- References: ## References then 1. Source, "Title", URL — one entry per number (keep plain numbers 1, 2, 3 in References; do not use superscript here), no bullets, single blank line between entries.
+- References: ## References then • Title on first line, URL on next line per entry. Use • bullets for each reference. Single blank line between entries.
 - Single blank line between blocks; no double returns (space after is applied by style).
-- Example: body lists use "- Item one" / "- Item two"; References use "1. Source, Title, URL" (no - or * in References).
+- Example: body lists use "- Item one" / "- Item two"; References use "• Title" then "URL" on next line per entry.
 
 RULES (MANDATORY — VALIDATE BEFORE OUTPUT):
 
@@ -238,13 +237,12 @@ CITATION FORMAT (BODY):
 - Inline citations MUST use inline format: [🔗](URL). Multiple citations appear sequentially: [🔗](url1)[🔗](url2)
 - When reference has no public URL: use [🔗] only (no link, no (#), no "(no public URL)" text inline).
 - Preserve citation links with full URL (no truncation).
-- Inline citation URL MUST exactly match the corresponding References entry [n].
+- Inline citation URL MUST exactly match the corresponding URL in the References section.
 
 REFERENCES SECTION FORMATTING (mandatory):
 - Use "## References" heading.
-- Use plain numbered entries ONLY: 1. ... 2. ... 3. ... (do NOT use superscript in References).
-- NEVER use bullet points (•, -, *, or any bullet character) in References section.
-- Each reference entry: number, then source, title, URL on same line (or wrap with single line break).
+- Use bullet (•) entries ONLY. NO numbers (1., 2., 3.) in References.
+- Each reference: • on first line with Title (Source Name, "Document Title," Year); URL on the NEXT line.
 - One blank line (space after) between each reference entry.
 
 SPACING & FORMATTING:
@@ -256,8 +254,7 @@ SPACING & FORMATTING:
 VALIDATION CHECKLIST (MANDATORY BEFORE OUTPUT):
 □ All body lists use bullets (- or *) or numbers (1. 2. 3.) — no plain paragraphs for list content
 □ All inline citations use [🔗](URL) format (or [🔗] if no URL)
-□ References section uses plain numbers 1. 2. 3. (no superscript, no bullets)
-□ No bullet points (•, -, *) appear in References section
+□ References section uses • bullets (NOT numbers). Each entry: first line = • Title, next line = URL
 □ Inline citation URLs match References entry URLs exactly
 □ Single blank line between paragraphs and reference entries (no double returns)
 □ No code fences, preamble, or explanation in output
@@ -588,14 +585,14 @@ CRITICAL: CITATION PRESERVATION (MANDATORY)
 - When adding new content, include citations using EXISTING reference IDs
   whenever the source is already present in the document.
 - Do NOT introduce new citation IDs for sources already cited in the document.
-- If a source is already cited, you MUST reuse its existing reference number.
+- If a source is already cited, you MUST reuse its existing reference entry.
 - You MAY introduce new citation IDs ONLY for genuinely new sources.
 
 SUPPORTING DOCUMENT CITATION RULE (MANDATORY):
 
 - The Supporting Document is an APPROVED citation source when provided.
 - If content from the Supporting Document is used:
-  • You MUST create a corresponding numbered citation.
+  • You MUST create a corresponding citation and reference entry.
   • You MUST add a reference entry in the References section.
 
 - If the Supporting Document includes ANY URL (public or internal):
@@ -603,8 +600,7 @@ SUPPORTING DOCUMENT CITATION RULE (MANDATORY):
 - If no URL exists in the document metadata: use "#" only as the link target (e.g. [🔗](#)). The visible citation must be [🔗] — never "#".
 
 - Supporting Document citations:
-  • MUST follow the same numbering sequence as existing references.
-  • MUST be included in the References section.
+  • MUST be included in the References section as bullet (•) entries.
   • MUST NOT be hyperlinked unless a valid public URL is explicitly provided.
 
 
@@ -651,9 +647,9 @@ SOURCE CLASSIFICATION RULE (MANDATORY):
 
 REFERENCE SPLITTING RULE (MANDATORY):
 
-- Each numbered reference [n] MUST represent exactly ONE source.
-- You MUST NOT combine multiple documents, pages, or reports under one number.
-- If multiple sources are mentioned, they MUST be split into [n], [n+1], [n+2].
+- Each reference entry (• bullet) MUST represent exactly ONE source.
+- You MUST NOT combine multiple documents, pages, or reports under one entry.
+- If multiple sources are mentioned, they MUST be separate bullet entries.
 
 FAILURE CONDITIONS:
 - If a reference includes “(no public URL)” and a URL → INVALID
@@ -669,19 +665,18 @@ REFERENCE CANONICALIZATION RULE (ABSOLUTE — ZERO TOLERANCE):
   • Publisher / organization
 
 - If the same source appears multiple times:
-  • You MUST collapse it into ONE reference entry
-  • You MUST select ONE reference number
-  • You MUST update ALL in-text citations to point to that single number
+  • You MUST collapse it into ONE reference entry (one • bullet)
+  • You MUST update ALL in-text citations to point to that single entry
 
 - You MUST NOT:
-  • create multiple reference numbers for the same source
-  • repeat the same URL under different numbers
+  • create multiple entries for the same source
+  • repeat the same URL in different entries
   • list the same document more than once
 
 FAILURE CONDITIONS (AUTOMATIC REJECTION):
 - Same URL appears more than once in References
 - Same title + publisher appears more than once
-- Multiple numbers refer to the same document
+- Multiple entries refer to the same document
 
 CASE STUDY SOURCE COLLAPSE RULE (MANDATORY):
 
@@ -832,12 +827,12 @@ CORE REQUIREMENTS:
 3. CITATION & LINK PRESERVATION (MANDATORY):
 - PRESERVE ALL existing citations in their original format
 - Citations may appear as:
-  * Use inline format for numbered references: [🔗](https://example.com), [🔗](https://example2.com). Multiple citations appear sequentially: [🔗](url1)[🔗](url2).
+  * Use inline format [🔗](URL) — links must render in BLUE. Multiple citations appear sequentially: [🔗](url1)[🔗](url2).
   * Parenthetical citations: (Source, 2024)
   * Narrative attributions: "According to Source..."
 - DO NOT remove, modify, or reformat existing citations
 - When adding new content that references sources, include citations in the same format as existing ones
-- If the original content has numbered citations 1., 2., continue the numbering sequence for new citations (use inline format [🔗](URL))
+- If the original content has citations, add new ones using inline format [🔗](URL) and include in References as bullet entries
 - Preserve all hyperlinks and URLs exactly as they appear
 - Citations are critical for credibility and must be maintained throughout expansion
 
@@ -909,7 +904,7 @@ DO NOT add filler, emphasis-only restatements, or surface-level paraphrasing.
 - INCLUDE **1–2 concrete quantitative data points per major section**, where credible data exists.
 - ALL statistics MUST:
   - follow the required source hierarchy,
-  - be cited inline using numbered references,
+  - be cited inline using [🔗](URL) format,
   - include qualifiers if estimates vary.
 - IF strong quantitative evidence does not exist, EXPLICITLY STATE this (e.g., “published estimates vary” or “quantitative evidence is limited”).
 
@@ -930,21 +925,21 @@ PHASE 1 — SOURCE REGISTRY (MANDATORY FIRST STEP):
   • Document title
   • Publisher / organization
 
-- Assign EACH unique source EXACTLY ONE reference ID (n).
+- Assign EACH unique source EXACTLY ONE reference entry.
 - This mapping is FINAL and MUST NOT change.
 
 PHASE 2 — CONTENT WRITING:
 - While writing or expanding content:
-  • Reuse the SAME reference ID every time the same source is cited
-  • NEVER create a new reference number for an already-registered source
+  • Reuse the SAME reference entry every time the same source is cited
+  • NEVER create a new reference entry for an already-registered source
 
 PROHIBITED:
-- Assigning reference numbers sentence-by-sentence
-- Creating a new reference ID because a citation appears in a new paragraph
-- Duplicating a source under different numbers for safety or convenience
+- Assigning reference entries sentence-by-sentence
+- Creating a new reference because a citation appears in a new paragraph
+- Duplicating a source under different entries for safety or convenience
 
 FAILURE CONDITION:
-- If the same URL or same title+publisher appears under more than one number,
+- If the same URL or same title+publisher appears under more than one entry,
   the output is INVALID and MUST be corrected before submission.
 
 """
@@ -1206,7 +1201,7 @@ CRITICAL INSTRUCTION:
 The research data below contains URL information in metadata fields.
 You MUST extract URLs from fields named 'url', 'source_url', or similar and include them
 in BOTH inline citations and the References section.
-- Use complete URL; inline citation URL must match References entry [n].
+- Use complete URL; inline citation URL must match References entry.
 
 IMPORTANT:
 The research content below may contain MULTIPLE RESEARCH STREAMS.
@@ -1269,7 +1264,7 @@ CRITICAL OUTPUT FORMAT REQUIREMENTS (READ FIRST)
 ═══════════════════════════════════════════════════════════════
 
 INLINE CITATION FORMAT (MANDATORY):
-Every citation MUST use this EXACT format: [🔗](URL)
+Every citation MUST use this EXACT format: [🔗](URL). Citation links must render in BLUE color.
 
 WHERE:
 - URL = complete URL from source metadata. If no URL exists, use "#" only as the link target (href), e.g. [🔗](#). The visible citation is [🔗], never "#".
@@ -1490,7 +1485,7 @@ Extract the COMPLETE URL exactly as provided. Do not truncate.
 
 STEP 2: USE URLS IN INLINE CITATIONS
 
-Format: [🔗](COMPLETE_URL). Use complete URL (no truncation); inline URL must match References entry. Multiple citations appear sequentially: [🔗](url1)[🔗](url2).
+Format: [🔗](COMPLETE_URL). Citation links must display in BLUE color. Use complete URL (no truncation); inline URL must match References entry. Multiple citations appear sequentially: [🔗](url1)[🔗](url2).
 
 Examples:
 - Public URL: [🔗](https://www.pwc.com/us/en/library/article.html)
@@ -1499,16 +1494,18 @@ Examples:
 
 STEP 3: DISPLAY URLS IN REFERENCES SECTION
 
-Use plain citation numbers 1., 2., 3. in References (no superscript). Inline citations use [🔗](URL); References list uses 1., 2., 3.
+References use BULLET (•) format. Each entry: first line = • Title, next line = URL. Inline citations use [🔗](URL) (blue links).
 
 Format for public URLs:
-1. Source Name, "Document Title," Year, Complete_URL
+• Source Name, "Document Title," Year
+Complete_URL
 
 Format for PwC internal URLs:
-2. Source Name, "Document Title," Complete_URL (PwC Internal - Authentication Required)
+• Source Name, "Document Title," (PwC Internal - Authentication Required)
+Complete_URL
 
 Format for no URL (References section only; in inline paragraph use [🔗] only, no link):
-3. Source Name, "Document Title" (no public URL)
+• Source Name, "Document Title" (no public URL)
 
 CRITICAL: NEVER write "(no public URL)" when a URL exists in the metadata
 
@@ -1518,10 +1515,10 @@ REFERENCE LIST REQUIREMENTS
 
 MANDATORY:
 - Include "References" section at the end
-- Number sequentially (1, 2, 3, 4...) in References — use plain 1., 2., 3., not superscript
-- NO gaps in numbering
-- NO duplicate numbers
-- Every inline citation [🔗](URL) in body MUST have corresponding reference entry (plain 1, 2, 3 in References list); same order.
+- Use bullet (•) entries ONLY — NO numbers (1., 2., 3.) in References
+- Each entry: first line = • Title, next line = URL
+- NO duplicate sources
+- Every inline citation [🔗](URL) in body MUST have corresponding reference entry in References (matching URL)
 - URLs in inline citations MUST match URLs in References
 
 MANDATORY NORMALIZATION STEP (BEFORE FINALIZING):
@@ -1555,9 +1552,8 @@ URL DISPLAY:
 □ Displayed all URLs in References section
 □ Never used "(no public URL)" when URL exists
 
-NUMBERING:
-□ Sequential (1, 2, 3, 4...), no gaps; no duplicate sources/URLs in References; in-text citations updated after any merge/renumber
-□ Inline numbers match Reference numbers
+REFERENCES:
+□ Bullet (•) format; each entry: first line = • Title, next line = URL; no duplicate sources/URLs
 
 CITATION LINKS:
 □ Complete URL in every inline citation; URL in [🔗](URL) matches References entry
@@ -1580,8 +1576,8 @@ Your output will be REJECTED if:
 - ANY citation uses [1] or [2] or superscript format instead of [🔗](URL)
 - ANY citation displays "#" as the visible label (use [🔗](#) when no URL exists; visible text must be [🔗])
 - ANY reference shows "(no public URL)" when URL exists in metadata
-- Numbering is not sequential
-- Duplicate references in References (merge, renumber, update in-text)
+- Same source appears multiple times in References
+- Duplicate references in References (merge, keep single entry per source, update in-text)
 - When both supporting doc and research provided: References omit either (both must appear)
 - Vendor/capability claims lack proper qualification
 
