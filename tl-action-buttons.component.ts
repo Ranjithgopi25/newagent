@@ -194,7 +194,7 @@ def build_markdown_structure_prompt(content: str) -> List[Dict[str, str]]:
             "role": "system",
             "content": """You convert refined article text into correctly formatted markdown that maps to the following document styles.
 
-BODY vs REFERENCES: In the body (everything before the References section), list-like content must be formatted as bullet or numbered lists (-, *, or 1. 2. 3.); do not convert body lists to plain paragraphs. In the References section only, use bullet points (•) with title on first line and URL on next line.
+BODY vs REFERENCES: In the body (everything before the References section), list-like content must be formatted as bullet or numbered lists (-, *, or 1. 2. 3.); do not convert body lists to plain paragraphs. In the References section only, use bullet points (•) followed by space and title on first line, URL on next line.
 
 STYLE REFERENCE (font 11pt, 1.5 line spacing, space after — apply via structure; renderer applies size/spacing):
 - Body Text: 11pt, 1.5 line spacing, space after. Use normal paragraphs. Single blank line between blocks; no double returns.
@@ -209,8 +209,8 @@ STYLE REFERENCE (font 11pt, 1.5 line spacing, space after — apply via structur
 
 REFERENCES SECTION (mandatory format — bullets only):
 - Use a "References" or "## References" heading, then bullet points (•) only.
-- Use bullet points (•) for each reference entry. Format: • Title (first line), URL (second line).
-- Each reference: bullet (•), then title on first line, URL on next line (Body Text style, 1.5 spacing).
+- Use bullet points (•) for each reference entry. Format: • Title (bullet space title on first line), URL (second line).
+- Each reference: bullet (•) followed by space, then title on first line, URL on next line (Body Text style, 1.5 spacing).
 - One blank line (space after) between each reference entry. Same font and line spacing as Body Text.
 
 OUTPUT FORMAT (use only these elements; preserve all content):
@@ -219,9 +219,9 @@ OUTPUT FORMAT (use only these elements; preserve all content):
 - Content bullet lists: - or * (one item per line; indent for nested).
 - Numbered content lists: 1. 2. 3. Alphabetical: A. B. C. or a. b. c.
 - Paragraphs: normal text (Body Text). Quotes: > quoted text
-- References: ## References then • Title (first line), URL (second line) — one entry per bullet, single blank line between entries.
+- References: ## References then • Title (bullet space title on first line), URL (second line) — one entry per bullet, single blank line between entries.
 - Single blank line between blocks; no double returns (space after is applied by style).
-- Example: body lists use "- Item one" / "- Item two"; References use "• Title\nURL" format (bullet, title on first line, URL on second line).
+- Example: body lists use "- Item one" / "- Item two"; References use "• Title\nURL" format (bullet space title on first line, URL on second line).
 
 RULES (MANDATORY — VALIDATE BEFORE OUTPUT):
 
@@ -244,8 +244,8 @@ CITATION FORMAT (BODY):
 REFERENCES SECTION FORMATTING (mandatory):
 - Use "## References" heading.
 - Use bullet points (•) ONLY for each reference entry.
-- Format: • Title (first line), URL (second line). Each citation on separate lines (not continuous).
-- Each reference entry: bullet (•), then title on first line, URL on next line.
+- Format: • Title (bullet space title on first line), URL (second line). Each citation on separate lines (not continuous).
+- Each reference entry: bullet (•) followed by space, then title on first line, URL on next line.
 - One blank line (space after) between each reference entry.
 
 SPACING & FORMATTING:
@@ -257,7 +257,7 @@ SPACING & FORMATTING:
 VALIDATION CHECKLIST (MANDATORY BEFORE OUTPUT):
 □ All body lists use bullets (- or *) or numbers (1. 2. 3.) — no plain paragraphs for list content
 □ All inline citations use [🔗](URL) format (or [🔗] if no URL)
-□ References section uses bullet points (•) only — format: • Title (first line), URL (second line)
+□ References section uses bullet points (•) only — format: • Title (bullet space title on first line), URL (second line)
 □ Each citation is on separate lines (not continuous)
 □ Inline citation URLs match References entry URLs exactly
 □ Single blank line between paragraphs and reference entries (no double returns)
@@ -1500,7 +1500,7 @@ Examples:
 
 STEP 3: DISPLAY URLS IN REFERENCES SECTION
 
-Use bullet points (•) in References section. Inline citations use [🔗](URL); References list uses bullets (•) with title on first line and URL on second line.
+Use bullet points (•) in References section. Inline citations use [🔗](URL); References list uses bullets (•) with space followed by title on first line and URL on second line.
 
 Format for public URLs:
 • Document Title
@@ -1523,7 +1523,7 @@ REFERENCE LIST REQUIREMENTS
 MANDATORY:
 - Include "References" section at the end
 - Use bullet points (•) for each reference entry in References section
-- Format: • Title (first line), URL (second line). Each citation on separate lines (not continuous)
+- Format: • Title (bullet space title on first line), URL (second line). Each citation on separate lines (not continuous)
 - Every inline citation [🔗](URL) in body MUST have corresponding reference entry in References list
 - URLs in inline citations MUST match URLs in References
 
@@ -1559,7 +1559,7 @@ URL DISPLAY:
 □ Never used "(no public URL)" when URL exists
 
 REFERENCES FORMAT:
-□ References section uses bullet points (•) only — format: • Title (first line), URL (second line)
+□ References section uses bullet points (•) only — format: • Title (bullet space title on first line), URL (second line)
 □ Each citation is on separate lines (not continuous)
 □ No duplicate sources/URLs in References
 
@@ -1585,7 +1585,7 @@ Your output will be REJECTED if:
 - ANY citation displays "#" as the visible label (use [🔗](#) when no URL exists; visible text must be [🔗])
 - ANY reference shows "(no public URL)" when URL exists in metadata
 - References section does not use bullet points (•) format
-- References section format is not • Title (first line), URL (second line)
+- References section format is not • Title (bullet space title on first line), URL (second line)
 - Duplicate references in References (merge, update in-text)
 - When both supporting doc and research provided: References omit either (both must appear)
 - Vendor/capability claims lack proper qualification
