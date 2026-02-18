@@ -1,831 +1,924 @@
-
-import { Component, Input, ViewChild, ElementRef, HostListener, Output, EventEmitter, OnInit } from '@angular/core';
-
-import { HttpClient } from '@angular/common/http';
-import { ThoughtLeadershipMetadata, Message } from '../../../../../core/models';
-import { CanvasStateService } from '../../../../../core/services/canvas-state.service';
-import { TlChatBridgeService } from '../../../../../core/services/tl-chat-bridge.service';
-import { ChatService } from '../../../../../core/services/chat.service';
-import { ToastService } from '../../../../../core/services/toast.service';
-import { ChatEditWorkflowService } from '../../../../../core/services/chat-edit-workflow.service';
-import { environment } from '../../../../../../environments/environment';
-import { TlRequestFormComponent } from '../../../../phoenix/TL/request-form';
-import { AuthFetchService } from '../../../../../core/services/auth-fetch.service';
-import { extractDocumentTitle } from '../../../../../core/utils/edit-content.utils';
-import { formatFinalArticleWithBlockTypes} from '../../../../../core/utils/edit-content.utils';
-import { BlockTypeInfo } from '../../../../../core/utils/edit-content.utils';
+/**
+ * Shared utility functions for Edit Content workflow
+ * Ensures deterministic results across Quick Start and Guided Journey flows
+ * 
+ * NOTE: EDITOR_ORDER and EDITOR_NAME_MAP must match backend constants in
+ * edit_content_service.py for consistent behavior between frontend and backend
+ */
+import { environment } from "../../../environments/environment";
 import { marked } from 'marked';
+// Editor processing order (must match backend EDITOR_ORDER in edit_content_service.py)
+export const EDITOR_ORDER = ['development', 'content', 'line', 'copy', 'brand-alignment'] as const;
 
-@Component({
-    selector: 'app-tl-action-buttons',
-    imports: [TlRequestFormComponent],
-    templateUrl: './tl-action-buttons.component.html',
-    styleUrls: ['./tl-action-buttons.component.scss']
-})
-export class TlActionButtonsComponent implements OnInit {
-  @Input() metadata!: ThoughtLeadershipMetadata;
-  @Input() messageId?: string;
-  @Input() message?: Message;  // Optional: Full message for accessing paragraph_edits
-  @Input() selectedFlow?: 'ppt' | 'thought-leadership' | 'market-intelligence';
-  @ViewChild('exportButton') exportButton?: ElementRef<HTMLButtonElement>;
+export type EditorType = 'development' | 'content' | 'line' | 'copy' | 'brand-alignment';
+
+/**
+ * Normalize editor IDs to ensure consistent ordering for deterministic results.
+ * Ensures brand-alignment is always included and editors are in the correct order.
+ * 
+ * @param editorIds - Array of editor IDs to normalize
+ * @returns Normalized array of editor IDs in EDITOR_ORDER sequence
+ */
+export function normalizeEditorOrder(editorIds: string[]): string[] {
+  // Create a copy to avoid mutating the input
+  let normalized = [...editorIds];
   
-  isConvertingToPodcast = false;
-  showExportDropdown = false;
-  isCopied = false;
-  isExporting = false;
-  isExported = false;
-  exportFormat = '';
-  showRequestForm = false;
-  translatedContent = '';
-
-  @Output() raisePhoenix = new EventEmitter<void>();
-
-  @HostListener('document:click', ['$event'])
-  onDocumentClick(event: MouseEvent): void {
-    const target = event.target as HTMLElement;
-    const exportDropdown = target.closest('.export-dropdown');
-    if (!exportDropdown && this.showExportDropdown) {
-      this.showExportDropdown = false;
-    }
+  // Ensure brand-alignment is always included
+  if (!normalized.includes('brand-alignment')) {
+    normalized.push('brand-alignment');
   }
-
-  constructor(
-    private canvasStateService: CanvasStateService,
-    private http: HttpClient,
-    private tlChatBridge: TlChatBridgeService,
-    private authFetchService: AuthFetchService,
-    private chatService: ChatService,
-    private toastService: ToastService,
-    private editWorkflowService: ChatEditWorkflowService
-  ) {}
   
-
-  ngOnInit(): void {
-    console.log('[TL Action Buttons] Component initialized with metadata:', {
-      contentType: this.metadata?.contentType,
-      hasPodcastUrl: !!this.metadata?.podcastAudioUrl,
-      podcastUrl: this.metadata?.podcastAudioUrl?.substring(0, 80),
-      showActions: this.metadata?.showActions,
-      isPodcast: this.isPodcast
-    });
-  }
-private exportWordNewLogic(): void {
-  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-    this.toastService.error('Content is not available yet.');
-    return;
-  }
-
-  // Prepare content according to new logic
-  const plainText = this.metadata.fullContent
-    .replace(/<br>/g, '\n')
-    .replace(/<[^>]+>/g, ''); // strip HTML
-
-  const title = this.metadata.topic?.trim() || 'Generated Document';
-
-  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-  const endpoint = `${apiUrl}/api/v1/export/word-standalone`; 
-
-  this.authFetchService.authenticatedFetch(endpoint, {
-    method: 'POST',
-    body: JSON.stringify({
-      content: plainText,
-      title,
-      content_type: this.metadata.contentType
-    })
-  })
-    .then(response => {
-      if (!response.ok) throw new Error('Failed to generate Word document');
-      return response.blob();
-    })
-    .then(blob => {
-      // Use existing download mechanism
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${this.sanitizeFilename(title)}.docx`;
-      link.click();
-      window.URL.revokeObjectURL(url);
-      this.resetExportState();
-    })
-    .catch(err => {
-      console.error('Word  document export error:', err);
-      this.toastService.error('Failed to generate Word document. Please try again.');
-      this.isExporting = false;
-    });
+  // Filter and order according to EDITOR_ORDER for deterministic results
+  return EDITOR_ORDER.filter(editor => normalized.includes(editor));
 }
 
-  // private isEditContent(): boolean {
-  //   // Check if this is edit content workflow
-  //   // Edit content may have contentType 'edit-content' 
-  //   return this.metadata?.contentType === 'edit-content';
-  // }
+/**
+ * Normalize content text to ensure consistent processing.
+ * Trims whitespace and normalizes line endings.
+ * 
+ * @param content - Content text to normalize
+ * @returns Normalized content text
+ */
+export function normalizeContent(content: string): string {
+  if (!content) {
+    return '';
+  }
+  
+  // Trim leading/trailing whitespace
+  let normalized = content.trim();
+  
+  // Normalize line endings to \n (Unix-style)
+  normalized = normalized.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  
+  // Remove trailing whitespace from each line (but preserve structure)
+  // This ensures consistent processing without changing content meaning
+  normalized = normalized.split('\n')
+    .map(line => line.trimEnd())
+    .join('\n');
+  
+  return normalized;
+}
 
+/**
+ * Compute a simple hash of content for verification purposes.
+ * Used to verify identical inputs are being processed.
+ * 
+ * @param content - Content to hash
+ * @returns Hash string
+ */
+export function hashContent(content: string): string {
+  if (!content) {
+    return 'empty';
+  }
+  
+  // Simple hash function for verification
+  let hash = 0;
+  for (let i = 0; i < content.length; i++) {
+    const char = content.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  
+  return Math.abs(hash).toString(36);
+}
 
+/**
+ * Extract document title from content.
+ * Checks for H1 heading first, then first line if it looks like a title,
+ * otherwise falls back to filename.
+ * 
+ * @param content - Document content text
+ * @param filename - Optional filename to use as fallback
+ * @returns Extracted title
+ */
+export function extractDocumentTitle(content: string, filename?: string): string {
+  if (!content || !content.trim()) {
+    // Fallback to filename if no content
+    if (filename) {
+      return filename.replace(/\.[^/.]+$/, '').trim();
+    }
+    return 'Revised Article';
+  }
 
-  downloadWord(): void {
-    // this.exportDocument('/api/v1/export/word', 'docx', 'docx');
-    const isSocialModule = this.metadata?.contentType === 'socialMedia';
-    const isEditContent = this.metadata?.contentType === 'edit-article';
-    const isMarketModule = this.metadata?.contentType === 'conduct-research'; 
-    const isindustryModule = this.metadata?.contentType === 'industry-insights';
-    const isproposalModule = this.metadata?.contentType === 'proposal-inputs';
-    const isprepMeetModule = this.metadata?.contentType === 'prep-meet';
-    const isPovModule = this.metadata?.contentType === 'pov';
-    const isDraftModule = this.metadata?.contentType === 'article' || 'blog' ||'executive_brief';
-    const isrefineModule = this.metadata?.contentType === 'refine-content';
-    console.log('[TL Action Buttons] downloadWord() called:', {
-      contentType: this.metadata?.contentType,
-      selectedFlow: this.selectedFlow,
-      isSocialModule,
-      isPovModule,isrefineModule,
-      isMarketModule,
-      timestamp: new Date().toISOString()
-    });
+  const normalizedContent = normalizeContent(content);
+  const lines = normalizedContent.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+
+  if (lines.length === 0) {
+    // Fallback to filename if no content lines
+    if (filename) {
+      return filename.replace(/\.[^/.]+$/, '').trim();
+    }
+    return 'Revised Article';
+  }
+
+  // Check for H1 heading at the start (# Title)
+  const firstLine = lines[0];
+  const h1Match = firstLine.match(/^#\s+(.+)$/);
+  if (h1Match && h1Match[1]) {
+    return h1Match[1].trim();
+  }
+
+  // Check if first line looks like a title
+  // Criteria: short (less than 100 chars), starts with capital, no ending punctuation (except ? or !)
+  if (firstLine.length > 0 && firstLine.length < 100) {
+    const firstChar = firstLine[0];
+    const lastChar = firstLine[firstLine.length - 1];
     
-    if (isEditContent) {
-      this.exportEditContentWord();
-    } else if (isSocialModule) {
-      this.exportUIWord();  
-    }
-    else if (isindustryModule || isprepMeetModule || isproposalModule || isMarketModule || isrefineModule ){
-       this.exportDocument('/api/v1/export/word-pwc-mi-module', 'docx', 'docx');
-    }
-    else if (isPovModule ) {
-      this.exportDocument('/api/v1/export/word', 'docx', 'docx');
-    }
-    else if (isDraftModule){
-      this.exportDocument('/api/v1/export/word', 'docx', 'docx'); 
-    }
-    else {
-      console.log("Export word 2")
-      this.exportDocument('/api/v1/export/word', 'docx', 'docx'); 
+    // Check if starts with capital letter or number
+    const startsWithCapital = /^[A-Z0-9]/.test(firstChar);
+    
+    // Check if doesn't end with period, comma, or semicolon (but allow ? or !)
+    const endsWithPunctuation = /[.,;]$/.test(lastChar);
+    
+    // Check if it's not a list item or code block
+    const isListItem = /^[-*+\d.]\s/.test(firstLine);
+    const isCodeBlock = firstLine.startsWith('```') || firstLine.startsWith('`');
+    
+    if (startsWithCapital && !endsWithPunctuation && !isListItem && !isCodeBlock) {
+      return firstLine;
     }
   }
 
-  /** Extract export title from markdown: prefer # Title (level-1), then ## heading, then first short non-list line. */
-  private getEditContentExportTitleAndContent(): { content: string; title: string } {
-    const content = this.metadata.fullContent || '';
-    const lines = content.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
-    let title = '';
-    let fallbackHeading = '';
-    for (const line of lines) {
-      const h1 = line.match(/^#\s+(.+)$/);
-      if (h1 && h1[1]) {
-        title = h1[1].replace(/\*\*/g, '').trim();
-        break;
-      }
-      const hAny = line.match(/^#+\s+(.+)$/);
-      if (hAny && hAny[1] && !fallbackHeading) {
-        fallbackHeading = hAny[1].replace(/\*\*/g, '').trim();
-      }
-      if (!title && !/^#+\s/.test(line) && line.length < 120 && !/^[-*]\s/.test(line) && !/^\d+\.\s/.test(line)) {
-        title = line.replace(/\*\*/g, '').trim();
-        break;
-      }
-    }
-    return { content, title: title || fallbackHeading || 'Revised Article' };
+  // Fallback to filename
+  if (filename) {
+    return filename.replace(/\.[^/.]+$/, '').trim();
   }
 
-  private async exportEditContentWord(): Promise<void> {
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      alert('Content is not available yet.');
-      return;
+  return 'Revised Article';
+}
+
+/** Editor name mapping (must match backend EDITOR_NAMES in edit_content_service.py) */
+const EDITOR_NAME_MAP: { [key: string]: string } = {
+  'development': 'Development Editor',
+  'content': 'Content Editor',
+  'line': 'Line Editor',
+  'copy': 'Copy Editor',
+  'brand-alignment': 'PwC Brand Alignment Editor'
+};
+
+/** Get editor display name by ID */
+export function getEditorDisplayName(editorId: string): string {
+  return EDITOR_NAME_MAP[editorId] || editorId;
+}
+
+/** Format markdown text to HTML for basic formatting (bold, italic, line breaks) */
+export function formatMarkdown(text: string): string {
+  let formatted = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  formatted = formatted.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  formatted = formatted.replace(/\n/g, '<br>');
+  return formatted;
+}
+
+/** Format markdown for chat display using marked.parse() with custom post-processing (same as chat.component.ts getFormattedContent). */
+export function formatMarkdownForChatDisplay(markdown: string): string {
+  if (!markdown || !markdown.trim()) return '';
+  
+  let html = marked.parse(markdown) as string;
+
+  // Fix bullet list formatting: add proper indentation and remove spacing between items
+  html = html.replace(/<ul>\n?/g, '<ul style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+  html = html.replace(/<ol>\n?/g, '<ol style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+  html = html.replace(/<li>/g, '<li style="margin: 0; padding: 0; line-height: 1.4;">');
+  html = html.replace(/<\/li>\n?/g, '</li>');
+
+  // Ensure links open in a new tab and use noopener for security.
+  // We add target and rel only when they are not already present.
+  html = html.replace(/<a\s+([^>]*?)href=(["'])(.*?)\2([^>]*)>/gi, (match: string, pre: string, quote: string, url: string, post: string) => {
+    const attrs = (pre + ' ' + post).toLowerCase();
+    if (/\btarget\s*=/.test(attrs) || /\brel\s*=/.test(attrs)) {
+      return match; // already has target or rel
     }
-    this.isExporting = true;
-    try {
-      const { content, title: exportTitle } = this.getEditContentExportTitleAndContent();
-      const finalTitle = exportTitle;
-      this.chatService.exportEditContentToWord({
-        content,
-        title: exportTitle,
-        block_types: []
-      }).subscribe({
-        next: (blob: Blob) => {
-          const url = window.URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = `${this.sanitizeFilename(finalTitle)}.docx`;
-          link.click();
-          window.URL.revokeObjectURL(url);
-          this.resetExportState();
-        },
-        error: (error) => {
-          console.error('Edit Content Word export error:', error);
-          alert('Failed to generate Word document. Please try again.');
-          this.isExporting = false;
+    // Preserve existing attributes order, append target and rel
+    return `<a ${pre}href=${quote}${url}${quote}${post} target="_blank" rel="noopener noreferrer">`;
+  });
+
+  // Convert ALL <sup>[ [ⁿ](URL) ]</sup>: [ⁿ] = citation link (clickable), URL shown as-is in brackets (clickable)
+  const esc = (s: string) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  html = html.replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((https?:\/\/[^)]+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, url: string) => {
+    const text = (superscriptText || '').trim();
+    const urlLink = `<a class="citation-url-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+    return `<sup><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">[${text}]</a></sup> [${urlLink}]`;
+  });
+
+  // Superscript only for inline paragraph citations — not in References list (ol/li). Process only content inside <p>...</p>.
+  html = html.replace(/<p>([\s\S]*?)<\/p>/gi, (_pMatch: string, inner: string) => {
+    let paragraphHtml = inner;
+    // Wrap citation-style links (e.g. [¹](URL) -> <a>¹</a>) in <sup> so they render as clickable superscript
+    paragraphHtml = paragraphHtml.replace(/<a\s+([^>]*?)href=(["'])([^"']*)\2([^>]*)>([^<]*)<\/a>/gi, (match: string, pre: string, quote: string, url: string, post: string, linkText: string) => {
+      const trimmed = (linkText || '').trim();
+      if (/^\[?[⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+\]?$/.test(trimmed) && /[⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(trimmed)) {
+        return `<sup><a ${pre}href=${quote}${url}${quote}${post} target="_blank" rel="noopener noreferrer" class="citation-superscript">${trimmed}</a></sup>`;
+      }
+      return match;
+    });
+    // If backend sent <sup>[ [¹](URL) ]</sup>, already converted above; citation link [ⁿ] + URL shown in brackets
+    paragraphHtml = paragraphHtml.replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((https?:\/\/[^)]+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, url: string) => {
+      const text = (superscriptText || '').trim();
+      const urlLink = `<a class="citation-url-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+      return `<sup><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">[${text}]</a></sup> [${urlLink}]`;
+    });
+    return `<p>${paragraphHtml}</p>`;
+  });
+
+  return html;
+}
+
+/** Render markdown the same way as Quick Start / chat (marked.parse + list styles + link target + citation superscript in <p> only). Use this for final article display instead of convertMarkdownToHtml. */
+export function renderMarkdownForDisplay(markdown: string): string {
+  if (!markdown || !markdown.trim()) return '';
+  // Process <sup>[ ⁿ ]</sup>(URL) BEFORE marked.parse — marked autolinks URLs and would break our pattern
+  const esc = (s: string) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let preProcessed = markdown.replace(/<sup>\s*\[\s*([⁰¹²³⁴⁵⁶⁷⁸⁹,\s]+)\s*\]\s*<\/sup>\s*\((https?:\/\/[^)]+|#)\)/gi, (_m: string, text: string, url: string) => {
+    const t = (text || '').trim();
+    const href = url === '#' ? '#' : url;
+    const urlDisplay = href === '#' ? '#' : `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer" class="citation-url-link">${esc(href)}</a>`;
+    return `<sup><a href="${esc(href)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">${t}</a></sup>(${urlDisplay})`;
+  });
+  let html = (marked.parse(preProcessed) as string) || '';
+  html = html.replace(/<ul>\n?/g, '<ul style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+  html = html.replace(/<ol>\n?/g, '<ol style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+  html = html.replace(/<li>/g, '<li style="margin: 0; padding: 0; line-height: 1.4;">');
+  html = html.replace(/<\/li>\n?/g, '</li>');
+  html = html.replace(/<a\s+([^>]*?)href=(["'])(.*?)\2([^>]*)>/gi, (_m: string, pre: string, quote: string, url: string, post: string) => {
+    const attrs = (pre + ' ' + post).toLowerCase();
+    if (/\btarget\s*=/.test(attrs) || /\brel\s*=/.test(attrs)) return _m;
+    return `<a ${pre}href=${quote}${url}${quote}${post} target="_blank" rel="noopener noreferrer">`;
+  });
+  // Convert <sup>[N](URL)</sup> (unparsed markdown inside raw HTML) to clickable superscript — backend may send this; marked does not parse inside raw HTML
+  html = html.replace(/<sup>\s*\[(\d+)\]\((https?:\/\/[^)]+)\)\s*<\/sup>/gi, (_m: string, num: string, url: string) =>
+    `<sup><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">[${num}]</a></sup>`
+  );
+  // Convert <sup>[ [ⁿ](#ref-N) ]</sup>: superscript links to citation reference (References list), same-page scroll
+  html = html.replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((#[a-z]+-\d+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, anchor: string) => {
+    const text = (superscriptText || '').trim();
+    return `<sup><a href="${esc(anchor)}" class="citation-superscript">[${text}]</a></sup>`;
+  });
+  // Convert <sup>[ ⁿ ]</sup>(URL) — edit content format: superscript and URL both clickable
+  html = html.replace(/<sup>\s*\[\s*([⁰¹²³⁴⁵⁶⁷⁸⁹,\s]+)\s*\]\s*<\/sup>\s*\((https?:\/\/[^)]+|#)\)/gi, (_m: string, text: string, url: string) => {
+    const t = (text || '').trim();
+    const href = url === '#' ? '#' : url;
+    const urlDisplay = href === '#' ? '#' : `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer" class="citation-url-link">${esc(href)}</a>`;
+    return `<sup><a href="${esc(href)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">${t}</a></sup>(${urlDisplay})`;
+  });
+  html = html.replace(/<p>([\s\S]*?)<\/p>/gi, (_pMatch: string, inner: string) => {
+    let paragraphHtml = inner;
+    // Citation links [³](url) or [1](url): marked outputs <a href="url">³</a> or <a href="url">1</a> — wrap in <sup> and keep link
+    paragraphHtml = paragraphHtml.replace(/<a\s+([^>]*?)href=(["'])([^"']*)\2([^>]*)>([^<]*)<\/a>/gi, (match: string, pre: string, quote: string, url: string, post: string, linkText: string) => {
+      const trimmed = (linkText || '').trim();
+      const isUnicodeSup = /^\[?[⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+\]?$/.test(trimmed) && /[⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(trimmed);
+      const isDigitBracket = /^\[\d+\]$/.test(trimmed);
+      if (isUnicodeSup || isDigitBracket) {
+        const isRefAnchor = /^#/.test((url || '').trim());
+        const targetRel = isRefAnchor ? '' : ' target="_blank" rel="noopener noreferrer"';
+        return `<sup><a ${pre}href=${quote}${url}${quote}${post}${targetRel} class="citation-superscript">${trimmed}</a></sup>`;
+      }
+      return match;
+    });
+    // Citation-reference fragment <sup>[ [¹](#ref-1) ]</sup>: link to References list, same-page scroll
+    paragraphHtml = paragraphHtml.replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((#[a-z]+-\d+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, anchor: string) => {
+      const text = (superscriptText || '').trim();
+      return `<sup><a href="${esc(anchor)}" class="citation-superscript">[${text}]</a></sup>`;
+    });
+    paragraphHtml = paragraphHtml.replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((https?:\/\/[^)]+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, url: string) => {
+      const text = (superscriptText || '').trim();
+      return `<sup><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">[${text}]</a></sup>`;
+    });
+    // Inline paragraph URLs in brackets (Title [URL] format from backend) — make [https://...] clickable
+    paragraphHtml = paragraphHtml.replace(/\[(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)\]/g, (_match: string, url: string) => {
+      const urlTrimmed = url.replace(/\n/g, ' ').trim();
+      return `[<a class="citation-url-link" href="${esc(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${esc(urlTrimmed)}</a>]`;
+    });
+    return `<p>${paragraphHtml}</p>`;
+  });
+  // Add id="ref-1", id="ref-2", ... to References list (first <ol> after References/Sources/Bibliography) for citation anchors
+  html = html.replace(/(<h2[^>]*>(?:References|Sources|Bibliography)<\/h2>\s*<ol[^>]*>)([\s\S]*?)(<\/ol>)/gi, (_full: string, open: string, content: string, close: string) => {
+    let refIndex = 0;
+    const newContent = content.replace(/<li(\s[^>]*)?>/gi, (_li: string, attrs?: string) => {
+      refIndex += 1;
+      return `<li id="ref-${refIndex}"${attrs || ''}>`;
+    });
+    return open + newContent + close;
+  });
+  return html;
+}
+
+/** Convert markdown text to HTML with proper formatting for headings, lists, paragraphs, etc. */
+export function convertMarkdownToHtml(markdown: string): string {
+  if (!markdown || !markdown.trim()) {
+    return '';
+  }
+
+  // Process <sup>[ ⁿ ]</sup>(URL) first — convert to clickable superscript + URL before other transforms
+  const escC = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let html = markdown
+    .replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((#[a-z]+-\d+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, anchor: string) => {
+      const text = (superscriptText || '').trim();
+      return `<sup><a href="${escC(anchor)}" class="citation-superscript">[${text}]</a></sup>`;
+    })
+    .replace(/<sup>\s*\[\s*([⁰¹²³⁴⁵⁶⁷⁸⁹,\s]+)\s*\]\s*<\/sup>\s*\((https?:\/\/[^)]+|#)\)/gi, (_m: string, text: string, url: string) => {
+      const t = (text || '').trim();
+      const href = url === '#' ? '#' : url;
+      const urlDisplay = href === '#' ? '#' : `<a href="${escC(href)}" target="_blank" rel="noopener noreferrer" class="citation-url-link">${escC(href)}</a>`;
+      return `<sup><a href="${escC(href)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">${t}</a></sup>(${urlDisplay})`;
+    });
+
+  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+
+  html = html.replace(/^---$/gm, '<hr>');
+  html = html.replace(/^\*\*\*$/gm, '<hr>');
+
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Links:
+  // - Standard markdown: [text](https://example.com)
+  // - Backend citation variant: [Title](URL: https://example.com)
+  //   If we don't strip "URL:", the href becomes invalid ("URL: https://...").
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, linkText, rawHref) => {
+    const textRaw = String(linkText ?? '');
+    const hrefRaw = String(rawHref ?? '').trim();
+
+    // Minimal escaping to avoid breaking attributes / HTML structure.
+    // Note: this utility already does simplistic markdown->HTML transforms elsewhere.
+    const escHtml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escAttr = (s: string) => escHtml(s).replace(/"/g, '&quot;');
+    const text = escHtml(textRaw);
+
+    // Handle "(URL: https://...)" (case-insensitive). URL can wrap across newlines so long citation URLs are fully clickable.
+    const citationUrlMatch = hrefRaw.match(/^url:\s*(https?:\/\/[^\s)]*(?:\n[^\s)]*)*)\s*$/i);
+    if (citationUrlMatch && citationUrlMatch[1]) {
+      const url = citationUrlMatch[1].replace(/\n/g, '').trim();
+      const urlAttr = escAttr(url);
+      const urlText = escHtml(url);
+      // Show both the title and the URL (common expectation for citation blocks)
+      // return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(${urlText})</span>`;
+      return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${urlText}</a>)</span>`;
+    }
+
+    // Fragment link (#ref-1): same-page scroll to citation reference, no target="_blank"
+    if (/^#/.test(hrefRaw)) {
+      return `<a href="${escAttr(hrefRaw)}" class="citation-superscript">${text}</a>`;
+    }
+    // Standard markdown link
+    return `<a href="${escAttr(hrefRaw)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+  });
+
+  // Spacing: ensure one space before (https:// when preceded by ), ], or superscript (e.g. )²(https:// -> )² (https://)
+  html = html.replace(/([)\]⁰¹²³⁴⁵⁶⁷⁸⁹])(\s*)(\()(https?:\/\/)/g, '$1 $3$4');
+
+  // Plain URLs: in References "Title [https://...]", in-paragraph "(https://...)" or "[https://...]" -> one full clickable link
+  // Match "[https://...]" so the entire URL is one <a> (no break in middle); class citation-url-link for styling.
+  const escAttr = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const escHtml = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Format "[https://...]" as [<a>full URL</a>] so the whole URL is one clickable link when it wraps
+  html = html.replace(/\[(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)\]/g, (_match, url) => {
+    const urlTrimmed = url.replace(/\n/g, ' ').trim();
+    return `[<a class="citation-url-link" href="${escAttr(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${escHtml(urlTrimmed)}</a>]`;
+  });
+  // Standalone https:// (no brackets) -> clickable; do not match when URL is already inside an <a> (before would be ">")
+  html = html.replace(/(^|[\s.)])(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)/g, (_match, before, url) => {
+    const urlTrimmed = url.replace(/\n/g, ' ').trim();
+    return before + `<a class="citation-url-link" href="${escAttr(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${escHtml(urlTrimmed)}</a>`;
+  });
+
+  // List styles: match paragraph/export (11pt, Helvetica/Arial, line-height 1.5), tight spacing between list items (citations)
+  const listBlockStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.25em; margin-bottom: 0.5em;";
+  const listBlockStyleAfterHeading = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.2em; margin-bottom: 0.5em;";
+  const listItemStyle = "display: list-item; margin: 0.05em 0 0.2em 0;";
+
+  const lines = html.split('\n');
+  const processedLines: string[] = [];
+  let inUnorderedList = false;
+  let inOrderedList = false;
+  let lastOrderedNumber = 0; // Track last number to detect gaps
+
+  const lastProcessedLineIsHeading = () => {
+    for (let j = processedLines.length - 1; j >= 0; j--) {
+      const s = processedLines[j].trim();
+      if (!s) continue;
+      return /<\/h[1-6]>$/i.test(s) || /^<h[1-6]\b/i.test(s);
+    }
+    return false;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmedLine = line.trim();
+
+    const unorderedMatch = trimmedLine.match(/^[-*]\s+(.+)$/);
+    const orderedMatch = trimmedLine.match(/^(\d+)\.\s+(.+)$/);
+
+    if (unorderedMatch) {
+      if (!inUnorderedList) {
+        if (inOrderedList) {
+          processedLines.push('</ol>');
+          inOrderedList = false;
+          lastOrderedNumber = 0; // Reset counter when closing ordered list
         }
-      });
-    } catch (error) {
-      console.error('Edit Content Word export error:', error);
-      alert('Failed to generate Word document. Please try again.');
-      this.isExporting = false;
-    }
-  }
-
-  downloadPDF(): void {
-    // Consider message as 'market module' when contentType is conduct-research or selectedFlow is market-intelligence
-    const contentType = String(this.metadata?.contentType || '');
-    const isEditContent = this.metadata?.contentType === 'edit-article';
-    const isMarketModule = contentType === 'conduct-research';
-    const isIndustryModule = contentType === 'industry-insights';
-    const isproposalModule = contentType === 'proposal-inputs';
-    const isprepMeetModule = contentType === 'prep-meet';
-    const isPovModule = contentType === 'pov';
-    const isDraftModule = contentType === 'article'||'blog'||'executive_brief';
-    const isrefineModule = this.metadata?.contentType === 'refine-content';
-    const isConductResearch = this.metadata?.contentType === 'conduct-research';
-    console.log('[TL Action Buttons] downloadPDF() called:', {
-      contentType,
-      selectedFlow: this.selectedFlow,
-      isMarketModule,
-      isIndustryModule,
-      isPovModule,
-      isprepMeetModule,
-      isproposalModule,isrefineModule,
-      timestamp: new Date().toISOString()
-    });
-      if (isEditContent) {
-        this.exportEditContentPDF();
-        return;
-    }
-      else if (isIndustryModule || isprepMeetModule || isproposalModule || isMarketModule || isrefineModule || isConductResearch ){
-          this.exportDocument('/api/v1/export/pdf-pwc-mi-module', 'pdf', 'pdf');
-          return;
- 
+        processedLines.push(`<ul style="${listBlockStyle}">`);
+        inUnorderedList = true;
       }
-      else if (isPovModule ) {
-        this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
-        return;
-      }
-      else if(isDraftModule){
-        this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
-      }
-      this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
-    // const endpoint = isMarketModule
-    //   ? '/api/v1/export/pdf-pwc-no-toc'
-    //   : '/api/v1/export/pdf-pwc';
-    
-    // console.log('[TL Action Buttons] Using endpoint:', endpoint);
-    // this.exportDocument(endpoint, 'pdf', 'pdf');
-  }
-
-  private async exportEditContentPDF(): Promise<void> {
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      alert('Content is not available yet.');
-      return;
-    }
-    this.isExporting = true;
-    try {
-      const { content, title: exportTitle } = this.getEditContentExportTitleAndContent();
-      const finalTitle = exportTitle;
-      this.chatService.exportEditContentToPDF({
-        content,
-        title: exportTitle,
-        block_types: []
-      }).subscribe({
-        next: (blob: Blob) => {
-          const url = window.URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = `${this.sanitizeFilename(finalTitle)}.pdf`;
-          link.click();
-          window.URL.revokeObjectURL(url);
-          this.resetExportState();
-        },
-        error: (error) => {
-          console.error('Edit Content PDF export error:', error);
-          alert('Failed to generate PDF document. Please try again.');
-          this.isExporting = false;
-        }
-      });
-    } catch (error) {
-      console.error('Edit Content PDF export error:', error);
-      alert('Failed to generate PDF document. Please try again.');
-      this.isExporting = false;
-    }
-  }
-  
-  downloadPPT(): void {
-    this.exportPPT('/api/v1/export/ppt');
-  }
-
-  downloadPodcast(): void {
-    if (this.metadata.podcastAudioUrl && this.metadata.podcastFilename) {
-      const link = document.createElement('a');
-      link.href = this.metadata.podcastAudioUrl;
-      link.download = this.metadata.podcastFilename;
-      link.click();
-    }
-  }
-
-  cleanedDocumentText!: string;
-  documentTitle!: string;
-  onRaisePhoenix(): void {
-
-    this.cleanedDocumentText = this.metadata.fullContent
-    .replace(/<br>/g, '\n')
-    .replace(/<[^>]+>/g, '');
-
-    const lines = this.cleanedDocumentText
-    .split('\n')
-    .filter(line => line.trim());
-
-    this.documentTitle = lines.length > 0
-    ? lines[0].substring(0, 150)
-    : 'Generated Document';
-
-    this.showRequestForm = true;
-    this.raisePhoenix.emit();
-  }
-  
-  phoenixRdpLink = '';
-  ticketNumber = '';
-
-  onTicketCreated(event: {
-  requestNumber: string;
-  phoenixRdpLink: string;
-  }): void {
- this.phoenixRdpLink = event.phoenixRdpLink;
- this.ticketNumber = event.requestNumber;
-  console.log('Ticket created:', event.requestNumber);
-  this.translatedContent = `✅ Request created successfully! Your request number is: <a href="${event.phoenixRdpLink}" target="_blank" rel="noopener noreferrer">${event.requestNumber}</a>`.trim();
-  this.showRequestForm = false; 
-  this.sendToChat();
-}
-
-sendToChat(): void {
-
-  const topic = `Phoenix Request - ${this.ticketNumber}`;
-  let contentType: string;
-
-   
-    // Create metadata for the message
-    const metadata: ThoughtLeadershipMetadata = {
-      contentType: 'Phoenix_Request',
-      topic: topic,
-      fullContent: this.translatedContent,
-      showActions: false
-    };
-  const chatMessage = this.translatedContent;
-   
-    // Send to chat via bridge
-    console.log('[FormatTranslatorFlow] Sending to chat with metadata:', metadata);
-    this.tlChatBridge.sendToChat(chatMessage, metadata);
-    //this.onClose();
-}
-
-  copyToClipboard(): void {
-    const markdownContent = this.metadata.fullContent ?? '';
-    
-    // Convert markdown to clean HTML (without UI-specific styles)
-    const htmlContent = marked.parse(markdownContent) as string;
-    
-    // Use ClipboardItem to support both HTML and plain text formats
-    if (navigator.clipboard && navigator.clipboard.write) {
-      const clipboardItem = new ClipboardItem({
-        'text/html': new Blob([htmlContent], { type: 'text/html' }),
-        'text/plain': new Blob([markdownContent], { type: 'text/plain' })
-      });
+      processedLines.push(`<li style="${listItemStyle}">${unorderedMatch[1]}</li>`);
+    } else if (orderedMatch) {
+      const originalNumber = parseInt(orderedMatch[1], 10);
+      const itemText = orderedMatch[2];
       
-      navigator.clipboard.write([clipboardItem]).then(() => {
-        this.isCopied = true;
-        setTimeout(() => {
-          this.isCopied = false;
-        }, 2000);
-      }).catch(err => {
-        console.error('Failed to copy to clipboard:', err);
-        // Fallback to plain text if HTML copy fails
-        navigator.clipboard.writeText(markdownContent).then(() => {
-          this.isCopied = true;
-          setTimeout(() => {
-            this.isCopied = false;
-          }, 2000);
-        }).catch(fallbackErr => {
-          console.error('Failed to copy plain text to clipboard:', fallbackErr);
-        });
-      });
+      // Check if this is a new ordered list (gap in numbering or first item)
+      const isNewList = !inOrderedList || (lastOrderedNumber > 0 && originalNumber < lastOrderedNumber);
+      
+      if (isNewList) {
+        if (inUnorderedList) {
+          processedLines.push('</ul>');
+          inUnorderedList = false;
+        }
+        if (inOrderedList) {
+          processedLines.push('</ol>');
+        }
+        const olStyle = lastProcessedLineIsHeading() ? listBlockStyleAfterHeading : listBlockStyle;
+        processedLines.push(`<ol style="${olStyle}">`);
+        inOrderedList = true;
+        lastOrderedNumber = 0; // Reset counter for new list
+      }
+      
+      // Preserve original number using value attribute to maintain correct citation order
+      // This is critical for citations which must maintain their original numbering (1, 2, 3...)
+      processedLines.push(`<li value="${originalNumber}" style="${listItemStyle}">${itemText}</li>`);
+      lastOrderedNumber = originalNumber;
     } else {
-      // Fallback for older browsers
-      navigator.clipboard.writeText(markdownContent).then(() => {
-        this.isCopied = true;
-        setTimeout(() => {
-          this.isCopied = false;
-        }, 2000);
-      }).catch(err => {
-        console.error('Failed to copy to clipboard:', err);
-      });
-    }
-  }
-
-  openInCanvas(): void {
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      this.toastService.error('Content is not available yet.');
-      return;
-    }
-    // Only allow supported types for canvas
-    const allowedTypes = ['article', 'blog', 'white_paper', 'executive_brief', 'socialMedia','conduct-research'];
-    if (!allowedTypes.includes(this.metadata.contentType)) {
-      this.toastService.warning('Canvas is only available for articles, blogs, white papers, executive briefs, social media posts, and conduct research.');
-      return;
-    }
-    // Map socialMedia and conduct-research to an accepted canvas type (they function like articles)
-    let canvasContentType: 'article' | 'blog' | 'white_paper' | 'executive_brief';
-    switch (this.metadata.contentType) {
-      case 'article':
-      case 'blog':
-      case 'white_paper':
-      case 'executive_brief':
-        canvasContentType = this.metadata.contentType;
-        break;
-      case 'socialMedia':
-      case 'conduct-research':
-      default:
-        canvasContentType = 'article';
-        break;
-    }
-    this.canvasStateService.loadFromContent(
-      this.metadata.fullContent,
-      this.metadata.topic || 'Untitled',
-      canvasContentType,
-      this.messageId
-    );
-  }
-
-  toggleExportDropdown(): void {
-    this.showExportDropdown = !this.showExportDropdown;
-  }
-  // downloadProcessedFile(): void {
-  //   if (!this.downloadUrl) {
-  //     console.warn('[SlideCreationFlow] No download URL available');
-  //     return;
-  //   }
-
-  //   const link = document.createElement('a');
-  //   link.href = this.downloadUrl;
-  //   link.target = '_blank';
-  //   link.download = 'Slide.pptx'; // default filename
-  //   link.click();
-  // }
-  exportSelected(format: 'word' | 'pdf' | 'ppt'): void {
-    this.showExportDropdown = false;
-    this.isExporting = true;
-    this.isExported = false;
-    this.exportFormat = format.toUpperCase();
-    
-    if (format === 'word') {
-    //  if (this.metadata?.contentType === 'conduct-research') {
-    //     this.exportWordNewLogic();   
-    //   } else {
-        this.downloadWord();       
-      // }
-    } else if(format === 'pdf') {
-      this.downloadPDF();
-    } else if (format === 'ppt') {
-      this.downloadPPT();
-    }
-       
-  }
-
-  private resetExportState(): void {
-    setTimeout(() => {
-      this.isExporting = false;
-    }, 500);
-    
-    this.isExported = true;
-    // Reset success indicator after 3 seconds
-    setTimeout(() => {
-      this.isExported = false;
-    }, 3000);
-  }
-
-  private exportDocument(endpoint: string, extension: string, format: string): void {
-    // Reuse the same approach as EditContentFlowComponent.downloadRevised()
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      this.toastService.error('Content is not available yet.');
-      return;
-    }
-
-    // Clean content the same way as the working implementation
-    const plainText = this.metadata.fullContent.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
-    
-    // Extract first line as subtitle (title for download)
-    const lines = plainText.split('\n').filter(line => line.trim());
-    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : 'Generated Document'; // First line as title, max 150 chars
-    const title = subtitle; // Use subtitle as the main title, not the topic
-    
-    // console.log(`>>>>>>>>>>>>>`,plainText);
-
-    // Get API URL from environment (supports runtime config via window._env)
-    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-    const fullEndpoint = `${apiUrl}${endpoint}`;
-
-    // Use fetch API like the working implementation (same as EditContentFlowComponent.downloadRevised)
-    this.authFetchService.authenticatedFetch(fullEndpoint, {
-      method: 'POST',
-      body: JSON.stringify({
-        content: plainText,
-        title,
-        subtitle: '',  // Don't pass subtitle separately since title is already set to it
-        content_type: this.metadata.contentType,  // Use snake_case to match backend
-
-      })
-    })
-    .then(response => {
-      if (!response.ok) {
-        throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
+      if (inUnorderedList) {
+        processedLines.push('</ul>');
+        inUnorderedList = false;
       }
-      return response.blob();
-    })
-    .then(blob => {
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${this.sanitizeFilename(title)}.${extension}`;
-      link.click();
-      window.URL.revokeObjectURL(url);
-      this.resetExportState();
-    })
-    .catch(error => {
-      console.error(`Error generating ${extension.toUpperCase()}:`, error);
-      this.toastService.error(`Failed to generate ${extension.toUpperCase()} file. Please try again.`);
-      this.isExporting = false;
-    });
-  }
-  private exportUIWord(): void {
-  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-    this.toastService.error('Content is not available yet.');
-    return;
-  }
+      if (inOrderedList) {
+        processedLines.push('</ol>');
+        inOrderedList = false;
+        lastOrderedNumber = 0; // Reset counter when closing ordered list
+      }
 
-  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-  const endpoint = `${apiUrl}/api/v1/export/word-ui`;
-
-  // IMPORTANT: send content AS-IS (no stripping)
-  const content = this.metadata.fullContent;
-
-  // Title logic can stay simple
-  const title = 'Generated Document';
-
-  this.authFetchService.authenticatedFetch(endpoint, {
-    method: 'POST',
-    body: JSON.stringify({
-      content,
-      title
-    })
-  })
-  .then(response => {
-    if (!response.ok) {
-      throw new Error('Failed to generate Word document');
+      if (trimmedLine) {
+        if (trimmedLine.startsWith('<')) {
+          processedLines.push(line);
+        } else {
+          processedLines.push(`<p>${trimmedLine}</p>`);
+        }
+      } else {
+        processedLines.push('');
+      }
     }
-    return response.blob();
-  })
-  .then(blob => {
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${this.sanitizeFilename(title)}.docx`;
-    link.click();
-    window.URL.revokeObjectURL(url);
-    this.resetExportState();
-  })
-  .catch(error => {
-    console.error('UI Word export failed:', error);
-    this.toastService.error('Failed to generate Word file.');
-    this.isExporting = false;
+  }
+
+  if (inUnorderedList) {
+    processedLines.push('</ul>');
+  }
+  if (inOrderedList) {
+    processedLines.push('</ol>');
+    lastOrderedNumber = 0; // Reset counter when closing ordered list
+  }
+
+  html = processedLines.join('\n');
+  html = html.replace(/(<p><\/p>\n?)+/g, '<p></p>');
+  html = html.replace(/<p>\s*<\/p>/g, '');
+
+  // Add id="ref-1", id="ref-2", ... to References list for citation-reference anchors
+  html = html.replace(/(<h2[^>]*>(?:References|Sources|Bibliography)<\/h2>\s*<ol[^>]*>)([\s\S]*?)(<\/ol>)/gi, (_full: string, open: string, content: string, close: string) => {
+    let refIndex = 0;
+    const newContent = content.replace(/<li(\s[^>]*)?>/gi, (_li: string, attrs?: string) => {
+      refIndex += 1;
+      return `<li id="ref-${refIndex}"${attrs || ''}>`;
+    });
+    return open + newContent + close;
   });
+
+  return html;
 }
 
-  private exportPPT(endpoint: string): void {
-  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-    this.toastService.error('Content is not available yet.');
-    return;
-  }
-
-  const plainText = this.metadata.fullContent
-    .replace(/<br>/g, '\n')
-    .replace(/<[^>]+>/g, '');
-
-  const title = this.metadata.topic?.trim() || 'Generated Presentation';
-
-  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-  const fullEndpoint = `${apiUrl}${endpoint}`;
-
-  this.authFetchService.authenticatedFetch(fullEndpoint, {
-    method: 'POST',
-    body: JSON.stringify({
-      content: plainText,
-      title
-    })
-  })
-  .then(response => {
-    if (!response.ok) throw new Error("Failed to start PPT generation");
-    return response.json(); 
-  })
-  .then(data => {
-    console.log("PPT download URL:", data.download_url);
-
-    const downloadUrl = data.download_url;
-    if (!downloadUrl) throw new Error("No download URL returned");
-
-    return fetch(downloadUrl, {
-      method: "GET",
-      headers: {
-        "Accept": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-      }
-    });
-  })
-  .then(response => {
-    if (!response.ok) throw new Error("Failed to retrieve PPT file");
-    return response.blob();
-  })
-  .then(blob => {
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${this.sanitizeFilename(title)}.pptx`;
-    a.click();
-    window.URL.revokeObjectURL(url);
-    this.resetExportState();
-  })
-  .catch(err => {
-    console.error(err);
-    this.toastService.error("Failed to generate PPT file.");
-    this.isExporting = false;
-  });
-}
-
-
-  private downloadFile(extension: string, mimeType: string): void {
-    const blob = new Blob([this.metadata.fullContent], { type: mimeType });
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${this.sanitizeFilename(this.metadata.topic)}.${extension}`;
-    link.click();
-    window.URL.revokeObjectURL(url);
-  }
-
-  private sanitizeFilename(filename: string): string {
-    return filename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-  }
-
-  get isPodcast(): boolean {
-    const result = this.metadata.contentType === 'podcast' && !!this.metadata.podcastAudioUrl;
-    // console.log('[TL Action Buttons] isPodcast check:', {
-    //   contentType: this.metadata.contentType,
-    //   hasPodcastUrl: !!this.metadata.podcastAudioUrl,
-    //   podcastUrl: this.metadata.podcastAudioUrl?.substring(0, 50),
-    //   result: result
-    // });
-    return result;
-  }
+/** 
+ * Extract text from uploaded file
+ * Note: This uses fetch() without auth headers. For authenticated requests,
+ * callers should use their injected HttpClient or AuthFetchService instead.
+ * This function is kept for backward compatibility but may not work if
+ * backend requires authentication.
+ * 
+ * @deprecated Use HttpClient or AuthFetchService in components/services instead
+ */
+export async function extractFileText(file: File): Promise<string> {
+  const formData = new FormData();
+  formData.append('file', file);
   
-  convertToPodcast(): void {
-    if (this.isConvertingToPodcast) return;
-    
-    this.isConvertingToPodcast = true;
-    
-    // Prepare the podcast generation request with correct backend schema
-    const formData = new FormData();
-    formData.append('topic', this.metadata.topic); // Required field
-    formData.append('style', 'dialogue'); // dialogue or monologue
-    formData.append('duration', 'medium'); // short, medium, or long
-    formData.append('context', this.metadata.fullContent); // The content to convert
-    
-    let scriptContent = '';
-    let audioBase64 = '';
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    
-    // Get API URL from environment (supports runtime config via window._env)
-    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-    
-    // Use fetch for SSE streaming
-    this.authFetchService.authenticatedFetchFormData(`${apiUrl}/api/v1/tl/generate-podcast`, {
-      method: 'POST',
-      body: formData
-    })
-    .then(response => {
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  
+  // Get auth token if available (for non-Angular contexts)
+  const headers: HeadersInit = {};
+  
+  // Try to get token from sessionStorage (MSAL stores it there)
+  // This is a workaround since we can't inject AuthService in a utility function
+  try {
+    // Check if we're in a browser environment
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      // Look for MSAL tokens in sessionStorage
+      // MSAL stores tokens with keys like: "<clientId>.<tenantId>.<idtoken/accesstoken>"
+      const keys = Object.keys(sessionStorage);
+      const idTokenKey = keys.find(key => 
+        key.includes('idtoken') && 
+        key.includes(environment.clientId || '')
+      );
       
-      reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      
-      const readStream = (): any => {
-        return reader?.read().then(({ done, value }) => {
-          if (done) {
-            this.isConvertingToPodcast = false;
-            
-            console.log('[Podcast Debug] Stream complete');
-            console.log('[Podcast Debug] audioBase64 length:', audioBase64?.length || 0);
-            console.log('[Podcast Debug] scriptContent length:', scriptContent?.length || 0);
-            
-            // Send podcast to chat with metadata
-            if (audioBase64 && scriptContent) {
-              console.log('[Podcast Debug] Converting base64 to blob...');
-              const audioBlob = this.base64ToBlob(audioBase64, 'audio/mpeg');
-              console.log('[Podcast Debug] Blob size:', audioBlob.size, 'bytes');
-              
-              const audioUrl = URL.createObjectURL(audioBlob);
-              console.log('[Podcast Debug] Audio URL created:', audioUrl);
-              
-              // Create metadata for the podcast message
-              const podcastMetadata: ThoughtLeadershipMetadata = {
-                contentType: 'podcast',
-                topic: `${this.metadata.topic} (Podcast)`,
-                fullContent: scriptContent,
-                showActions: true,
-                podcastAudioUrl: audioUrl,
-                podcastFilename: `${this.sanitizeFilename(this.metadata.topic)}_podcast.mp3`
-              };
-              
-              console.log('[Podcast Debug] Metadata:', podcastMetadata);
-              
-              // Send to chat via bridge
-              const podcastMessage = `📻 **Podcast Generated Successfully!**\n\n**Script:**\n\n${scriptContent}\n\n🎧 **Audio Ready!** Listen below or download the MP3 file.`;
-              this.tlChatBridge.sendToChat(podcastMessage, podcastMetadata);
-              
-              console.log('[Podcast Debug] Sent to chat via bridge');
-              this.toastService.success('Podcast generated and added to chat!');
-            } else {
-              console.error('[Podcast Debug] Missing data - audioBase64:', !!audioBase64, 'scriptContent:', !!scriptContent);
+      if (idTokenKey) {
+        const tokenData = sessionStorage.getItem(idTokenKey);
+        if (tokenData) {
+          try {
+            const parsed = JSON.parse(tokenData);
+            const secret = parsed.secret;
+            if (secret) {
+              headers['Authorization'] = `Bearer ${secret}`;
+              console.log('[extractFileText] Added auth token from sessionStorage');
             }
-            return;
+          } catch (e) {
+            console.warn('[extractFileText] Failed to parse token from sessionStorage:', e);
           }
-          
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          
-          lines.forEach(line => {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6).trim();
-              if (data) {
-                try {
-                  const parsed = JSON.parse(data);
-                  console.log('[Podcast Debug] SSE event type:', parsed.type);
-                  
-                  if (parsed.type === 'script') {
-                    scriptContent = parsed.content;
-                    console.log('[Podcast Debug] Script received, length:', scriptContent.length);
-                  } else if (parsed.type === 'complete') {
-                    audioBase64 = parsed.audio;
-                    console.log('[Podcast Debug] Audio received, base64 length:', audioBase64?.length || 0);
-                  } else if (parsed.type === 'error') {
-                    console.error('Podcast generation error:', parsed.message);
-                    this.toastService.error(`Error generating podcast: ${parsed.message}`);
-                    
-                    // Abort the reader and reset state immediately
-                    reader?.cancel();
-                    this.isConvertingToPodcast = false;
-                    throw new Error(parsed.message);
-                  } else if (parsed.type === 'progress') {
-                    console.log('[Podcast Debug] Progress:', parsed.message);
-                  }
-                } catch (e) {
-                  console.error('Error parsing SSE data:', e);
-                }
-              }
-            }
-          });
-          
-          return readStream();
-        }).catch((error) => {
-          // Handle stream reading errors
-          this.isConvertingToPodcast = false;
-          reader?.cancel();
-          throw error;
-        });
-      };
-      
-      return readStream();
-    })
-    .catch(error => {
-      console.error('Error converting to podcast:', error);
-      this.toastService.error(`Failed to convert content to podcast: ${error.message || 'Unknown error'}`);
-      this.isConvertingToPodcast = false;
-      reader?.cancel();
-    });
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[extractFileText] Failed to get auth token:', e);
   }
   
-  private base64ToBlob(base64: string, contentType: string): Blob {
-    const byteCharacters = atob(base64);
-    const byteArrays = [];
-    
-    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
-      const slice = byteCharacters.slice(offset, offset + 512);
-      const byteNumbers = new Array(slice.length);
-      for (let i = 0; i < slice.length; i++) {
-        byteNumbers[i] = slice.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      byteArrays.push(byteArray);
+  const response = await fetch(`${apiUrl}/api/v1/export/extract-text`, {
+    method: 'POST',
+    headers: headers,
+    body: formData
+  });
+  
+  if (!response.ok) {
+    throw new Error('Failed to extract text from file');
+  }
+  
+  const data = await response.json();
+  return data.text || '';
+}
+
+export interface EditorialFeedbackItem {
+  issue: string;
+  rule?: string;
+  impact?: string;
+  fix?: string;
+  priority?: string;
+}
+
+/**
+ * Parse editorial feedback text into structured items.
+ * Handles lines that start with "- Issue:", "- Rule:", "- Impact:", "- Fix:", "- Priority:".
+ */
+export function parseEditorialFeedback(text: string): EditorialFeedbackItem[] {
+  if (!text) return [];
+
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
+
+  const items: EditorialFeedbackItem[] = [];
+  let current: EditorialFeedbackItem | null = null;
+
+  const stripQuotes = (s: string) => s.trim().replace(/^["“]+|["”]+$/g, '').trim();
+
+  for (let raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    const issueMatch = line.match(/^-+\s*\*{0,2}Issue\*{0,2}:\s*(.*)/i);
+    const ruleMatch = line.match(/^-+\s*\*{0,2}Rule\*{0,2}:\s*(.*)/i);
+    const impactMatch = line.match(/^-+\s*\*{0,2}Impact\*{0,2}:\s*(.*)/i);
+    const fixMatch = line.match(/^-+\s*\*{0,2}Fix\*{0,2}:\s*(.*)/i);
+    const priorityMatch = line.match(/^-+\s*\*{0,2}Priority\*{0,2}:\s*(.*)/i);
+
+    if (issueMatch) {
+      // push previous
+      if (current) items.push(current);
+      current = { issue: stripQuotes(issueMatch[1] || '') };
+      continue;
     }
-    
-    return new Blob(byteArrays, { type: contentType });
+
+    if (!current) {
+      // ignore lines outside an issue block
+      continue;
+    }
+
+    if (ruleMatch) {
+      current.rule = ruleMatch[1].trim();
+      continue;
+    }
+    if (impactMatch) {
+      current.impact = impactMatch[1].trim();
+      continue;
+    }
+    if (fixMatch) {
+      current.fix = fixMatch[1].trim();
+      continue;
+    }
+    if (priorityMatch) {
+      current.priority = priorityMatch[1].trim();
+      continue;
+    }
+
+    // If line starts with '-' but no recognized label, try to append to last field (fix or impact)
+    const dashContent = line.replace(/^-+\s*/, '');
+    if (dashContent) {
+      // prefer appending to fix > impact > rule
+      if (current.fix) current.fix += ' ' + dashContent;
+      else if (current.impact) current.impact += ' ' + dashContent;
+      else if (current.rule) current.rule += ' ' + dashContent;
+    }
   }
 
- 
+  if (current) items.push(current);
+  return items;
+}
+
+/**
+ * Render editorial feedback items into a simple HTML string (escaped).
+ * Use ngFor in templates if possible instead of innerHTML.
+ */
+export function renderEditorialFeedbackHtml(items: EditorialFeedbackItem[]): string {
+  if (!items || items.length === 0) return '';
+
+  const esc = (s?: string) =>
+    (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const cards = items.map(it => {
+    const badge = it.priority ? `<span class="ef-priority">${esc(it.priority)}</span>` : '';
+    return `
+      <div class="ef-card">
+        <div class="ef-header">
+          <div class="ef-issue">${esc(it.issue)}</div>
+          ${badge}
+        </div>
+        <div class="ef-body">
+          ${it.rule ? `<div class="ef-row"><strong>Rule:</strong> ${esc(it.rule)}</div>` : ''}
+          ${it.impact ? `<div class="ef-row"><strong>Impact:</strong> ${esc(it.impact)}</div>` : ''}
+          ${it.fix ? `<div class="ef-row"><strong>Fix:</strong> ${esc(it.fix)}</div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('\n');
+
+  return `<div class="ef-container">${cards}</div>`;
+}
+
+
+/**
+ * Block type information for formatting
+ */
+export interface BlockTypeInfo {
+  index: number;
+  type: string;
+  level?: number;
+}
+
+
+/**
+ * Format final article with block type information to produce semantic HTML.
+ * Groups consecutive bullet_item blocks into proper <ul> or <ol> lists.
+ * 
+ * @param article - The article content (markdown or plain text)
+ * @param blockTypes - Array of block type information with index, type, and optional level
+ * @returns Formatted HTML with proper semantic structure
+ */
+export function formatFinalArticleWithBlockTypes(
+  article: string, 
+  blockTypes: BlockTypeInfo[]
+): string {
+  if (!blockTypes || blockTypes.length === 0) {
+    // If no block types, just convert markdown to HTML
+    return convertMarkdownToHtml(article);
+  }
+
+  // Split article into paragraphs (assuming double newline separation)
+  const paragraphs = article.split(/\n\n+/);
+  
+  // Create a map of index to block type
+  const blockTypeMap = new Map<number, {type: string, level?: number}>();
+  blockTypes.forEach(bt => {
+    blockTypeMap.set(bt.index, {type: bt.type, level: bt.level});
+  });
+
+  // First pass: format individual paragraphs
+  /** 'numbered' = preserve 1., 2., A., i. etc. (use <ol>); 'bullet' = use • (use <ul>) */
+  type ListKind = 'numbered' | 'bullet';
+  interface ParagraphBlock {
+    type: string;
+    content: string;
+    level: number;
+    rawContent?: string;
+    hasBulletIcon?: boolean;
+    listKind?: ListKind;   // For bullet_item: preserve numbers/letters vs force bullet
+    listValue?: number;   // For numbered: value for <li value="..."> (1, 2, 3...)
+  }
+
+  const formattedParagraphs = paragraphs
+    .map((para, idx): ParagraphBlock | null => {
+      const trimmedPara = para.trim();
+      if (!trimmedPara) return null; // Filter out empty paragraphs
+
+      const blockInfo = blockTypeMap.get(idx);
+      if (!blockInfo) {
+        // Default to paragraph if no block type info
+        const formatted = convertMarkdownToHtml(trimmedPara);
+        const content = formatted.startsWith('<') ? formatted : `<p>${formatted}</p>`;
+        return {
+          type: 'paragraph',
+          content: content,
+          level: 0
+        };
+      }
+
+      // Convert markdown in the paragraph first
+      let formatted = convertMarkdownToHtml(trimmedPara);
+      
+      // Remove wrapping <p> tags if they exist at the start/end (we'll add our own based on block type)
+      // Only remove if the entire content is wrapped in a single <p> tag
+      formatted = formatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+
+      // Apply block type formatting (matches backend export formatting)
+      switch (blockInfo.type) {
+        case 'title':
+          // Title: 24pt font (matches PDF), bold, center aligned, spacing matches backend
+          // Note: Title is typically on cover page in export, but for UI display we show it
+          return {
+            type: 'title',
+            content: `<h1 style="font-size: 24pt; font-weight: 700; font-family: 'Helvetica', 'Arial', sans-serif; display: block; margin-top: 1.25em; margin-bottom: 0.35em; text-align: center; color: #D04A02;">${formatted}</h1>`,
+            level: 0
+          };
+        
+        case 'heading':
+          // Heading: 14pt font, bold (Helvetica-Bold), black, spacing matches backend (0.9em top, 0.2em bottom)
+          const headingLevel = blockInfo.level || 1;
+          const headingTag = `h${Math.min(Math.max(headingLevel, 1), 6)}`;
+          return {
+            type: 'heading',
+            content: `<${headingTag} style="font-size: 14pt; font-weight: 700; font-family: 'Helvetica-Bold', 'Arial Bold', sans-serif; display: block; margin-top: 0.9em; margin-bottom: 0.2em; color: #000000;">${formatted}</${headingTag}>`,
+            level: headingLevel
+          };
+        
+        case 'bullet_item': {
+          // Preserve numbered/lettered list prefixes (match backend FINAL_FORMATTING_PROMPT).
+          // Only use bullet icon (•) when content has bullet prefix (•, -, *) or no prefix.
+          const numPrefixMatch = trimmedPara.match(/^(\d+)[.)]\s+(.+)$/s);
+          const romanPrefixMatch = trimmedPara.match(/^([ivxlcdmIVXLCDM]+)[.)]\s+(.+)$/i);
+          const letterPrefixMatch = trimmedPara.match(/^([A-Za-z])[.)]\s+(.+)$/s);
+          const bulletPrefixMatch = trimmedPara.match(/^[•\-\*]\s+(.+)$/s);
+
+          let listKind: ListKind = 'bullet';
+          let listValue: number | undefined;
+          let processedContent: string;
+          let prefix = '';
+
+          if (numPrefixMatch) {
+            listKind = 'numbered';
+            listValue = parseInt(numPrefixMatch[1], 10);
+            prefix = numPrefixMatch[1] + '. ';
+            processedContent = numPrefixMatch[2].trim();
+          } else if (romanPrefixMatch) {
+            listKind = 'numbered';
+            prefix = romanPrefixMatch[1] + '. ';
+            processedContent = romanPrefixMatch[2].trim();
+          } else if (letterPrefixMatch) {
+            listKind = 'numbered';
+            prefix = letterPrefixMatch[1] + '. ';
+            processedContent = letterPrefixMatch[2].trim();
+          } else if (bulletPrefixMatch) {
+            prefix = '• ';
+            processedContent = bulletPrefixMatch[1].trim();
+          } else {
+            prefix = '• ';
+            processedContent = trimmedPara;
+          }
+
+          // Format text before ":" as bold, after ":" as normal (for both numbered and bullet)
+          const colonIndex = processedContent.indexOf(':');
+          if (colonIndex > 0) {
+            const beforeColon = processedContent.substring(0, colonIndex).trim();
+            const afterColon = processedContent.substring(colonIndex + 1).trim();
+            let beforeFormatted = convertMarkdownToHtml(beforeColon);
+            let afterFormatted = convertMarkdownToHtml(afterColon);
+            beforeFormatted = beforeFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+            afterFormatted = afterFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+            processedContent = `${prefix}<strong>${beforeFormatted}</strong>: ${afterFormatted}`;
+          } else {
+            processedContent = convertMarkdownToHtml(processedContent);
+            processedContent = processedContent.replace(/^<p>(.*)<\/p>$/s, '$1');
+            processedContent = prefix + processedContent;
+          }
+
+          return {
+            type: 'bullet_item',
+            content: processedContent,
+            level: blockInfo.level || 0,
+            rawContent: trimmedPara,
+            hasBulletIcon: listKind === 'bullet',
+            listKind,
+            listValue
+          };
+        }
+        
+        case 'paragraph':
+        default:
+          // Paragraph: 11pt font, line-height 1.5 (matches backend), justify alignment, spacing matches backend
+          // margin-top: 0.15em (2pt), margin-bottom: 0.7em (8pt)
+          return {
+            type: 'paragraph',
+            content: `<p style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; display: block; text-align: justify; margin-top: 0.15em; margin-bottom: 0.7em; line-height: 1.5;">${formatted}</p>`,
+            level: 0
+          };
+      }
+    })
+    .filter((para): para is ParagraphBlock => para !== null);
+
+  // Second pass: group consecutive bullet_item blocks into <ol> (numbered) or <ul> (bullet)
+  const finalOutput: string[] = [];
+  type ListItem = { content: string; level: number; rawContent: string; hasBulletIcon?: boolean; listKind?: ListKind; listValue?: number };
+  let currentList: ListItem[] = [];
+  let prevBlockType: string | null = null;
+  let prevBlockIndex: number = -1;
+
+  const flushList = (list: ListItem[], marginTop: string, marginBottom: string) => {
+    if (list.length === 0) return;
+    const isNumbered = list.every(item => item.listKind === 'numbered');
+    // Tighter spacing for citations/references: less gap between list and heading, and between list items
+    const listStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; padding-left: 1.5em; margin-top: " + marginTop + "; margin-bottom: " + marginBottom + "; line-height: 1.4;";
+    const liStyle = "display: list-item; margin: 0.15em 0; line-height: 1.4;";
+    if (isNumbered) {
+      // Preserve numbered/lettered prefixes (content already has "1. ", "A. ", "i. " etc.)
+      finalOutput.push(`<ol style="${listStyle} list-style-type: none;">`);
+      list.forEach(item => finalOutput.push(`<li style="${liStyle}">${item.content}</li>`));
+      finalOutput.push('</ol>');
+    } else {
+      finalOutput.push(`<ul style="${listStyle} list-style-type: none;">`);
+      list.forEach(item => finalOutput.push(`<li style="${liStyle}">${item.content}</li>`));
+      finalOutput.push('</ul>');
+    }
+  };
+
+  for (let i = 0; i < formattedParagraphs.length; i++) {
+    const para = formattedParagraphs[i];
+    const nextPara = i < formattedParagraphs.length - 1 ? formattedParagraphs[i + 1] : null;
+    
+    if (para.type === 'bullet_item') {
+      currentList.push({
+        content: para.content,
+        level: para.level,
+        rawContent: para.rawContent || '',
+        hasBulletIcon: para.hasBulletIcon,
+        listKind: para.listKind,
+        listValue: para.listValue
+      });
+      prevBlockType = 'bullet_item';
+      prevBlockIndex = i;
+    } else {
+      // Close any open list before processing non-list item
+      if (currentList.length > 0) {
+        const listMarginTop = prevBlockType === 'heading' ? '0.1em' : (prevBlockType === 'paragraph' ? '0.2em' : '0.4em');
+        const listMarginBottom = nextPara && nextPara.type === 'paragraph' ? '0.2em' : '0.4em';
+        flushList(currentList, listMarginTop, listMarginBottom);
+        currentList = [];
+      }
+
+      // Adjust paragraph margins based on context (matches backend export)
+      if (para.type === 'paragraph') {
+        // Reduce bottom margin if followed by bullet list (0.25em/3pt matches backend)
+        if (nextPara && nextPara.type === 'bullet_item') {
+          para.content = para.content.replace(/margin-bottom:\s*[^;]+;?/g, 'margin-bottom: 0.25em;');
+        }
+        // Reduce top margin if following heading - decrease line spacing between heading and paragraph
+        if (prevBlockType === 'heading') {
+          para.content = para.content.replace(/margin-top:\s*[^;]+;?/g, 'margin-top: 0.05em;');
+        }
+      }
+
+      // Add non-list paragraph
+      finalOutput.push(para.content);
+      prevBlockType = para.type;
+      prevBlockIndex = i;
+    }
+  }
+
+  // Close any remaining open list
+  if (currentList.length > 0) {
+    const listMarginTop = prevBlockType === 'heading' ? '0.1em' : (prevBlockType === 'paragraph' ? '0.2em' : '0.4em');
+    flushList(currentList, listMarginTop, '0.4em');
+  }
+
+  return finalOutput.join('\n');
 }
