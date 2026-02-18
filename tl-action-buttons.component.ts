@@ -14,7 +14,7 @@ import { AuthFetchService } from '../../../../../core/services/auth-fetch.servic
 import { extractDocumentTitle } from '../../../../../core/utils/edit-content.utils';
 import { formatFinalArticleWithBlockTypes} from '../../../../../core/utils/edit-content.utils';
 import { BlockTypeInfo } from '../../../../../core/utils/edit-content.utils';
-import { renderMarkdownForDisplay } from '../../../../../core/utils/edit-content.utils';
+import { marked } from 'marked';
 
 @Component({
     selector: 'app-tl-action-buttons',
@@ -377,8 +377,8 @@ sendToChat(): void {
   copyToClipboard(): void {
     const markdownContent = this.metadata.fullContent ?? '';
     
-    // Convert markdown to HTML (same format as UI display)
-    const htmlContent = renderMarkdownForDisplay(markdownContent);
+    // Convert markdown to clean HTML (without UI-specific styles)
+    const htmlContent = marked.parse(markdownContent) as string;
     
     // Use ClipboardItem to support both HTML and plain text formats
     if (navigator.clipboard && navigator.clipboard.write) {
@@ -389,7 +389,6 @@ sendToChat(): void {
       
       navigator.clipboard.write([clipboardItem]).then(() => {
         this.isCopied = true;
-        // Reset the "copied" feedback after 2 seconds
         setTimeout(() => {
           this.isCopied = false;
         }, 2000);
