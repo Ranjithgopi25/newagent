@@ -570,6 +570,7 @@ def development_content_combined_node(state: SupervisorState) -> SupervisorState
     logger.info("RUNNING: development_content_combined_node")
     
     original_results = state.get("editor_results", [])
+    original_document = state["document"]  # Preserve original for validation
     
     # Run article analysis if needed
     if not state.get("article_analysis"):
@@ -579,6 +580,15 @@ def development_content_combined_node(state: SupervisorState) -> SupervisorState
     dev_state = development_editor_node(state)
     dev_result = dev_state["editor_results"][-1]
     
+    # Validate Development Editor result using article_validation_node
+    # Ensure original document is used for validation
+    validation_state = article_validation_node({
+        **dev_state, 
+        **state,
+        "document": original_document  # Explicitly use original document
+    })
+    dev_state = {**dev_state, **validation_state}
+    
     # Update document with Development's suggestions for Content Editor
     updated_doc = DocumentStructure(blocks=[
         DocumentBlock(id=b.id, type=b.type, level=b.level, 
@@ -586,15 +596,29 @@ def development_content_combined_node(state: SupervisorState) -> SupervisorState
         for b in dev_result.blocks
     ])
     
-    # Run cross-paragraph analysis if needed
+    # Run cross-paragraph analysis if needed (using validated dev_result document)
     if not state.get("cross_paragraph_analysis"):
-        state = {**state, **cross_paragraph_analysis_node({"document": updated_doc, **state})}
+        analysis_state = cross_paragraph_analysis_node({"document": updated_doc, **state})
+        state = {**state, **analysis_state}
     
-    # Run Content Editor on updated document
-    content_state = content_editor_node({**dev_state, "document": updated_doc})
+    # Run Content Editor on updated document (with validation result and cross-paragraph analysis in state)
+    content_state = content_editor_node({
+        **dev_state,
+        **state,
+        "document": updated_doc  # Use updated document for Content Editor
+    })
     content_result = content_state["editor_results"][-1]
     
-    # Merge results
+    # Validate Content Editor result using content_validation_node
+    # Ensure original document is used for validation (not updated_doc)
+    content_validation_state = content_validation_node({
+        **content_state,
+        **state,
+        "document": original_document  # Explicitly use original document for validation
+    })
+    content_state = {**content_state, **content_validation_state}
+    
+    # Merge results (after both validations)
     merged_result = merge_two_editor_results(dev_result, content_result, "development+content")
     
     return {
