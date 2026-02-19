@@ -590,7 +590,6 @@ def development_content_combined_node(state: SupervisorState) -> SupervisorState
     }
     # Debug: Log editor_results to verify development editor result is present
     editor_results_count = len(validation_input_state.get("editor_results", []))
-    logger.info(f"Validating development editor: {editor_results_count} editor results in state")
     validation_state = article_validation_node(validation_input_state)
     dev_state = {**dev_state, **validation_state}
     
@@ -693,11 +692,6 @@ def article_validation_node(state: SupervisorState) -> SupervisorState:
     article_analysis_text = state.get("article_analysis") or ""
     editor_results = state.get("editor_results", [])
     
-    # Debug: Log editor_results to help diagnose issues
-    logger.info(f"article_validation_node: Found {len(editor_results)} editor results")
-    for i, result in enumerate(editor_results):
-        logger.info(f"  Result {i}: editor_type={result.editor_type}")
-    
     dev_editor_result = None
     for result in reversed(editor_results):
         if result.editor_type == "development":
@@ -706,7 +700,6 @@ def article_validation_node(state: SupervisorState) -> SupervisorState:
     
     if not dev_editor_result:
         logger.error("No Development Editor result found for validation")
-        logger.error(f"Available editor_types: {[r.editor_type for r in editor_results]}")
         return {
             "validation_result": DevelopmentEditorValidationResult(
                 score=0,
@@ -767,11 +760,6 @@ def content_validation_node(state: SupervisorState) -> SupervisorState:
     cross_paragraph_analysis_text = state.get("cross_paragraph_analysis") or ""
     editor_results = state.get("editor_results", [])
     
-    # Debug: Log editor_results to help diagnose issues
-    logger.info(f"content_validation_node: Found {len(editor_results)} editor results")
-    for i, result in enumerate(editor_results):
-        logger.info(f"  Result {i}: editor_type={result.editor_type}")
-    
     content_editor_result = None
     for result in reversed(editor_results):
         if result.editor_type == "content":
@@ -780,7 +768,6 @@ def content_validation_node(state: SupervisorState) -> SupervisorState:
     
     if not content_editor_result:
         logger.error("No Content Editor result found for validation")
-        logger.error(f"Available editor_types: {[r.editor_type for r in editor_results]}")
         return {
             "content_validation_result": ContentEditorValidationResult(
                 score=0,
@@ -1052,7 +1039,7 @@ def route_after_content_validation(state: SupervisorState) -> str:
     """After validation: retry if score < 8 (max 2 retries), else merge when score >= 8."""
     validation_result = state.get("content_validation_result")
     retry_count = state.get("content_editor_retry_count", 0)
-    MAX_RETRIES = 1
+    MAX_RETRIES = 2
     
     if validation_result:
         score = validation_result.score
@@ -1082,7 +1069,7 @@ def route_after_validation(state: SupervisorState) -> str:
     """After validation: retry if score < 8 (max 2 retries), else merge when score >= 8."""
     validation_result = state.get("validation_result")
     retry_count = state.get("dev_editor_retry_count", 0)
-    MAX_RETRIES = 1
+    MAX_RETRIES = 2
     
     if validation_result:
         score = validation_result.score
