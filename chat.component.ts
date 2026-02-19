@@ -31,7 +31,8 @@ from .schema import (
     ContentEditorValidationResult,
     DocumentBlock,
     FeedbackItem,
-    SingleEditorFeedback
+    SingleEditorFeedback,
+    ListedBlockEditResult
 )
 
 from .tools import (
@@ -45,12 +46,9 @@ from .tools import (
     validate_content_editor,
 )
 
-logger = logging.getLogger(__name__)
+from .prompt import MERGE_DUPLICATE_FEEDBACK_PROMPT
 
-# ---------------------------------------------------------------------
-# CONSTANTS
-# ---------------------------------------------------------------------
-MAX_RETRIES = 2  # Maximum retry attempts for editors
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------
 # LLM (shared)
@@ -581,57 +579,22 @@ def development_content_combined_node(state: SupervisorState) -> SupervisorState
     if not state.get("article_analysis"):
         state = {**state, **article_analysis_node(state)}
     
-    # =====================================================================
-    # DEVELOPMENT EDITOR WITH RETRY LOGIC (reuses existing nodes)
-    # =====================================================================
-    dev_state = state
-    dev_result = None
+    # Run Development Editor
+    dev_state = development_editor_node(state)
+    dev_result = dev_state["editor_results"][-1]
     
-    while True:
-        # Get current retry count from state (retry nodes increment it themselves)
-        current_retry_count = dev_state.get("dev_editor_retry_count", 0)
-        
-        # Run Development Editor (initial or retry) - reuse existing nodes
-        if current_retry_count == 0:
-            dev_state = development_editor_node(dev_state)
-        else:
-            # Retry node increments count internally, so pass current state as-is
-            dev_state = development_editor_retry_node(dev_state)
-        
-        dev_result = dev_state["editor_results"][-1]
-        
-        # Validate Development Editor result - reuse existing validation node
-        validation_input_state = {
-            **state,
-            **dev_state,  # dev_state comes last to preserve editor_results (includes development editor result)
-            "document": original_document  # Explicitly use original document for validation
-        }
-        validation_state = article_validation_node(validation_input_state)
-        dev_state = {**dev_state, **validation_state}
-        
-        # Check validation score (reuse same logic as route_after_validation)
-        validation_result = dev_state.get("validation_result")
-        if validation_result and hasattr(validation_result, 'score'):
-            score = validation_result.score
-            retry_count = dev_state.get("dev_editor_retry_count", 0)
-            logger.info(f"Development Editor validation (attempt {retry_count + 1}): score={score}/10")
-            
-            # If score >= 8, proceed to Content Editor
-            if score >= 8:
-                logger.info(f"Development Editor passed (score {score} >= 8), proceeding to Content Editor")
-                break
-            
-            # If score < 8 and retries remaining, retry (retry node will increment count)
-            if retry_count < MAX_RETRIES:
-                logger.info(f"Development Editor score {score} < 8, retrying (attempt {retry_count + 1}/{MAX_RETRIES})")
-                continue
-            else:
-                logger.info(f"Development Editor score {score} < 8 but max retries ({MAX_RETRIES}) reached, proceeding to Content Editor")
-                break
-        else:
-            # No validation result, proceed to Content Editor
-            logger.warning("No Development Editor validation result found, proceeding to Content Editor")
-            break
+    # Validate Development Editor result using article_validation_node
+    # Ensure original document is used for validation
+    # IMPORTANT: dev_state must come last to preserve editor_results with development editor result
+    validation_input_state = {
+        **state,
+        **dev_state,  # dev_state comes last to preserve editor_results (includes development editor result)
+        "document": original_document  # Explicitly use original document
+    }
+    # Debug: Log editor_results to verify development editor result is present
+    editor_results_count = len(validation_input_state.get("editor_results", []))
+    validation_state = article_validation_node(validation_input_state)
+    dev_state = {**dev_state, **validation_state}
     
     # Update document with Development's suggestions for Content Editor
     updated_doc = DocumentStructure(blocks=[
@@ -645,77 +608,109 @@ def development_content_combined_node(state: SupervisorState) -> SupervisorState
         analysis_state = cross_paragraph_analysis_node({"document": updated_doc, **state})
         state = {**state, **analysis_state}
     
-    # =====================================================================
-    # CONTENT EDITOR WITH RETRY LOGIC (reuses existing nodes)
-    # =====================================================================
-    content_state = {
+    # Run Content Editor on updated document (with validation result and cross-paragraph analysis in state)
+    content_state = content_editor_node({
         **dev_state,
         **state,
         "document": updated_doc  # Use updated document for Content Editor
-    }
-    content_result = None
+    })
+    content_result = content_state["editor_results"][-1]
     
-    while True:
-        # Get current retry count from state (retry nodes increment it themselves)
-        current_retry_count = content_state.get("content_editor_retry_count", 0)
-        
-        # Run Content Editor (initial or retry) - reuse existing nodes
-        if current_retry_count == 0:
-            content_state = content_editor_node(content_state)
-        else:
-            # For retry, use updated document (with Development's changes) - Content Editor works on Development's output
-            # Retry node increments count internally, so pass current state as-is
-            content_state = content_editor_retry_node({
-                **content_state,
-                "document": updated_doc  # Use updated document for retry (Content Editor edits Development's output)
-            })
-        
-        content_result = content_state["editor_results"][-1]
-        
-        # Validate Content Editor result - reuse existing validation node
-        content_validation_input_state = {
-            **state,
-            **content_state,  # content_state comes last to preserve editor_results (includes content editor result)
-            "document": original_document  # Explicitly use original document for validation
-        }
-        content_validation_state = content_validation_node(content_validation_input_state)
-        content_state = {**content_state, **content_validation_state}
-        
-        # Check validation score (reuse same logic as route_after_content_validation)
-        content_validation_result = content_state.get("content_validation_result")
-        if content_validation_result and hasattr(content_validation_result, 'score'):
-            score = content_validation_result.score
-            retry_count = content_state.get("content_editor_retry_count", 0)
-            logger.info(f"Content Editor validation (attempt {retry_count + 1}): score={score}/10")
-            
-            # If score >= 8, proceed to merge
-            if score >= 8:
-                logger.info(f"Content Editor passed (score {score} >= 8), proceeding to merge")
-                break
-            
-            # If score < 8 and retries remaining, retry (retry node will increment count)
-            if retry_count < MAX_RETRIES:
-                logger.info(f"Content Editor score {score} < 8, retrying (attempt {retry_count + 1}/{MAX_RETRIES})")
-                continue
-            else:
-                logger.info(f"Content Editor score {score} < 8 but max retries ({MAX_RETRIES}) reached, proceeding to merge")
-                break
-        else:
-            # No validation result, proceed to merge
-            logger.warning("No Content Editor validation result found, proceeding to merge")
-            break
+    # Validate Content Editor result using content_validation_node
+    # Ensure original document is used for validation (not updated_doc)
+    # IMPORTANT: content_state must come last to preserve editor_results with content editor result
+    content_validation_input_state = {
+        **state,
+        **content_state,  # content_state comes last to preserve editor_results (includes content editor result)
+        "document": original_document  # Explicitly use original document for validation
+    }
+    # Debug: Log editor_results to verify content editor result is present
+    editor_results_count = len(content_validation_input_state.get("editor_results", []))
+    logger.info(f"Validating content editor: {editor_results_count} editor results in state")
+    content_validation_state = content_validation_node(content_validation_input_state)
+    content_state = {**content_state, **content_validation_state}
     
     # Merge results (after both validations)
     merged_result = merge_two_editor_results(dev_result, content_result, "development+content")
     
+    # Resolve duplicate feedback: combine impact and rule_used if same sentence
+    try:
+        merged_result_json = json.dumps({
+            "blocks": [
+                {
+                    "id": block.id,
+                    "type": block.type,
+                    "level": block.level,
+                    "original_text": block.original_text,
+                    "suggested_text": block.suggested_text or block.original_text,
+                    "has_changes": block.has_changes,
+                    "feedback_edit": [
+                        {
+                            "editor": fb.editor,
+                            "items": [
+                                {
+                                    "issue": item.issue,
+                                    "fix": item.fix,
+                                    "impact": item.impact,
+                                    "rule_used": item.rule_used,
+                                    "priority": item.priority
+                                }
+                                for item in fb.items
+                            ]
+                        }
+                        for fb in block.feedback_edit
+                    ]
+                }
+                for block in merged_result.blocks
+            ]
+        }, indent=2)
+        
+        prompt = MERGE_DUPLICATE_FEEDBACK_PROMPT.replace("{merged_result_json}", merged_result_json)
+        response = llm.with_structured_output(ListedBlockEditResult).invoke([HumanMessage(content=prompt)])
+        llm_blocks = json.loads(response.model_dump_json())["blocks"]
+        
+        resolved_blocks = []
+        for llm_block in llm_blocks:
+            raw_feedback = llm_block.get("feedback_edit", [])
+            normalized_feedback = []
+            
+            if isinstance(raw_feedback, list):
+                for fb_item in raw_feedback:
+                    if isinstance(fb_item, dict):
+                        try:
+                            normalized_feedback.append(SingleEditorFeedback(**fb_item))
+                        except:
+                            pass
+            elif isinstance(raw_feedback, dict):
+                for editor_name, items in raw_feedback.items():
+                    if isinstance(items, list):
+                        feedback_items = [FeedbackItem(**fb) for fb in items if isinstance(fb, dict)]
+                        if feedback_items:
+                            normalized_feedback.append(SingleEditorFeedback(editor=editor_name, items=feedback_items))
+            
+            resolved_blocks.append(BlockEditResult(
+                id=llm_block.get("id", ""),
+                type=llm_block.get("type", "paragraph"),
+                level=llm_block.get("level", 0),
+                original_text=llm_block.get("original_text", ""),
+                suggested_text=llm_block.get("suggested_text"),
+                has_changes=llm_block.get("has_changes", False),
+                feedback_edit=normalized_feedback,
+            ))
+        
+        merged_result = EditorResult(
+            editor_type=merged_result.editor_type,
+            blocks=resolved_blocks,
+            warnings=merged_result.warnings,
+            raw_output=None
+        )
+    except Exception as e:
+        logger.warning(f"Failed to resolve duplicate feedback: {e}")
+    
     return {
         "editor_results": original_results + [merged_result],
         "article_analysis": state.get("article_analysis"),
-        "cross_paragraph_analysis": state.get("cross_paragraph_analysis"),
-        "validation_result": dev_state.get("validation_result"),
-        "content_validation_result": content_state.get("content_validation_result"),
-        "dev_editor_retry_count": dev_state.get("dev_editor_retry_count", 0),
-        "content_editor_retry_count": content_state.get("content_editor_retry_count", 0)
+        "cross_paragraph_analysis": state.get("cross_paragraph_analysis")
     }
 
 
@@ -742,6 +737,80 @@ def line_copy_combined_node(state: SupervisorState) -> SupervisorState:
     
     # Merge results
     merged_result = merge_two_editor_results(line_result, copy_result, "line+copy")
+    
+    # Resolve duplicate feedback: combine impact and rule_used if same sentence
+    try:
+        merged_result_json = json.dumps({
+            "blocks": [
+                {
+                    "id": block.id,
+                    "type": block.type,
+                    "level": block.level,
+                    "original_text": block.original_text,
+                    "suggested_text": block.suggested_text or block.original_text,
+                    "has_changes": block.has_changes,
+                    "feedback_edit": [
+                        {
+                            "editor": fb.editor,
+                            "items": [
+                                {
+                                    "issue": item.issue,
+                                    "fix": item.fix,
+                                    "impact": item.impact,
+                                    "rule_used": item.rule_used,
+                                    "priority": item.priority
+                                }
+                                for item in fb.items
+                            ]
+                        }
+                        for fb in block.feedback_edit
+                    ]
+                }
+                for block in merged_result.blocks
+            ]
+        }, indent=2)
+        
+        prompt = MERGE_DUPLICATE_FEEDBACK_PROMPT.replace("{merged_result_json}", merged_result_json)
+        response = llm.with_structured_output(ListedBlockEditResult).invoke([HumanMessage(content=prompt)])
+        llm_blocks = json.loads(response.model_dump_json())["blocks"]
+        
+        resolved_blocks = []
+        for llm_block in llm_blocks:
+            raw_feedback = llm_block.get("feedback_edit", [])
+            normalized_feedback = []
+            
+            if isinstance(raw_feedback, list):
+                for fb_item in raw_feedback:
+                    if isinstance(fb_item, dict):
+                        try:
+                            normalized_feedback.append(SingleEditorFeedback(**fb_item))
+                        except:
+                            pass
+            elif isinstance(raw_feedback, dict):
+                for editor_name, items in raw_feedback.items():
+                    if isinstance(items, list):
+                        feedback_items = [FeedbackItem(**fb) for fb in items if isinstance(fb, dict)]
+                        if feedback_items:
+                            normalized_feedback.append(SingleEditorFeedback(editor=editor_name, items=feedback_items))
+            
+            resolved_blocks.append(BlockEditResult(
+                id=llm_block.get("id", ""),
+                type=llm_block.get("type", "paragraph"),
+                level=llm_block.get("level", 0),
+                original_text=llm_block.get("original_text", ""),
+                suggested_text=llm_block.get("suggested_text"),
+                has_changes=llm_block.get("has_changes", False),
+                feedback_edit=normalized_feedback,
+            ))
+        
+        merged_result = EditorResult(
+            editor_type=merged_result.editor_type,
+            blocks=resolved_blocks,
+            warnings=merged_result.warnings,
+            raw_output=None
+        )
+    except Exception as e:
+        logger.warning(f"Failed to resolve duplicate feedback: {e}")
     
     return {
         "editor_results": original_results + [merged_result]
@@ -1121,6 +1190,7 @@ def route_after_content_validation(state: SupervisorState) -> str:
     """After validation: retry if score < 8 (max 2 retries), else merge when score >= 8."""
     validation_result = state.get("content_validation_result")
     retry_count = state.get("content_editor_retry_count", 0)
+    MAX_RETRIES = 2
     
     if validation_result:
         score = validation_result.score
@@ -1150,6 +1220,7 @@ def route_after_validation(state: SupervisorState) -> str:
     """After validation: retry if score < 8 (max 2 retries), else merge when score >= 8."""
     validation_result = state.get("validation_result")
     retry_count = state.get("dev_editor_retry_count", 0)
+    MAX_RETRIES = 2
     
     if validation_result:
         score = validation_result.score
