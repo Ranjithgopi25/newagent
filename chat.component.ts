@@ -566,74 +566,136 @@ def merge_two_editor_results(
 # COMBINED EDITOR NODES (reuse existing nodes)
 # ---------------------------------------------------------------------
 def development_content_combined_node(state: SupervisorState) -> SupervisorState:
-    """Run Development + Content editors together by reusing existing nodes."""
+    """
+    Run Development + Content editors together by reusing sequential logic pattern.
+    Follows the same flow as sequential graph: analysis -> tool -> validation -> retry (if needed) -> merge.
+    
+    This function orchestrates the combined editor flow by:
+    1. Running development editor with analysis, validation, and retry logic
+    2. Running content editor with analysis, validation, and retry logic  
+    3. Merging both results into a single combined result
+    
+    Reuses existing retry routing functions (route_after_validation, route_after_content_validation)
+    to maintain consistency with sequential graph behavior.
+    """
     logger.info("RUNNING: development_content_combined_node")
     
+    # Preserve original state values
     original_results = state.get("editor_results", [])
-    original_document = state["document"]  # Preserve original for validation
+    original_document = state["document"]
     
-    # Run article analysis if needed
+    # =====================================================================
+    # DEVELOPMENT EDITOR FLOW (reusing sequential pattern with retry logic)
+    # =====================================================================
+    
+    # Step 1: Article Analysis (if needed)
     if not state.get("article_analysis"):
-        state = {**state, **article_analysis_node(state)}
+        analysis_update = article_analysis_node(state)
+        state["article_analysis"] = analysis_update["article_analysis"]
     
-    # Run Development Editor
-    dev_state = development_editor_node(state)
-    dev_result = dev_state["editor_results"][-1]
+    # Step 2 & 3: Run Development Editor Tool and Validate (with retry loop)
+    # Reuse route_after_validation logic for consistent retry handling
+    dev_result = None
     
-    # Validate Development Editor result using article_validation_node
-    # Ensure original document is used for validation
-    # IMPORTANT: dev_state must come last to preserve editor_results with development editor result
-    validation_input_state = {
-        **state,
-        **dev_state,  # dev_state comes last to preserve editor_results (includes development editor result)
-        "document": original_document  # Explicitly use original document
-    }
-    # Debug: Log editor_results to verify development editor result is present
-    editor_results_count = len(validation_input_state.get("editor_results", []))
-    validation_state = article_validation_node(validation_input_state)
-    dev_state = {**dev_state, **validation_state}
+    while True:
+        # Run editor (initial or retry)
+        retry_count = state.get("dev_editor_retry_count", 0)
+        if retry_count == 0:
+            editor_update = development_editor_node(state)
+        else:
+            editor_update = development_editor_retry_node(state)
+            state["dev_editor_retry_count"] = editor_update["dev_editor_retry_count"]
+        
+        state["editor_results"] = editor_update["editor_results"]
+        dev_result = state["editor_results"][-1]
+        
+        # Validate Development Editor (needs original document)
+        validation_state = state.copy()
+        validation_state["document"] = original_document
+        validation_update = article_validation_node(validation_state)
+        state["validation_result"] = validation_update["validation_result"]
+        
+        # Use route_after_validation to determine next action
+        next_action = route_after_validation(state)
+        if next_action == "merge":
+            # Validation passed or max retries reached, proceed
+            break
+        elif next_action == "development_editor_retry":
+            # Retry needed, continue loop
+            continue
+    
+    # =====================================================================
+    # CONTENT EDITOR FLOW (reusing sequential pattern with retry logic)
+    # =====================================================================
     
     # Update document with Development's suggestions for Content Editor
     updated_doc = DocumentStructure(blocks=[
-        DocumentBlock(id=b.id, type=b.type, level=b.level, 
-                     text=b.suggested_text or b.original_text)
-        for b in dev_result.blocks
+        DocumentBlock(
+            id=block.id,
+            type=block.type,
+            level=block.level,
+            text=block.suggested_text or block.original_text
+        )
+        for block in dev_result.blocks
     ])
     
-    # Run cross-paragraph analysis if needed (using validated dev_result document)
+    # Step 1: Cross-Paragraph Analysis (if needed) - using updated document
     if not state.get("cross_paragraph_analysis"):
-        analysis_state = cross_paragraph_analysis_node({"document": updated_doc, **state})
-        state = {**state, **analysis_state}
+        analysis_state = state.copy()
+        analysis_state["document"] = updated_doc
+        analysis_update = cross_paragraph_analysis_node(analysis_state)
+        state["cross_paragraph_analysis"] = analysis_update["cross_paragraph_analysis"]
     
-    # Run Content Editor on updated document (with validation result and cross-paragraph analysis in state)
-    content_state = content_editor_node({
-        **dev_state,
-        **state,
-        "document": updated_doc  # Use updated document for Content Editor
-    })
-    content_result = content_state["editor_results"][-1]
+    # Step 2 & 3: Run Content Editor Tool and Validate (with retry loop)
+    # Reuse route_after_content_validation logic for consistent retry handling
+    content_result = None
     
-    # Validate Content Editor result using content_validation_node
-    # Ensure original document is used for validation (not updated_doc)
-    # IMPORTANT: content_state must come last to preserve editor_results with content editor result
-    content_validation_input_state = {
-        **state,
-        **content_state,  # content_state comes last to preserve editor_results (includes content editor result)
-        "document": original_document  # Explicitly use original document for validation
-    }
-    # Debug: Log editor_results to verify content editor result is present
-    editor_results_count = len(content_validation_input_state.get("editor_results", []))
-    logger.info(f"Validating content editor: {editor_results_count} editor results in state")
-    content_validation_state = content_validation_node(content_validation_input_state)
-    content_state = {**content_state, **content_validation_state}
+    while True:
+        # Run editor (initial or retry)
+        retry_count = state.get("content_editor_retry_count", 0)
+        if retry_count == 0:
+            # Initial run: use updated document
+            editor_state = state.copy()
+            editor_state["document"] = updated_doc
+            editor_update = content_editor_node(editor_state)
+        else:
+            # Retry: use original document as per content_editor_retry_node logic
+            retry_state = state.copy()
+            retry_state["document"] = original_document
+            editor_update = content_editor_retry_node(retry_state)
+            state["content_editor_retry_count"] = editor_update["content_editor_retry_count"]
+        
+        state["editor_results"] = editor_update["editor_results"]
+        content_result = state["editor_results"][-1]
+        
+        # Validate Content Editor (needs original document)
+        validation_state = state.copy()
+        validation_state["document"] = original_document
+        validation_update = content_validation_node(validation_state)
+        state["content_validation_result"] = validation_update["content_validation_result"]
+        
+        # Use route_after_content_validation to determine next action
+        next_action = route_after_content_validation(state)
+        if next_action == "merge":
+            # Validation passed or max retries reached, proceed
+            break
+        elif next_action == "content_editor_retry":
+            # Retry needed, continue loop
+            continue
     
-    # Merge results (after both validations)
+    # =====================================================================
+    # MERGE RESULTS
+    # =====================================================================
     merged_result = merge_two_editor_results(dev_result, content_result, "development+content")
     
     return {
         "editor_results": original_results + [merged_result],
         "article_analysis": state.get("article_analysis"),
-        "cross_paragraph_analysis": state.get("cross_paragraph_analysis")
+        "cross_paragraph_analysis": state.get("cross_paragraph_analysis"),
+        "validation_result": state.get("validation_result"),
+        "content_validation_result": state.get("content_validation_result"),
+        "dev_editor_retry_count": state.get("dev_editor_retry_count", 0),
+        "content_editor_retry_count": state.get("content_editor_retry_count", 0)
     }
 
 
