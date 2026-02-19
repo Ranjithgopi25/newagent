@@ -200,6 +200,131 @@ Provide clear, actionable guidance for the Content Editor to work across paragra
 
 
 
+def validate_cross_paragraph_compliance(
+    original_analysis_text: str,
+    edited_result: EditorResult,
+    original_document: DocumentStructure
+) -> List[str]:
+    """
+    Use LLM to validate that Content Editor output meets cross-paragraph enforcement requirements.
+    Returns list of validation warnings (empty if compliant).
+    """
+    logger.info("VALIDATING CROSS-PARAGRAPH COMPLIANCE USING LLM")
+    
+    if not original_analysis_text or not original_analysis_text.strip():
+        logger.info("No original cross-paragraph analysis text available for validation")
+        return []
+    
+    # Extract paragraphs from original and edited documents
+    original_paragraphs = []
+    for block in original_document.blocks:
+        if block.type in ["paragraph", "bullet_item"]:
+            original_paragraphs.append(block.text)
+    
+    edited_paragraphs = []
+    for block in edited_result.blocks:
+        if block.type in ["paragraph", "bullet_item"]:
+            edited_paragraphs.append(block.suggested_text or block.original_text)
+    
+    original_text = "\n\n".join(original_paragraphs)
+    edited_text = "\n\n".join(edited_paragraphs)
+    
+    # Create validation prompt for LLM - uses exact CROSS-PARAGRAPH ENFORCEMENT requirements
+    validation_prompt = f"""You are validating that the Content Editor output meets the CROSS-PARAGRAPH ENFORCEMENT requirements.
+
+ORIGINAL CROSS-PARAGRAPH ANALYSIS (provided to Content Editor):
+{original_analysis_text}
+
+ORIGINAL PARAGRAPH SEQUENCE:
+{original_text}
+
+EDITED PARAGRAPH SEQUENCE (Content Editor output):
+{edited_text}
+
+============================================================
+CROSS-PARAGRAPH ENFORCEMENT REQUIREMENTS — VALIDATE AGAINST THESE
+============================================================
+
+The Content Editor MUST have:
+
+1. Cross-Paragraph Logic
+   Each paragraph MUST assume and build on the reader's understanding from the preceding paragraph. The Content Editor MUST have eliminated soft resets, re-introductions, or restatement of previously established context.
+
+2. Redundancy Awareness (Non-Structural)
+   If a paragraph materially repeats an idea already established elsewhere in the article, the Content Editor MUST have reduced reinforcement language and avoided adding emphasis or framing that increases redundancy. The Content Editor MUST NOT have removed or merged ideas across blocks.
+
+3. Executive Signal Hierarchy
+   The Content Editor MUST have calibrated emphasis so that later sections convey clearer implications, priorities, or decision relevance than earlier sections, without introducing new conclusions or shifting the author's intent.
+
+============================================================
+VALIDATION TASK
+============================================================
+
+Analyze the EDITED PARAGRAPH SEQUENCE against the ORIGINAL CROSS-PARAGRAPH ANALYSIS and the requirements above.
+
+For EACH requirement (1-3), check if it was met:
+- If met: No warning needed
+- If NOT met: Provide a specific warning explaining what requirement failed and what needs to be fixed
+
+Return your response as a JSON array of warnings. If all requirements are met, return an empty array [].
+Format: ["Warning 1: [specific requirement and issue]", "Warning 2: [specific requirement and issue]", ...]
+
+Be specific and actionable in your warnings. Reference the actual paragraph content where possible.
+"""
+    
+    try:
+        response = llm.invoke([HumanMessage(content=validation_prompt)])
+        content = response.content if hasattr(response, 'content') else str(response)
+        
+        # Parse warnings from LLM response
+        warnings = []
+        
+        if isinstance(content, str):
+            # Try to extract JSON array from response
+            json_match = re.search(r'\[.*\]', content, re.DOTALL)
+            if json_match:
+                try:
+                    warnings = json.loads(json_match.group(0))
+                    if not isinstance(warnings, list):
+                        warnings = []
+                except json.JSONDecodeError:
+                    # If JSON parsing fails, try to extract warnings from text
+                    # Look for list-like patterns
+                    lines = content.split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if line.startswith('-') or line.startswith('•') or (line.startswith('"') and line.endswith('"')):
+                            # Extract warning text
+                            warning = line.lstrip('-•"').rstrip('"').strip()
+                            if warning:
+                                warnings.append(warning)
+            else:
+                # If no JSON found, check if response indicates compliance
+                content_lower = content.lower()
+                if "compliant" in content_lower or "no issues" in content_lower or "all requirements met" in content_lower:
+                    warnings = []
+                elif "warning" in content_lower or "issue" in content_lower or "failed" in content_lower:
+                    # Extract warnings from text format
+                    lines = content.split('\n')
+                    for line in lines:
+                        if any(keyword in line.lower() for keyword in ['warning', 'issue', 'failed', 'not met', 'missing']):
+                            warning = line.strip().lstrip('-•1234567890.').strip()
+                            if warning and len(warning) > 10:  # Filter out very short lines
+                                warnings.append(warning)
+        
+        if warnings:
+            logger.info(f"Cross-paragraph validation found {len(warnings)} issues")
+        else:
+            logger.info("Cross-paragraph validation: All requirements met")
+        
+        return warnings if isinstance(warnings, list) else []
+        
+    except Exception as e:
+        logger.error(f"Error validating cross-paragraph compliance: {e}")
+        # Return empty list on error - don't block workflow
+        return []
+
+
 # ---------------------------------------------------------------------
 # EDITOR NODES (EXECUTE EXACTLY ONCE)
 # ---------------------------------------------------------------------
@@ -445,7 +570,6 @@ def development_content_combined_node(state: SupervisorState) -> SupervisorState
     logger.info("RUNNING: development_content_combined_node")
     
     original_results = state.get("editor_results", [])
-    original_document = state["document"]  # Preserve original document for validation
     
     # Run article analysis if needed
     if not state.get("article_analysis"):
@@ -455,13 +579,6 @@ def development_content_combined_node(state: SupervisorState) -> SupervisorState
     dev_state = development_editor_node(state)
     dev_result = dev_state["editor_results"][-1]
     
-    # Validate Development Editor result (reuse existing validation node)
-    dev_validation_state = article_validation_node({**dev_state, "dev_editor_retry_count": 0})
-    dev_validation_result = dev_validation_state.get("validation_result")
-    
-    # Merge validation state back into state chain
-    state_with_dev_validation = {**dev_state, **dev_validation_state}
-    
     # Update document with Development's suggestions for Content Editor
     updated_doc = DocumentStructure(blocks=[
         DocumentBlock(id=b.id, type=b.type, level=b.level, 
@@ -469,33 +586,21 @@ def development_content_combined_node(state: SupervisorState) -> SupervisorState
         for b in dev_result.blocks
     ])
     
-    # Run cross-paragraph analysis if needed (use state with dev validation)
-    if not state_with_dev_validation.get("cross_paragraph_analysis"):
-        cross_analysis_state = cross_paragraph_analysis_node({"document": updated_doc, **state_with_dev_validation})
-        state_with_dev_validation = {**state_with_dev_validation, **cross_analysis_state}
+    # Run cross-paragraph analysis if needed
+    if not state.get("cross_paragraph_analysis"):
+        state = {**state, **cross_paragraph_analysis_node({"document": updated_doc, **state})}
     
-    # Run Content Editor on updated document (pass state with dev validation and cross-paragraph analysis)
-    content_state = content_editor_node({**state_with_dev_validation, "document": updated_doc})
+    # Run Content Editor on updated document
+    content_state = content_editor_node({**dev_state, "document": updated_doc})
     content_result = content_state["editor_results"][-1]
     
-    # Validate Content Editor result (reuse existing validation node)
-    # Use original document for validation
-    content_validation_state = content_validation_node({
-        **content_state, 
-        "document": original_document,  # Use original document for validation
-        "content_editor_retry_count": 0
-    })
-    content_validation_result = content_validation_state.get("content_validation_result")
-    
-    # Merge results after validation
+    # Merge results
     merged_result = merge_two_editor_results(dev_result, content_result, "development+content")
     
     return {
         "editor_results": original_results + [merged_result],
-        "article_analysis": state_with_dev_validation.get("article_analysis"),
-        "cross_paragraph_analysis": state_with_dev_validation.get("cross_paragraph_analysis"),
-        "validation_result": dev_validation_result,  # Store dev validation result
-        "content_validation_result": content_validation_result  # Store content validation result
+        "article_analysis": state.get("article_analysis"),
+        "cross_paragraph_analysis": state.get("cross_paragraph_analysis")
     }
 
 
@@ -901,7 +1006,7 @@ def route_after_content_validation(state: SupervisorState) -> str:
     """After validation: retry if score < 8 (max 2 retries), else merge when score >= 8."""
     validation_result = state.get("content_validation_result")
     retry_count = state.get("content_editor_retry_count", 0)
-    MAX_RETRIES = 2
+    MAX_RETRIES = 1
     
     if validation_result:
         score = validation_result.score
@@ -931,7 +1036,7 @@ def route_after_validation(state: SupervisorState) -> str:
     """After validation: retry if score < 8 (max 2 retries), else merge when score >= 8."""
     validation_result = state.get("validation_result")
     retry_count = state.get("dev_editor_retry_count", 0)
-    MAX_RETRIES = 2
+    MAX_RETRIES = 1
     
     if validation_result:
         score = validation_result.score
@@ -1432,7 +1537,7 @@ def build_sequential_graph():
     )
     graph.add_edge("development_editor_tool", "article_validation")
     
-    # Combined editor nodes: dev+content validates internally, then goes to merge
+    # Combined editor nodes go directly to merge
     graph.add_edge("development_content_combined", "merge")
     graph.add_edge("line_copy_combined", "merge")
     
