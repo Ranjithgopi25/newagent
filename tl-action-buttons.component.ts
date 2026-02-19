@@ -1,571 +1,872 @@
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel
-from typing import List, Optional
-from langchain_core.messages import HumanMessage, SystemMessage
+/**
+ * Shared utility functions for Edit Content workflow
+ * Ensures deterministic results across Quick Start and Guided Journey flows
+ * 
+ * NOTE: EDITOR_ORDER and EDITOR_NAME_MAP must match backend constants in
+ * edit_content_service.py for consistent behavior between frontend and backend
+ */
+import { environment } from "../../../environments/environment";
+import { marked } from 'marked';
+// Editor processing order (must match backend EDITOR_ORDER in edit_content_service.py) - 3 options
+export const EDITOR_ORDER = ['development+content', 'line+copy', 'brand-alignment'] as const;
 
-# Reuse existing components
-from app.features.thought_leadership.services.edit_content.graph import build_sequential_graph
-from app.features.thought_leadership.services.edit_content.utils import (
-    segment_document_with_llm,
-    apply_decisions_to_document
-)
-from app.features.thought_leadership.services.edit_content.schema import (
-    ConsolidateResult,
-    EditorResult,
-)
-from app.features.thought_leadership.services.edit_content.prompt import (
-    FINAL_FORMATTING_AND_MARKDOWN_PROMPT,
-)
-from app.core.deps import get_llm_client_agent
+export type EditorType = 'development+content' | 'line+copy' | 'brand-alignment';
 
-import json
-import logging
-import asyncio
-import uuid
-from dotenv import load_dotenv
+/**
+ * Normalize editor IDs to ensure consistent ordering for deterministic results.
+ * Ensures brand-alignment is always included and editors are in the correct order.
+ * 
+ * @param editorIds - Array of editor IDs to normalize
+ * @returns Normalized array of editor IDs in EDITOR_ORDER sequence
+ */
+export function normalizeEditorOrder(editorIds: string[]): string[] {
+  // Create a copy to avoid mutating the input
+  let normalized = [...editorIds];
+  
+  // Ensure brand-alignment is always included
+  if (!normalized.includes('brand-alignment')) {
+    normalized.push('brand-alignment');
+  }
+  
+  // Filter and order according to EDITOR_ORDER for deterministic results
+  return EDITOR_ORDER.filter(editor => normalized.includes(editor));
+}
 
-load_dotenv(".env", override=True)
+/**
+ * Normalize content text to ensure consistent processing.
+ * Trims whitespace and normalizes line endings.
+ * 
+ * @param content - Content text to normalize
+ * @returns Normalized content text
+ */
+export function normalizeContent(content: string): string {
+  if (!content) {
+    return '';
+  }
+  
+  // Trim leading/trailing whitespace
+  let normalized = content.trim();
+  
+  // Normalize line endings to \n (Unix-style)
+  normalized = normalized.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  
+  // Remove trailing whitespace from each line (but preserve structure)
+  // This ensures consistent processing without changing content meaning
+  normalized = normalized.split('\n')
+    .map(line => line.trimEnd())
+    .join('\n');
+  
+  return normalized;
+}
 
-# ---------------------------------------------------------------------
-# GLOBAL SETUP
-# ---------------------------------------------------------------------
-llm = get_llm_client_agent()
-logger = logging.getLogger(__name__)
-router = APIRouter()
+/**
+ * Compute a simple hash of content for verification purposes.
+ * Used to verify identical inputs are being processed.
+ * 
+ * @param content - Content to hash
+ * @returns Hash string
+ */
+export function hashContent(content: string): string {
+  if (!content) {
+    return 'empty';
+  }
+  
+  // Simple hash function for verification
+  let hash = 0;
+  for (let i = 0; i < content.length; i++) {
+    const char = content.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  
+  return Math.abs(hash).toString(36);
+}
 
-# ---------------------------------------------------------------------
-# REQUEST MODELS
-# ---------------------------------------------------------------------
-class EditContentRequest(BaseModel):
-    """Initial request to start sequential editing workflow"""
-    messages: List[dict]
-    editor_types: Optional[List[str]] = None
+/**
+ * Extract document title from content.
+ * Checks for H1 heading first, then first line if it looks like a title,
+ * otherwise falls back to filename.
+ * 
+ * @param content - Document content text
+ * @param filename - Optional filename to use as fallback
+ * @returns Extracted title
+ */
+export function extractDocumentTitle(content: string, filename?: string): string {
+  if (!content || !content.trim()) {
+    // Fallback to filename if no content
+    if (filename) {
+      return filename.replace(/\.[^/.]+$/, '').trim();
+    }
+    return 'Revised Article';
+  }
 
+  const normalizedContent = normalizeContent(content);
+  const lines = normalizedContent.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 
-class NextEditorRequest(BaseModel):
-    """Request to continue to next editor after user approval"""
-    thread_id: str
-    paragraph_edits: List[dict]
-    decisions: List[dict]
-    accept_all: bool = False
-    reject_all: bool = False
+  if (lines.length === 0) {
+    // Fallback to filename if no content lines
+    if (filename) {
+      return filename.replace(/\.[^/.]+$/, '').trim();
+    }
+    return 'Revised Article';
+  }
 
+  // Check for H1 heading at the start (# Title)
+  const firstLine = lines[0];
+  const h1Match = firstLine.match(/^#\s+(.+)$/);
+  if (h1Match && h1Match[1]) {
+    return h1Match[1].trim();
+  }
 
-class FinalArticleRequest(BaseModel):
-    """Request to generate final article from all decisions"""
-    original_content: str
-    paragraph_edits: List[dict]
-    decisions: List[dict]
-    accept_all: bool = False
-    reject_all: bool = False
-
-
-# ---------------------------------------------------------------------
-# FRONTEND CONVERSION HELPER
-# ---------------------------------------------------------------------
-def convert_into_frontend(
-    result: ConsolidateResult,
-    original: str,
-    current_editor: str = None
-) -> dict:
-    """
-    Convert ConsolidateResult to frontend format.
+  // Check if first line looks like a title
+  // Criteria: short (less than 100 chars), starts with capital, no ending punctuation (except ? or !)
+  if (firstLine.length > 0 && firstLine.length < 100) {
+    const firstChar = firstLine[0];
+    const lastChar = firstLine[firstLine.length - 1];
     
-    If current_editor is provided, show ONLY that editor's feedback.
-    Otherwise, show all feedback (for final view).
+    // Check if starts with capital letter or number
+    const startsWithCapital = /^[A-Z0-9]/.test(firstChar);
     
-    Args:
-        result: ConsolidateResult from graph
-        original: Original content text
-        current_editor: Name of current editor to filter feedback (optional)
+    // Check if doesn't end with period, comma, or semicolon (but allow ? or !)
+    const endsWithPunctuation = /[.,;]$/.test(lastChar);
     
-    Returns:
-        Formatted dict for frontend consumption
-    """
-    paragraphs = []
-    final_text = []
+    // Check if it's not a list item or code block
+    const isListItem = /^[-*+\d.]\s/.test(firstLine);
+    const isCodeBlock = firstLine.startsWith('```') || firstLine.startsWith('`');
     
-    # helper to normalize editor names used in models vs UI
-    def _normalize_editor_name(e: str) -> str:
-        if not e:
-            return e
-        mapping = {"brand-alignment": "brand"}
-        return mapping.get(e, e)
+    if (startsWithCapital && !endsWithPunctuation && !isListItem && !isCodeBlock) {
+      return firstLine;
+    }
+  }
 
-    # For combined steps, show feedback from both underlying editors
-    def _feedback_keys_for_editor(e: str):
-        if e == "development+content":
-            return ["development", "content"]
-        if e == "line+copy":
-            return ["line", "copy"]
-        return [_normalize_editor_name(e)]
+  // Fallback to filename
+  if (filename) {
+    return filename.replace(/\.[^/.]+$/, '').trim();
+  }
 
-    for i, block in enumerate(result.blocks):
-        # Collect feedback - ONLY from current editor if specified (or both sub-editors for combined)
-        all_feedback = []
-        
-        if current_editor:
-            # Show current editor's feedback (or both sub-editors for development+content / line+copy)
-            keys = _feedback_keys_for_editor(current_editor)
-            for normalized in keys:
-                editor_feedback_list = getattr(block.editorial_feedback, normalized, [])
-                for feedback_item in editor_feedback_list:
-                    all_feedback.append({
-                        "editor": normalized,
-                        "issue": feedback_item.issue,
-                        "fix": feedback_item.fix,
-                        "impact": feedback_item.impact,
-                        "rule_used": feedback_item.rule_used,
-                        "priority": feedback_item.priority
-                    })
-        else:
-            # Show all feedback (for final view)
-            for editor_name in ["development", "content", "copy", "line", "brand"]:
-                editor_feedback_list = getattr(block.editorial_feedback, editor_name, [])
-                for feedback_item in editor_feedback_list:
-                    all_feedback.append({
-                        "editor": editor_name,
-                        "issue": feedback_item.issue,
-                        "fix": feedback_item.fix,
-                        "impact": feedback_item.impact,
-                        "rule_used": feedback_item.rule_used,
-                        "priority": feedback_item.priority
-                    })
-        
-        # Check if paragraph is unchanged for auto-approval
-        is_unchanged = block.original_text.strip() == block.final_text.strip()
-        
-        # Filter editorial_feedback to only include current editor if specified (or both sub-editors for combined)
-        if current_editor:
-            filtered_editorial_feedback = {
-                "development": [],
-                "content": [],
-                "copy": [],
-                "line": [],
-                "brand": []
-            }
-            keys = _feedback_keys_for_editor(current_editor)
-            for normalized in keys:
-                editor_feedback_list = getattr(block.editorial_feedback, normalized, [])
-                filtered_editorial_feedback[normalized] = [
-                    {"issue": fb.issue, "fix": fb.fix, "impact": fb.impact, "rule_used": fb.rule_used, "priority": fb.priority}
-                    for fb in editor_feedback_list
-                ]
-            editorial_feedback_to_send = filtered_editorial_feedback
-        else:
-            # Show all feedback (for final view)
-            editorial_feedback_to_send = block.editorial_feedback.model_dump()
-        
-        paragraphs.append({
-            "index": i,
-            "block_id": block.id,
-            "block_type": block.type,
-            "level": block.level,
-            "original": block.original_text,  # This will be updated doc for next editor
-            "edited": block.final_text,
-            "has_changes": block.original_text != block.final_text,
-            "tags": [],
-            "feedback": all_feedback,  # ONLY current editor's feedback (if specified)
-            "editorial_feedback": editorial_feedback_to_send,  # Filtered to current editor only
-            "approved": True if is_unchanged else None,  # Auto-approve unchanged paragraphs
-            "autoApproved": is_unchanged  # Mark unchanged paragraphs as auto-approved
-        })
-        final_text.append(block.final_text)
-    
-    return {
-        "type": "editor_complete" if current_editor else "final_complete",
-        "original_content": original,
-        "final_revised": "\n\n".join(final_text),
-        "paragraph_edits": paragraphs,
-        "total_blocks": len(paragraphs),
-        "total_feedback_items": sum(len(p["feedback"]) for p in paragraphs)
+  return 'Revised Article';
+}
+
+/** Editor name mapping (must match backend EDITOR_NAMES in edit_content_service.py) */
+const EDITOR_NAME_MAP: { [key: string]: string } = {
+  'development+content': 'Development + Content',
+  'line+copy': 'Line + Copy',
+  'brand-alignment': 'PwC Brand Alignment Editor',
+  'development': 'Development Editor',
+  'content': 'Content Editor',
+  'line': 'Line Editor',
+  'copy': 'Copy Editor',
+};
+
+/** Get editor display name by ID */
+export function getEditorDisplayName(editorId: string): string {
+  return EDITOR_NAME_MAP[editorId] || editorId;
+}
+
+/** Format markdown text to HTML for basic formatting (bold, italic, line breaks) */
+export function formatMarkdown(text: string): string {
+  let formatted = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  formatted = formatted.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  formatted = formatted.replace(/\n/g, '<br>');
+  return formatted;
+}
+
+/** Render markdown the same way as Quick Start / chat (marked.parse + list styles + link target + citation superscript in <p> only). Use this for final article display instead of convertMarkdownToHtml. */
+export function renderMarkdownForDisplay(markdown: string): string {
+  if (!markdown || !markdown.trim()) return '';
+  // Process <sup>[ ⁿ ]</sup>(URL) BEFORE marked.parse — marked autolinks URLs and would break our pattern
+  const esc = (s: string) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let preProcessed = markdown.replace(/<sup>\s*\[\s*([⁰¹²³⁴⁵⁶⁷⁸⁹,\s]+)\s*\]\s*<\/sup>\s*\((https?:\/\/[^)]+|#)\)/gi, (_m: string, text: string, url: string) => {
+    const t = (text || '').trim();
+    const href = url === '#' ? '#' : url;
+    const urlDisplay = href === '#' ? '#' : `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer" class="citation-url-link">${esc(href)}</a>`;
+    return `<sup><a href="${esc(href)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">${t}</a></sup>(${urlDisplay})`;
+  });
+  let html = (marked.parse(preProcessed) as string) || '';
+  html = html.replace(/<ul>\n?/g, '<ul style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+  html = html.replace(/<ol>\n?/g, '<ol style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+  html = html.replace(/<li>/g, '<li style="margin: 0; padding: 0; line-height: 1.4;">');
+  html = html.replace(/<\/li>\n?/g, '</li>');
+  html = html.replace(/<a\s+([^>]*?)href=(["'])(.*?)\2([^>]*)>/gi, (_m: string, pre: string, quote: string, url: string, post: string) => {
+    const attrs = (pre + ' ' + post).toLowerCase();
+    if (/\btarget\s*=/.test(attrs) || /\brel\s*=/.test(attrs)) return _m;
+    return `<a ${pre}href=${quote}${url}${quote}${post} target="_blank" rel="noopener noreferrer">`;
+  });
+  // Convert <sup>[N](URL)</sup> (unparsed markdown inside raw HTML) to clickable superscript — backend may send this; marked does not parse inside raw HTML
+  html = html.replace(/<sup>\s*\[(\d+)\]\((https?:\/\/[^)]+)\)\s*<\/sup>/gi, (_m: string, num: string, url: string) =>
+    `<sup><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">[${num}]</a></sup>`
+  );
+  // Convert <sup>[ [ⁿ](#ref-N) ]</sup>: superscript links to citation reference (References list), same-page scroll
+  html = html.replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((#[a-z]+-\d+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, anchor: string) => {
+    const text = (superscriptText || '').trim();
+    return `<sup><a href="${esc(anchor)}" class="citation-superscript">[${text}]</a></sup>`;
+  });
+  // Convert <sup>[ ⁿ ]</sup>(URL) — edit content format: superscript and URL both clickable
+  html = html.replace(/<sup>\s*\[\s*([⁰¹²³⁴⁵⁶⁷⁸⁹,\s]+)\s*\]\s*<\/sup>\s*\((https?:\/\/[^)]+|#)\)/gi, (_m: string, text: string, url: string) => {
+    const t = (text || '').trim();
+    const href = url === '#' ? '#' : url;
+    const urlDisplay = href === '#' ? '#' : `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer" class="citation-url-link">${esc(href)}</a>`;
+    return `<sup><a href="${esc(href)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">${t}</a></sup>(${urlDisplay})`;
+  });
+  html = html.replace(/<p>([\s\S]*?)<\/p>/gi, (_pMatch: string, inner: string) => {
+    let paragraphHtml = inner;
+    // Citation links [³](url) or [1](url): marked outputs <a href="url">³</a> or <a href="url">1</a> — wrap in <sup> and keep link
+    paragraphHtml = paragraphHtml.replace(/<a\s+([^>]*?)href=(["'])([^"']*)\2([^>]*)>([^<]*)<\/a>/gi, (match: string, pre: string, quote: string, url: string, post: string, linkText: string) => {
+      const trimmed = (linkText || '').trim();
+      const isUnicodeSup = /^\[?[⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+\]?$/.test(trimmed) && /[⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(trimmed);
+      const isDigitBracket = /^\[\d+\]$/.test(trimmed);
+      if (isUnicodeSup || isDigitBracket) {
+        const isRefAnchor = /^#/.test((url || '').trim());
+        const targetRel = isRefAnchor ? '' : ' target="_blank" rel="noopener noreferrer"';
+        return `<sup><a ${pre}href=${quote}${url}${quote}${post}${targetRel} class="citation-superscript">${trimmed}</a></sup>`;
+      }
+      return match;
+    });
+    // Citation-reference fragment <sup>[ [¹](#ref-1) ]</sup>: link to References list, same-page scroll
+    paragraphHtml = paragraphHtml.replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((#[a-z]+-\d+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, anchor: string) => {
+      const text = (superscriptText || '').trim();
+      return `<sup><a href="${esc(anchor)}" class="citation-superscript">[${text}]</a></sup>`;
+    });
+    paragraphHtml = paragraphHtml.replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((https?:\/\/[^)]+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, url: string) => {
+      const text = (superscriptText || '').trim();
+      return `<sup><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">[${text}]</a></sup>`;
+    });
+    // Inline paragraph URLs in brackets (Title [URL] format from backend) — make [https://...] clickable
+    paragraphHtml = paragraphHtml.replace(/\[(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)\]/g, (_match: string, url: string) => {
+      const urlTrimmed = url.replace(/\n/g, ' ').trim();
+      return `[<a class="citation-url-link" href="${esc(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${esc(urlTrimmed)}</a>]`;
+    });
+    return `<p>${paragraphHtml}</p>`;
+  });
+  // Add id="ref-1", id="ref-2", ... to References list (first <ol> after References/Sources/Bibliography) for citation anchors
+  html = html.replace(/(<h2[^>]*>(?:References|Sources|Bibliography)<\/h2>\s*<ol[^>]*>)([\s\S]*?)(<\/ol>)/gi, (_full: string, open: string, content: string, close: string) => {
+    let refIndex = 0;
+    const newContent = content.replace(/<li(\s[^>]*)?>/gi, (_li: string, attrs?: string) => {
+      refIndex += 1;
+      return `<li id="ref-${refIndex}"${attrs || ''}>`;
+    });
+    return open + newContent + close;
+  });
+  return html;
+}
+
+/** Convert markdown text to HTML with proper formatting for headings, lists, paragraphs, etc. */
+export function convertMarkdownToHtml(markdown: string): string {
+  if (!markdown || !markdown.trim()) {
+    return '';
+  }
+
+  // Process <sup>[ ⁿ ]</sup>(URL) first — convert to clickable superscript + URL before other transforms
+  const escC = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let html = markdown
+    .replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((#[a-z]+-\d+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, anchor: string) => {
+      const text = (superscriptText || '').trim();
+      return `<sup><a href="${escC(anchor)}" class="citation-superscript">[${text}]</a></sup>`;
+    })
+    .replace(/<sup>\s*\[\s*([⁰¹²³⁴⁵⁶⁷⁸⁹,\s]+)\s*\]\s*<\/sup>\s*\((https?:\/\/[^)]+|#)\)/gi, (_m: string, text: string, url: string) => {
+      const t = (text || '').trim();
+      const href = url === '#' ? '#' : url;
+      const urlDisplay = href === '#' ? '#' : `<a href="${escC(href)}" target="_blank" rel="noopener noreferrer" class="citation-url-link">${escC(href)}</a>`;
+      return `<sup><a href="${escC(href)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">${t}</a></sup>(${urlDisplay})`;
+    });
+
+  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+
+  html = html.replace(/^---$/gm, '<hr>');
+  html = html.replace(/^\*\*\*$/gm, '<hr>');
+
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Links:
+  // - Standard markdown: [text](https://example.com)
+  // - Backend citation variant: [Title](URL: https://example.com)
+  //   If we don't strip "URL:", the href becomes invalid ("URL: https://...").
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, linkText, rawHref) => {
+    const textRaw = String(linkText ?? '');
+    const hrefRaw = String(rawHref ?? '').trim();
+
+    // Minimal escaping to avoid breaking attributes / HTML structure.
+    // Note: this utility already does simplistic markdown->HTML transforms elsewhere.
+    const escHtml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escAttr = (s: string) => escHtml(s).replace(/"/g, '&quot;');
+    const text = escHtml(textRaw);
+
+    // Handle "(URL: https://...)" (case-insensitive). URL can wrap across newlines so long citation URLs are fully clickable.
+    const citationUrlMatch = hrefRaw.match(/^url:\s*(https?:\/\/[^\s)]*(?:\n[^\s)]*)*)\s*$/i);
+    if (citationUrlMatch && citationUrlMatch[1]) {
+      const url = citationUrlMatch[1].replace(/\n/g, '').trim();
+      const urlAttr = escAttr(url);
+      const urlText = escHtml(url);
+      // Show both the title and the URL (common expectation for citation blocks)
+      // return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(${urlText})</span>`;
+      return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${urlText}</a>)</span>`;
     }
 
+    // Fragment link (#ref-1): same-page scroll to citation reference, no target="_blank"
+    if (/^#/.test(hrefRaw)) {
+      return `<a href="${escAttr(hrefRaw)}" class="citation-superscript">${text}</a>`;
+    }
+    // Standard markdown link
+    return `<a href="${escAttr(hrefRaw)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+  });
 
-# ---------------------------------------------------------------------
-# HELPER: WAIT FOR INTERRUPT + LOAD STATE
-# ---------------------------------------------------------------------
-def wait_for_interrupt(graph, input_state, config):
-    interrupted = False
-    for event in graph.stream(input_state, config=config):
-        logger.info("STREAM EVENT: %s", event)
-        if "__interrupt__" in event:
-            interrupted = True
-            break
+  // Spacing: ensure one space before (https:// when preceded by ), ], or superscript (e.g. )²(https:// -> )² (https://)
+  html = html.replace(/([)\]⁰¹²³⁴⁵⁶⁷⁸⁹])(\s*)(\()(https?:\/\/)/g, '$1 $3$4');
 
-    if not interrupted:
-        return None
+  // Plain URLs: in References "Title [https://...]", in-paragraph "(https://...)" or "[https://...]" -> one full clickable link
+  // Match "[https://...]" so the entire URL is one <a> (no break in middle); class citation-url-link for styling.
+  const escAttr = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const escHtml = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Format "[https://...]" as [<a>full URL</a>] so the whole URL is one clickable link when it wraps
+  html = html.replace(/\[(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)\]/g, (_match, url) => {
+    const urlTrimmed = url.replace(/\n/g, ' ').trim();
+    return `[<a class="citation-url-link" href="${escAttr(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${escHtml(urlTrimmed)}</a>]`;
+  });
+  // Standalone https:// (no brackets) -> clickable; do not match when URL is already inside an <a> (before would be ">")
+  html = html.replace(/(^|[\s.)])(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)/g, (_match, before, url) => {
+    const urlTrimmed = url.replace(/\n/g, ' ').trim();
+    return before + `<a class="citation-url-link" href="${escAttr(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${escHtml(urlTrimmed)}</a>`;
+  });
 
-    checkpoint = graph.get_state(config)
-    if not checkpoint or not checkpoint.values:
-        return None
+  // List styles: match paragraph/export (11pt, Helvetica/Arial, line-height 1.5), tight spacing between list items (citations)
+  const listBlockStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.25em; margin-bottom: 0.5em;";
+  const listBlockStyleAfterHeading = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.2em; margin-bottom: 0.5em;";
+  const listItemStyle = "display: list-item; margin: 0.05em 0 0.2em 0;";
 
-    return checkpoint.values
+  const lines = html.split('\n');
+  const processedLines: string[] = [];
+  let inUnorderedList = false;
+  let inOrderedList = false;
+  let lastOrderedNumber = 0; // Track last number to detect gaps
 
+  const lastProcessedLineIsHeading = () => {
+    for (let j = processedLines.length - 1; j >= 0; j--) {
+      const s = processedLines[j].trim();
+      if (!s) continue;
+      return /<\/h[1-6]>$/i.test(s) || /^<h[1-6]\b/i.test(s);
+    }
+    return false;
+  };
 
-# ---------------------------------------------------------------------
-# INITIAL WORKFLOW ENDPOINT
-# ---------------------------------------------------------------------
-@router.post("")
-async def edit_content_workflow(request: EditContentRequest):
-    """
-    Start sequential editing workflow - runs first editor.
-    
-    Flow:
-    1. Validate input
-    2. Segment document
-    3. Select and order editors
-    4. Generate thread_id for checkpointing
-    5. Build graph input state
-    6. Invoke graph (stops at interrupt after first editor)
-    7. Extract and format result
-    8. Stream response to frontend
-    """
-    if not request.messages:
-        raise HTTPException(400, "Messages cannot be empty")
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmedLine = line.trim();
 
-    content = request.messages[-1].get("content", "").strip()
-    if not content:
-        raise HTTPException(400, "Content cannot be empty")
+    const unorderedMatch = trimmedLine.match(/^[-*]\s+(.+)$/);
+    const orderedMatch = trimmedLine.match(/^(\d+)\.\s+(.+)$/);
 
-    async def stream():
-        try:
-            loop = asyncio.get_event_loop()
+    if (unorderedMatch) {
+      if (!inUnorderedList) {
+        if (inOrderedList) {
+          processedLines.push('</ol>');
+          inOrderedList = false;
+          lastOrderedNumber = 0; // Reset counter when closing ordered list
+        }
+        processedLines.push(`<ul style="${listBlockStyle}">`);
+        inUnorderedList = true;
+      }
+      processedLines.push(`<li style="${listItemStyle}">${unorderedMatch[1]}</li>`);
+    } else if (orderedMatch) {
+      const originalNumber = parseInt(orderedMatch[1], 10);
+      const itemText = orderedMatch[2];
+      
+      // Check if this is a new ordered list (gap in numbering or first item)
+      const isNewList = !inOrderedList || (lastOrderedNumber > 0 && originalNumber < lastOrderedNumber);
+      
+      if (isNewList) {
+        if (inUnorderedList) {
+          processedLines.push('</ul>');
+          inUnorderedList = false;
+        }
+        if (inOrderedList) {
+          processedLines.push('</ol>');
+        }
+        const olStyle = lastProcessedLineIsHeading() ? listBlockStyleAfterHeading : listBlockStyle;
+        processedLines.push(`<ol style="${olStyle}">`);
+        inOrderedList = true;
+        lastOrderedNumber = 0; // Reset counter for new list
+      }
+      
+      // Preserve original number using value attribute to maintain correct citation order
+      // This is critical for citations which must maintain their original numbering (1, 2, 3...)
+      processedLines.push(`<li value="${originalNumber}" style="${listItemStyle}">${itemText}</li>`);
+      lastOrderedNumber = originalNumber;
+    } else {
+      if (inUnorderedList) {
+        processedLines.push('</ul>');
+        inUnorderedList = false;
+      }
+      if (inOrderedList) {
+        processedLines.push('</ol>');
+        inOrderedList = false;
+        lastOrderedNumber = 0; // Reset counter when closing ordered list
+      }
 
-            # 1. Segment document
-            doc = await loop.run_in_executor(None, segment_document_with_llm, content)
+      if (trimmedLine) {
+        if (trimmedLine.startsWith('<')) {
+          processedLines.push(line);
+        } else {
+          processedLines.push(`<p>${trimmedLine}</p>`);
+        }
+      } else {
+        processedLines.push('');
+      }
+    }
+  }
 
-            # 2. Editor selection (three options: development+content, line+copy, brand-alignment)
-            editor_sequence = ["development+content", "line+copy", "brand-alignment"]
-            requested = request.editor_types or editor_sequence
-            selected_editors = [e for e in editor_sequence if e in requested]
+  if (inUnorderedList) {
+    processedLines.push('</ul>');
+  }
+  if (inOrderedList) {
+    processedLines.push('</ol>');
+    lastOrderedNumber = 0; // Reset counter when closing ordered list
+  }
 
-            if not selected_editors:
-                raise ValueError("No valid editors selected")
+  html = processedLines.join('\n');
+  html = html.replace(/(<p><\/p>\n?)+/g, '<p></p>');
+  html = html.replace(/<p>\s*<\/p>/g, '');
 
-            # 3. Thread id
-            thread_id = str(uuid.uuid4())
+  // Add id="ref-1", id="ref-2", ... to References list for citation-reference anchors
+  html = html.replace(/(<h2[^>]*>(?:References|Sources|Bibliography)<\/h2>\s*<ol[^>]*>)([\s\S]*?)(<\/ol>)/gi, (_full: string, open: string, content: string, close: string) => {
+    let refIndex = 0;
+    const newContent = content.replace(/<li(\s[^>]*)?>/gi, (_li: string, attrs?: string) => {
+      refIndex += 1;
+      return `<li id="ref-${refIndex}"${attrs || ''}>`;
+    });
+    return open + newContent + close;
+  });
 
-            # 4. Graph input
-            graph_input = {
-                "messages": [HumanMessage(content=doc.model_dump_json(indent=2))],
-                "document": doc,
-                "selected_editors": selected_editors,
-                "current_editor_index": 0,
-                "editor_results": [],
-                "final_result": None,
+  return html;
+}
+
+/** 
+ * Extract text from uploaded file
+ * Note: This uses fetch() without auth headers. For authenticated requests,
+ * callers should use their injected HttpClient or AuthFetchService instead.
+ * This function is kept for backward compatibility but may not work if
+ * backend requires authentication.
+ * 
+ * @deprecated Use HttpClient or AuthFetchService in components/services instead
+ */
+export async function extractFileText(file: File): Promise<string> {
+  const formData = new FormData();
+  formData.append('file', file);
+  
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  
+  // Get auth token if available (for non-Angular contexts)
+  const headers: HeadersInit = {};
+  
+  // Try to get token from sessionStorage (MSAL stores it there)
+  // This is a workaround since we can't inject AuthService in a utility function
+  try {
+    // Check if we're in a browser environment
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      // Look for MSAL tokens in sessionStorage
+      // MSAL stores tokens with keys like: "<clientId>.<tenantId>.<idtoken/accesstoken>"
+      const keys = Object.keys(sessionStorage);
+      const idTokenKey = keys.find(key => 
+        key.includes('idtoken') && 
+        key.includes(environment.clientId || '')
+      );
+      
+      if (idTokenKey) {
+        const tokenData = sessionStorage.getItem(idTokenKey);
+        if (tokenData) {
+          try {
+            const parsed = JSON.parse(tokenData);
+            const secret = parsed.secret;
+            if (secret) {
+              headers['Authorization'] = `Bearer ${secret}`;
+              console.log('[extractFileText] Added auth token from sessionStorage');
             }
+          } catch (e) {
+            console.warn('[extractFileText] Failed to parse token from sessionStorage:', e);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[extractFileText] Failed to get auth token:', e);
+  }
+  
+  const response = await fetch(`${apiUrl}/api/v1/export/extract-text`, {
+    method: 'POST',
+    headers: headers,
+    body: formData
+  });
+  
+  if (!response.ok) {
+    throw new Error('Failed to extract text from file');
+  }
+  
+  const data = await response.json();
+  return data.text || '';
+}
 
-            graph = build_sequential_graph()
-            config = {"configurable": {"thread_id": thread_id}}
+export interface EditorialFeedbackItem {
+  issue: string;
+  rule?: string;
+  impact?: string;
+  fix?: string;
+  priority?: string;
+}
 
-            # 5. Run until interrupt
-            state = wait_for_interrupt(graph, graph_input, config)
-            if not state:
-                raise ValueError("Expected interrupt but graph completed")
+/**
+ * Parse editorial feedback text into structured items.
+ * Handles lines that start with "- Issue:", "- Rule:", "- Impact:", "- Fix:", "- Priority:".
+ */
+export function parseEditorialFeedback(text: string): EditorialFeedbackItem[] {
+  if (!text) return [];
 
-            current_editor = selected_editors[0]
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
 
-            result = state["final_result"]
-            if isinstance(result, dict):
-                result = ConsolidateResult.model_validate(result)
+  const items: EditorialFeedbackItem[] = [];
+  let current: EditorialFeedbackItem | null = null;
 
-            # FRONTEND PAYLOAD
-            payload = convert_into_frontend(
-                result,
-                content,
-                current_editor=current_editor
-            )
-            payload["thread_id"] = thread_id
-            payload["current_editor"] = current_editor
-            payload["editor_index"] = 0
-            payload["total_editors"] = len(selected_editors)
+  const stripQuotes = (s: string) => s.trim().replace(/^["“]+|["”]+$/g, '').trim();
 
-            yield f"data: {json.dumps(payload)}\n\n"
-            yield "data: [DONE]\n\n"
+  for (let raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
 
-        except Exception as e:
-            logger.exception("Edit content workflow failed")
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+    const issueMatch = line.match(/^-+\s*\*{0,2}Issue\*{0,2}:\s*(.*)/i);
+    const ruleMatch = line.match(/^-+\s*\*{0,2}Rule\*{0,2}:\s*(.*)/i);
+    const impactMatch = line.match(/^-+\s*\*{0,2}Impact\*{0,2}:\s*(.*)/i);
+    const fixMatch = line.match(/^-+\s*\*{0,2}Fix\*{0,2}:\s*(.*)/i);
+    const priorityMatch = line.match(/^-+\s*\*{0,2}Priority\*{0,2}:\s*(.*)/i);
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    if (issueMatch) {
+      // push previous
+      if (current) items.push(current);
+      current = { issue: stripQuotes(issueMatch[1] || '') };
+      continue;
+    }
 
+    if (!current) {
+      // ignore lines outside an issue block
+      continue;
+    }
 
-# ---------------------------------------------------------------------
-# NEXT EDITOR ENDPOINT
-# ---------------------------------------------------------------------
-@router.post("/next")
-async def next_editor_workflow(request: NextEditorRequest):
-    """
-    Continue to next editor after user approval.
-    
-    Flow:
-    1. Load checkpointed state
-    2. Get current editor result
-    3. Apply user decisions to update document
-    4. Check if all editors complete
-    5. Update state with approved document
-    6. Resume graph execution (runs next editor)
-    7. Extract and format next editor result
-    8. Stream response to frontend
-    """
-    async def stream():
-        try:
-            graph = build_sequential_graph()
-            config = {"configurable": {"thread_id": request.thread_id}}
+    if (ruleMatch) {
+      current.rule = ruleMatch[1].trim();
+      continue;
+    }
+    if (impactMatch) {
+      current.impact = impactMatch[1].trim();
+      continue;
+    }
+    if (fixMatch) {
+      current.fix = fixMatch[1].trim();
+      continue;
+    }
+    if (priorityMatch) {
+      current.priority = priorityMatch[1].trim();
+      continue;
+    }
 
-            # 1. Load paused state
-            checkpoint = graph.get_state(config)
-            if not checkpoint or not checkpoint.values:
-                raise ValueError(f"Session not found: {request.thread_id}")
+    // If line starts with '-' but no recognized label, try to append to last field (fix or impact)
+    const dashContent = line.replace(/^-+\s*/, '');
+    if (dashContent) {
+      // prefer appending to fix > impact > rule
+      if (current.fix) current.fix += ' ' + dashContent;
+      else if (current.impact) current.impact += ' ' + dashContent;
+      else if (current.rule) current.rule += ' ' + dashContent;
+    }
+  }
 
-            state = checkpoint.values
+  if (current) items.push(current);
+  return items;
+}
 
-            editor_results = state["editor_results"]
-            current_idx = state["current_editor_index"]
-            selected_editors = state["selected_editors"]
-            original_doc = state["document"]
+/**
+ * Render editorial feedback items into a simple HTML string (escaped).
+ * Use ngFor in templates if possible instead of innerHTML.
+ */
+export function renderEditorialFeedbackHtml(items: EditorialFeedbackItem[]): string {
+  if (!items || items.length === 0) return '';
 
-            # 2. Apply decisions
-            updated_doc = apply_decisions_to_document(
-                original_doc,
-                editor_results[-1],
-                request.paragraph_edits,
-                request.decisions,
-                request.accept_all,
-                request.reject_all
-            )
+  const esc = (s?: string) =>
+    (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-            next_idx = current_idx + 1
-            if next_idx >= len(selected_editors):
-                yield f"data: {json.dumps({'type': 'all_complete'})}\n\n"
-                yield "data: [DONE]\n\n"
-                return
+  const cards = items.map(it => {
+    const badge = it.priority ? `<span class="ef-priority">${esc(it.priority)}</span>` : '';
+    return `
+      <div class="ef-card">
+        <div class="ef-header">
+          <div class="ef-issue">${esc(it.issue)}</div>
+          ${badge}
+        </div>
+        <div class="ef-body">
+          ${it.rule ? `<div class="ef-row"><strong>Rule:</strong> ${esc(it.rule)}</div>` : ''}
+          ${it.impact ? `<div class="ef-row"><strong>Impact:</strong> ${esc(it.impact)}</div>` : ''}
+          ${it.fix ? `<div class="ef-row"><strong>Fix:</strong> ${esc(it.fix)}</div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('\n');
 
-            # 3. Resume graph
-            resume_input = {
-                **state,
-                "document": updated_doc,
-                "current_editor_index": next_idx,
-                "messages": [
-                    HumanMessage(content=updated_doc.model_dump_json(indent=2))
-                ],
-            }
-
-            next_state = wait_for_interrupt(graph, resume_input, config)
-            if not next_state:
-                raise ValueError("Expected interrupt after next editor")
-
-            next_editor = selected_editors[next_idx]
-
-            result = next_state["final_result"]
-            if isinstance(result, dict):
-                result = ConsolidateResult.model_validate(result)
-
-            original_content = "\n\n".join([b.text for b in updated_doc.blocks])
-
-            # FRONTEND PAYLOAD
-            payload = convert_into_frontend(
-                result,
-                original_content,
-                current_editor=next_editor
-            )
-            payload["thread_id"] = request.thread_id
-            payload["current_editor"] = next_editor
-            payload["editor_index"] = next_idx
-            payload["total_editors"] = len(selected_editors)
-
-            yield f"data: {json.dumps(payload)}\n\n"
-            yield "data: [DONE]\n\n"
-
-        except Exception as e:
-            logger.exception("Next editor workflow failed")
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
-
-    return StreamingResponse(stream(), media_type="text/event-stream")
+  return `<div class="ef-container">${cards}</div>`;
+}
 
 
-# ---------------------------------------------------------------------
-# SHARED FUNCTION: GENERATE BLOCK TYPES FROM PARAGRAPH EDITS
-# ---------------------------------------------------------------------
-def generate_block_types_from_paragraph_edits(
-    paragraph_edits: List[dict],
-    decisions: List[dict],
-    accept_all: bool = False,
-    reject_all: bool = False
-) -> tuple[List[str], List[dict]]:
-    """
-    Generate final_paragraphs and block_types from paragraph_edits.
-    Uses same logic as /final endpoint.
-    
-    This function is shared between /final endpoint and export endpoints
-    to ensure block_types are generated consistently.
-    
-    Args:
-        paragraph_edits: List of paragraph edit dictionaries with block_type, level, original, edited
-        decisions: List of decision dictionaries with index and approved status
-        accept_all: Global flag to accept all edits
-        reject_all: Global flag to reject all edits
-    
-    Returns:
-        Tuple of (final_paragraphs, block_types)
-        - final_paragraphs: List of text strings (final article content)
-        - block_types: List of dicts with index, type, level
-    """
-    if accept_all and reject_all:
-        raise ValueError("Cannot accept all and reject all")
-    
-    decision_map = {d["index"]: d.get("approved") for d in decisions}
-    
-    final_paragraphs = []
-    block_types = []
-    
-    for edit in sorted(paragraph_edits, key=lambda x: x["index"]):
-        idx = edit["index"]
-        approved = decision_map.get(idx)
-        auto = edit.get("autoApproved", False)
+/**
+ * Block type information for formatting
+ */
+export interface BlockTypeInfo {
+  index: number;
+  type: string;
+  level?: number;
+}
+
+
+/**
+ * Format final article with block type information to produce semantic HTML.
+ * Groups consecutive bullet_item blocks into proper <ul> or <ol> lists.
+ * 
+ * @param article - The article content (markdown or plain text)
+ * @param blockTypes - Array of block type information with index, type, and optional level
+ * @returns Formatted HTML with proper semantic structure
+ */
+export function formatFinalArticleWithBlockTypes(
+  article: string, 
+  blockTypes: BlockTypeInfo[]
+): string {
+  if (!blockTypes || blockTypes.length === 0) {
+    // If no block types, just convert markdown to HTML
+    return convertMarkdownToHtml(article);
+  }
+
+  // Split article into paragraphs (assuming double newline separation)
+  const paragraphs = article.split(/\n\n+/);
+  
+  // Create a map of index to block type
+  const blockTypeMap = new Map<number, {type: string, level?: number}>();
+  blockTypes.forEach(bt => {
+    blockTypeMap.set(bt.index, {type: bt.type, level: bt.level});
+  });
+
+  // First pass: format individual paragraphs
+  /** 'numbered' = preserve 1., 2., A., i. etc. (use <ol>); 'bullet' = use • (use <ul>) */
+  type ListKind = 'numbered' | 'bullet';
+  interface ParagraphBlock {
+    type: string;
+    content: string;
+    level: number;
+    rawContent?: string;
+    hasBulletIcon?: boolean;
+    listKind?: ListKind;   // For bullet_item: preserve numbers/letters vs force bullet
+    listValue?: number;   // For numbered: value for <li value="..."> (1, 2, 3...)
+  }
+
+  const formattedParagraphs = paragraphs
+    .map((para, idx): ParagraphBlock | null => {
+      const trimmedPara = para.trim();
+      if (!trimmedPara) return null; // Filter out empty paragraphs
+
+      const blockInfo = blockTypeMap.get(idx);
+      if (!blockInfo) {
+        // Default to paragraph if no block type info
+        const formatted = convertMarkdownToHtml(trimmedPara);
+        const content = formatted.startsWith('<') ? formatted : `<p>${formatted}</p>`;
+        return {
+          type: 'paragraph',
+          content: content,
+          level: 0
+        };
+      }
+
+      // Convert markdown in the paragraph first
+      let formatted = convertMarkdownToHtml(trimmedPara);
+      
+      // Remove wrapping <p> tags if they exist at the start/end (we'll add our own based on block type)
+      // Only remove if the entire content is wrapped in a single <p> tag
+      formatted = formatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+
+      // Apply block type formatting (matches backend export formatting)
+      switch (blockInfo.type) {
+        case 'title':
+          // Title: 24pt font (matches PDF), bold, center aligned, spacing matches backend
+          // Note: Title is typically on cover page in export, but for UI display we show it
+          return {
+            type: 'title',
+            content: `<h1 style="font-size: 24pt; font-weight: 700; font-family: 'Helvetica', 'Arial', sans-serif; display: block; margin-top: 1.25em; margin-bottom: 0.35em; text-align: center; color: #D04A02;">${formatted}</h1>`,
+            level: 0
+          };
         
-        # Determine which text to use (same logic as /final endpoint)
-        if reject_all:
-            text_to_append = edit["original"]
-        elif accept_all:
-            text_to_append = edit["edited"]
-        elif approved is True:
-            text_to_append = edit["edited"]
-        elif approved is False:
-            text_to_append = edit["original"]
-        elif auto:
-            text_to_append = edit["edited"]
-        else:
-            text_to_append = edit["original"]
+        case 'heading':
+          // Heading: 14pt font, bold (Helvetica-Bold), black, spacing matches backend (0.9em top, 0.2em bottom)
+          const headingLevel = blockInfo.level || 1;
+          const headingTag = `h${Math.min(Math.max(headingLevel, 1), 6)}`;
+          return {
+            type: 'heading',
+            content: `<${headingTag} style="font-size: 14pt; font-weight: 700; font-family: 'Helvetica-Bold', 'Arial Bold', sans-serif; display: block; margin-top: 0.9em; margin-bottom: 0.2em; color: #000000;">${formatted}</${headingTag}>`,
+            level: headingLevel
+          };
         
-        # Only create block_type and append if paragraph is not empty
-        # This ensures indices align with split_blocks() which filters empty blocks
-        text_stripped = text_to_append.strip() if text_to_append else ""
-        if text_stripped:  # Only process non-empty paragraphs
-            block_type = edit.get("block_type", "paragraph")
-            block_types.append({
-                "index": len(final_paragraphs),  # Index matches final_paragraphs position
-                "type": block_type,
-                "level": edit.get("level", 0)
-            })
-            final_paragraphs.append(text_to_append)
-    
-    # Debug: Log block_types distribution to verify they're not all 'paragraph'
-    type_counts = {}
-    for bt in block_types:
-        bt_type = bt.get("type", "paragraph")
-        type_counts[bt_type] = type_counts.get(bt_type, 0) + 1
-    logger.info(f"[Block Types Generation] Block types distribution: {type_counts}")
-    logger.info(f"[Block Types Generation] Total block_types: {len(block_types)}, Sample: {block_types[:5] if len(block_types) > 5 else block_types}")
-    
-    return final_paragraphs, block_types
+        case 'bullet_item': {
+          // Preserve numbered/lettered list prefixes (match backend FINAL_FORMATTING_PROMPT).
+          // Only use bullet icon (•) when content has bullet prefix (•, -, *) or no prefix.
+          const numPrefixMatch = trimmedPara.match(/^(\d+)[.)]\s+(.+)$/s);
+          const romanPrefixMatch = trimmedPara.match(/^([ivxlcdmIVXLCDM]+)[.)]\s+(.+)$/i);
+          const letterPrefixMatch = trimmedPara.match(/^([A-Za-z])[.)]\s+(.+)$/s);
+          const bulletPrefixMatch = trimmedPara.match(/^[•\-\*]\s+(.+)$/s);
 
+          let listKind: ListKind = 'bullet';
+          let listValue: number | undefined;
+          let processedContent: string;
+          let prefix = '';
 
-# ---------------------------------------------------------------------
-# FINAL FORMATTING FUNCTION
-# ---------------------------------------------------------------------
-def format_final_article_with_llm(final_article: str, block_types: List[dict] = None) -> str:
-    """
-    Apply final formatting and output as markdown in one LLM pass.
-    
-    Fixes and output:
-    - Preserves numbered/lettered list prefixes (doesn't convert to bullets)
-    - Converts reference markers to superscripts; citation links to Title [URL]
-    - Fixes spacing, line spacing, alignment, and paragraph spacing
-    
-    Args:
-        final_article: The final article text to format
-        block_types: List of dicts with index, type, level for each block (optional)
-    
-    Returns:
-        Formatted article in standard markdown (for UI and export)
-    """
-    if not final_article or not final_article.strip():
-        return final_article
-    
-    try:
-        # Create block type metadata if provided
-        block_type_info = ""
-        if block_types:
-            block_type_info = "\n\nBlock Type Information: {}\n".format(json.dumps(block_types))
-            block_type_info += "Use the block type metadata (index, type, level) to apply proper formatting for each paragraph. DO NOT add, remove, split, or merge paragraphs - maintain exact paragraph structure to keep block types aligned.\n"
-        
-        # Prepare messages with system role and user content
-        messages = [
-            SystemMessage(content=FINAL_FORMATTING_AND_MARKDOWN_PROMPT + block_type_info),
-            HumanMessage(content=final_article)
-        ]
-        
-        # Call LLM with temperature=0.0 for deterministic results
-        response = llm.invoke(messages)
-        
-        # Extract the formatted text from response
-        formatted_text = response.content if hasattr(response, 'content') else str(response)
-        
-        # Clean up any potential markdown code fences or extra formatting
-        formatted_text = formatted_text.strip()
-        
-        # Remove markdown code fences if present
-        if formatted_text.startswith("```"):
-            lines = formatted_text.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            formatted_text = "\n".join(lines).strip()
-        
-        # If LLM returned empty or error, return original
-        if not formatted_text:
-            logger.warning("Formatting LLM returned empty response, returning original article")
-            return final_article
-        
-        return formatted_text
-        
-    except Exception as e:
-        logger.error(f"Error in format_final_article_with_llm: {e}", exc_info=True)
-        # Return original article on error
-        return final_article
+          if (numPrefixMatch) {
+            listKind = 'numbered';
+            listValue = parseInt(numPrefixMatch[1], 10);
+            prefix = numPrefixMatch[1] + '. ';
+            processedContent = numPrefixMatch[2].trim();
+          } else if (romanPrefixMatch) {
+            listKind = 'numbered';
+            prefix = romanPrefixMatch[1] + '. ';
+            processedContent = romanPrefixMatch[2].trim();
+          } else if (letterPrefixMatch) {
+            listKind = 'numbered';
+            prefix = letterPrefixMatch[1] + '. ';
+            processedContent = letterPrefixMatch[2].trim();
+          } else if (bulletPrefixMatch) {
+            prefix = '• ';
+            processedContent = bulletPrefixMatch[1].trim();
+          } else {
+            prefix = '• ';
+            processedContent = trimmedPara;
+          }
 
+          // Format text before ":" as bold, after ":" as normal (for both numbered and bullet)
+          const colonIndex = processedContent.indexOf(':');
+          if (colonIndex > 0) {
+            const beforeColon = processedContent.substring(0, colonIndex).trim();
+            const afterColon = processedContent.substring(colonIndex + 1).trim();
+            let beforeFormatted = convertMarkdownToHtml(beforeColon);
+            let afterFormatted = convertMarkdownToHtml(afterColon);
+            beforeFormatted = beforeFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+            afterFormatted = afterFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+            processedContent = `${prefix}<strong>${beforeFormatted}</strong>: ${afterFormatted}`;
+          } else {
+            processedContent = convertMarkdownToHtml(processedContent);
+            processedContent = processedContent.replace(/^<p>(.*)<\/p>$/s, '$1');
+            processedContent = prefix + processedContent;
+          }
 
-# ---------------------------------------------------------------------
-# FINAL ARTICLE GENERATION ENDPOINT 
-# ---------------------------------------------------------------------
-@router.post("/final")
-async def generate_final_article(request: FinalArticleRequest):
-    """
-    Generate final article from all user decisions.
-    
-    Decision priority:
-    1. Global flags (reject_all > accept_all)
-    2. Explicit paragraph decisions (approved=True/False)
-    3. Auto-approval (for unchanged paragraphs)
-    4. Default to original
-    
-    Args:
-        request: FinalArticleRequest with all paragraph edits and decisions
-    
-    Returns:
-        JSONResponse with final_article text (formatted)
-    """
-    if not request.original_content:
-        raise HTTPException(400, "Original content cannot be empty")
+          return {
+            type: 'bullet_item',
+            content: processedContent,
+            level: blockInfo.level || 0,
+            rawContent: trimmedPara,
+            hasBulletIcon: listKind === 'bullet',
+            listKind,
+            listValue
+          };
+        }
+        
+        case 'paragraph':
+        default:
+          // Paragraph: 11pt font, line-height 1.5 (matches backend), justify alignment, spacing matches backend
+          // margin-top: 0.15em (2pt), margin-bottom: 0.7em (8pt)
+          return {
+            type: 'paragraph',
+            content: `<p style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; display: block; text-align: justify; margin-top: 0.15em; margin-bottom: 0.7em; line-height: 1.5;">${formatted}</p>`,
+            level: 0
+          };
+      }
+    })
+    .filter((para): para is ParagraphBlock => para !== null);
 
-    if request.accept_all and request.reject_all:
-        raise HTTPException(400, "Cannot accept all and reject all")
+  // Second pass: group consecutive bullet_item blocks into <ol> (numbered) or <ul> (bullet)
+  const finalOutput: string[] = [];
+  type ListItem = { content: string; level: number; rawContent: string; hasBulletIcon?: boolean; listKind?: ListKind; listValue?: number };
+  let currentList: ListItem[] = [];
+  let prevBlockType: string | null = null;
+  let prevBlockIndex: number = -1;
 
-    # Use shared function to generate block_types (same logic used by export endpoints)
-    final_paragraphs, block_types = generate_block_types_from_paragraph_edits(
-        paragraph_edits=request.paragraph_edits,
-        decisions=request.decisions,
-        accept_all=request.accept_all,
-        reject_all=request.reject_all
-    )
+  const flushList = (list: ListItem[], marginTop: string, marginBottom: string) => {
+    if (list.length === 0) return;
+    const isNumbered = list.every(item => item.listKind === 'numbered');
+    // Tighter spacing for citations/references: less gap between list and heading, and between list items
+    const listStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; padding-left: 1.5em; margin-top: " + marginTop + "; margin-bottom: " + marginBottom + "; line-height: 1.4;";
+    const liStyle = "display: list-item; margin: 0.15em 0; line-height: 1.4;";
+    if (isNumbered) {
+      // Preserve numbered/lettered prefixes (content already has "1. ", "A. ", "i. " etc.)
+      finalOutput.push(`<ol style="${listStyle} list-style-type: none;">`);
+      list.forEach(item => finalOutput.push(`<li style="${liStyle}">${item.content}</li>`));
+      finalOutput.push('</ol>');
+    } else {
+      finalOutput.push(`<ul style="${listStyle} list-style-type: none;">`);
+      list.forEach(item => finalOutput.push(`<li style="${liStyle}">${item.content}</li>`));
+      finalOutput.push('</ul>');
+    }
+  };
 
-    # Join paragraphs to create final article
-    final_article = "\n\n".join(final_paragraphs)
+  for (let i = 0; i < formattedParagraphs.length; i++) {
+    const para = formattedParagraphs[i];
+    const nextPara = i < formattedParagraphs.length - 1 ? formattedParagraphs[i + 1] : null;
     
-    # Apply final formatting and output as markdown in one LLM pass
-    final_article = format_final_article_with_llm(final_article, block_types)
-    return JSONResponse(content={"final_article": final_article})
+    if (para.type === 'bullet_item') {
+      currentList.push({
+        content: para.content,
+        level: para.level,
+        rawContent: para.rawContent || '',
+        hasBulletIcon: para.hasBulletIcon,
+        listKind: para.listKind,
+        listValue: para.listValue
+      });
+      prevBlockType = 'bullet_item';
+      prevBlockIndex = i;
+    } else {
+      // Close any open list before processing non-list item
+      if (currentList.length > 0) {
+        const listMarginTop = prevBlockType === 'heading' ? '0.1em' : (prevBlockType === 'paragraph' ? '0.2em' : '0.4em');
+        const listMarginBottom = nextPara && nextPara.type === 'paragraph' ? '0.2em' : '0.4em';
+        flushList(currentList, listMarginTop, listMarginBottom);
+        currentList = [];
+      }
+
+      // Adjust paragraph margins based on context (matches backend export)
+      if (para.type === 'paragraph') {
+        // Reduce bottom margin if followed by bullet list (0.25em/3pt matches backend)
+        if (nextPara && nextPara.type === 'bullet_item') {
+          para.content = para.content.replace(/margin-bottom:\s*[^;]+;?/g, 'margin-bottom: 0.25em;');
+        }
+        // Reduce top margin if following heading - decrease line spacing between heading and paragraph
+        if (prevBlockType === 'heading') {
+          para.content = para.content.replace(/margin-top:\s*[^;]+;?/g, 'margin-top: 0.05em;');
+        }
+      }
+
+      // Add non-list paragraph
+      finalOutput.push(para.content);
+      prevBlockType = para.type;
+      prevBlockIndex = i;
+    }
+  }
+
+  // Close any remaining open list
+  if (currentList.length > 0) {
+    const listMarginTop = prevBlockType === 'heading' ? '0.1em' : (prevBlockType === 'paragraph' ? '0.2em' : '0.4em');
+    flushList(currentList, listMarginTop, '0.4em');
+  }
+
+  return finalOutput.join('\n');
+}
