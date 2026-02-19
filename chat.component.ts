@@ -563,158 +563,6 @@ def merge_two_editor_results(
 
 
 # ---------------------------------------------------------------------
-# VALIDATE AND RESOLVE DUPLICATE FIXES
-# ---------------------------------------------------------------------
-def resolve_duplicate_fixes_with_llm(
-    original_text: str,
-    issue_text: str,
-    fix1: FeedbackItem,
-    fix2: FeedbackItem,
-    editor1_name: str,
-    editor2_name: str
-) -> FeedbackItem:
-    """Resolve conflicting fixes using LLM."""
-    from .prompt import DUPLICATE_FIX_RESOLUTION_PROMPT
-    import json
-    import re
-    
-    prompt = DUPLICATE_FIX_RESOLUTION_PROMPT.format(
-        original_text=original_text[:500],
-        issue_text=issue_text,
-        editor1_name=editor1_name,
-        fix1=fix1.fix,
-        rule1=fix1.rule_used,
-        impact1=fix1.impact,
-        priority1=fix1.priority,
-        editor2_name=editor2_name,
-        fix2=fix2.fix,
-        rule2=fix2.rule_used,
-        impact2=fix2.impact,
-        priority2=fix2.priority
-    )
-    
-    try:
-        response = llm.invoke([HumanMessage(content=prompt)])
-        content = response.content if hasattr(response, 'content') else str(response)
-        json_match = re.search(r'\{.*\}', content, re.DOTALL)
-        if json_match:
-            resolved = json.loads(json_match.group(0))
-            return FeedbackItem(
-                issue=issue_text,
-                fix=resolved.get("resolved_fix", fix1.fix),
-                impact=resolved.get("combined_impact", fix1.impact),
-                rule_used=resolved.get("combined_rule", f"{editor1_name} & {editor2_name} - Combined"),
-                priority=resolved.get("resolved_priority", fix1.priority)
-            )
-    except Exception as e:
-        logger.error(f"LLM resolution failed: {e}")
-    
-    # Fallback: higher priority wins
-    priority_order = {"Critical": 3, "Important": 2, "Enhancement": 1}
-    return fix2 if priority_order.get(fix2.priority, 0) > priority_order.get(fix1.priority, 0) else fix1
-
-
-def validate_and_resolve_duplicate_fixes(merged_result: EditorResult) -> EditorResult:
-    """Resolve duplicate fixes where both editors found same issue."""
-    logger.info("VALIDATING DUPLICATE FIXES")
-    
-    resolved_blocks = []
-    for block in merged_result.blocks:
-        if not block.feedback_edit:
-            resolved_blocks.append(block)
-            continue
-        
-        # Group by normalized issue
-        issue_groups: Dict[str, List[tuple[str, FeedbackItem]]] = {}
-        for sef in block.feedback_edit:
-            for item in sef.items:
-                key = item.issue.lower().strip()
-                issue_groups.setdefault(key, []).append((sef.editor, item))
-        
-        if len(issue_groups) == 0:
-            resolved_blocks.append(block)
-            continue
-        
-        # Resolve duplicates
-        resolved_map: Dict[str, List[FeedbackItem]] = {}
-        for normalized_issue, items in issue_groups.items():
-            if len(items) == 1:
-                editor, item = items[0]
-                resolved_map.setdefault(editor, []).append(item)
-            else:
-                # Multiple editors found same issue
-                editor1, fix1 = items[0]
-                editor2, fix2 = items[1]
-                
-                if fix1.fix.lower().strip() == fix2.fix.lower().strip():
-                    # Same fix - combine
-                    priority_order = {"Critical": 3, "Important": 2, "Enhancement": 1}
-                    best_priority = max(fix1.priority, fix2.priority, key=lambda p: priority_order.get(p, 0))
-                    resolved_map.setdefault(f"{editor1}+{editor2}", []).append(
-                        FeedbackItem(
-                            issue=fix1.issue,
-                            fix=fix1.fix,
-                            impact=f"{fix1.impact} | {fix2.impact}",
-                            rule_used=f"{fix1.rule_used} & {fix2.rule_used}",
-                            priority=best_priority
-                        )
-                    )
-                else:
-                    # Different fixes - LLM resolve
-                    resolved = resolve_duplicate_fixes_with_llm(
-                        block.original_text, fix1.issue, fix1, fix2, editor1, editor2
-                    )
-                    resolved_map.setdefault(f"{editor1}+{editor2}", []).append(resolved)
-        
-        resolved_blocks.append(
-            BlockEditResult(
-                id=block.id,
-                type=block.type,
-                level=block.level,
-                original_text=block.original_text,
-                suggested_text=block.suggested_text,
-                has_changes=block.has_changes,
-                feedback_edit=[SingleEditorFeedback(editor=e, items=i) for e, i in resolved_map.items()]
-            )
-        )
-    
-    return EditorResult(
-        editor_type=merged_result.editor_type,
-        blocks=resolved_blocks,
-        warnings=merged_result.warnings,
-        raw_output=None
-    )
-
-
-# ---------------------------------------------------------------------
-# VALIDATION NODE FOR COMBINED EDITORS
-# ---------------------------------------------------------------------
-def validate_combined_editors_node(state: SupervisorState) -> SupervisorState:
-    """Validate and resolve duplicate fixes after merging combined editors."""
-    logger.info("RUNNING: validate_combined_editors_node")
-    
-    editor_results = state.get("editor_results", [])
-    if not editor_results:
-        return state
-    
-    # Get the last result (should be merged combined editor result)
-    last_result = editor_results[-1]
-    
-    # Check if it's a combined editor type
-    if last_result.editor_type not in ["development+content", "line+copy"]:
-        # Not a combined editor, skip validation
-        return state
-    
-    # Validate and resolve duplicate fixes
-    validated_result = validate_and_resolve_duplicate_fixes(last_result)
-    
-    # Replace the last result with validated version
-    return {
-        "editor_results": editor_results[:-1] + [validated_result]
-    }
-
-
-# ---------------------------------------------------------------------
 # COMBINED EDITOR NODES (reuse existing nodes)
 # ---------------------------------------------------------------------
 def development_content_combined_node(state: SupervisorState) -> SupervisorState:
@@ -1641,7 +1489,6 @@ def build_sequential_graph():
     # Validation nodes (run after editors)
     graph.add_node("article_validation", article_validation_node)
     graph.add_node("content_validation", content_validation_node)
-    graph.add_node("validate_combined_editors", validate_combined_editors_node)
     
     # Merge node (final step)
     graph.add_node("merge", sequential_merge_node)
@@ -1672,7 +1519,6 @@ def build_sequential_graph():
             # Validation nodes
             "article_validation": "article_validation",
             "content_validation": "content_validation",
-            "validate_combined_editors": "validate_combined_editors",
             
             # Merge node
             "merge": "merge",
@@ -1691,10 +1537,9 @@ def build_sequential_graph():
     )
     graph.add_edge("development_editor_tool", "article_validation")
     
-    # Combined editor nodes go through validation then merge
-    graph.add_edge("development_content_combined", "validate_combined_editors")
-    graph.add_edge("line_copy_combined", "validate_combined_editors")
-    graph.add_edge("validate_combined_editors", "merge")
+    # Combined editor nodes go directly to merge
+    graph.add_edge("development_content_combined", "merge")
+    graph.add_edge("line_copy_combined", "merge")
     
     graph.add_conditional_edges(
         "article_validation",
