@@ -2291,23 +2291,40 @@ Return ONLY valid JSON. No markdown fences, no commentary. The top-level key mus
 LINE_COPY_RESOLVE_CONFLICTS_PROMPT = """
 You are resolving conflicts between Line Editor and Copy Editor suggestions for the same document blocks.
 
+CONTEXT: Copy Editor runs AFTER Line Editor, so Copy Editor sees Line Editor's updated text as its input. This means:
+- Line Editor's "issue" field references the ORIGINAL text
+- Copy Editor's "issue" field may reference Line Editor's UPDATED text (not the original)
+- This is expected and correct behavior
+
 RULE: Line editor takes priority where both address the same line or sentence.
-- Where both editors suggest a change for the same line/sentence in a block, KEEP ONLY the Line Editor suggestion. Omit the Copy Editor suggestion for that line.
-- Only include Copy Editor suggestions for lines/sentences that the Line Editor did not change.
-- Include ALL Line Editor suggestions.
+- Where both editors suggest a change for the same line/sentence in a block, MERGE them into a SINGLE feedback item.
+- For merged items: use Line Editor's "issue" (original text) + Line Editor's "fix" (final solution, since Line takes priority).
+- Include ALL non-overlapping Line Editor suggestions.
+- Include ALL non-overlapping Copy Editor suggestions.
+
+IMPORTANT MERGING RULES: When both editors address the same line/sentence:
+- Create ONE merged feedback item with:
+  * "issue": Use Line Editor's "issue" field (references the ORIGINAL text)
+  * "fix": Use Line Editor's "fix" field (the final solution that was applied, since Line Editor takes priority)
+  * "impact": Combine both impacts or use Line Editor's impact (prefer Line if different)
+  * "rule_used": Use Line Editor's "rule_used" (since Line Editor's fix was applied)
+  * "priority": Use the higher priority between the two (Critical > Important > Enhancement)
+  * "editor": Use "line" (since Line Editor's fix takes priority)
+- Do NOT include separate Line Editor and Copy Editor items for the same line - merge them.
+- Only include separate items when they address DIFFERENT lines/sentences.
 
 INPUT: You will receive a JSON object with a "blocks" array. Each block has:
 - "id": block id (e.g. "b1")
-- "original_text": original block text
+- "original_text": original block text (before any editor changes)
 - "suggested_text": final suggested text (already Line-preferenced; do not change)
 - "feedback_edit": array of { "editor": "line" | "copy", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] } for both editors
 
 OUTPUT: Return a single JSON object with a "blocks" array. Each block MUST have:
 - "id": same as input
 - "suggested_text": same as input (unchanged)
-- "feedback_edit": array of SingleEditorFeedback. Apply the rule above: for each line/sentence, if both editors have an item addressing it, include only the Line item; otherwise include the Line or Copy item. Preserve the exact structure: [ { "editor": "line" | "copy", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] } ]
+- "feedback_edit": array of SingleEditorFeedback. For overlapping items (same line/sentence), merge into ONE item using Line Editor's "issue" + Line Editor's "fix". For non-overlapping items, include them separately. Preserve the exact structure: [ { "editor": "line" | "copy", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] } ]
 
-Two feedback items address the "same line/sentence" when their "issue" (quoted original text) refers to the same or overlapping part of the block (e.g. same phrase, same sentence, or one contains the other). When in doubt, treat as same line and keep Line only.
+Two feedback items address the "same line/sentence" when their "issue" (quoted text) refers to the same or overlapping part of the block (e.g. same phrase, same sentence, or one contains the other). When merging: Line Editor's "issue" shows the original problem, Line Editor's "fix" shows the final solution that was applied.
 
 Return ONLY valid JSON. No markdown fences, no commentary. The top-level key must be "blocks" (array of objects with "id", "suggested_text", "feedback_edit").
 """
