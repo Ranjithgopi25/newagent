@@ -2254,19 +2254,20 @@ CONTEXT: Content Editor runs AFTER Development Editor, so Content Editor sees De
 
 RULE: Content editor takes priority where both address the same line or sentence.
 - Where both editors suggest a change for the same line/sentence in a block, MERGE them into a SINGLE feedback item.
-- For merged items: use Development Editor's "issue" (original text) + Content Editor's "fix" (final solution).
 - Include ALL non-overlapping Content Editor suggestions.
 - Include ALL non-overlapping Development Editor suggestions.
 
 IMPORTANT MERGING RULES: When both editors address the same line/sentence:
-- Create ONE merged feedback item with:
-  * "issue": Use Development Editor's "issue" field (references the ORIGINAL text)
-  * "fix": Use Content Editor's "fix" field (the final solution that was applied)
-  * "impact": Combine both impacts or use Content Editor's impact (prefer Content if different)
-  * "rule_used": Use Content Editor's "rule_used" (since Content Editor's fix was applied)
-  * "priority": Use the higher priority between the two (Critical > Important > Enhancement)
+- Create ONE merged feedback item that combines ALL overlapping items from both editors.
+- If Development Editor has 2+ items and Content Editor has 2+ items addressing the same line, merge ALL of them into ONE feedback item.
+- The merged feedback item must have:
+  * "issue": Use Development Editor's "issue" field (references the ORIGINAL text). If multiple Development Editor items overlap, use the most comprehensive one.
+  * "fix": Use Content Editor's "fix" field (the final solution that was applied). If multiple Content Editor items overlap, intelligently combine all Content Editor fixes into one coherent solution.
+  * "impact": Format as an array string combining ALL impacts from ALL overlapping items. Example: "['Impact from Development Editor Item 1', 'Impact from Development Editor Item 2', 'Impact from Content Editor Item 1', 'Impact from Content Editor Item 2']" (include all impacts, no duplicates)
+  * "rule_used": Format as an array string combining ALL rules from ALL overlapping items. Example: "['Development Editor - Rule X', 'Development Editor - Rule Y', 'Content Editor - Rule Z', 'Content Editor - Rule W']" (include all rules)
+  * "priority": Use the HIGHEST priority among all overlapping items (Critical > Important > Enhancement)
   * "editor": Use "content" (since Content Editor's fix takes priority)
-- Do NOT include separate Development Editor and Content Editor items for the same line - merge them.
+- Do NOT include separate Development Editor and Content Editor items for the same line - merge ALL of them into ONE item.
 - Only include separate items when they address DIFFERENT lines/sentences.
 
 INPUT: You will receive a JSON object with a "blocks" array. Each block has:
@@ -2278,9 +2279,9 @@ INPUT: You will receive a JSON object with a "blocks" array. Each block has:
 OUTPUT: Return a single JSON object with a "blocks" array. Each block MUST have:
 - "id": same as input
 - "suggested_text": same as input (unchanged)
-- "feedback_edit": array of SingleEditorFeedback. For overlapping items (same line/sentence), merge into ONE item using Development Editor's "issue" + Content Editor's "fix". For non-overlapping items, include them separately. Preserve the exact structure: [ { "editor": "development" | "content", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] } ]
+- "feedback_edit": array of SingleEditorFeedback. For overlapping items (same line/sentence), merge ALL overlapping items from both editors into ONE item using Development Editor's "issue" + Content Editor's "fix" (or combined Content Editor fixes if multiple) + combined impacts array + combined rules array, and set "editor" to "content". For non-overlapping items, include them separately. Preserve the exact structure: [ { "editor": "development" | "content", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] } ]
 
-Two feedback items address the "same line/sentence" when their "issue" (quoted text) refers to the same or overlapping part of the block (e.g. same phrase, same sentence, or one contains the other). When merging: Development Editor's "issue" shows the original problem, Content Editor's "fix" shows the final solution that was applied.
+Two feedback items address the "same line/sentence" when their "issue" (quoted text) refers to the same or overlapping part of the block (e.g. same phrase, same sentence, or one contains the other). When merging: Development Editor's "issue" shows the original problem, Content Editor's "fix" shows the final solution that was applied (or intelligently combined fix if multiple Content Editor items). Include ALL impacts and ALL rules from all merged items in the arrays.
 
 Return ONLY valid JSON. No markdown fences, no commentary. The top-level key must be "blocks" (array of objects with "id", "suggested_text", "feedback_edit").
 """
