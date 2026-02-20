@@ -1,6 +1,7 @@
 import { Component, OnInit, ChangeDetectorRef  } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { TlFlowService } from '../../../core/services/tl-flow.service';
 import { ChatService } from '../../../core/services/chat.service';
 import { TlChatBridgeService } from '../../../core/services/tl-chat-bridge.service';
@@ -196,7 +197,8 @@ export class EditContentFlowComponent implements OnInit {
     private chatService: ChatService,
     private tlChatBridge: TlChatBridgeService,
     private cdr: ChangeDetectorRef,
-    private authFetchService: AuthFetchService
+    private authFetchService: AuthFetchService,
+    private sanitizer: DomSanitizer
   ) {}
 
   ngOnInit(): void {
@@ -1490,6 +1492,11 @@ export class EditContentFlowComponent implements OnInit {
     if (!editorId) return '';
     
     return getEditorDisplayName(editorId);
+  }
+
+  /** Get sanitized HTML for editor name to render bold text */
+  getEditorNameHtml(name: string): SafeHtml {
+    return this.sanitizer.bypassSecurityTrustHtml(name);
   }
 
   /** Update paragraph's approved status based on its feedback items */
