@@ -1,6 +1,7 @@
 import { Component, OnInit, ChangeDetectorRef  } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { TlFlowService } from '../../../core/services/tl-flow.service';
 import { ChatService } from '../../../core/services/chat.service';
 import { TlChatBridgeService } from '../../../core/services/tl-chat-bridge.service';
@@ -167,7 +168,7 @@ export class EditContentFlowComponent implements OnInit {
   editorTypes: { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] = [
     {
       id: 'development+content' as EditorType,
-      name: 'Development + Content',
+      name: 'Strengthen content structure and key messaging (clarify positioning, flow, and key points)',
       icon: '🚀',
       description: 'Development and Content editors run together, then combined into one result',
       details: 'Development: structure, narrative, POV. Content: MECE, citations, logic. Same-sentence merge of rules and impact.',
@@ -175,7 +176,7 @@ export class EditContentFlowComponent implements OnInit {
     },
     {
       id: 'line+copy' as EditorType,
-      name: 'Line + Copy',
+      name: 'Copyedit (smooth phrasing, grammar, and consistency)',
       icon: '📝',
       description: 'Line and Copy editors run together, then combined into one result',
       details: 'Line: flow, readability, style. Copy: grammar, punctuation, typos. Same-sentence merge of rules and impact.',
@@ -183,7 +184,7 @@ export class EditContentFlowComponent implements OnInit {
     },
     {
       id: 'brand-alignment' as EditorType,
-      name: 'PwC Brand Alignment Editor',
+      name: 'Align to PwC brand standards (tone, terminology, formatting)',
       icon: '🎯',
       description: 'Aligns content writing standards with PwC brand',
       details: 'Checks: we/you language, contractions, active voice, prohibited words (catalyst, PwC Network), China references, brand messaging',
@@ -371,33 +372,6 @@ export class EditContentFlowComponent implements OnInit {
       return editor ? editor.name : '';
     }
     return `${this.formData.selectedEditors.length} editors`;
-  }
-
-  /** Format editor name with bold styling for UI display */
-  getEditorNameHtml(editorName: string): string {
-    // Map editor names to their display format with bold main text
-    const editorDisplayMap: { [key: string]: { bold: string; regular: string } } = {
-      'Development + Content': {
-        bold: 'Strengthen content structure and key messaging',
-        regular: '(clarify positioning, flow, and key points)'
-      },
-      'Line + Copy': {
-        bold: 'Copyedit',
-        regular: '(smooth phrasing, grammar, and consistency)'
-      },
-      'PwC Brand Alignment Editor': {
-        bold: 'Align to PwC brand standards',
-        regular: '(tone, terminology, formatting)'
-      }
-    };
-
-    const display = editorDisplayMap[editorName];
-    if (display) {
-      return `<strong>${display.bold}</strong> ${display.regular}`;
-    }
-    
-    // Fallback: just make the name bold if no mapping exists
-    return `<strong>${editorName}</strong>`;
   }
   
   getSatisfactionPromptText(): string {
@@ -1517,6 +1491,22 @@ export class EditContentFlowComponent implements OnInit {
     if (!editorId) return '';
     
     return getEditorDisplayName(editorId);
+  }
+
+  /** Format editor name HTML with only the title bold (not the description) */
+  getEditorNameHtml(name: string): string {
+    if (!name) return '';
+    
+    // Split on opening parenthesis to separate title from description
+    const match = name.match(/^(.+?)\s*\((.+)\)$/);
+    if (match) {
+      const title = match[1].trim();
+      const description = match[2].trim();
+      return `<strong>${title}</strong> (${description})`;
+    }
+    
+    // If no parentheses found, make the whole name bold
+    return `<strong>${name}</strong>`;
   }
 
   /** Update paragraph's approved status based on its feedback items */
