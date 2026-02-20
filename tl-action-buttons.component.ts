@@ -1,1709 +1,1837 @@
-from typing import TypedDict, List, Dict, Optional, Annotated, Iterator, Tuple, Sequence, Any
-import operator
-import json
-import pickle
-import re
-from datetime import datetime, timezone
-from langgraph.graph import StateGraph
-from langchain_core.messages import BaseMessage, HumanMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.base import (
-    BaseCheckpointSaver,
-    Checkpoint,
-    CheckpointMetadata,
-    CheckpointTuple,
-    ChannelVersions,
-)
-from redis import Redis
-from app.core.config import config
-from app.core.deps import get_llm_client_agent
-import logging
+import { Component, OnInit, ChangeDetectorRef  } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { TlFlowService } from '../../../core/services/tl-flow.service';
+import { ChatService } from '../../../core/services/chat.service';
+import { TlChatBridgeService } from '../../../core/services/tl-chat-bridge.service';
+import { AuthFetchService } from '../../../core/services/auth-fetch.service';
+import { ThoughtLeadershipMetadata } from '../../../core/models';
+import { FileUploadComponent } from '../../../shared/ui/components/file-upload/file-upload.component';
+import { EditorProgressItem } from '../../../shared/ui/components/editor-progress/editor-progress.component'; // EditorProgressComponent removed - not used in template
+import { normalizeEditorOrder, normalizeContent, EditorType, extractDocumentTitle, getEditorDisplayName, formatMarkdown, convertMarkdownToHtml, renderMarkdownForDisplay, extractFileText, parseEditorialFeedback, renderEditorialFeedbackHtml, EditorialFeedbackItem } from '../../../core/utils/edit-content.utils';
+import { 
+  createParagraphEditsFromComparison, 
+  allParagraphsDecided,
+  validateStringEquality
+} from '../../../core/utils/paragraph-edit.utils';
+import { ParagraphEdit } from '../../../core/models/message.model';
+import { environment } from '../../../../environments/environment';
+interface EditForm {
+  selectedEditors: EditorType[];
+  uploadedFile: File | null;
+}
 
-from .schema import (
-    DocumentStructure,
-    EditorResult,
-    ConsolidateResult,
-    ConsolidatedBlockEdit,
-    BlockEditResult,
-    EditorFeedback,
-    DevelopmentEditorValidationResult,
-    ContentEditorValidationResult,
-    DocumentBlock,
-    FeedbackItem,
-    SingleEditorFeedback
-)
+interface ParagraphFeedback {
+  index: number;
+  original: string;
+  edited: string;
+  tags: string[];
+  autoApproved: boolean;
+  approved?: boolean | null;
+  block_type?: string;
+  level?: number;
+  editorial_feedback: {
+    development?: any[];
+    content?: any[];
+    copy?: any[];
+    line?: any[];
+    brand?: any[];
+  };
+  displayOriginal?: string;
+  displayEdited?: string;
+}
 
-from .prompt import (
-    DEVELOPMENT_CONTENT_RESOLVE_CONFLICTS_PROMPT,
-    LINE_COPY_RESOLVE_CONFLICTS_PROMPT,
-)
-from .tools import (
-    development_editor_tool,
-    content_editor_tool,
-    line_editor_tool,
-    copy_editor_tool,
-    brand_editor_tool,
-    run_editor_engine,
-    validate_development_editor,
-    validate_content_editor,
-)
+@Component({
+  selector: 'app-edit-content-flow',
+  standalone: true,
+  imports: [CommonModule, FormsModule, FileUploadComponent], // EditorProgressComponent removed - not used in template
+  templateUrl: './edit-content-flow.component.html',
+  styleUrls: ['./edit-content-flow.component.scss']
+})
+export class EditContentFlowComponent implements OnInit {
+  isGenerating: boolean = false;
+  editFeedback: string = '';
+  feedbackItems: EditorialFeedbackItem[] = [];
+  feedbackHtml: string = '';
+  revisedContent: string = '';
+  originalContent: string = '';
+  iterationCount: number = 0;
+  showSatisfactionPrompt: boolean = false;
+  showImprovementInput: boolean = false;
+  improvementRequestText: string = '';
+  fileUploadError: string = '';
+  uploadedFileSize: string = '';
+  MAX_FILE_SIZE_MB: number = 5;
+  editorProgressList: EditorProgressItem[] = [];
+  currentEditorIndex: number = 0;
+  totalEditors: number = 0;
+  currentEditorId: string = '';
+  
+  // Sequential workflow properties
+  threadId: string | null = null;
+  currentEditor: string | null = null;
+  isSequentialMode: boolean = false;
+  isLastEditor: boolean = false;
+  isEditorLoading: boolean = false; // Track if current editor is loading
+  
+  paragraphFeedbackData: ParagraphFeedback[] = [];
+  paragraphEdits: ParagraphEdit[] = [];
+  showFinalOutput: boolean = false;
+  /** Final article as markdown (same as Quick Start). For in-component display we convert to HTML. */
+  finalArticle: string = '';
+  isGeneratingFinal: boolean = false;
 
-logger = logging.getLogger(__name__)
+  /** HTML for in-component display of final article — same as Quick Start: marked.parse + list/citation post-process (no convertMarkdownToHtml). */
+  get finalArticleDisplay(): string {
+    return this.finalArticle ? renderMarkdownForDisplay(this.finalArticle) : '';
+  }
 
-# ---------------------------------------------------------------------
-# LLM (shared)
-# ---------------------------------------------------------------------
-llm = get_llm_client_agent()
+  /** Paragraphs that require review (exclude autoApproved) */
+  private get reviewParagraphs(): ParagraphFeedback[] {
+    return (this.paragraphFeedbackData || [])
+      .filter(p => p.autoApproved !== true)
+      .sort((a, b) => a.index - b.index);
+  }
 
-# ---------------------------------------------------------------------
-# GRAPH STATE
-# ---------------------------------------------------------------------
-class SupervisorState(TypedDict):
-    messages: List[BaseMessage]
-    document: DocumentStructure
-    selected_editors: List[str]
-    editor_results: Annotated[List[EditorResult], operator.add]
-    final_result: Optional[ConsolidateResult]
-    current_editor_index: Optional[int]  # For sequential execution
-    thread_id: Optional[str]  # For checkpointing
-    article_analysis: Optional[str]  # Article-level analysis text for Development Editor (LLM-based, not schema)
-    cross_paragraph_analysis: Optional[str]  # Cross-paragraph analysis text for Content Editor (LLM-based, not schema)
-    dev_editor_retry_count: Optional[int]  # Retry count for Development Editor (retries until score >= 8, max 2 retries)
-    content_editor_retry_count: Optional[int]  # Retry count for Content Editor (retries until score >= 8, max 2 retries)
-    content_validation_result: Optional[ContentEditorValidationResult]  # Validation result for Content Editor
-    validation_result: Optional[DevelopmentEditorValidationResult]  # Validation result for Development Editor
+  /** Flatten all editorial feedback items across paragraphs */
+  private getAllFeedbackItems(): Array<{
+    paraIndex: number;
+    editorType: string;
+    fbIndex: number;
+    fb: any;
+  }> {
+    const items: Array<{ paraIndex: number; editorType: string; fbIndex: number; fb: any }> = [];
 
-
-# ---------------------------------------------------------------------
-# ARTICLE-LEVEL ANALYSIS AND VALIDATION HELPERS
-# ---------------------------------------------------------------------
-def analyze_article(document: DocumentStructure) -> str:
-    """
-    Analyze the entire article using LLM.
-    Returns formatted text analysis for Development Editor guidance.
-    No schema parsing - direct LLM text response.
-    """
-    logger.info("ANALYZING ARTICLE FOR DEVELOPMENT EDITOR")
-    
-    # Calculate article length
-    full_text = " ".join([block.text for block in document.blocks])
-    word_count = len(full_text.split())
-    
-    # Count sections (headings)
-    section_count = sum(1 for block in document.blocks if block.type == "heading")
-    
-    # Create analysis prompt - request formatted text, not JSON
-    analysis_prompt = f"""Analyze the following article for Development Editor guidance.
-
-ARTICLE:
-{full_text}
-
-Provide article-level analysis in the following format:
-
-CENTRAL ARGUMENT:
-[Articulate the article's central argument in ONE clear, assertive sentence. This must appear explicitly in the introduction.]
-
-PRIMARY POINT OF VIEW:
-[Identify the primary point of view: advisor/collaborator, observer, analyst, etc.]
-
-REPETITION PATTERNS:
-[List specific core ideas/concepts that appear in multiple sections. Be specific about what concepts are repeated and where they appear.]
-
-ARTICLE METRICS:
-- Original length: {word_count} words
-- Sections: {section_count}
-- Has redundancy: [yes/no - indicate if the article has redundant or repetitive content]
-
-ACTIONABLE GUIDANCE:
-[Provide specific guidance on what needs to be addressed: which sections need consolidation, which ideas are repeated, what POV should be maintained, etc.]
-
-Provide clear, actionable guidance for the Development Editor to work at the article level, not paragraph-by-paragraph.
-"""
-    
-    try:
-        response = llm.invoke([HumanMessage(content=analysis_prompt)])
-        analysis_text = response.content if hasattr(response, 'content') else str(response)
-        
-        if not analysis_text or analysis_text.strip() == "":
-            logger.info("Article analysis returned empty response")
-            return ""
-        
-        return analysis_text
-    except Exception as e:
-        logger.error(f"Error analyzing article: {e}")
-        # Return empty string on error - no fallback values
-        return ""
-
-
-def analyze_cross_paragraph_logic(document: DocumentStructure) -> str:
-    """
-    Analyze cross-paragraph progression using LLM.
-    Returns formatted text analysis for Content Editor guidance.
-    No schema parsing - direct LLM text response.
-    """
-    logger.info("ANALYZING CROSS-PARAGRAPH LOGIC FOR CONTENT EDITOR")
-    
-    # Extract paragraphs (paragraph and bullet_item blocks)
-    paragraphs = []
-    for i, block in enumerate(document.blocks):
-        if block.type in ["paragraph", "bullet_item"]:
-            paragraphs.append({
-                "id": block.id,
-                "index": i,
-                "text": block.text
-            })
-    
-    if len(paragraphs) < 2:
-        logger.info("Not enough paragraphs for cross-paragraph analysis")
-        return ""
-    
-    # Build paragraph sequence text
-    paragraph_sequence = "\n\n".join([
-        f"PARAGRAPH {i+1} (ID: {p['id']}):\n{p['text']}"
-        for i, p in enumerate(paragraphs)
-    ])
-    
-    # Create analysis prompt
-    analysis_prompt = f"""Analyze the following paragraph sequence for Content Editor cross-paragraph enforcement guidance.
-
-PARAGRAPH SEQUENCE:
-{paragraph_sequence}
-
-Provide cross-paragraph analysis in the following format:
-
-Cross-Paragraph Logic Issues:
-[List specific instances where paragraphs soft-reset, re-introduce context, or fail to build on preceding paragraphs. Identify which paragraphs have these issues and what context is being unnecessarily reintroduced.]
-
-Redundancy Patterns (Non-Structural):
-[Identify paragraphs that materially repeat ideas already established in earlier paragraphs. Specify which paragraphs repeat which concepts, and whether later mentions increase specificity, consequence, or decision relevance, or merely restate.]
-
-Executive Signal Hierarchy:
-[Map the progression of executive signal strength across paragraphs. Identify which paragraphs should convey clearer implications, priorities, or decision relevance than earlier ones. Note if later paragraphs fail to escalate appropriately or if the final paragraph lacks sufficient executive signal.]
-
-Actionable Guidance:
-[Provide specific guidance for Content Editor: which paragraphs need edits to eliminate soft resets, which redundant language should be reduced, and how to strengthen executive signal hierarchy through sentence-level edits only.]
-
-Provide clear, actionable guidance for the Content Editor to work across paragraphs using sentence-level edits only.
-"""
-    
-    try:
-        response = llm.invoke([HumanMessage(content=analysis_prompt)])
-        analysis_text = response.content if hasattr(response, 'content') else str(response)
-        
-        if not analysis_text or analysis_text.strip() == "":
-            logger.info("Cross-paragraph analysis returned empty response")
-            return ""
-        
-        return analysis_text
-    except Exception as e:
-        logger.error(f"Error analyzing cross-paragraph logic: {e}")
-        # Return empty string on error - no fallback values
-        return ""
-
-
-
-
-def validate_cross_paragraph_compliance(
-    original_analysis_text: str,
-    edited_result: EditorResult,
-    original_document: DocumentStructure
-) -> List[str]:
-    """
-    Use LLM to validate that Content Editor output meets cross-paragraph enforcement requirements.
-    Returns list of validation warnings (empty if compliant).
-    """
-    logger.info("VALIDATING CROSS-PARAGRAPH COMPLIANCE USING LLM")
-    
-    if not original_analysis_text or not original_analysis_text.strip():
-        logger.info("No original cross-paragraph analysis text available for validation")
-        return []
-    
-    # Extract paragraphs from original and edited documents
-    original_paragraphs = []
-    for block in original_document.blocks:
-        if block.type in ["paragraph", "bullet_item"]:
-            original_paragraphs.append(block.text)
-    
-    edited_paragraphs = []
-    for block in edited_result.blocks:
-        if block.type in ["paragraph", "bullet_item"]:
-            edited_paragraphs.append(block.suggested_text or block.original_text)
-    
-    original_text = "\n\n".join(original_paragraphs)
-    edited_text = "\n\n".join(edited_paragraphs)
-    
-    # Create validation prompt for LLM - uses exact CROSS-PARAGRAPH ENFORCEMENT requirements
-    validation_prompt = f"""You are validating that the Content Editor output meets the CROSS-PARAGRAPH ENFORCEMENT requirements.
-
-ORIGINAL CROSS-PARAGRAPH ANALYSIS (provided to Content Editor):
-{original_analysis_text}
-
-ORIGINAL PARAGRAPH SEQUENCE:
-{original_text}
-
-EDITED PARAGRAPH SEQUENCE (Content Editor output):
-{edited_text}
-
-============================================================
-CROSS-PARAGRAPH ENFORCEMENT REQUIREMENTS — VALIDATE AGAINST THESE
-============================================================
-
-The Content Editor MUST have:
-
-1. Cross-Paragraph Logic
-   Each paragraph MUST assume and build on the reader's understanding from the preceding paragraph. The Content Editor MUST have eliminated soft resets, re-introductions, or restatement of previously established context.
-
-2. Redundancy Awareness (Non-Structural)
-   If a paragraph materially repeats an idea already established elsewhere in the article, the Content Editor MUST have reduced reinforcement language and avoided adding emphasis or framing that increases redundancy. The Content Editor MUST NOT have removed or merged ideas across blocks.
-
-3. Executive Signal Hierarchy
-   The Content Editor MUST have calibrated emphasis so that later sections convey clearer implications, priorities, or decision relevance than earlier sections, without introducing new conclusions or shifting the author's intent.
-
-============================================================
-VALIDATION TASK
-============================================================
-
-Analyze the EDITED PARAGRAPH SEQUENCE against the ORIGINAL CROSS-PARAGRAPH ANALYSIS and the requirements above.
-
-For EACH requirement (1-3), check if it was met:
-- If met: No warning needed
-- If NOT met: Provide a specific warning explaining what requirement failed and what needs to be fixed
-
-Return your response as a JSON array of warnings. If all requirements are met, return an empty array [].
-Format: ["Warning 1: [specific requirement and issue]", "Warning 2: [specific requirement and issue]", ...]
-
-Be specific and actionable in your warnings. Reference the actual paragraph content where possible.
-"""
-    
-    try:
-        response = llm.invoke([HumanMessage(content=validation_prompt)])
-        content = response.content if hasattr(response, 'content') else str(response)
-        
-        # Parse warnings from LLM response
-        warnings = []
-        
-        if isinstance(content, str):
-            # Try to extract JSON array from response
-            json_match = re.search(r'\[.*\]', content, re.DOTALL)
-            if json_match:
-                try:
-                    warnings = json.loads(json_match.group(0))
-                    if not isinstance(warnings, list):
-                        warnings = []
-                except json.JSONDecodeError:
-                    # If JSON parsing fails, try to extract warnings from text
-                    # Look for list-like patterns
-                    lines = content.split('\n')
-                    for line in lines:
-                        line = line.strip()
-                        if line.startswith('-') or line.startswith('•') or (line.startswith('"') and line.endswith('"')):
-                            # Extract warning text
-                            warning = line.lstrip('-•"').rstrip('"').strip()
-                            if warning:
-                                warnings.append(warning)
-            else:
-                # If no JSON found, check if response indicates compliance
-                content_lower = content.lower()
-                if "compliant" in content_lower or "no issues" in content_lower or "all requirements met" in content_lower:
-                    warnings = []
-                elif "warning" in content_lower or "issue" in content_lower or "failed" in content_lower:
-                    # Extract warnings from text format
-                    lines = content.split('\n')
-                    for line in lines:
-                        if any(keyword in line.lower() for keyword in ['warning', 'issue', 'failed', 'not met', 'missing']):
-                            warning = line.strip().lstrip('-•1234567890.').strip()
-                            if warning and len(warning) > 10:  # Filter out very short lines
-                                warnings.append(warning)
-        
-        if warnings:
-            logger.info(f"Cross-paragraph validation found {len(warnings)} issues")
-        else:
-            logger.info("Cross-paragraph validation: All requirements met")
-        
-        return warnings if isinstance(warnings, list) else []
-        
-    except Exception as e:
-        logger.error(f"Error validating cross-paragraph compliance: {e}")
-        # Return empty list on error - don't block workflow
-        return []
-
-
-# ---------------------------------------------------------------------
-# EDITOR NODES (EXECUTE EXACTLY ONCE)
-# ---------------------------------------------------------------------
-def development_editor_node(state: SupervisorState) -> SupervisorState:
-    logger.info("RUNNING: development_editor_tool")
-    
-    article_analysis = state.get("article_analysis")
-    result = run_editor_engine("development", state["document"].blocks, article_analysis)
-
-    return {
-        "editor_results": state["editor_results"] + [result]
+    for (const para of this.reviewParagraphs) {
+      const types = Object.keys(para.editorial_feedback || {});
+      for (const editorType of types) {
+        const arr = (para.editorial_feedback as any)[editorType] || [];
+        arr.forEach((fb: any, fbIndex: number) => {
+          items.push({ paraIndex: para.index, editorType, fbIndex, fb });
+        });
+      }
     }
 
+    return items;
+  }
 
-# ---------------------------------------------------------------------
-# DEVELOPMENT EDITOR RETRY NODE
-# ---------------------------------------------------------------------
-def development_editor_retry_node(state: SupervisorState) -> SupervisorState:
-    """Retry Development Editor using validation score and feedback to improve."""
-    retry_count = state.get("dev_editor_retry_count", 0) + 1
-    logger.info(f"RUNNING: development_editor_retry_node (attempt {retry_count})")
+  /** Count of feedback items approved (fb.approved === true) */
+  get approvedFeedbackCount(): number {
+    return this.getAllFeedbackItems().filter(x => x.fb?.approved === true).length;
+  }
+
+  /** Count of feedback items rejected (fb.approved === false) */
+  get rejectedFeedbackCount(): number {
+    return this.getAllFeedbackItems().filter(x => x.fb?.approved === false).length;
+  }
+
+  /** Count of feedback items pending (fb.approved is null/undefined) */
+  get pendingFeedbackCount(): number {
+    return this.getAllFeedbackItems().filter(
+      x => x.fb?.approved === null || x.fb?.approved === undefined
+    ).length;
+  }
+
+  /** Scroll to the first feedback card with the requested status */
+  scrollToFirstFeedbackByStatus(status: 'pending' | 'approved' | 'rejected'): void {
+    const match = this.getAllFeedbackItems().find(x => {
+      if (status === 'approved') return x.fb?.approved === true;
+      if (status === 'rejected') return x.fb?.approved === false;
+      return x.fb?.approved === null || x.fb?.approved === undefined;
+    });
+
+    if (!match) return;
+
+    const el = document.getElementById(`fb-${match.paraIndex}-${match.editorType}-${match.fbIndex}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    }
+  }
+
+  
+  formData: EditForm = {
+    selectedEditors: ['development+content', 'line+copy', 'brand-alignment'],
+    uploadedFile: null
+  };
+  
+  fileReadError: string = '';
+
+  // Notification properties
+  showNotification: boolean = false;
+  notificationMessage: string = '';
+  notificationType: 'success' | 'error' = 'success';
+
+  isCopied: boolean = false;
+
+
+  editorTypes: { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] = [
+    {
+      id: 'development+content' as EditorType,
+      name: 'Strengthen content structure and key messaging (clarify positioning, flow, and key points)',
+      icon: '🚀',
+      description: 'Development and Content editors run together, then combined into one result',
+      details: 'Development: structure, narrative, POV. Content: MECE, citations, logic. Same-sentence merge of rules and impact.',
+      disabled: false
+    },
+    {
+      id: 'line+copy' as EditorType,
+      name: 'Copyedit (smooth phrasing, grammar, and consistency)',
+      icon: '📝',
+      description: 'Line and Copy editors run together, then combined into one result',
+      details: 'Line: flow, readability, style. Copy: grammar, punctuation, typos. Same-sentence merge of rules and impact.',
+      disabled: false
+    },
+    {
+      id: 'brand-alignment' as EditorType,
+      name: 'Align to PwC brand standards (tone, terminology, formatting)',
+      icon: '🎯',
+      description: 'Aligns content writing standards with PwC brand',
+      details: 'Checks: we/you language, contractions, active voice, prohibited words (catalyst, PwC Network), China references, brand messaging',
+      disabled: true
+    }
+  ];
+
+  constructor(
+    public tlFlowService: TlFlowService,
+    private chatService: ChatService,
+    private tlChatBridge: TlChatBridgeService,
+    private cdr: ChangeDetectorRef,
+    private authFetchService: AuthFetchService
+  ) {}
+
+  ngOnInit(): void {
+    // this.paragraphFeedbackData.forEach(para => {
+    //   // Add these properties so Angular/TypeScript knows they exist
+    //   para.displayOriginal = para.original;
+    //   para.displayEdited = para.edited;
+    // });
+  }
+
+  get isOpen(): boolean {
+    return this.tlFlowService.currentFlow === 'edit-content';
+  }
+
+  onClose(): void {
+    this.resetForm();
+    this.tlFlowService.closeFlow();
+  }
+
+  back(): void{
+    this.resetForm();
+    this.tlFlowService.closeFlow();
+    this.tlFlowService.openGuidedDialog();
+  }
+
+  resetForm(): void {
+    this.isGenerating = false;
+    this.editFeedback = '';
+    this.feedbackItems = [];
+    this.feedbackHtml = '';
+    this.revisedContent = '';
+    this.originalContent = '';
+    this.fileReadError = '';
+    this.fileUploadError = '';
+    this.uploadedFileSize = '';
+    this.iterationCount = 0;
+    this.showSatisfactionPrompt = false;
+    this.showImprovementInput = false;
+    this.improvementRequestText = '';
+    this.paragraphEdits = [];
+    this.paragraphFeedbackData = [];
+    this.showFinalOutput = false;
+    this.finalArticle = '';
+    this.isGeneratingFinal = false;
+    this.editorProgressList = [];
+    this.currentEditorIndex = 0;
+    this.totalEditors = 0;
+    this.currentEditorId = '';
+    this.isCopied = false;
+    this.isEditorLoading = false;
+    this.formData = {
+      selectedEditors: ['development+content', 'line+copy', 'brand-alignment'],
+      uploadedFile: null
+    };
+  }
+
+  canEdit(): boolean {
+    return this.formData.uploadedFile !== null && this.formData.selectedEditors.length > 0;
+  }
+
+  clearUploadError(): void {
+    this.fileUploadError = '';
+  }
+
+  clearReadError(): void {
+    this.fileReadError = '';
+  }
+  
+  onFileSelect(file: File): void {
+    if (file) {
+      // Reset error states
+      this.fileReadError = '';
+      this.fileUploadError = '';
+      
+      // Calculate and display file size
+      this.uploadedFileSize = this.formatFileSize(file.size);
+      this.formData.uploadedFile = file;
+    }
+  }
+
+  onFileRemoved(): void {
+    this.formData.uploadedFile = null;
+    this.fileUploadError = '';
+    this.fileReadError = '';
+    this.uploadedFileSize = '';
+  }
+
+  formatFileSize(bytes: number): string {
+     if (bytes === 0) return '0 Bytes';
     
-    article_analysis = state.get("article_analysis")
-    validation_result = state.get("validation_result")
-    validation_feedback = None
-    validation_score = None
+    // Show exact size in KB (no rounding)
+    if (bytes < 1024) {
+      return bytes + ' Bytes';
+    } else if (bytes < 1024 * 1024) {
+      // Exact KB with decimal precision
+      const kb = bytes / 1024;
+      return kb.toFixed(2) + ' KB';
+    } else {
+      // For MB and above, show with 2 decimal places
+      const mb = bytes / (1024 * 1024);
+      return mb.toFixed(2) + ' MB';
+    }
+  }
+
+  /** Toggle editor selection, ensuring brand-alignment is always included */
+  toggleEditor(type: EditorType): void {
+    if (type === 'brand-alignment') {
+      return;
+    }
     
-    if validation_result:
-        if hasattr(validation_result, 'feedback_remarks'):
-            validation_feedback = validation_result.feedback_remarks
-        if hasattr(validation_result, 'score'):
-            validation_score = validation_result.score
-            logger.info(f"Using previous validation score: {validation_score}/10 to improve")
+    const index = this.formData.selectedEditors.indexOf(type);
+    if (index > -1) {
+      this.formData.selectedEditors.splice(index, 1);
+    } else {
+      this.formData.selectedEditors.push(type);
+    }
+    
+    if (!this.formData.selectedEditors.includes('brand-alignment')) {
+      this.formData.selectedEditors.push('brand-alignment');
+    }
+  }
+
+  isEditorSelected(type: EditorType): boolean {
+    return this.formData.selectedEditors.includes(type);
+  }
+
+  /** Get selectable editors (excluding brand-alignment which is always enabled) */
+  get selectableEditors(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] {
+    return this.editorTypes.filter(editor => editor.id !== 'brand-alignment');
+  }
+
+  /** Get brand alignment editor info */
+  get brandAlignmentEditor(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean } | undefined {
+    return this.editorTypes.find(editor => editor.id === 'brand-alignment');
+  }
+
+  /** Get selected editors in normalized order (for timeline display) */
+  get selectedEditorsForTimeline(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] {
+    if (!this.formData.selectedEditors || this.formData.selectedEditors.length === 0) {
+      return [];
+    }
+    
+    // Normalize order to match processing order
+    const normalizedOrder = normalizeEditorOrder([...this.formData.selectedEditors]) as EditorType[];
+    
+    // Map to full editor info objects
+    return normalizedOrder.map(editorId => {
+      const editor = this.editorTypes.find(e => e.id === editorId);
+      return editor || {
+        id: editorId,
+        name: getEditorDisplayName(editorId),
+        icon: '',
+        description: '',
+        details: '',
+        disabled: false
+      };
+    });
+  }
+
+  /** Steps array for editor timeline (0..totalEditors-1) */
+  get editorSteps(): number[] {
+    const total = this.totalEditors || 0;
+    if (total <= 0) return [];
+    return Array.from({ length: total }, (_, i) => i);
+  }
+
+
+  getEditorNames(): string {
+    if (this.formData.selectedEditors.length === 0) return '';
+    if (this.formData.selectedEditors.length === 1) {
+      const editor = this.editorTypes.find(e => e.id === this.formData.selectedEditors[0]);
+      return editor ? editor.name : '';
+    }
+    return `${this.formData.selectedEditors.length} editors`;
+  }
+  
+  getSatisfactionPromptText(): string {
+    if (this.iterationCount === 1) {
+      return 'Are you satisfied with the edited document output, or do you need additional updates?';
+    }
+    return `Are you satisfied with this revision (Iteration ${this.iterationCount}), or do you need additional updates?`;
+  }
+
+  async editContent(): Promise<void> {
+    this.isGenerating = true;
+    this.isEditorLoading = true; // Initial editor loading starts
+    this.fileReadError = '';
+    this.fileUploadError = '';
+    this.editFeedback = '';
+    this.revisedContent = '';
+    this.editorProgressList = [];
+    this.currentEditorIndex = 0;
+    this.totalEditors = 0;
+    this.currentEditorId = '';
+    
+    let contentText = '';
+    
+    if (this.formData.uploadedFile) {
+      // Validate file is not empty
+      if (this.formData.uploadedFile.size === 0) {
+        this.fileUploadError = 'The uploaded file is empty. Please upload a valid document with content.';
+        this.isGenerating = false;
+        return;
+      }
+      
+      // Validate minimum file size (10 bytes)
+      const MIN_FILE_SIZE = 10;
+      if (this.formData.uploadedFile.size < MIN_FILE_SIZE) {
+        this.fileUploadError = 'The uploaded file appears to be empty or corrupted. Please upload a valid document.';
+        this.isGenerating = false;
+        return;
+      }
+      
+      // Validate maximum file size (5MB)
+      const fileSizeMB = this.formData.uploadedFile.size / (1024 * 1024);
+      if (fileSizeMB > this.MAX_FILE_SIZE_MB) {
+        this.fileUploadError = `File size exceeds the maximum limit of ${this.MAX_FILE_SIZE_MB}MB. Please upload a smaller file.`;
+        this.isGenerating = false;
+        return;
+      }
+      
+      try {
+        const extractedText = await extractFileText(this.formData.uploadedFile);
+        contentText = normalizeContent(extractedText);
         
-        if validation_feedback:
-            failed_criteria = [fb for fb in validation_feedback if not fb.passed]
-            passed_criteria = [fb for fb in validation_feedback if fb.passed]
-            logger.info(f"Parsed validation feedback: {len(failed_criteria)} failed, {len(passed_criteria)} passed")
-            
-            if failed_criteria:
-                logger.info("Failed criteria to address:")
-                for i, fb in enumerate(failed_criteria[:3], 1):  # Show first 3
-                    logger.info(f"  {i}. {fb.feedback[:80]}...")
-        else:
-            logger.info("No validation feedback found in previous result")
-    else:
-        logger.info("No previous validation result found in state")
-    
-    # Always use ORIGINAL document blocks for retry (not previously edited blocks)
-    # This ensures each retry starts from the same baseline
-    result = run_editor_engine(
-        "development", 
-        state["document"].blocks,  # Original blocks
-        article_analysis,
-        validation_feedback=validation_feedback,
-        validation_score=validation_score
-    )
-
-    return {
-        "editor_results": state["editor_results"] + [result],
-        "dev_editor_retry_count": retry_count
-    }
-
-
-def content_editor_node(state: SupervisorState) -> SupervisorState:
-    logger.info("RUNNING: content_editor_tool")
-    
-    # Get cross-paragraph analysis if available
-    cross_paragraph_analysis = state.get("cross_paragraph_analysis")
-    
-    # Get validation feedback if retrying
-    validation_result = state.get("content_validation_result")
-    validation_feedback = None
-    validation_score = None
-    
-    if validation_result:
-        if hasattr(validation_result, 'feedback_remarks'):
-            validation_feedback = validation_result.feedback_remarks
-        if hasattr(validation_result, 'score'):
-            validation_score = validation_result.score
-            logger.info(f"Using previous validation score: {validation_score}/10 to improve")
+        // Validate extracted content is not empty
+        if (!contentText || contentText.trim().length === 0) {
+          this.fileUploadError = 'The uploaded document appears to be empty or contains no readable text. Please upload a document with content.';
+          this.isGenerating = false;
+          return;
+        }
         
-        if validation_feedback:
-            failed_count = sum(1 for fb in validation_feedback if not fb.passed)
-            logger.info(f"Addressing {failed_count} failed validation criteria")
-    
-    # Run editor engine with cross-paragraph analysis and validation feedback
-    result = run_editor_engine(
-        "content", 
-        state["document"].blocks, 
-        cross_paragraph_analysis_text=cross_paragraph_analysis,
-        validation_feedback=validation_feedback,
-        validation_score=validation_score
-    )
-
-    return {
-        "editor_results": state["editor_results"] + [result]
-    }
-
-
-# ---------------------------------------------------------------------
-def content_editor_retry_node(state: SupervisorState) -> SupervisorState:
-    """Retry Content Editor using validation score and feedback to improve."""
-    retry_count = state.get("content_editor_retry_count", 0) + 1
-    logger.info(f"RUNNING: content_editor_retry_node (attempt {retry_count})")
-    
-    cross_paragraph_analysis = state.get("cross_paragraph_analysis")
-    validation_result = state.get("content_validation_result")
-    validation_feedback = None
-    validation_score = None
-    
-    if validation_result:
-        if hasattr(validation_result, 'feedback_remarks'):
-            validation_feedback = validation_result.feedback_remarks
-        if hasattr(validation_result, 'score'):
-            validation_score = validation_result.score
-            logger.info(f"Using previous validation score: {validation_score}/10 to improve")
+        // Validate minimum content length (50 characters for meaningful content)
+        const MIN_CONTENT_LENGTH = 50;
+        if (contentText.trim().length < MIN_CONTENT_LENGTH) {
+          this.fileUploadError = `The uploaded document contains insufficient content (minimum ${MIN_CONTENT_LENGTH} characters required). Please upload a document with more text.`;
+          this.isGenerating = false;
+          return;
+        }
         
-        if validation_feedback:
-            failed_criteria = [fb for fb in validation_feedback if not fb.passed]
-            passed_criteria = [fb for fb in validation_feedback if fb.passed]
-            logger.info(f"Parsed validation feedback: {len(failed_criteria)} failed, {len(passed_criteria)} passed")
-            
-            if failed_criteria:
-                logger.info("Failed criteria to address:")
-                for i, fb in enumerate(failed_criteria[:3], 1):  # Show first 3
-                    logger.info(f"  {i}. {fb.feedback[:80]}...")
-        else:
-            logger.info("No validation feedback found in previous result")
-    else:
-        logger.info("No previous validation result found in state")
+        this.originalContent = contentText;
+      } catch (error) {
+        console.error('Error extracting file:', error);
+        this.fileReadError = 'Error reading uploaded file. Please try again or upload a different format.';
+        this.isGenerating = false;
+        return;
+      }
+    }
     
-    # Always use ORIGINAL document blocks for retry (not previously edited blocks)
-    result = run_editor_engine(
-        "content", 
-        state["document"].blocks,  # Original blocks
-        cross_paragraph_analysis_text=cross_paragraph_analysis,
-        validation_feedback=validation_feedback,
-        validation_score=validation_score
-    )
+    const messages = [{
+      role: 'user' as const,
+      content: contentText
+    }];
 
-    return {
-        "editor_results": state["editor_results"] + [result],
-        "content_editor_retry_count": retry_count
+    let fullResponse = '';
+    const editorsToUse = normalizeEditorOrder(this.formData.selectedEditors) as EditorType[];
+
+    this.editorProgressList = editorsToUse.map((id, index) => ({
+      editorId: id,
+      editorName: getEditorDisplayName(id),
+      status: 'pending' as const,
+      current: index + 1,
+      total: editorsToUse.length
+    }));
+    this.totalEditors = editorsToUse.length;
+
+    this.chatService.streamEditContent(messages, editorsToUse).subscribe({
+      next: (data: any) => {
+        if (data.type === 'editor_progress') {
+          // Backend sends 1-based index, convert to 0-based for our array
+          const backendCurrentIndex = data.current || 1;
+          this.currentEditorIndex = backendCurrentIndex - 1; // Convert to 0-based
+          this.totalEditors = data.total || editorsToUse.length;
+          this.currentEditorId = data.editor || '';
+          
+          // Set loading state when editor starts processing
+          this.isEditorLoading = true;
+          
+          // Update editor statuses (using 0-based index)
+          this.editorProgressList.forEach((editor, index) => {
+            if (index < this.currentEditorIndex) {
+              editor.status = 'completed';
+            } else if (index === this.currentEditorIndex) {
+              editor.status = 'processing'; // In Progress when loading
+              editor.current = backendCurrentIndex; // Keep 1-based for display
+              editor.total = this.totalEditors;
+            } else {
+              editor.status = 'pending';
+            }
+          });
+
+          this.cdr.detectChanges();
+        } else if (data.type === 'editor_content') {
+          if (data.content) {
+            fullResponse += data.content;
+          }
+        } else if (data.type === 'editor_complete') {
+          // Sequential workflow: Handle single editor completion
+          console.log('[EditContentFlow] Editor complete:', data);
+          
+          // Store thread_id for sequential workflow
+          if (data.thread_id) {
+            this.threadId = data.thread_id;
+            this.isSequentialMode = true;
+          }
+          
+          // Store current editor info
+          if (data.current_editor) {
+            this.currentEditor = data.current_editor;
+            this.currentEditorIndex = data.editor_index || 0;
+            this.totalEditors = data.total_editors || this.totalEditors;
+            this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || 1) - 1;
+          }
+          
+          // Update editor progress - change to review-pending after generation
+          const completedEditor = this.editorProgressList.find(e => e.editorId === data.current_editor);
+          if (completedEditor) {
+            completedEditor.status = 'review-pending';
+          }
+          
+          // Process paragraph edits (same structure as final_complete)
+          if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
+            console.log('[EditContentFlow] Paragraph edits received:', data.paragraph_edits);
+            this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
+          }
+          
+          // Update content
+          if (data.original_content) {
+            this.originalContent = data.original_content;
+          }
+          
+          if (data.final_revised) {
+            const trimmedRevised = data.final_revised.trim();
+            fullResponse = trimmedRevised;
+            this.revisedContent = convertMarkdownToHtml(trimmedRevised);
+          }
+          
+          // Process feedback (only current editor's feedback)
+          if (data.combined_feedback) {
+            const feedbackContent = data.combined_feedback.trim();
+            this.feedbackItems = parseEditorialFeedback(feedbackContent);
+            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+            this.editFeedback = this.feedbackHtml;
+          }
+          
+          this.isGenerating = false;
+          this.isEditorLoading = false; // Editor loaded, now in review pending state
+          this.cdr.detectChanges();
+        } else if (data.type === 'editor_error') {
+          console.error(`${data.editor} editor error:`, data.error);
+        } else if (data.type === 'final_complete') {
+          this.editorProgressList.forEach(editor => {
+            if (editor.status !== 'error') {
+              editor.status = 'completed';
+            }
+          });
+          this.currentEditorId = 'completed';
+          this.cdr.detectChanges();
+          
+          if (data.combined_feedback) {
+            const feedbackContent = data.combined_feedback.trim();
+            // parse and render structured feedback; keep legacy fallback in editFeedback
+            this.feedbackItems = parseEditorialFeedback(feedbackContent);
+            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+            this.editFeedback = this.feedbackHtml;
+          }
+          
+          if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
+            console.log('Paragraph edits received:', data.paragraph_edits);
+            this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
+          } else if (data.final_revised && data.original_content) {
+            this.paragraphEdits = this.createParagraphEditsFromComparison(
+              data.original_content,
+              data.final_revised
+            );
+          }
+          
+          if (data.original_content) {
+            this.originalContent = data.original_content;
+          }
+          
+          if (data.final_revised) {
+            const trimmedRevised = data.final_revised.trim();
+            fullResponse = trimmedRevised;
+            this.revisedContent = convertMarkdownToHtml(trimmedRevised);
+          }
+          
+          this.isGenerating = false;
+        } else if (data?.type === 'content' && data.content) {
+          fullResponse += data.content;
+        } else if (data?.type === 'done' || data?.done) {
+          return;
+        } else if (data?.error) {
+          this.editFeedback = `❌ Error: ${data.error}`;
+          this.isGenerating = false;
+          return;
+        } else if (typeof data === 'string') {
+          fullResponse += data;
+        }
+      },
+      error: (error: any) => {
+        console.error('[EditContentFlow] Streaming error:', error);
+        this.editFeedback = 'Sorry, there was an error editing your content. Please try again.';
+        this.isGenerating = false;
+      },
+      complete: () => {
+        this.iterationCount++;
+        if (this.revisedContent && this.revisedContent.trim()) {
+          this.showSatisfactionPrompt = true;
+        }
+      }
+    });
+  }
+
+  /** Parse edit response (fallback method for old format or improvement requests) */
+  private parseEditResponse(response: string): void {
+    if (!response || !response.trim()) {
+      return;
     }
 
+    const feedbackMatch = response.match(/===\s*FEEDBACK\s*===\s*([\s\S]*?)(?====\s*REVISED ARTICLE\s*===|$)/i);
+    const revisedMatch = response.match(/===\s*REVISED ARTICLE\s*===\s*([\s\S]*?)$/i);
+    
+    if (feedbackMatch && feedbackMatch[1]) {
+      const feedbackContent = feedbackMatch[1].trim();
+      this.feedbackItems = parseEditorialFeedback(feedbackContent);
+      this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+      this.editFeedback = this.feedbackHtml;
+    } else if (!revisedMatch && response.trim()) {
+      const feedbackContent = response.trim();
+      this.feedbackItems = parseEditorialFeedback(feedbackContent);
+      this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+      this.editFeedback = this.feedbackHtml;
+    }
+    
+    if (revisedMatch && revisedMatch[1]) {
+      let revisedText = revisedMatch[1].trim();
+      revisedText = revisedText
+        .replace(/===\s*FEEDBACK\s*===/gi, '')
+        .replace(/##\s*📝\s*Editorial\s*Feedback/gi, '')
+        .trim();
+      this.revisedContent = convertMarkdownToHtml(revisedText);
+    }
+  }
 
-def line_editor_node(state: SupervisorState) -> SupervisorState:
-    logger.info("RUNNING: line_editor_tool")
-    raw_blocks = line_editor_tool.invoke(
-        {"blocks": state["document"].blocks}
-    )
+  /** Convert markdown to HTML (public method for template) */
+  convertMarkdownToHtml(markdown: string): string {
+    return convertMarkdownToHtml(markdown);
+  }
 
-    result = normalize_editor_output("line", raw_blocks)
+  /** Copy content to clipboard */
+  async copyToClipboard(): Promise<void>  {
+    let content = '';
+    if (this.showFinalOutput && this.finalArticle) {
+      content = this.finalArticle;
+    } else {
+      content = this.revisedContent || this.editFeedback;
+    }
+    const plainText = content.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    try {
+      await navigator.clipboard.writeText(plainText);
+      
+      this.isCopied = true;
+      this.cdr.detectChanges();
 
-    return {
-        "editor_results": state["editor_results"] + [result]
+      setTimeout(() => {
+        this.isCopied = false;
+        this.cdr.detectChanges();
+      },2000);
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+      this.showNotificationMessage('Failed to copy ', 'error');
     }
 
+  }
 
-def copy_editor_node(state: SupervisorState) -> SupervisorState:
-    logger.info("RUNNING: copy_editor_tool")
-    raw_blocks = copy_editor_tool.invoke(
-        {"blocks": state["document"].blocks}
-    )
-
-    result = normalize_editor_output("copy", raw_blocks)
-
-    return {
-        "editor_results": state["editor_results"] + [result]
+  /** Download revised content as DOCX or PDF */
+  async downloadRevised(format: 'docx' | 'pdf'): Promise<void> {
+    let contentToDownload = '';
+    if (this.showFinalOutput && this.finalArticle) {
+      contentToDownload = this.finalArticle;
+    } else if (this.revisedContent) {
+      contentToDownload = this.revisedContent.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    } else {
+      this.showNotificationMessage('article is not available yet.', 'error');
+      return;
     }
 
+    const plainText = contentToDownload.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    const endpoint = format === 'docx' ? '/api/v1/export/word' : '/api/v1/export/pdf-pwc';
+    const extension = format === 'docx' ? 'docx' : 'pdf';
+    const title = 'revised-article';
+    
+    // Extract first line as subtitle
+    const lines = plainText.split('\n').filter(line => line.trim());
+    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : ''; // First line, max 150 chars
 
-def brand_editor_node(state: SupervisorState) -> SupervisorState:
-    logger.info("RUNNING: brand_editor_tool")
-    raw_blocks = brand_editor_tool.invoke(
-        {"blocks": state["document"].blocks}
-    )
+    // Get API URL from environment (supports runtime config via window._env)
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const fullEndpoint = `${apiUrl}${endpoint}`;
 
-    result = normalize_editor_output("brand-alignment", raw_blocks)
-
-    return {
-        "editor_results": state["editor_results"] + [result]
-    }
-
-
-# ---------------------------------------------------------------------
-# MERGE TWO EDITOR RESULTS INTO ONE
-# ---------------------------------------------------------------------
-def merge_two_editor_results(
-    result1: EditorResult,
-    result2: EditorResult,
-    combined_editor_type: str
-) -> EditorResult:
-    """Merge two EditorResult objects into one, combining feedback and suggestions."""
-    logger.info(f"MERGING {result1.editor_type} + {result2.editor_type} into {combined_editor_type}")
-    
-    result1_blocks = {blk.id: blk for blk in result1.blocks}
-    result2_blocks = {blk.id: blk for blk in result2.blocks}
-    all_block_ids = set(result1_blocks.keys()) | set(result2_blocks.keys())
-    
-    merged_blocks = []
-    for block_id in sorted(all_block_ids, key=lambda x: int(x[1:]) if x[1:].isdigit() else 999):
-        blk1 = result1_blocks.get(block_id)
-        blk2 = result2_blocks.get(block_id)
-        
-        original_text = blk1.original_text if blk1 else (blk2.original_text if blk2 else "")
-        suggested_text = (blk2.suggested_text if blk2 and blk2.suggested_text 
-                         else blk1.suggested_text if blk1 and blk1.suggested_text 
-                         else original_text)
-        
-        combined_feedback = []
-        if blk1 and blk1.feedback_edit:
-            combined_feedback.extend(blk1.feedback_edit)
-        if blk2 and blk2.feedback_edit:
-            combined_feedback.extend(blk2.feedback_edit)
-        
-        merged_blocks.append(
-            BlockEditResult(
-                id=block_id,
-                type=blk1.type if blk1 else (blk2.type if blk2 else "paragraph"),
-                level=blk1.level if blk1 else (blk2.level if blk2 else 0),
-                original_text=original_text,
-                suggested_text=suggested_text,
-                has_changes=suggested_text != original_text,
-                feedback_edit=combined_feedback
-            )
-        )
-    
-    return EditorResult(
-        editor_type=combined_editor_type,
-        blocks=merged_blocks,
-        warnings=list(result1.warnings) + list(result2.warnings),
-        raw_output=None
-    )
-
-
-# ---------------------------------------------------------------------
-# COMBINED EDITOR NODES (reuse existing nodes)
-# ---------------------------------------------------------------------
-def development_content_combined_node(state: SupervisorState) -> SupervisorState:
-    """Run Development + Content editors together by reusing existing nodes."""
-    logger.info("RUNNING: development_content_combined_node")
-    
-    original_results = state.get("editor_results", [])
-    original_document = state["document"]  # Preserve original for validation
-    
-    # Run article analysis if needed
-    if not state.get("article_analysis"):
-        state = {**state, **article_analysis_node(state)}
-    
-    # Run Development Editor
-    dev_state = development_editor_node(state)
-    dev_result = dev_state["editor_results"][-1]
-    
-    # Validate Development Editor result using article_validation_node
-    # Ensure original document is used for validation
-    # IMPORTANT: dev_state must come last to preserve editor_results with development editor result
-    validation_input_state = {
-        **state,
-        **dev_state,  # dev_state comes last to preserve editor_results (includes development editor result)
-        "document": original_document  # Explicitly use original document
-    }
-    # Debug: Log editor_results to verify development editor result is present
-    editor_results_count = len(validation_input_state.get("editor_results", []))
-    validation_state = article_validation_node(validation_input_state)
-    dev_state = {**dev_state, **validation_state}
-    
-    # Update document with Development's suggestions for Content Editor
-    updated_doc = DocumentStructure(blocks=[
-        DocumentBlock(id=b.id, type=b.type, level=b.level, 
-                     text=b.suggested_text or b.original_text)
-        for b in dev_result.blocks
-    ])
-    
-    # Run cross-paragraph analysis if needed (using validated dev_result document)
-    if not state.get("cross_paragraph_analysis"):
-        analysis_state = cross_paragraph_analysis_node({"document": updated_doc, **state})
-        state = {**state, **analysis_state}
-    
-    # Run Content Editor on updated document (with validation result and cross-paragraph analysis in state)
-    content_state = content_editor_node({
-        **dev_state,
-        **state,
-        "document": updated_doc  # Use updated document for Content Editor
-    })
-    content_result = content_state["editor_results"][-1]
-    
-    # Validate Content Editor result using content_validation_node
-    # Ensure original document is used for validation (not updated_doc)
-    # IMPORTANT: content_state must come last to preserve editor_results with content editor result
-    content_validation_input_state = {
-        **state,
-        **content_state,  # content_state comes last to preserve editor_results (includes content editor result)
-        "document": original_document  # Explicitly use original document for validation
-    }
-    # Debug: Log editor_results to verify content editor result is present
-    editor_results_count = len(content_validation_input_state.get("editor_results", []))
-    logger.info(f"Validating content editor: {editor_results_count} editor results in state")
-    content_validation_state = content_validation_node(content_validation_input_state)
-    content_state = {**content_state, **content_validation_state}
-    
-    # Merge results (after both validations)
-    merged_result = merge_two_editor_results(dev_result, content_result, "development+content")
-    
-    return {
-        "editor_results": original_results + [merged_result],
-        "article_analysis": state.get("article_analysis"),
-        "cross_paragraph_analysis": state.get("cross_paragraph_analysis")
-    }
-
-
-def line_copy_combined_node(state: SupervisorState) -> SupervisorState:
-    """Run Line + Copy editors together by reusing existing nodes."""
-    logger.info("RUNNING: line_copy_combined_node")
-    
-    original_results = state.get("editor_results", [])
-    
-    # Run Line Editor
-    line_state = line_editor_node(state)
-    line_result = line_state["editor_results"][-1]
-    
-    # Update document with Line's suggestions for Copy Editor
-    updated_doc = DocumentStructure(blocks=[
-        DocumentBlock(id=b.id, type=b.type, level=b.level,
-                     text=b.suggested_text or b.original_text)
-        for b in line_result.blocks
-    ])
-    
-    # Run Copy Editor on updated document
-    copy_state = copy_editor_node({**line_state, "document": updated_doc})
-    copy_result = copy_state["editor_results"][-1]
-    
-    # Merge results
-    merged_result = merge_two_editor_results(line_result, copy_result, "line+copy")
-    
-    return {
-        "editor_results": original_results + [merged_result]
-    }
-
-
-# ---------------------------------------------------------------------
-# RESOLVE COMBINED EDITOR CONFLICTS (consolidate node via prompt)
-# Used for development+content (content priority) and line+copy (line priority).
-# ---------------------------------------------------------------------
-def resolve_combined_editor_conflicts_node(state: SupervisorState) -> SupervisorState:
-    """
-    After merging two editors, call LLM with the appropriate prompt to resolve conflicts.
-    development+content: Content editor takes priority on same span.
-    line+copy: Line editor takes priority on same span.
-    Replaces the last editor_result with the resolved result.
-    """
-    editor_results = state.get("editor_results", [])
-    if not editor_results:
-        return state
-    last = editor_results[-1]
-    combined_type = last.editor_type
-    if combined_type == "development+content":
-        resolve_prompt = DEVELOPMENT_CONTENT_RESOLVE_CONFLICTS_PROMPT
-    elif combined_type == "line+copy":
-        resolve_prompt = LINE_COPY_RESOLVE_CONFLICTS_PROMPT
-    else:
-        return state
-
-    logger.info(f"RUNNING: resolve_combined_editor_conflicts_node ({combined_type})")
-    merged_result = last
-    blocks_by_id = {b.id: b for b in merged_result.blocks}
-
-    input_blocks = []
-    for b in merged_result.blocks:
-        feedback_edit = [
-            {"editor": sef.editor, "items": [item.model_dump() for item in sef.items]}
-            for sef in (b.feedback_edit or [])
-        ]
-        input_blocks.append({
-            "id": b.id,
-            "original_text": b.original_text,
-            "suggested_text": b.suggested_text or b.original_text,
-            "feedback_edit": feedback_edit,
+    try {
+      const response = await this.authFetchService.authenticatedFetch(fullEndpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          content: plainText,
+          title,
+          subtitle
         })
-    input_payload = {"blocks": input_blocks}
-    prompt_text = f"""{resolve_prompt}
+      });
 
-INPUT (merged feedback; resolve and return resolved feedback_edit per block):
+      if (!response.ok) {
+        throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
+      }
 
-{json.dumps(input_payload, indent=2)}
-"""
-
-    try:
-        response = llm.invoke([HumanMessage(content=prompt_text)])
-        raw = response.content if hasattr(response, "content") else str(response)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```\s*$", "", raw)
-        data = json.loads(raw)
-        resolved_blocks_data = data.get("blocks", [])
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.warning(f"Resolve conflicts LLM output parse failed, keeping merged result: {e}")
-        return state
-
-    resolved_blocks = []
-    for blk_data in resolved_blocks_data:
-        block_id = blk_data.get("id")
-        orig_block = blocks_by_id.get(block_id)
-        if not orig_block:
-            continue
-        suggested_text = blk_data.get("suggested_text") or orig_block.original_text
-        feedback_edit = []
-        for sef_data in blk_data.get("feedback_edit", []):
-            editor_name = sef_data.get("editor")
-            items_data = sef_data.get("items", [])
-            try:
-                items = [FeedbackItem(**item) for item in items_data]
-                feedback_edit.append(SingleEditorFeedback(editor=editor_name, items=items))
-            except (TypeError, ValueError):
-                continue
-        resolved_blocks.append(
-            BlockEditResult(
-                id=orig_block.id,
-                type=orig_block.type,
-                level=orig_block.level,
-                original_text=orig_block.original_text,
-                suggested_text=suggested_text,
-                has_changes=suggested_text != orig_block.original_text,
-                feedback_edit=feedback_edit,
-            )
-        )
-
-    resolved_result = EditorResult(
-        editor_type=combined_type,
-        blocks=resolved_blocks,
-        warnings=list(merged_result.warnings),
-        raw_output=None,
-    )
-    new_editor_results = list(editor_results[:-1]) + [resolved_result]
-    return {"editor_results": new_editor_results}
-
-
-# ---------------------------------------------------------------------
-# ARTICLE-LEVEL ANALYSIS NODE (runs before Development Editor)
-# ---------------------------------------------------------------------
-def article_analysis_node(state: SupervisorState) -> SupervisorState:
-    """Analyze article before Development Editor runs."""
-    logger.info("RUNNING: article_analysis_node")
-    
-    analysis = analyze_article(state["document"])
-    
-    return {
-        "article_analysis": analysis
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `${title}.${extension}`);
+      link.click();
+      window.URL.revokeObjectURL(url);
+      this.showNotificationMessage(`${extension.toUpperCase()} downloaded successfully!`, 'success');
+    } catch (error) {
+      console.error(`Error generating ${extension.toUpperCase()}:`, error);
+      this.showNotificationMessage(`Failed to generate ${extension.toUpperCase()} file. Please try again.`, 'error');
     }
+  }
+  
+  /** Handle satisfaction response - send to chat or show improvement input */
+  // onSatisfactionResponse(isSatisfied: boolean): void {
+  //   if (isSatisfied) {
+  //     const contentToSend = (this.showFinalOutput && this.finalArticle) 
+  //       ? this.finalArticle 
+  //       : this.revisedContent;
+      
+  //     if (contentToSend && contentToSend.trim()) {
+  //       let plainText = contentToSend;
+  //       if (contentToSend.includes('<')) {
+  //         const tempDiv = document.createElement('div');
+  //         tempDiv.innerHTML = contentToSend;
+  //         plainText = tempDiv.textContent || tempDiv.innerText || '';
+  //       }
+  //       plainText = plainText.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
+        
+  //       const headerLines: string[] = ['### Guided Journey – Edit Content'];
+  //       const uploadedFileName = this.formData.uploadedFile?.name;
+  //       if (uploadedFileName) {
+  //         headerLines.push(`_Source: ${uploadedFileName}_`);
+  //       }
+        
+  //       const selectedEditorNames = this.formData.selectedEditors
+  //         .map(id => {
+  //           const editor = this.editorTypes.find(e => e.id === id);
+  //           return editor ? editor.name : id;
+  //         })
+  //         .join(', ');
+        
+  //       if (selectedEditorNames) {
+  //         headerLines.push(`_Editors Applied: ${selectedEditorNames}_`);
+  //       }
+        
+  //       const articleTitle = this.showFinalOutput ? 'Final Revised Article' : 'Revised Article';
+  //       headerLines.push('', `**${articleTitle}**`, '');
+        
+  //       const documentTitle = extractDocumentTitle(
+  //         this.originalContent || '',
+  //         uploadedFileName
+  //       );
+        
+  //       if (documentTitle && documentTitle !== articleTitle) {
+  //         headerLines.push(`**${documentTitle}**`, '');
+  //       }
+        
+  //       const headerHtml = convertMarkdownToHtml(headerLines.join('\n'));
+  //       const contentHtml = this.showFinalOutput && this.finalArticle
+  //         ? convertMarkdownToHtml(this.finalArticle)
+  //         : this.revisedContent;
+  //       const combinedHtml = `${headerHtml}${contentHtml}`;
+        
+  //       const revisedMetadata: ThoughtLeadershipMetadata = {
+  //         contentType: 'article',
+  //         topic: documentTitle || articleTitle,
+  //         fullContent: plainText,
+  //         showActions: true
+  //       };
+        
+  //       this.tlChatBridge.sendMessage({
+  //         role: 'assistant',
+  //         content: combinedHtml,
+  //         timestamp: new Date(),
+  //         isHtml: true,
+  //         thoughtLeadership: revisedMetadata
+  //       });
+  //     }
+      
+  //     this.onClose();
+  //   } else {
+  //     this.showImprovementInput = true;
+  //     this.showSatisfactionPrompt = false;
+  //   }
+  // }
+  
+  submitImprovementRequest(): void {
+    if (!this.improvementRequestText?.trim()) {
+      return;
+    }
+    
+    const nextIteration = this.iterationCount + 1;
+    if (nextIteration > 5) {
+      alert('You have reached the maximum number of iterations (5). Please start a new edit workflow if you need further changes.');
+      this.cancelImprovementRequest();
+      return;
+    }
+    
+    const revisedPlainText = this.revisedContent.replace(/<br>/g, '\n');
+    const improvementMessage = `Please review the following revised article and apply these additional improvements:\n\n${this.improvementRequestText.trim()}\n\nRevised Article:\n${revisedPlainText}`;
+    
+    const messages = [{
+      role: 'user' as const,
+      content: improvementMessage
+    }];
+    
+    this.isGenerating = true;
+    this.showImprovementInput = false;
+    this.improvementRequestText = '';
+    this.editFeedback = '';
+    this.revisedContent = '';
+    
+    let fullResponse = '';
+    const editorsToUse = normalizeEditorOrder(this.formData.selectedEditors) as EditorType[];
 
-
-# ---------------------------------------------------------------------
-# ARTICLE-LEVEL VALIDATION NODE (runs after Development Editor)
-# ---------------------------------------------------------------------
-def article_validation_node(state: SupervisorState) -> SupervisorState:
-    """Validate Development Editor output and return score."""
-    retry_count = state.get("dev_editor_retry_count", 0)
-    attempt_label = "initial" if retry_count == 0 else f"retry {retry_count}"
-    logger.info(f"RUNNING: article_validation_node ({attempt_label})")
-    
-    article_analysis_text = state.get("article_analysis") or ""
-    editor_results = state.get("editor_results", [])
-    
-    dev_editor_result = None
-    for result in reversed(editor_results):
-        if result.editor_type == "development":
-            dev_editor_result = result
-            break
-    
-    if not dev_editor_result:
-        logger.error("No Development Editor result found for validation")
-        return {
-            "validation_result": DevelopmentEditorValidationResult(
-                score=0,
-                feedback_remarks=[]
-            )
+    this.chatService.streamEditContent(messages, editorsToUse).subscribe({
+      next: (data: any) => {
+        if (data.type === 'editor_progress') {
+        } else if (data.type === 'editor_content') {
+          if (data.content) {
+            fullResponse += data.content;
+          }
+        } else if (data.type === 'editor_complete') {
+          if (data.revised_content) {
+            fullResponse = data.revised_content;
+            this.revisedContent = convertMarkdownToHtml(fullResponse);
+          }
+        } else if (data.type === 'editor_error') {
+          console.error(`${data.editor} editor error:`, data.error);
+        } else if (data.type === 'final_complete') {
+          if (data.final_revised) {
+            fullResponse = data.final_revised;
+            this.revisedContent = convertMarkdownToHtml(fullResponse);
+          }
+          if (data.combined_feedback) {
+            const feedbackContent = data.combined_feedback.trim();
+            this.feedbackItems = parseEditorialFeedback(feedbackContent);
+            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+            this.editFeedback = this.feedbackHtml;
+          }
+        } else if (data.type === 'content' && data.content) {
+          fullResponse += data.content;
+        } else if (typeof data === 'string') {
+          fullResponse += data;
         }
-    
-    validation_result = validate_development_editor(
-        article_analysis_text,
-        dev_editor_result,
-        state["document"]
-    )
-    
-    score = validation_result.score
-    previous_score = None
-    previous_validation = state.get("validation_result")
-    if previous_validation and hasattr(previous_validation, 'score'):
-        previous_score = previous_validation.score
-    
-    if previous_score is not None:
-        score_change = score - previous_score
-        change_indicator = "↑" if score_change > 0 else "↓" if score_change < 0 else "→"
-        logger.info(f"Development Editor validation ({attempt_label}): score={score}/10 {change_indicator} (previous: {previous_score}/10, change: {score_change:+d})")
-    else:
-        logger.info(f"Development Editor validation ({attempt_label}): score={score}/10")
-    
-    return {
-        "validation_result": validation_result
-    }
-
-
-# ---------------------------------------------------------------------
-# CROSS-PARAGRAPH ANALYSIS NODE (runs before Content Editor)
-# ---------------------------------------------------------------------
-def cross_paragraph_analysis_node(state: SupervisorState) -> SupervisorState:
-    """
-    Analyze cross-paragraph logic before Content Editor runs.
-    Stores analysis in state for use by Content Editor.
-    """
-    logger.info("RUNNING: cross_paragraph_analysis_node")
-    
-    analysis = analyze_cross_paragraph_logic(state["document"])
-    
-    return {
-        "cross_paragraph_analysis": analysis
-    }
-
-
-# ---------------------------------------------------------------------
-# CROSS-PARAGRAPH VALIDATION NODE (runs after Content Editor)
-# ---------------------------------------------------------------------
-def content_validation_node(state: SupervisorState) -> SupervisorState:
-    """Validate Content Editor output and return score."""
-    retry_count = state.get("content_editor_retry_count", 0)
-    attempt_label = "initial" if retry_count == 0 else f"retry {retry_count}"
-    logger.info(f"RUNNING: content_validation_node ({attempt_label})")
-    
-    cross_paragraph_analysis_text = state.get("cross_paragraph_analysis") or ""
-    editor_results = state.get("editor_results", [])
-    
-    content_editor_result = None
-    for result in reversed(editor_results):
-        if result.editor_type == "content":
-            content_editor_result = result
-            break
-    
-    if not content_editor_result:
-        logger.error("No Content Editor result found for validation")
-        return {
-            "content_validation_result": ContentEditorValidationResult(
-                score=0,
-                feedback_remarks=[]
-            )
+      },
+      error: (error: any) => {
+        console.error('Error improving content:', error);
+        this.editFeedback = 'Sorry, there was an error processing your improvement request. Please try again.';
+        this.isGenerating = false;
+        this.revisedContent = revisedPlainText.replace(/\n/g, '<br>');
+        this.showSatisfactionPrompt = true;
+      },
+      complete: () => {
+        if (!this.revisedContent && fullResponse) {
+          this.parseEditResponse(fullResponse);
         }
+        this.isGenerating = false;
+        this.iterationCount = nextIteration;
+        if (!this.revisedContent || !this.revisedContent.trim()) {
+          this.revisedContent = revisedPlainText.replace(/\n/g, '<br>');
+        }
+        this.showSatisfactionPrompt = true;
+      }
+    });
+  }
+  
+  cancelImprovementRequest(): void {
+    this.showImprovementInput = false;
+    this.improvementRequestText = '';
+    this.showSatisfactionPrompt = true;
+  }
+  
+  /** Create paragraph edits by comparing original and edited content */
+  private createParagraphEditsFromComparison(original: string, edited: string): ParagraphEdit[] {
+    const allEditorNames = this.formData.selectedEditors.map(editorId => {
+      const editor = this.editorTypes.find(e => e.id === editorId);
+      return editor ? editor.name : editorId;
+    });
     
-    validation_result = validate_content_editor(
-        cross_paragraph_analysis_text,
-        content_editor_result,
-        state["document"]
-    )
-    
-    score = validation_result.score
-    previous_score = None
-    previous_validation = state.get("content_validation_result")
-    if previous_validation and hasattr(previous_validation, 'score'):
-        previous_score = previous_validation.score
-    
-    if previous_score is not None:
-        score_change = score - previous_score
-        change_indicator = "↑" if score_change > 0 else "↓" if score_change < 0 else "→"
-        logger.info(f"Content Editor validation ({attempt_label}): score={score}/10 {change_indicator} (previous: {previous_score}/10, change: {score_change:+d})")
-    else:
-        logger.info(f"Content Editor validation ({attempt_label}): score={score}/10")
-    
-    return {
-        "content_validation_result": validation_result
+    return createParagraphEditsFromComparison(original, edited, allEditorNames);
+  }
+  
+  /** Approve a paragraph edit */
+  approveParagraph(index: number): void {
+    const paragraph = this.paragraphEdits.find(p => p.index === index);
+    if (!paragraph) {
+      return;
+    }
+    paragraph.approved = true; 
+  }
+  
+  /** Decline a paragraph edit */
+  declineParagraph(index: number): void {
+    const paragraph = this.paragraphEdits.find(p => p.index === index);
+    if (!paragraph) {
+      return;
+    }
+    paragraph.approved = false;
+  }
+
+  /** Get paragraphs that require user review (excludes auto-approved), sorted by index */
+  get getParagraphsForReview(): ParagraphEdit[] {
+    return this.paragraphEdits
+      .filter(p => p.autoApproved !== true)
+      .sort((a, b) => a.index - b.index);
+  }
+  
+  /** Get count of auto-approved paragraphs */
+  get autoApprovedCount(): number {
+    return this.paragraphEdits.filter(p => p.autoApproved === true).length;
+  }
+  
+  /** Get auto-approved count text with proper pluralization */
+  get autoApprovedText(): string {
+    const count = this.autoApprovedCount;
+    if (count === 0) {
+      return '';
+    }
+    return `(${count} paragraph${count !== 1 ? 's' : ''} auto-approved)`;
+  }
+
+  /** Get paragraphs that require user review (excludes auto-approved), sorted by index */
+  get getParagraphsForFeedbackReview(): ParagraphFeedback[] {
+    return this.paragraphFeedbackData
+      .filter(p => p.autoApproved !== true)
+      .sort((a, b) => a.index - b.index);
+  }
+
+  /** Get count of auto-approved paragraphs in feedback data */
+  get autoApprovedFeedbackCount(): number {
+    return this.paragraphFeedbackData.filter(
+      p => p.autoApproved === true
+    ).length;
+  }
+
+  /** Get auto-approved count text for feedback data */
+  get autoApprovedFeedbackText(): string {
+    const count = this.autoApprovedFeedbackCount;
+
+    if (count === 0) {
+      return '';
     }
 
+    return `(${count} paragraph${count !== 1 ? 's' : ''} auto-approved)`;
+  }
+  
+  /** Check if all paragraphs have been decided */
+  get allParagraphsDecided(): boolean {
+    // Check both paragraphEdits and paragraphFeedbackData
+    const editsDecided = this.paragraphEdits.length === 0 || allParagraphsDecided(this.paragraphEdits);
+    const feedbackDecided = this.allParagraphFeedbackDecided;
+    return editsDecided && feedbackDecided;
+  }
 
-def normalize_editor_output(
-    editor_type: str,
-    raw_output,
-) -> EditorResult:
-    """
-    Normalize editor tool output into EditorResult.
-    Handles:
-      - JSON string
-      - list[dict]
-      - {"blocks": list[dict]}
-    """
-
-    # ---------------------------
-    # Step 1: Parse JSON string
-    # ---------------------------
-    if isinstance(raw_output, str):
-        try:
-            raw_output = json.loads(raw_output)
-        except json.JSONDecodeError as e:
-            raise ValueError(
-                f"{editor_type} editor returned invalid JSON"
-            ) from e
-
-    # ---------------------------
-    # Step 2: Unwrap dict form
-    # ---------------------------
-    if isinstance(raw_output, dict):
-        if "blocks" in raw_output:
-            raw_blocks = raw_output["blocks"]
-        else:
-            raise TypeError(
-                f"{editor_type} editor dict output missing 'blocks' key"
-            )
-    else:
-        raw_blocks = raw_output
-
-    # ---------------------------
-    # Step 3: Validate list
-    # ---------------------------
-    if not isinstance(raw_blocks, list):
-        raise TypeError(
-            f"{editor_type} editor output must be a list of blocks, "
-            f"got {type(raw_blocks)}"
-        )
-
-    # ---------------------------
-    # Step 4: Convert to models
-    # ---------------------------
-    block_results = []
-    for blk in raw_blocks:
-        if not isinstance(blk, dict):
-            raise TypeError(
-                f"{editor_type} editor block must be dict, got {type(blk)}"
-            )
-        block_results.append(BlockEditResult(**blk))
-
-    return EditorResult(
-        editor_type=editor_type,
-        blocks=block_results,
-        warnings=[],
-    )
-
-# ---------------------------------------------------------------------
-# MERGE NODE (FINAL STEP)
-# ---------------------------------------------------------------------
-def merge_node(state: SupervisorState) -> SupervisorState:
-    logger.info("MERGING EDITOR RESULTS")
-    # Keyed by block id to ensure true merging
-    blocks_by_id: dict[str, ConsolidatedBlockEdit] = {}
-
-    # Map incoming editor names to internal EditorFeedback attribute names
-    editor_attr_map = {
-        "development": "development",
-        "content": "content",
-        "copy": "copy",
-        "line": "line",
-        # external editor name maps to internal 'brand'
-        "brand": "brand",
-        "brand-alignment": "brand",
-    }
-
-    for editor in state.get("editor_results", []):
-        for blk in editor.blocks:
-
-            # Initialize consolidated block once
-            if blk.id not in blocks_by_id:
-                blocks_by_id[blk.id] = ConsolidatedBlockEdit(
-                    id=blk.id,
-                    type=blk.type,
-                    level=blk.level,
-                    original_text=blk.original_text,
-                    final_text=blk.suggested_text or blk.original_text,
-                    editorial_feedback=EditorFeedback(),
-                )
-
-            consolidated = blocks_by_id[blk.id]
-            feedback = consolidated.editorial_feedback
-
-            # If editor returned feedback, merge it
-            if blk.feedback_edit:
-                for sef in blk.feedback_edit:
-                    attr = editor_attr_map.get(sef.editor)
-                    if not attr:
-                        # unknown editor, skip
-                        continue
-                    getattr(feedback, attr).extend(sef.items)
-
-            # prefer explicit suggested_text as final text
-            if blk.suggested_text:
-                consolidated.final_text = blk.suggested_text
-
-    final = ConsolidateResult(
-        blocks=list(blocks_by_id.values())
-    )
-    return {"final_result": final}
-
-
-# ---------------------------------------------------------------------
-# SEQUENTIAL ROUTER (routes to single editor based on index)
-# ---------------------------------------------------------------------
-def route_sequential_editor(state: SupervisorState):
-    """Route to current editor based on current_editor_index."""
-    current_idx = state.get("current_editor_index", 0)
-    selected_editors = state.get("selected_editors", [])
-    
-    if current_idx >= len(selected_editors):
-        return "merge"
-    
-    editor_name = selected_editors[current_idx]
-    
-    # Handle combined editor types first
-    if editor_name == "development+content":
-        # Check if we've already run the combined node
-        editor_results = state.get("editor_results", [])
-        has_combined_result = any(r.editor_type == "development+content" for r in editor_results)
-        
-        if has_combined_result:
-            # Already ran, proceed to merge
-            return "merge"
-        
-        # Check if we need article analysis first
-        article_analysis = state.get("article_analysis")
-        if not article_analysis:
-            return "article_analysis"
-        
-        # Analysis done, run combined node
-        return "development_content_combined"
-    
-    if editor_name == "line+copy":
-        # Check if we've already run the combined node
-        editor_results = state.get("editor_results", [])
-        has_combined_result = any(r.editor_type == "line+copy" for r in editor_results)
-        
-        if not has_combined_result:
-            return "line_copy_combined"
-        else:
-            # Already ran, proceed to merge
-            return "merge"
-    
-    # Handle individual editors (for backward compatibility)
-    if editor_name == "development":
-        article_analysis = state.get("article_analysis")
-        editor_results = state.get("editor_results", [])
-        has_dev_result = any(r.editor_type == "development" for r in editor_results)
-        
-        if not article_analysis and not has_dev_result:
-            return "article_analysis"
-        elif article_analysis and not has_dev_result:
-            return "development_editor_tool"
-        elif has_dev_result:
-            return "article_validation"
-    
-    # Special handling for Content Editor: check if analysis needed
-    if editor_name == "content":
-        cross_paragraph_analysis = state.get("cross_paragraph_analysis")
-        # Check if we just completed analysis (by checking if analysis exists but no editor results yet)
-        editor_results = state.get("editor_results", [])
-        has_content_result = any(r.editor_type == "content" for r in editor_results)
-        
-        if not cross_paragraph_analysis and not has_content_result:
-            # Need to run analysis first
-            logger.info("ROUTING TO CROSS-PARAGRAPH ANALYSIS (before Content Editor)")
-            return "cross_paragraph_analysis"
-        elif cross_paragraph_analysis and not has_content_result:
-            # Analysis done, now run Content Editor
-            logger.info("ROUTING TO CONTENT EDITOR (after analysis)")
-            return "content_editor_tool"
-        elif has_content_result:
-            # Content Editor done, now validate
-            logger.info("ROUTING TO CONTENT VALIDATION (after Content Editor)")
-            return "content_validation"
-    
-    # Map editor name to node name for other editors
-    editor_node_map = {
-        "line": "line_editor_tool",
-        "copy": "copy_editor_tool",
-        "brand-alignment": "brand_editor_tool",
+  /** Check if all paragraph feedback items are decided */
+  get allParagraphFeedbackDecided(): boolean {
+    if (!this.paragraphFeedbackData || this.paragraphFeedbackData.length === 0) {
+      return true; // No feedback to decide
     }
     
-    return editor_node_map.get(editor_name, "merge")
+    return this.paragraphFeedbackData.every(para => {
+      // Check if paragraph itself is decided
+      if (para.approved === null || para.approved === undefined) {
+        return false;
+      }
+      
+      // Check if all editorial feedback items are decided
+      const feedbackTypes = Object.keys(para.editorial_feedback || {});
+      for (const editorType of feedbackTypes) {
+        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+        for (const fb of feedbacks) {
+          if (fb.approved === null || fb.approved === undefined) {
+            return false;
+          }
+        }
+      }
+      
+      return true;
+    });
+  }
 
+  /** Check if all paragraphs are approved */
+  get allParagraphsApproved(): boolean {
+    return this.paragraphEdits.length > 0 && 
+           this.paragraphEdits.every(p => p.approved === true);
+  }
+  
+  /** Check if all paragraphs are declined */
+  get allParagraphsDeclined(): boolean {
+    return this.paragraphEdits.length > 0 && 
+           this.paragraphEdits.every(p => p.approved === false);
+  }
 
-# ---------------------------------------------------------------------
-# SEQUENTIAL MERGE NODE (merges only current editor result)
-# ---------------------------------------------------------------------
-def sequential_merge_node(state: SupervisorState) -> SupervisorState:
-    """
-    Merge only the current editor's result for sequential flow.
-    Reuses existing merge_node logic but filters to current editor only.
-    """
-    logger.info("MERGING CURRENT EDITOR RESULT (SEQUENTIAL)")
-    
-    current_idx = state.get("current_editor_index", 0)
-    editor_results = state.get("editor_results", [])
-    
-    if not editor_results:
-        return {"final_result": None}
-    
-    # Get only the current editor's result (last one added)
-    current_editor_result = editor_results[-1]
-    
-    # Create temporary state with only current editor for merging
-    temp_state = {
-        **state,
-        "editor_results": [current_editor_result],  # Only current editor
+  get isImprovementRequestValid(): boolean {
+    return !!this.improvementRequestText && this.improvementRequestText.trim().length > 0;
+  }
+  
+  /** Approve all paragraph edits */
+  approveAllParagraphs(): void {
+    if (this.paragraphEdits.length === 0) {
+      return;
     }
     
-    # Reuse existing merge_node
-    merged = merge_node(temp_state)
+    this.paragraphEdits.forEach(paragraph => {
+      paragraph.approved = true;
+    });
+  }
+  
+  /** Decline all paragraph edits */
+  declineAllParagraphs(): void {
+    if (this.paragraphEdits.length === 0) {
+      return;
+    }
     
-    return merged
+    this.paragraphEdits.forEach(paragraph => {
+      paragraph.approved = false;
+    });
+  }
+
+  
+  /** Generate final article using approved edits */
+  async runFinalOutput(): Promise<void> {
+    if (!this.allParagraphsDecided) {
+      alert('Please approve or decline all paragraph edits before generating the final article.');
+      return;
+    }
+    
+    this.isGeneratingFinal = true;
+    
+    try {
+      const decisions = this.paragraphEdits.map(p => ({
+        index: p.index,
+        approved: p.approved === true
+      }));
+      
+      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
+        method: 'POST',
+        body: JSON.stringify({
+          original_content: this.originalContent,
+          paragraph_edits: this.paragraphEdits.map(p => ({
+            index: p.index,
+            original: p.original,
+            edited: p.edited,
+            tags: p.tags,
+            autoApproved: p.autoApproved
+          })),
+          decisions: decisions
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Failed to generate final article: ${response.status} ${errorText}`);
+      }
+      
+      const data = await response.json();
+      const finalArticle = data.final_article || '';
+      
+      if (!finalArticle) {
+        throw new Error('No final article returned from server');
+      }
+      
+      // Same as Quick Start: store markdown only (no formatFinalArticleWithBlockTypes). Display uses getter to HTML.
+      this.finalArticle = finalArticle.trim();
+      this.showFinalOutput = true;
+      this.showSatisfactionPrompt = true;
+    } catch (error) {
+      console.error('Error generating final article:', error);
+      const errorMessage = error instanceof Error 
+        ? `Failed to generate final article: ${error.message}` 
+        : 'Failed to generate final article. Please try again.';
+      alert(errorMessage);
+    } finally {
+      this.isGeneratingFinal = false;
+    }
+  }
+
+  /** Generate final article using approved edits and feedback */
+  async generateFinalOutput(): Promise<void> {
+    if (!this.allParagraphsDecided) {
+      alert('Please approve or reject all paragraph edits and feedback before generating the final article.');
+      return;
+    }
+    
+    this.isGeneratingFinal = true;
+    
+    try {
+      // Collect all approved/rejected decisions from paragraphFeedbackData
+      const paragraphDecisions = this.paragraphFeedbackData.map(para => ({
+        index: para.index,
+        approved: para.approved === true,
+        editorial_feedback_decisions: this.collectFeedbackDecisions(para)
+      }));
+      
+      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
+        method: 'POST',
+        body: JSON.stringify({
+          original_content: this.originalContent,
+          paragraph_edits: this.paragraphFeedbackData.map(p => ({
+            index: p.index,
+            original: p.original,
+            edited: p.edited,
+            tags: p.tags,
+            autoApproved: p.autoApproved,
+            block_type: p.block_type || 'paragraph',
+            level: p.level || 0,
+            editorial_feedback: p.editorial_feedback
+          })),
+          decisions: paragraphDecisions,
+          include_quality_checks: true,
+          include_copy_check: true
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Failed to generate final article: ${response.status} ${errorText}`);
+      }
+      
+      const data = await response.json();
+      const finalArticle = data.final_article || '';
+      
+      if (!finalArticle) {
+        throw new Error('No final article returned from server');
+      }
+      
+      const trimmedFinal = finalArticle.trim();
+      
+      // Same as Quick Start: send markdown so chat renders with marked.parse() (getFormattedContent). No formatFinalArticleWithBlockTypes.
+      const headerLines: string[] = ['### Guided Journey – Edit Content'];
+      const uploadedFileName = this.formData.uploadedFile?.name;
+      if (uploadedFileName) {
+        headerLines.push(`_Source: ${uploadedFileName}_`);
+      }
+      headerLines.push('', '---', '');
+      
+      const documentTitle = extractDocumentTitle(
+        this.originalContent || '',
+        uploadedFileName
+      );
+      
+      const contentAsMarkdown = headerLines.join('\n') + trimmedFinal;
+      
+      const revisedMetadata: ThoughtLeadershipMetadata = {
+        contentType: 'edit-article',
+        topic: documentTitle || 'Final Revised Article',
+        fullContent: trimmedFinal,
+        showActions: true
+      };
+      
+      // Send to chat as markdown (isHtml: false) so chat uses marked.parse() like Quick Start
+      this.tlChatBridge.sendMessage({
+        role: 'assistant',
+        content: contentAsMarkdown,
+        timestamp: new Date(),
+        isHtml: false,
+        thoughtLeadership: revisedMetadata
+      });
+      
+      // Close the edit-content-flow component
+      this.onClose();
+    } catch (error) {
+      console.error('Error generating final article:', error);
+      const errorMessage = error instanceof Error 
+        ? `Failed to generate final article: ${error.message}` 
+        : 'Failed to generate final article. Please try again.';
+      alert(errorMessage);
+    } finally {
+      this.isGeneratingFinal = false;
+    }
+  }
 
 
-# ---------------------------------------------------------------------
-# ROUTER AFTER CONTENT VALIDATION
-# ---------------------------------------------------------------------
-def route_after_content_validation(state: SupervisorState) -> str:
-    """After validation: retry if score < 8 (max 2 retries), else merge when score >= 8."""
-    validation_result = state.get("content_validation_result")
-    retry_count = state.get("content_editor_retry_count", 0)
-    MAX_RETRIES = 2
-    
-    if validation_result:
-        score = validation_result.score
-        logger.info(f"Content validation score: {score}/10, Retry count: {retry_count}/{MAX_RETRIES}")
-        
-        # Merge if score >= 8 (passing threshold)
-        if score >= 8:
-            logger.info(f"Score {score} >= 8, proceeding to merge")
-            return "merge"
-        
-        # Retry if score < 8 and retries remaining
-        if retry_count < MAX_RETRIES:
-            logger.info(f"Score {score} < 8, retrying (attempt {retry_count + 1}/{MAX_RETRIES})")
-            return "content_editor_retry"
-        else:
-            logger.info(f"Score {score} < 8 but max retries ({MAX_RETRIES}) reached, proceeding to merge")
-            return "merge"
-    
-    # No validation result, proceed to merge
-    return "merge"
 
+  /** Collect feedback decisions from a paragraph */
+  private collectFeedbackDecisions(para: ParagraphFeedback): any {
+    const decisions: any = {};
+    const feedbackTypes = Object.keys(para.editorial_feedback || {});
+    
+    for (const editorType of feedbackTypes) {
+      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+      decisions[editorType] = feedbacks.map((fb: any) => ({
+        issue: fb.issue,
+        approved: fb.approved === true
+      }));
+    }
+    
+    return decisions;
+  }
 
-# ---------------------------------------------------------------------
-# ROUTER AFTER VALIDATION
-# ---------------------------------------------------------------------
-def route_after_validation(state: SupervisorState) -> str:
-    """After validation: retry if score < 8 (max 2 retries), else merge when score >= 8."""
-    validation_result = state.get("validation_result")
-    retry_count = state.get("dev_editor_retry_count", 0)
-    MAX_RETRIES = 2
-    
-    if validation_result:
-        score = validation_result.score
-        logger.info(f"Validation score: {score}/10, Retry count: {retry_count}/{MAX_RETRIES}")
-        
-        # Merge if score >= 8 (passing threshold)
-        if score >= 8:
-            logger.info(f"Score {score} >= 8, proceeding to merge")
-            return "merge"
-        
-        # Retry if score < 8 and retries remaining
-        if retry_count < MAX_RETRIES:
-            logger.info(f"Score {score} < 8, retrying (attempt {retry_count + 1}/{MAX_RETRIES})")
-            return "development_editor_retry"
-        else:
-            logger.info(f"Score {score} < 8 but max retries ({MAX_RETRIES}) reached, proceeding to merge")
-            return "merge"
-    
-    # No validation result, proceed to merge
-    return "merge"
+  /** Process paragraph edits from backend response (reusable helper) */
+  private processParagraphEdits(paragraph_edits: any[]): ParagraphFeedback[] {
+    // If API returned no paragraph edits at all, just clear the data array.
+    // The template can show an inline "no feedback" message inside the paragraph box.
+    if (!paragraph_edits || !Array.isArray(paragraph_edits) || paragraph_edits.length === 0) {
+      return [];
+    }
 
+    const feedbackData: ParagraphFeedback[] = paragraph_edits.map((edit: any) => {
+      const editorial_feedback = {
+        development: edit.editorial_feedback?.development || [],
+        content: edit.editorial_feedback?.content || [],
+        copy: edit.editorial_feedback?.copy || [],
+        line: edit.editorial_feedback?.line || [],
+        brand: edit.editorial_feedback?.brand || []
+      };
 
-# ---------------------------------------------------------------------
-# ROUTER FOR SEQUENTIAL FLOW (after merge)
-# ---------------------------------------------------------------------
-def route_sequential_after_merge(state: SupervisorState):
-    """
-    After merging current editor result, interrupt for user approval.
-    """
-    current_idx = state.get("current_editor_index", 0)
-    selected_editors = state.get("selected_editors", [])
-    
-    if current_idx >= len(selected_editors):
-        return "end"
-    
-    # Interrupt for user approval
-    return "__interrupt__"
+      return {
+        index: edit.index || 0,
+        original: edit.original || '',
+        edited: edit.edited || '',
+        tags: edit.tags || [],
+        autoApproved: edit.autoApproved ?? false,
+        approved: edit.approved ?? null,
+        block_type: edit.block_type || 'paragraph',
+        level: edit.level || 0,
+        editorial_feedback
+      };
+    });
 
+    return feedbackData;
+  }
 
-# ---------------------------------------------------------------------
-# CUSTOM REDIS CHECKPOINTER (for multi-pod deployments)
-# ---------------------------------------------------------------------
-import pickle
+  /** True when there are no feedback items inside paragraphFeedbackData */
+  get hasNoParagraphFeedback(): boolean {
+    if (!this.paragraphFeedbackData || this.paragraphFeedbackData.length === 0) {
+      return true;
+    }
 
-class CustomRedisCheckpointer(BaseCheckpointSaver):
-    """
-    Custom Redis checkpointer that behaves EXACTLY like MemorySaver.
-    Drop-in replacement for MemorySaver with Redis persistence.
-    Uses pickle for serialization to preserve Python object types.
-    """
-    
-    def __init__(self, redis_client: Redis, ttl_seconds: int = 86400):
-        super().__init__()
-        self.redis = redis_client
-        self.ttl_seconds = ttl_seconds
-        logger.info(f"CustomRedisCheckpointer initialized with TTL={ttl_seconds}s")
-    
-    def _make_redis_key(
-        self, 
-        thread_id: str, 
-        checkpoint_ns: str = "", 
-        checkpoint_id: Optional[str] = None,
-        suffix: Optional[str] = None
-    ) -> str:
-        """Generate Redis key matching MemorySaver's internal key structure."""
-        parts = ["checkpoint", thread_id, checkpoint_ns]
-        parts.append(checkpoint_id if checkpoint_id else "latest")
-        if suffix:
-            parts.append(suffix)
-        return ":".join(parts)
-    
-    def _parse_config(self, config: Optional[RunnableConfig]) -> Tuple[str, str, Optional[str]]:
-        """Extract thread_id, checkpoint_ns, and checkpoint_id from config."""
-        if not config:
-            raise ValueError("Config is required")
-        
-        configurable = config.get("configurable", {})
-        thread_id = configurable.get("thread_id")
-        
-        if not thread_id:
-            raise ValueError("thread_id is required in config.configurable")
-        
-        checkpoint_ns = configurable.get("checkpoint_ns", "")
-        checkpoint_id = configurable.get("checkpoint_id")
-        
-        return thread_id, checkpoint_ns, checkpoint_id
-    
-    def put(
-        self,
-        config: RunnableConfig,
-        checkpoint: Checkpoint,
-        metadata: CheckpointMetadata,
-        new_versions: Optional[Dict[str, Any]] = None,
-    ) -> RunnableConfig:
-        """Save checkpoint to Redis. Matches MemorySaver.put() exactly."""
-        try:
-            thread_id, checkpoint_ns, _ = self._parse_config(config)
-            
-            # Generate checkpoint_id using microsecond timestamp (like MemorySaver)
-            checkpoint_id = checkpoint.get("id")
-            if not checkpoint_id:
-                checkpoint_id = str(int(datetime.now(timezone.utc).timestamp() * 1_000_000))
-            
-            # Ensure checkpoint has the ID
-            if isinstance(checkpoint, dict):
-                checkpoint["id"] = checkpoint_id
-            
-            # Build parent_config if parent_checkpoint_id exists
-            parent_config = None
-            if metadata and metadata.get("parent_checkpoint_id"):
-                parent_checkpoint_id = metadata["parent_checkpoint_id"]
-                parent_config = {
-                    "configurable": {
-                        "thread_id": thread_id,
-                        "checkpoint_ns": checkpoint_ns,
-                        "checkpoint_id": parent_checkpoint_id
+    // No editorial feedback items across all paragraphs
+    return this.paragraphFeedbackData.every(para => {
+      const types = Object.keys(para.editorial_feedback || {});
+      return types.every(t => {
+        const arr = (para.editorial_feedback as any)[t] || [];
+        return !arr || arr.length === 0;
+      });
+    });
+  }
+
+  /** Move to next editor in sequential workflow */
+  async nextEditor(): Promise<void> {
+    if (!this.threadId) {
+      console.error('[EditContentFlow] No thread_id available for next editor');
+      return;
+    }
+
+    if (!this.allParagraphsDecided) {
+      alert('Please approve or reject all paragraph edits before proceeding to the next editor.');
+      return;
+    }
+
+    this.isGenerating = true;
+    this.isEditorLoading = true; // Mark that we're loading the next editor
+
+    // Mark current editor as completed when moving to next
+    const currentEditorItem = this.editorProgressList.find(e => e.editorId === this.currentEditor);
+    if (currentEditorItem && currentEditorItem.status === 'review-pending') {
+      currentEditorItem.status = 'completed';
+    }
+
+    // Update next editor to 'processing' status for visual feedback only.
+    // Do NOT update currentEditor/currentEditorIndex here — wait for backend (editor_progress / editor_complete)
+    // so the "no feedback" message and content stay under the previous editor name until next editor loads.
+    const nextEditorIndex = this.currentEditorIndex + 1;
+    if (nextEditorIndex < this.editorProgressList.length) {
+      const nextEditorItem = this.editorProgressList[nextEditorIndex];
+      if (nextEditorItem && (nextEditorItem.status === 'pending' || nextEditorItem.status === 'review-pending')) {
+        nextEditorItem.status = 'processing';
+        this.cdr.detectChanges();
+      }
+    }
+
+    try {
+      // Collect decisions from paragraphFeedbackData
+      const decisions = this.paragraphFeedbackData.map(para => ({
+        index: para.index,
+        approved: para.approved === true
+      }));
+
+      // Prepare paragraph_edits
+      const paragraph_edits = this.paragraphFeedbackData.map(para => ({
+        index: para.index,
+        original: para.original,
+        edited: para.edited,
+        tags: para.tags || [],
+        autoApproved: para.autoApproved || false,
+        approved: para.approved
+      }));
+
+      // Call /next endpoint via ChatService
+      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/next`, {
+        method: 'POST',
+        body: JSON.stringify({
+          thread_id: this.threadId,
+          paragraph_edits: paragraph_edits,
+          decisions: decisions,
+          accept_all: false,
+          reject_all: false
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Failed to proceed to next editor: ${response.status} ${errorText}`);
+      }
+
+      // Handle streaming response
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      if (!reader) {
+        throw new Error('No response body reader available');
+      }
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.slice(6).trim();
+            if (dataStr && dataStr !== '[DONE]') {
+              try {
+                const data = JSON.parse(dataStr);
+                
+                // Handle editor_progress - show In Progress
+                if (data.type === 'editor_progress') {
+                  // Backend sends 1-based index, convert to 0-based for our array
+                  const backendCurrentIndex = data.current || 1;
+                  this.currentEditorIndex = backendCurrentIndex - 1; // Convert to 0-based
+                  this.totalEditors = data.total || this.totalEditors;
+                  this.currentEditorId = data.editor || '';
+                  this.isEditorLoading = true;
+                  
+                  // Update editor statuses (using 0-based index)
+                  this.editorProgressList.forEach((editor, index) => {
+                    if (index < this.currentEditorIndex) {
+                      editor.status = 'completed';
+                    } else if (index === this.currentEditorIndex) {
+                      editor.status = 'processing'; // In Progress
+                      editor.current = backendCurrentIndex; // Keep 1-based for display
+                      editor.total = this.totalEditors;
+                    } else {
+                      editor.status = 'pending';
                     }
+                  });
+                  
+                  this.cdr.detectChanges();
                 }
-            
-            # pending_writes is always empty list - writes stored separately via put_writes()
-            checkpoint_tuple_data = {
-                "checkpoint": checkpoint,
-                "metadata": metadata if metadata else {},
-                "parent_config": parent_config,
-                "pending_writes": []
-            }
-            
-            # Store checkpoint data using pickle to preserve types
-            checkpoint_key = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id)
-            serialized = pickle.dumps(checkpoint_tuple_data)
-            self.redis.setex(checkpoint_key, self.ttl_seconds, serialized)
-            
-            # Update "latest" pointer (store as string)
-            latest_key = self._make_redis_key(thread_id, checkpoint_ns, None)
-            self.redis.setex(latest_key, self.ttl_seconds, checkpoint_id.encode('utf-8'))
-            
-            # Add to sorted set for chronological listing
-            list_key = self._make_redis_key(thread_id, checkpoint_ns, suffix="list")
-            score = float(checkpoint_id) if checkpoint_id.replace('.', '', 1).isdigit() else 0
-            self.redis.zadd(list_key, {checkpoint_id: score})
-            self.redis.expire(list_key, self.ttl_seconds)
-            
-            logger.debug(f"Saved checkpoint: thread={thread_id}, ns={checkpoint_ns}, id={checkpoint_id}")
-            
-            # Return updated config
-            return {
-                "configurable": {
-                    "thread_id": thread_id,
-                    "checkpoint_ns": checkpoint_ns,
-                    "checkpoint_id": checkpoint_id
+                
+                // Handle all_complete
+                if (data.type === 'all_complete') {
+                  this.isGenerating = false;
+                  // Mark as last editor to show "Generate Final Output" button
+                  this.isLastEditor = true;
+                  this.currentEditorIndex = this.totalEditors;
+                  this.cdr.detectChanges();
+                  return;
                 }
-            }
-            
-        except Exception as e:
-            logger.error(f"CustomRedisCheckpointer.put failed: {e}", exc_info=True)
-            raise
-    
-    def get_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:
-        """Retrieve checkpoint tuple from Redis. Matches MemorySaver.get_tuple() exactly."""
-        try:
-            thread_id, checkpoint_ns, checkpoint_id = self._parse_config(config)
-            
-            # If no checkpoint_id specified, get the latest one
-            if not checkpoint_id:
-                latest_key = self._make_redis_key(thread_id, checkpoint_ns, None)
-                latest_checkpoint_id_bytes = self.redis.get(latest_key)
-                
-                if not latest_checkpoint_id_bytes:
-                    logger.debug(f"No checkpoints found: thread={thread_id}, ns={checkpoint_ns}")
-                    return None
-                
-                checkpoint_id = (
-                    latest_checkpoint_id_bytes.decode('utf-8') 
-                    if isinstance(latest_checkpoint_id_bytes, bytes) 
-                    else latest_checkpoint_id_bytes
-                )
-            
-            # Retrieve checkpoint data
-            checkpoint_key = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id)
-            data_bytes = self.redis.get(checkpoint_key)
-            
-            if not data_bytes:
-                logger.debug(f"Checkpoint not found: {checkpoint_key}")
-                return None
-            
-            # Deserialize using pickle to preserve types
-            checkpoint_tuple_data = pickle.loads(data_bytes)
-            
-            # Load pending_writes from separate put_writes() calls
-            pending_writes = []
-            writes_pattern = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id, suffix="writes:*")
-            
-            # Get all write keys for this checkpoint
-            write_keys = self.redis.keys(writes_pattern)
-            for write_key_bytes in write_keys:
-                write_key = write_key_bytes.decode('utf-8') if isinstance(write_key_bytes, bytes) else write_key_bytes
-                write_data_bytes = self.redis.get(write_key)
-                
-                if write_data_bytes:
-                    # Deserialize writes using pickle
-                    write_data = pickle.loads(write_data_bytes)
-                    
-                    task_id = write_data.get("task_id")
-                    writes_list = write_data.get("writes", [])
-                    
-                    # Convert to MemorySaver format: (task_id, channel, value)
-                    for channel, value in writes_list:
-                        pending_writes.append((task_id, channel, value))
-            
-            # Build config for this checkpoint
-            current_config = {
-                "configurable": {
-                    "thread_id": thread_id,
-                    "checkpoint_ns": checkpoint_ns,
-                    "checkpoint_id": checkpoint_id
-                }
-            }
-            
-            # Return CheckpointTuple with pending_writes as list
-            return CheckpointTuple(
-                config=current_config,
-                checkpoint=checkpoint_tuple_data["checkpoint"],
-                metadata=checkpoint_tuple_data.get("metadata", {}),
-                parent_config=checkpoint_tuple_data.get("parent_config"),
-                pending_writes=pending_writes
-            )
-            
-        except Exception as e:
-            logger.error(f"CustomRedisCheckpointer.get_tuple failed: {e}", exc_info=True)
-            return None
-    
-    def list(
-        self,
-        config: RunnableConfig,
-        *,
-        filter: Optional[Dict[str, Any]] = None,
-        before: Optional[RunnableConfig] = None,
-        limit: Optional[int] = None,
-    ) -> Iterator[CheckpointTuple]:
-        """List checkpoints in reverse chronological order. Matches MemorySaver.list() exactly."""
-        try:
-            thread_id, checkpoint_ns, _ = self._parse_config(config)
-            
-            list_key = self._make_redis_key(thread_id, checkpoint_ns, suffix="list")
-            
-            # Determine range for iteration
-            max_score = "+inf"
-            if before:
-                before_checkpoint_id = before.get("configurable", {}).get("checkpoint_id")
-                if before_checkpoint_id:
-                    max_score = f"({before_checkpoint_id}"
-            
-            # Get checkpoint IDs in reverse chronological order
-            checkpoint_ids = self.redis.zrevrangebyscore(
-                list_key,
-                max_score,
-                "-inf",
-                start=0,
-                num=limit if limit else -1
-            )
-            
-            if not checkpoint_ids:
-                logger.debug(f"No checkpoints in list: thread={thread_id}, ns={checkpoint_ns}")
-                return
-            
-            # Yield each checkpoint
-            for checkpoint_id_bytes in checkpoint_ids:
-                checkpoint_id = (
-                    checkpoint_id_bytes.decode('utf-8') 
-                    if isinstance(checkpoint_id_bytes, bytes) 
-                    else checkpoint_id_bytes
-                )
-                
-                checkpoint_key = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id)
-                data_bytes = self.redis.get(checkpoint_key)
-                
-                if not data_bytes:
-                    continue
-                
-                # Deserialize using pickle
-                checkpoint_tuple_data = pickle.loads(data_bytes)
-                
-                # Apply metadata filter if provided
-                if filter:
-                    metadata = checkpoint_tuple_data.get("metadata", {})
-                    if not all(metadata.get(k) == v for k, v in filter.items()):
-                        continue
-                
-                # Load pending_writes for this checkpoint
-                pending_writes = []
-                writes_pattern = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id, suffix="writes:*")
-                write_keys = self.redis.keys(writes_pattern)
-                
-                for write_key_bytes in write_keys:
-                    write_key = write_key_bytes.decode('utf-8') if isinstance(write_key_bytes, bytes) else write_key_bytes
-                    write_data_bytes = self.redis.get(write_key)
-                    
-                    if write_data_bytes:
-                        # Deserialize using pickle
-                        write_data = pickle.loads(write_data_bytes)
-                        
-                        task_id = write_data.get("task_id")
-                        writes_list = write_data.get("writes", [])
-                        
-                        # Convert to MemorySaver format: (task_id, channel, value)
-                        for channel, value in writes_list:
-                            pending_writes.append((task_id, channel, value))
-                
-                current_config = {
-                    "configurable": {
-                        "thread_id": thread_id,
-                        "checkpoint_ns": checkpoint_ns,
-                        "checkpoint_id": checkpoint_id
+
+                // Handle editor_complete (same as initial flow)
+                if (data.type === 'editor_complete') {
+                  const scrollContainer = document.querySelector('.flow-content') || 
+                                         document.querySelector('.flow-container') || 
+                                         document.documentElement;
+                  const scrollPosition = scrollContainer === document.documentElement
+                    ? window.scrollY || window.pageYOffset 
+                    : (scrollContainer as HTMLElement).scrollTop;
+
+                  // Store thread_id
+                  if (data.thread_id) {
+                    this.threadId = data.thread_id;
+                  }
+
+                  // Store current editor info
+                  if (data.current_editor) {
+                    this.currentEditor = data.current_editor;
+                    this.currentEditorIndex = data.editor_index || 0;
+                    this.totalEditors = data.total_editors || this.totalEditors;
+                    this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || 1) - 1;
+                  }
+
+                  // Mark previous editor as completed when moving to next editor
+                  if (this.currentEditorIndex > 0) {
+                    const previousEditorIndex = this.currentEditorIndex - 1;
+                    const previousEditor = this.editorProgressList[previousEditorIndex];
+                    if (previousEditor && previousEditor.status === 'review-pending') {
+                      previousEditor.status = 'completed';
                     }
+                  }
+
+                  // Update current editor to review-pending after generation completes
+                  const currentEditorItem = this.editorProgressList.find(e => e.editorId === data.current_editor);
+                  if (currentEditorItem) {
+                    currentEditorItem.status = 'review-pending';
+                  }
+
+                  // Process paragraph edits
+                  if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
+                    this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
+                  }
+
+                  // Update content
+                  if (data.original_content) {
+                    this.originalContent = data.original_content;
+                  }
+
+                  if (data.final_revised) {
+                    this.revisedContent = convertMarkdownToHtml(data.final_revised.trim());
+                  }
+
+                  // Process feedback
+                  if (data.combined_feedback) {
+                    const feedbackContent = data.combined_feedback.trim();
+                    this.feedbackItems = parseEditorialFeedback(feedbackContent);
+                    this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+                    this.editFeedback = this.feedbackHtml;
+                  }
+
+                  this.isGenerating = false;
+                  this.isEditorLoading = false; // Loading complete, now in review pending state
+                  
+                  this.cdr.detectChanges();
+
+                  setTimeout(() => {
+                    const paragraphSection = document.getElementById('paragraph-feedback-section');
+                    if (paragraphSection) {
+                      paragraphSection.scrollIntoView({ 
+                        behavior: 'smooth', 
+                        block: 'start',
+                        inline: 'nearest'
+                      });
+                    }
+                  }, 100);
+
+
                 }
-                
-                yield CheckpointTuple(
-                    config=current_config,
-                    checkpoint=checkpoint_tuple_data["checkpoint"],
-                    metadata=checkpoint_tuple_data.get("metadata", {}),
-                    parent_config=checkpoint_tuple_data.get("parent_config"),
-                    pending_writes=pending_writes
-                )
-                
-        except Exception as e:
-            logger.error(f"CustomRedisCheckpointer.list failed: {e}", exc_info=True)
-    
-    def put_writes(
-        self,
-        config: RunnableConfig,
-        writes: Sequence[Tuple[str, Any]],
-        task_id: str,
-    ) -> None:
-        """Save incremental writes to Redis. Matches MemorySaver.put_writes() exactly."""
-        try:
-            thread_id, checkpoint_ns, checkpoint_id = self._parse_config(config)
-            
-            # If no checkpoint_id, get the latest
-            if not checkpoint_id:
-                latest_key = self._make_redis_key(thread_id, checkpoint_ns, None)
-                latest_checkpoint_id_bytes = self.redis.get(latest_key)
-                
-                if latest_checkpoint_id_bytes:
-                    checkpoint_id = (
-                        latest_checkpoint_id_bytes.decode('utf-8') 
-                        if isinstance(latest_checkpoint_id_bytes, bytes) 
-                        else latest_checkpoint_id_bytes
-                    )
-                else:
-                    checkpoint_id = str(int(datetime.now(timezone.utc).timestamp() * 1_000_000))
-            
-            # Store writes
-            writes_key = self._make_redis_key(
-                thread_id, 
-                checkpoint_ns, 
-                checkpoint_id, 
-                suffix=f"writes:{task_id}"
-            )
-            
-            # Store writes data using pickle to preserve types
-            writes_data = {
-                "writes": [[channel, value] for channel, value in writes],
-                "task_id": task_id,
-                "timestamp": datetime.now(timezone.utc).isoformat()
+
+                // Handle errors
+                if (data.type === 'error') {
+                  throw new Error(data.error || 'Unknown error');
+                }
+              } catch (e) {
+                console.error('[EditContentFlow] Error parsing SSE data:', e);
+              }
             }
-            
-            serialized = pickle.dumps(writes_data)
-            self.redis.setex(writes_key, self.ttl_seconds, serialized)
-            
-            logger.debug(f"Saved writes: thread={thread_id}, checkpoint={checkpoint_id}, task={task_id}")
-            
-        except Exception as e:
-            logger.error(f"CustomRedisCheckpointer.put_writes failed: {e}", exc_info=True)
-# ---------------------------------------------------------------------
-# SHARED CHECKPOINTER FOR SEQUENTIAL GRAPH
-# ---------------------------------------------------------------------
-# IMPORTANT: Use a single shared checkpointer instance so state persists
-# across multiple graph instances AND multiple pods (initial request and /next requests)
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[EditContentFlow] Error in nextEditor:', error);
+      const errorMessage = error instanceof Error 
+        ? `Failed to proceed to next editor: ${error.message}` 
+        : 'Failed to proceed to next editor. Please try again.';
+      alert(errorMessage);
+      this.isGenerating = false;
+      this.isEditorLoading = false; // Reset loading state on error
+    }
+  }
 
-if config.APP_ENV == "local":
-    _sequential_checkpointer = MemorySaver()
-    logger.info("Using MemorySaver for local development")
-else:
-    try:
-        redis_client = Redis(
-            host=config.REDIS_HOST,
-            port=config.REDIS_PORT,
-            password=config.REDIS_PASSWORD,
-            ssl=True,
-            decode_responses=False
-        )
-        # Test connection with PING
-        redis_client.ping()
-        logger.info(f"Redis connection successful: {config.REDIS_HOST}:{config.REDIS_PORT}")
-        
-        # Use custom checkpointer that doesn't require JSON module
-        _sequential_checkpointer = CustomRedisCheckpointer(
-            redis_client=redis_client,
-            ttl_seconds=86400  # 24 hour TTL
-        )
-        logger.info("Using CustomRedisCheckpointer for multi-pod deployment")
-        
-    except Exception as e:
-        logger.error(f"Redis connection failed: {e}")
-        logger.warning("FALLBACK: Using MemorySaver - state will NOT persist across pod restarts")
-        _sequential_checkpointer = MemorySaver()
+  objectKeys = Object.keys;
+
+  /** Get display name for editor */
+  getEditorDisplayName(editorId: string | null): string {
+    if (!editorId) return '';
+    
+    return getEditorDisplayName(editorId);
+  }
+
+  /** Update paragraph's approved status based on its feedback items */
+  private updateParagraphApprovedStatus(para: ParagraphFeedback): void {
+    // Check if all feedback items in this paragraph are decided
+    const feedbackTypes = Object.keys(para.editorial_feedback || {});
+    let allDecided = true;
+    let allApproved = true;
+    let hasAnyFeedback = false;
+    
+    for (const editorType of feedbackTypes) {
+      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+      for (const fb of feedbacks) {
+        hasAnyFeedback = true;
+        if (fb.approved === null || fb.approved === undefined) {
+          allDecided = false;
+          break;
+        } else if (fb.approved === false) {
+          allApproved = false;
+        }
+      }
+      if (!allDecided) break;
+    }
+    
+    // If no feedback items exist, paragraph doesn't need approval
+    if (!hasAnyFeedback) {
+      para.approved = true; // No feedback means nothing to approve/reject
+      return;
+    }
+    
+    // If all feedback items are decided, set paragraph's approved status
+    if (allDecided) {
+      // Set to true if all are approved, false if any are rejected
+      para.approved = allApproved;
+    } else {
+      // If not all feedback items are decided, reset paragraph approval to null
+      // This ensures the getter properly reflects that decisions are incomplete
+      para.approved = null;
+    }
+  }
 
 
-# ---------------------------------------------------------------------
-# BUILD SEQUENTIAL GRAPH (reuses existing graph nodes)
-# ---------------------------------------------------------------------
-def build_sequential_graph():
-    """
-    Build a sequential graph that runs editors one at a time with interrupts.
-    REUSES all existing editor nodes, merge_node, and graph structure.
+  approveEditorialFeedback(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
     
-    Flow:
-    1. route_sequential_editor -> routes to current editor node
-    2. editor node -> runs current editor (reuses existing editor nodes)
-    3. sequential_merge_node -> merges only current editor result
-    4. route_sequential_after_merge -> interrupts for user approval
-    5. Resume -> continues to next editor (when state updated externally)
+    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === true) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = true; // Approve (green/strikeout)
+    }
     
-    NOTE: All graph instances share the same checkpointer (_sequential_checkpointer)
-    to ensure state persistence across requests.
-    """
-    graph = StateGraph(SupervisorState)
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
     
-    # ---------------------------------------------------------------------
-    # ADD NODES (organized by category)
-    # ---------------------------------------------------------------------
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  rejectEditorialFeedback(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
     
-    # Analysis nodes (run before editors)
-    graph.add_node("article_analysis", article_analysis_node)
-    graph.add_node("cross_paragraph_analysis", cross_paragraph_analysis_node)
+    // Toggle: If already rejected, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === false) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = false; // Reject (green/strikeout opposite)
+    }
     
-    # Individual editor nodes
-    graph.add_node("development_editor_tool", development_editor_node)
-    graph.add_node("development_editor_retry", development_editor_retry_node)
-    graph.add_node("content_editor_tool", content_editor_node)
-    graph.add_node("content_editor_retry", content_editor_retry_node)
-    graph.add_node("line_editor_tool", line_editor_node)
-    graph.add_node("copy_editor_tool", copy_editor_node)
-    graph.add_node("brand_editor_tool", brand_editor_node)
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
     
-    # Combined editor nodes
-    graph.add_node("development_content_combined", development_content_combined_node)
-    graph.add_node("line_copy_combined", line_copy_combined_node)
-    graph.add_node("resolve_combined_editor_conflicts", resolve_combined_editor_conflicts_node)
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  applyEditorialFix(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
     
-    # Validation nodes (run after editors)
-    graph.add_node("article_validation", article_validation_node)
-    graph.add_node("content_validation", content_validation_node)
+    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === true) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = true; // Approve (green/strikeout)
+    }
     
-    # Merge node (final step)
-    graph.add_node("merge", sequential_merge_node)
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
     
-    # ---------------------------------------------------------------------
-    # SET CONDITIONAL ENTRY POINT (routes to appropriate node)
-    # ---------------------------------------------------------------------
-    graph.set_conditional_entry_point(
-        route_sequential_editor,
-        {
-            # Analysis nodes
-            "article_analysis": "article_analysis",
-            "cross_paragraph_analysis": "cross_paragraph_analysis",
-            
-            # Individual editor nodes
-            "development_editor_tool": "development_editor_tool",
-            "development_editor_retry": "development_editor_retry",
-            "content_editor_tool": "content_editor_tool",
-            "content_editor_retry": "content_editor_retry",
-            "line_editor_tool": "line_editor_tool",
-            "copy_editor_tool": "copy_editor_tool",
-            "brand_editor_tool": "brand_editor_tool",
-            
-            # Combined editor nodes
-            "development_content_combined": "development_content_combined",
-            "line_copy_combined": "line_copy_combined",
-            
-            # Validation nodes
-            "article_validation": "article_validation",
-            "content_validation": "content_validation",
-            
-            # Merge node
-            "merge": "merge",
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  rejectEditorialFix(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    
+    // Toggle: If already rejected, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === false) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = false; // Reject (green/strikeout opposite)
+    }
+    
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
+    
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  highlightAllFeedbacks(
+    para: ParagraphFeedback,
+    hovered?: { editorType: string; fbIndex: number }
+  ): { original: string; edited: string } {
+
+    let highlightedOriginal = para.original;
+    let highlightedEdited = para.edited;
+
+    type HighlightItem = {
+      text: string;
+      approved: boolean | null;
+      start: number;
+      end: number;
+      hovered: boolean;
+    };
+
+    const originalItems: HighlightItem[] = [];
+    const editedItems: HighlightItem[] = [];
+
+    // ------------------------------------------------------------
+    // STEP 1: Collect ALL highlight metadata (NO string mutation)
+    // ------------------------------------------------------------
+    Object.keys(para.editorial_feedback).forEach(editorType => {
+      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+
+      feedbacks.forEach((fb: any, idx: number) => {
+        const issueText = fb.issue?.trim();
+        const fixText = fb.fix?.trim();
+
+        const isHovered =
+          !!hovered &&
+          hovered.editorType === editorType &&
+          hovered.fbIndex === idx;
+
+        const approved: boolean | null =
+          fb.approved === true ? true : fb.approved === false ? false : null;
+
+        // ---- ORIGINAL (issue) ----
+        if (issueText) {
+          const regex = new RegExp(this.escapeRegex(issueText), 'g');
+          let match: RegExpExecArray | null;
+
+          while ((match = regex.exec(highlightedOriginal)) !== null) {
+            originalItems.push({
+              text: issueText,
+              approved,
+              start: match.index,
+              end: match.index + issueText.length,
+              hovered: isHovered
+            });
+          }
         }
-    )
-    
-    # Article analysis routes conditionally based on editor type
-    graph.add_conditional_edges(
-        "article_analysis",
-        route_sequential_editor,
-        {
-            "development_editor_tool": "development_editor_tool",
-            "development_content_combined": "development_content_combined",
-            "merge": "merge"
+
+        // ---- EDITED (fix) ----
+        if (fixText) {
+          const regex = new RegExp(this.escapeRegex(fixText), 'g');
+          let match: RegExpExecArray | null;
+
+          while ((match = regex.exec(highlightedEdited)) !== null) {
+            editedItems.push({
+              text: fixText,
+              approved,
+              start: match.index,
+              end: match.index + fixText.length,
+              hovered: isHovered
+            });
+          }
         }
-    )
-    graph.add_edge("development_editor_tool", "article_validation")
+      });
+    });
+
+    // ------------------------------------------------------------
+    // STEP 2: Apply highlights (END → START to keep indexes valid)
+    // ------------------------------------------------------------
+    const applyHighlights = (
+      source: string,
+      items: HighlightItem[],
+      mode: 'original' | 'edited'
+    ): string => {
+
+      items
+        .sort((a, b) => b.start - a.start)
+        .forEach(item => {
+          let cssClass = '';
+
+          if (mode === 'original') {
+            if (item.approved === true) {
+              cssClass = 'strikeout highlight-yellow';
+            } else if (item.approved === false) {
+              cssClass = 'highlight-green';
+            } else {
+              cssClass = 'highlight-yellow';
+            }
+          } else {
+            if (item.approved === true) {
+              cssClass = 'highlight-green';
+            } else if (item.approved === false) {
+              cssClass = 'strikeout highlight-yellow';
+            } else {
+              cssClass = 'highlight-yellow';
+            }
+          }
+
+          if (item.hovered) {
+            cssClass += ' highlight-border';
+          }
+
+          const wrapped = `<span class="${cssClass}">${item.text}</span>`;
+
+          source =
+            source.substring(0, item.start) +
+            wrapped +
+            source.substring(item.end);
+        });
+
+      return source;
+    };
+
+    highlightedOriginal = applyHighlights(
+      highlightedOriginal,
+      originalItems,
+      'original'
+    );
+
+    highlightedEdited = applyHighlights(
+      highlightedEdited,
+      editedItems,
+      'edited'
+    );
+
+    return {
+      original: highlightedOriginal,
+      edited: highlightedEdited
+    };
+  }
+
+
+  // Helper method to escape special regex characters
+  private escapeRegex(str: string): string {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  approveAllFeedback(): void {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    this.paragraphFeedbackData.forEach(para => {
+
+      para.approved = true;
+
+
+      Object.keys(para.editorial_feedback).forEach(editorType => {
+        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+        feedbacks.forEach((fb: any) => {
+          // Set all to approved (don't toggle)
+          fb.approved = true;
+        });
+      });
+      // Clear display properties so highlightAllFeedbacks() handles all highlighting
+      para.displayOriginal = undefined;
+      para.displayEdited = undefined;
+    });
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  rejectAllFeedback(): void {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    this.paragraphFeedbackData.forEach(para => {
+      para.approved = false;
+      Object.keys(para.editorial_feedback).forEach(editorType => {
+        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+        feedbacks.forEach((fb: any) => {
+          // Set all to rejected (don't toggle)
+          fb.approved = false;
+        });
+      });
+      // Clear display properties so highlightAllFeedbacks() handles all highlighting
+      para.displayOriginal = undefined;
+      para.displayEdited = undefined;
+    });
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+    /** Show notification message */
+  private showNotificationMessage(message: string, type: 'success' | 'error' = 'success'): void {
+    this.notificationMessage = message;
+    this.notificationType = type;
+    this.showNotification = true;
     
-    # Combined editors: run -> same resolve node (prompt) -> merge
-    graph.add_edge("development_content_combined", "resolve_combined_editor_conflicts")
-    graph.add_edge("line_copy_combined", "resolve_combined_editor_conflicts")
-    graph.add_edge("resolve_combined_editor_conflicts", "merge")
-    
-    graph.add_conditional_edges(
-        "article_validation",
-        route_after_validation,
-        {
-            "development_editor_retry": "development_editor_retry",
-            "merge": "merge"
-        }
-    )
-    
-    graph.add_edge("development_editor_retry", "article_validation")
-    
-    graph.add_edge("cross_paragraph_analysis", "content_editor_tool")
-    graph.add_edge("content_editor_tool", "content_validation")
-    
-    graph.add_conditional_edges(
-        "content_validation",
-        route_after_content_validation,
-        {
-            "content_editor_retry": "content_editor_retry",
-            "merge": "merge"
-        }
-    )
-    
-    graph.add_edge("content_editor_retry", "content_validation")
-    
-    for node in ["line_editor_tool", "copy_editor_tool", "brand_editor_tool"]:
-        graph.add_edge(node, "merge")
-    
-    return graph.compile(checkpointer=_sequential_checkpointer, interrupt_after=["merge"]) 
+    // Auto-hide after 3 seconds
+    setTimeout(() => {
+      this.showNotification = false;
+    }, 3000);
+  }
+
+  hoveredFeedback: { paraIndex: number, editorType: string, fbIndex: number } | null = null;
+
+  onFeedbackHover(paraIndex: number, editorType: string, fbIndex: number) {
+    this.hoveredFeedback = { paraIndex, editorType, fbIndex };
+  }
+
+  onFeedbackLeave() {
+    this.hoveredFeedback = null;
+  }
+}
