@@ -1,2022 +1,1724 @@
-@import '../../../shared/ui/styles/design-tokens';
-@import '../../../shared/ui/styles/mixins';
-@import '../../../shared/ui/styles/paragraph-edits';
-@import '../../ddc/brand-format-flow/brand-format-flow.component.scss';
+from typing import TypedDict, List, Dict, Optional, Annotated, Iterator, Tuple, Sequence, Any
+import operator
+import json
+import pickle
+import re
+from datetime import datetime, timezone
+from langgraph.graph import StateGraph
+from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.base import (
+    BaseCheckpointSaver,
+    Checkpoint,
+    CheckpointMetadata,
+    CheckpointTuple,
+    ChannelVersions,
+)
+from redis import Redis
+from app.core.config import config
+from app.core.deps import get_llm_client_agent
+import logging
+
+from .schema import (
+    DocumentStructure,
+    EditorResult,
+    ConsolidateResult,
+    ConsolidatedBlockEdit,
+    BlockEditResult,
+    EditorFeedback,
+    DevelopmentEditorValidationResult,
+    ContentEditorValidationResult,
+    DocumentBlock,
+    FeedbackItem,
+    SingleEditorFeedback
+)
+
+from .prompt import (
+    DEVELOPMENT_CONTENT_RESOLVE_CONFLICTS_PROMPT,
+    LINE_COPY_RESOLVE_CONFLICTS_PROMPT,
+)
+from .tools import (
+    development_editor_tool,
+    content_editor_tool,
+    line_editor_tool,
+    copy_editor_tool,
+    brand_editor_tool,
+    run_editor_engine,
+    validate_development_editor,
+    validate_content_editor,
+)
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------
+# LLM (shared)
+# ---------------------------------------------------------------------
+llm = get_llm_client_agent()
+
+# ---------------------------------------------------------------------
+# GRAPH STATE
+# ---------------------------------------------------------------------
+class SupervisorState(TypedDict):
+    messages: List[BaseMessage]
+    document: DocumentStructure
+    selected_editors: List[str]
+    editor_results: Annotated[List[EditorResult], operator.add]
+    final_result: Optional[ConsolidateResult]
+    current_editor_index: Optional[int]  # For sequential execution
+    thread_id: Optional[str]  # For checkpointing
+    article_analysis: Optional[str]  # Article-level analysis text for Development Editor (LLM-based, not schema)
+    cross_paragraph_analysis: Optional[str]  # Cross-paragraph analysis text for Content Editor (LLM-based, not schema)
+    dev_editor_retry_count: Optional[int]  # Retry count for Development Editor (retries until score >= 8, max 2 retries)
+    content_editor_retry_count: Optional[int]  # Retry count for Content Editor (retries until score >= 8, max 2 retries)
+    content_validation_result: Optional[ContentEditorValidationResult]  # Validation result for Content Editor
+    validation_result: Optional[DevelopmentEditorValidationResult]  # Validation result for Development Editor
 
 
-// Introduction text styling
-.panel-title {
-  font-size: 14px;
-  color: var(--text-primary);
-  margin-bottom: 24px;
-  line-height: 1.5;
-}
-// Form label with required indicator
-.form-label {
-  display: block;
-  font-weight: 500;
-  color: var(--text-primary);
-  margin-bottom: 8px;
-  font-size: 11.5px;
-
-  .required {
-    color: #fd5108;
-    margin-left: 4px;
-    font-weight: normal;
-  }
-}
-
-// Upload item container
-.upload-item {
-  margin-bottom: 16px;
-}
-
-// Services checklist styling
-.services-checklist {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.service-card {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  background: #FFF5EB;
-  border-radius: 0px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  min-height: 48px;
-
-  input[type="checkbox"] {
-    position: absolute;
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-
-  &.selected {
-    background: #FFF5EB;
-  }
-
-  &.disabled {
-    cursor: not-allowed;
-    opacity: 0.8;
-  }
-
-  &:hover:not(.disabled) {
-    background: #FFEBD5;
-  }
-}
-
-.service-indicator {
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  border: 2px solid #ccc;
-  background: transparent;
-  position: relative;
-  transition: all 0.2s ease;
-
-  .service-card input[type="checkbox"]:checked ~ & {
-    background: #fd5108;
-    border-color: #fd5108;
-
-    &::after {
-      content: '';
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      width: 6px;
-      height: 6px;
-      background: white;
-      border-radius: 50%;
-    }
-  }
-
-  .service-card.disabled & {
-    background: #fd5108;
-    border-color: #fd5108;
-    opacity: 0.6;
-  }
-}
-
-.service-label {
-  flex: 1;
-  font-size: 11.5px;
-  color: var(--text-primary);
-  line-height: 1.4;
-
-  strong {
-    font-weight: 700;
-  }
-
-  .service-card.selected & {
-    color: var(--text-primary);
-  }
-}
-
-// File size info display
-.file-size-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-  padding: 10px 12px;
-  background: #F0F7FF;
-  border: 1px solid #BFDBFE;
-  border-radius: 0px;
-  font-size: 13px;
-  color: #1F2937;
-  
-  svg {
-    flex-shrink: 0;
-    color: #3B82F6;
-  }
-  
-  span {
-    font-weight: 500;
-    word-break: break-all;
-  }
-}
-
-// Error message display
-.error-message {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  margin-top: 12px;
-  margin-bottom: 12px;
-  padding: 14px 16px;
-  background: #FEF2F2;
-  border-left: 4px solid #DC2626;
-  border-radius: 0px;
-  font-size: 13.5px;
-  line-height: 1.6;
-  color: #991B1B;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  animation: slideIn 0.3s ease-out;
-  position: relative;
-  
-  svg {
-    flex-shrink: 0;
-    margin-top: 2px;
-    stroke: #DC2626;
-  }
-  
-  span {
-    flex: 1;
-    font-weight: 500;
-  }
-}
-
-.error-close-btn {
-  flex-shrink: 0;
-  background: transparent;
-  border: none;
-  padding: 4px;
-  cursor: pointer;
-  border-radius: 0px ;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
-  color: #c90c0c;
-  margin-left: 8px;
-  
-  svg {
-    stroke: #b70f0f;
-    transition: stroke 0.2s ease;
-  }
-  
-  &:hover {
-    background: rgba(220, 38, 38, 0.1);
+# ---------------------------------------------------------------------
+# ARTICLE-LEVEL ANALYSIS AND VALIDATION HELPERS
+# ---------------------------------------------------------------------
+def analyze_article(document: DocumentStructure) -> str:
+    """
+    Analyze the entire article using LLM.
+    Returns formatted text analysis for Development Editor guidance.
+    No schema parsing - direct LLM text response.
+    """
+    logger.info("ANALYZING ARTICLE FOR DEVELOPMENT EDITOR")
     
-    svg {
-      stroke: #ba1f1f;
-    }
-  }
-  
-  &:active {
-    background: rgba(220, 38, 38, 0.2);
-  }
-  
-  &:focus {
-    outline: 2px solid #DC2626;
-    outline-offset: 2px;
-  }
-}
-
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateY(-10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.uploaded-file-indicator {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  background: #F0F7FF;
-  border: 1px solid #BFDBFE;
-  border-radius: 0px;
-  margin-top: 12px;
-
-  .file-icon {
-    flex-shrink: 0;
-    color: #fd5108;
-  }
-
-  .file-details {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-
-    .file-name {
-      font-size: 14px;
-      font-weight: 500;
-      color: #1F2937;
-    }
-
-    .file-size {
-      font-size: 12px;
-      color: #6B7280;
-    }
-  }
-
-  .remove-file-btn {
-    flex-shrink: 0;
-    width: 28px;
-    height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: none;
-    background: transparent;
-    color: #6B7280;
-    cursor: pointer;
-    border-radius: 0px ;
-    transition: all 0.2s;
-
-    &:hover {
-      background: #FEE2E2;
-      color: #DC2626;
-    }
-
-    svg {
-      width: 16px;
-      height: 16px;
-    }
-  }
-}
-
-.editor-checklist {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.editor-toggle-item {
-  position: relative;
-  cursor: pointer;
-  display: block;
-
-  &.disabled {
-    cursor: not-allowed;
-    opacity: 1;
-  }
-
-  input[type="checkbox"] {
-  position: absolute;
-  opacity: 0;
-  width: 0;
-  height: 0;
-
-  &:checked + .editor-toggle-switch {
-    background: #fd5108;
-    color: white;
-
-    .editor-toggle-indicator {
-      background: rgba(255, 255, 255, 0.3);
-      
-      &::before {
-        transform: translateX(24px);
-      }
-    }
-  }
-
-  &:disabled + .editor-toggle-switch {
-    background: #fd5108;  // Exact same color as checked state
-    color: white;
-    cursor: not-allowed;
-    opacity: 1;  // Remove opacity to match exactly
-
-    .editor-toggle-indicator {
-      background: rgb(202, 198, 198);  // Changed to solid white
-      
-      &::before {
-        background: rgb(126, 123, 123);  // Changed to orange
-        transform: translateX(24px);
-      }
-    }
-  }
-}
-}
-
-.editor-toggle-switch {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  background: #F5F5F5;
-  border-radius: 0px;
-  transition: all 0.1s ease;
-  min-height: 48px;
-
-  &.disabled {
-    cursor: not-allowed;
-  }
-}
-
-.editor-toggle-indicator {
-  flex-shrink: 0;
-  width: 48px;
-  height: 24px;
-  background: #E0E0E0;
-  border-radius: 0px;
-  position: relative;
-  transition: all 0.1s ease;
-
-  &::before {
-    content: '';
-    position: absolute;
-    width: 20px;
-    height: 20px;
-    background: var(--bg-primary);
-    border-radius: 50%;
-    top: 2px;
-    left: 2px;
-    transition: transform 0.1s ease;
-  }
-}
-
-.editor-content {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-}
-
-.editor-title {
-  font-weight: 600;
-  font-size: 11.5px;
-}
-
-.editor-description {
-  font-size: 11.5px;
-  opacity: 0.85;
-  font-style: italic;
-}
-
-.result-section {
-  margin-top: 16px;
-}
-
-.result-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 8px;
-}
-
-.bulk-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 24px;
-  margin-bottom: 16px;
-  padding: 8px 12px;
-  background: var(--bg-secondary, #F9FAFB);
-  border-radius: 0px;
-  border: 1px solid var(--border-color, #E5E7EB);
-  width: fit-content;
-  margin-left: auto;
-  
-  // Style buttons inside bulk-actions with borders
-  .ef-approve-btn,
-  .ef-reject-btn {
-    padding: 6px 16px;
-    border-radius: 0px;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    border: 2px solid transparent;
-  }
-  
-  .ef-approve-btn {
-    background: #F0FDF4;
-    color: #059669;
-    border-color: #10b981;
-  }
-  
-  .ef-approve-btn:hover:not(:disabled) {
-    background: #D1FAE5;
-    border-color: #059669;
-  }
-  
-  .ef-reject-btn {
-    background: #FEF2F2;
-    color: #DC2626;
-    border-color: #EF4444;
-  }
-  
-  .ef-reject-btn:hover:not(:disabled) {
-    background: #FEE2E2;
-    border-color: #DC2626;
-  }
-  
-  .ef-approve-btn:disabled,
-  .ef-reject-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-}
-
-.bulk-action-btn {
-  padding: 6px 16px;
-  border-radius: 0px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: 2px solid transparent;
-  display: inline-block;
-  text-align: center;
-  text-decoration: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  appearance: none;
-  user-select: none;
-  margin: 0;
-  font-family: inherit;
-  position: relative;
-  pointer-events: auto;
-  touch-action: manipulation;
-}
-
-.bulk-action-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.bulk-action-btn:active:not(:disabled) {
-  transform: translateY(0);
-}
-
-.bulk-action-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  pointer-events: none;
-}
-
-.bulk-action-btn:focus:not(:disabled) {
-  outline: 2px solid #fd5108;
-  outline-offset: 2px;
-}
-
-.approve-all-btn {
-  background-color: #F0FDF4;
-  color: #059669;
-  border-color: #10b981;
-}
-
-.approve-all-btn:hover:not(:disabled) {
-  background-color: #D1FAE5;
-  border-color: #059669;
-}
-
-.decline-all-btn {
-  background-color: #FEF2F2;
-  color: #DC2626;
-  border-color: #EF4444;
-}
-
-.decline-all-btn:hover:not(:disabled) {
-  background-color: #FEE2E2;
-  border-color: #DC2626;
-}
-
-@media (max-width: 768px) {
-  .bulk-actions {
-    flex-direction: row;
-    width: 100%;
-    justify-content: flex-end;
-  }
-  
-  .bulk-action-btn {
-    flex: 0 0 auto;
-  }
-}
-
-.generation-output {
-  margin-top: 24px;
-}
-
-.assistant-message {
-  background: var(--bg-primary);
-  padding: 16px;
-  border-radius: 0px;
-  border: 1px solid var(--border-color);
-  font-size: 14px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  color: var(--text-primary);
-  max-height: 400px;
-  overflow-y: auto;
-  margin-bottom: 12px;
-}
-
-.revised-content-formatted {
-  white-space: normal;
-  
-  h1 {
-    font-size: 2em;
-    font-weight: 700;
-    margin-top: 1.5em;
-    margin-bottom: 0.75em;
-    color: var(--text-primary);
-    line-height: 1.2;
-    border-bottom: 2px solid var(--border-color);
-    padding-bottom: 0.5em;
-  }
-
-  h2 {
-    font-size: 1.5em;
-    font-weight: 600;
-    margin-top: 1.25em;
-    margin-bottom: 0.625em;
-    color: var(--text-primary);
-    line-height: 1.3;
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 0.375em;
-  }
-
-  h3 {
-    font-size: 1.25em;
-    font-weight: 600;
-    margin-top: 1em;
-    margin-bottom: 0.5em;
-    color: var(--text-primary);
-    line-height: 1.4;
-  }
-
-  h4 {
-    font-size: 1.1em;
-    font-weight: 600;
-    margin-top: 0.875em;
-    margin-bottom: 0.5em;
-    color: var(--text-primary);
-    line-height: 1.4;
-  }
-
-  h5 {
-    font-size: 1em;
-    font-weight: 600;
-    margin-top: 0.75em;
-    margin-bottom: 0.5em;
-    color: var(--text-primary);
-    line-height: 1.5;
-  }
-
-  h6 {
-    font-size: 0.9em;
-    font-weight: 600;
-    margin-top: 0.75em;
-    margin-bottom: 0.5em;
-    color: var(--text-primary);
-    line-height: 1.5;
-  }
-
-  p {
-    margin-top: 0.75em;
-    margin-bottom: 0.75em;
-    line-height: 1.7;
-    color: var(--text-primary);
+    # Calculate article length
+    full_text = " ".join([block.text for block in document.blocks])
+    word_count = len(full_text.split())
     
-    &:first-child {
-      margin-top: 0;
-    }
+    # Count sections (headings)
+    section_count = sum(1 for block in document.blocks if block.type == "heading")
     
-    &:last-child {
-      margin-bottom: 0;
-    }
-  }
+    # Create analysis prompt - request formatted text, not JSON
+    analysis_prompt = f"""Analyze the following article for Development Editor guidance.
 
-  ul, ol {
-    margin-top: 0.75em;
-    margin-bottom: 0.75em;
-    padding-left: 2em;
-    line-height: 1.7;
-    color: var(--text-primary);
-  }
+ARTICLE:
+{full_text}
 
-  ul {
-    list-style-type: disc;
+Provide article-level analysis in the following format:
+
+CENTRAL ARGUMENT:
+[Articulate the article's central argument in ONE clear, assertive sentence. This must appear explicitly in the introduction.]
+
+PRIMARY POINT OF VIEW:
+[Identify the primary point of view: advisor/collaborator, observer, analyst, etc.]
+
+REPETITION PATTERNS:
+[List specific core ideas/concepts that appear in multiple sections. Be specific about what concepts are repeated and where they appear.]
+
+ARTICLE METRICS:
+- Original length: {word_count} words
+- Sections: {section_count}
+- Has redundancy: [yes/no - indicate if the article has redundant or repetitive content]
+
+ACTIONABLE GUIDANCE:
+[Provide specific guidance on what needs to be addressed: which sections need consolidation, which ideas are repeated, what POV should be maintained, etc.]
+
+Provide clear, actionable guidance for the Development Editor to work at the article level, not paragraph-by-paragraph.
+"""
     
-    ul {
-      list-style-type: circle;
-      margin-top: 0.5em;
-      margin-bottom: 0.5em;
-      
-      ul {
-        list-style-type: square;
-      }
-    }
-  }
+    try:
+        response = llm.invoke([HumanMessage(content=analysis_prompt)])
+        analysis_text = response.content if hasattr(response, 'content') else str(response)
+        
+        if not analysis_text or analysis_text.strip() == "":
+            logger.info("Article analysis returned empty response")
+            return ""
+        
+        return analysis_text
+    except Exception as e:
+        logger.error(f"Error analyzing article: {e}")
+        # Return empty string on error - no fallback values
+        return ""
 
-  ol {
-    list-style-type: decimal;
+
+def analyze_cross_paragraph_logic(document: DocumentStructure) -> str:
+    """
+    Analyze cross-paragraph progression using LLM.
+    Returns formatted text analysis for Content Editor guidance.
+    No schema parsing - direct LLM text response.
+    """
+    logger.info("ANALYZING CROSS-PARAGRAPH LOGIC FOR CONTENT EDITOR")
     
-    ol {
-      list-style-type: lower-alpha;
-      margin-top: 0.5em;
-      margin-bottom: 0.5em;
-      
-      ol {
-        list-style-type: lower-roman;
-      }
-    }
-  }
-
-  li {
-    margin-top: 0.375em;
-    margin-bottom: 0.375em;
-    line-height: 1.7;
+    # Extract paragraphs (paragraph and bullet_item blocks)
+    paragraphs = []
+    for i, block in enumerate(document.blocks):
+        if block.type in ["paragraph", "bullet_item"]:
+            paragraphs.append({
+                "id": block.id,
+                "index": i,
+                "text": block.text
+            })
     
-    p {
-      margin-top: 0.5em;
-      margin-bottom: 0.5em;
-    }
-  }
-
-  strong {
-    font-weight: 700;
-    color: var(--text-primary);
-  }
-
-  em {
-    font-style: italic;
-    color: var(--text-primary);
-  }
-
-  pre {
-    background: #F5F5F5;
-    border: 1px solid var(--border-color);
-    border-radius: 0px;
-    padding: 1em;
-    margin-top: 1em;
-    margin-bottom: 1em;
-    overflow-x: auto;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 0.9em;
-    line-height: 1.5;
-  }
-
-  code {
-    background: #F5F5F5;
-    border: 1px solid var(--border-color);
-    border-radius: 0px;
-    padding: 0.2em 0.4em;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 0.9em;
-  }
-
-  pre code {
-    background: transparent;
-    border: none;
-    padding: 0;
-  }
-
-  // Links
-  a {
-    color: #fd5108;
-    text-decoration: underline;
-    transition: color 0.2s ease;
+    if len(paragraphs) < 2:
+        logger.info("Not enough paragraphs for cross-paragraph analysis")
+        return ""
     
-    &:hover {
-      color: #b83d01;
-    }
-  }
-
-  // Horizontal rules
-  hr {
-    border: none;
-    border-top: 2px solid var(--border-color);
-    margin: 2em 0;
-  }
-
-  // Blockquotes (if needed in future)
-  blockquote {
-    border-left: 4px solid #fd5108;
-    padding-left: 1em;
-    margin-left: 0;
-    margin-top: 1em;
-    margin-bottom: 1em;
-    color: #6B7280;
-    font-style: italic;
-  }
-}
-
-.action-buttons {
-  display: flex;
-  gap: 12px;
-  margin-top: 16px;
-  flex-wrap: wrap;
-}
-
-// Satisfaction Prompt Styles
-.satisfaction-prompt {
-  margin-top: 24px;
-  padding: 16px;
-  background-color: #F0F7FF;
-  border-radius: 0px;
-  border: 1px solid #BFDBFE;
-}
-
-.satisfaction-question {
-  font-size: 14px;
-  font-weight: 500;
-  color: #1F2937;
-  margin-bottom: 12px;
-}
-
-.satisfaction-buttons {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.satisfaction-btn {
-  padding: 0.75rem 1.5rem;
-  border-radius: 0px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: 2px solid transparent;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  
-  &:hover:not(:disabled) {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-  }
-  
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-}
-
-.satisfied-btn {
-  background-color: #10b981;
-  color: white;
-  border-color: #10b981;
-  
-  &:hover:not(:disabled) {
-    background-color: #059669;
-    border-color: #059669;
-  }
-}
-
-.improve-btn {
-  background-color: #f59e0b;
-  color: white;
-  border-color: #f59e0b;
-  
-  &:hover:not(:disabled) {
-    background-color: #d97706;
-    border-color: #d97706;
-  }
-}
-
-// Improvement Input Styles
-.improvement-input {
-  margin-top: 24px;
-  padding: 16px;
-  background-color: #F0F7FF;
-  border-radius: 0px;
-  border: 1px solid #BFDBFE;
-}
-
-.improvement-textarea {
-  width: 100%;
-  min-height: 100px;
-  padding: 0.75rem;
-  margin-top: 0.5rem;
-  border: 1px solid #BFDBFE;
-  border-radius: 0px;
-  background-color: white;
-  color: #1F2937;
-  font-size: 0.875rem;
-  font-family: inherit;
-  resize: vertical;
-  transition: all 0.2s ease;
-  
-  &:focus {
-    outline: none;
-    border-color: #fd5108;
-    box-shadow: 0 0 0 3px rgba(208, 74, 2, 0.1);
-  }
-  
-  &::placeholder {
-    color: #6B7280;
-  }
-}
-
-.improvement-actions {
-  display: flex;
-  gap: 12px;
-  margin-top: 12px;
-  justify-content: flex-end;
-}
-
-.improvement-submit-btn,
-.improvement-cancel-btn {
-  padding: 0.625rem 1.25rem;
-  border-radius: 0px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: 2px solid transparent;
-  
-  &:hover:not(:disabled) {
-    transform: translateY(-1px);
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  }
-  
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-}
-
-.improvement-submit-btn {
-  background-color: #fd5108;
-  color: white;
-  border-color: #fd5108;
-  
-  &:hover:not(:disabled) {
-    background-color: #b83d01;
-    border-color: #b83d01;
-  }
-}
-
-.improvement-cancel-btn {
-  background-color: transparent;
-  color: #6B7280;
-  border-color: #E5E7EB;
-  
-  &:hover:not(:disabled) {
-    background-color: #F9FAFB;
-    border-color: #6B7280;
-    color: #1F2937;
-  }
-}
-
-/* Editorial feedback card styles */
-.ef-container,
-.ef-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 8px;
-}
-
-.ef-card {
-  border: 1px solid #e5e7eb;
-  border-radius: 0px;
-  padding: 12px;
-  background: #fff;
-  margin-bottom: 8px;
-}
-
-.ef-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.ef-issue {
-  font-weight: 600;
-  font-size: 13px;
-  color: #111827;
-  flex: 1;
-}
-
-.ef-priority {
-  display: inline-block;
-  padding: 3px 8px;
-  border-radius: 0px;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.priority-critical {
-  background: #fee2e2;
-  color: #991b1b;
-}
-
-.priority-important {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-.priority-enhancement {
-  background: #dbeafe;
-  color: #1e40af;
-}
-
-.ef-body {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.ef-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.ef-label {
-  font-weight: 600;
-  min-width: 40px;
-  color: #374151;
-  background: #dcfce7;
-  border-radius: 0px ;
-  padding: 2px 8px;
-  font-size: 12px;
-}
-
-.ef-value {
-  flex: 1;
-  color: #1f2937;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.ef-label-small {
-  font-weight: 500;
-  min-width: 50px;
-  color: #6b7280;
-  font-size: 11px;
-}
-
-.ef-value-small {
-  flex: 1;
-  color: #6b7280;
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.ef-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.ef-approve-btn, .ef-reject-btn {
-  padding: 4px 12px;
-  border-radius: 0px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  border: none;
-  transition: all 0.2s;
-}
-
-.ef-approve-btn {
-  background: #d1fae5;
-  color: #059669;
-}
-
-.ef-approve-btn:hover:not(:disabled) {
-  background: #10b981;
-  color: #fff;
-}
-
-.ef-approve-btn.active {
-  background: #10b981;
-  color: #fff;
-  font-weight: 600;
-}
-
-.ef-approve-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.ef-reject-btn {
-  background: #fee2e2;
-  color: #dc2626;
-}
-
-.ef-reject-btn:hover:not(:disabled) {
-  background: #dc2626;
-  color: #fff;
-}
-
-.ef-reject-btn.active {
-  background: #dc2626;
-  color: #fff;
-  font-weight: 600;
-}
-
-.ef-reject-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.ef-status {
-  margin-top: 4px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.ef-approved {
-  color: #059669;
-}
-
-.ef-rejected {
-  color: #dc2626;
-}
-
-/* Inline message when there is no paragraph-level feedback */
-.paragraph-no-feedback {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.2rem;
-  margin-top: 5rem;
-  border-radius: 0.5rem;
-  border: 1px dashed rgba(0, 0, 0, 0.12);
-  background-color: #fd5108;
-  text-align: center;
-  font-size: 0.95rem;
-  color: rgba(0, 0, 0, 0.7);
-}
-
-.paragraph-no-feedback p {
-  margin: 0;
-  font-size: 1.12rem;
-}
-
-.paragraph-feedback-section {
-  margin-bottom: 32px;
-  padding: 16px;
-  background: #fafafa;
-  border-radius: 0px;
-  border: 1px solid #e5e7eb;
-}
-
-.paragraph-row {
-  display: flex;
-  gap: 24px;
-  margin-bottom: 16px;
-}
-
-.paragraph-col {
-  flex: 1;
-}
-
-.paragraph-col h5 {
-  margin: 0 0 8px 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: #374151;
-}
-
-.paragraph-text-box {
-  height: auto;
-  overflow: hidden;
-  background: #fff;
-  border-radius: 0px;
-  border: 1px solid #d1d5db;
-  padding: 12px;
-  min-height: 60px;
-  font-size: 14px;
-  color: #1f2937;
-  line-height: 1.6;
-  word-break: break-word;
-}
-
-:host ::ng-deep .highlight-border {
-  border: 2px solid #fa1515;
-  border-radius: 0px ;
-  box-shadow: 0 0 2px #ffdd00;
-  padding: 1px 3px;
-}
-
-:host ::ng-deep .highlight-yellow {
-  background: #fef08a;
-  color: #92400e;
-  font-weight: 700;
-  padding: 2px 4px;
-  border-radius: 0px;
-}
-
-:host ::ng-deep .highlight-green {
-  background: #86efac;
-  color: #166534;
-  font-weight: 700;
-  padding: 2px 4px;
-  border-radius: 0px;
-}
-
-:host ::ng-deep .strikeout {
-  text-decoration: line-through;
-}
-
-// Strikeout with yellow background (for approved issues in original)
-:host ::ng-deep .strikeout.highlight-yellow {
-  background: #fef08a;
-  color: #92400e;
-  text-decoration: line-through;
-  font-weight: 700;
-  padding: 2px 4px;
-  border-radius: 0px;
-}
-
-:host ::ng-deep .highlight-fix {
-  color: #0c9500;
-  font-weight: 700;
-  padding: 2px 4px;
-  border-radius: 0px;
-}
-
-// .editorial-feedback-list {
-//   margin-bottom: 12px;
-// }
-
-.editorial-feedback-list {
-  max-height: 300px;   /* adjust height as you prefer */
-  overflow-y: auto;
-  padding-right: 8px;  /* optional: avoids content flush against scrollbar */
-}
-
-.editor-type-label {
-  font-weight: 600;
-  margin: 12px 0 6px 0;
-  color: #0369a1;
-  font-size: 13px;
-}
-
-.flow-container {
-  width: 110%;  // Increase from default (usually 80%)
-  max-width: 1200px;  // Adjust max-width as needed
-  max-height: 98vh;
-  background: white;
-  border-radius: 0px;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  overflow: hidden;
-}
-
-// .approved-section {
-//   background: #e6fbe6;
-//   border: 1px solid #34d399;
-// }
-
-// .rejected-section {
-//   background: #fee2e2;
-//   border: 1px solid #f87171;
-//   text-decoration: line-through;
-//   color: #dc2626;
-  
-//   // Apply strikethrough and red color to all nested elements
-//   * {
-//     text-decoration: line-through;
-//     color: #dc2626;
-//   }
-// }
-
-// Final Output Section
-.final-output-actions {
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 2px solid var(--border-color, #E5E7EB);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-}
-
-.final-output-btn {
-  padding: 12px 24px;
-  background-color: #fd5108;
-  color: white;
-  border: none;
-  border-radius: 0px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  
-  &:hover:not(:disabled) {
-    background-color: #b83d01;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(208, 74, 2, 0.3);
-  }
-  
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-}
-
-.final-output-hint {
-  margin-top: 12px;
-  font-size: 13px;
-  color: #6B7280;
-  font-style: italic;
-  text-align: center;
-}
-
-.spinner {
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-radius: 50%;
-  border-top-color: white;
-  animation: spin 0.6s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.final-output-section {
-  margin-top: 32px;
-  padding: 24px;
-  background: #F9FAFB;
-  border-radius: 0px;
-  border: 1px solid #E5E7EB;
-}
-
-.final-output-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: #1F2937;
-  margin-bottom: 16px;
-}
-
-.final-output-content {
-  background: white;
-  padding: 20px;
-  border-radius: 0px;
-  border: 1px solid #E5E7EB;
-  margin-bottom: 20px;
-  max-height: 600px;
-  overflow-y: auto;
-
-  // Style for title blocks (h1 with bold)
-  h1 {
-    font-weight: 700 !important; // Bold title
-    display: block;
-    font-size: 2em;
-    margin-top: 1em;
-    margin-bottom: 0.5em;
-    color: var(--text-primary);
-    line-height: 1.2;
-    border-bottom: 2px solid var(--border-color);
-    padding-bottom: 0.5em;
-    text-align: left;
-  }
-
-  // Style for headings (h2-h6, bold but less than title)
-  h2, h3, h4, h5, h6 {
-    font-weight: 600 !important; // Bold but less than title
-    display: block;
-    margin-top: 0.65em;
-    margin-bottom: 0.35em;
-    color: var(--text-primary);
-    text-align: left;
-  }
-
-  h2 {
-    font-size: 1.5em;
-    line-height: 1.3;
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 0.375em;
-  }
-
-  h3 {
-    font-size: 1.25em;
-    line-height: 1.4;
-  }
-
-  h4 {
-    font-size: 1.1em;
-    line-height: 1.4;
-  }
-
-  h5 {
-    font-size: 1em;
-    line-height: 1.5;
-  }
-
-  h6 {
-    font-size: 0.9em;
-    line-height: 1.5;
-  }
-
-  // Style for paragraphs (proper alignment)
-  p {
-    display: block;
-    text-align: left;
-    margin: 0.5em 0;
-    line-height: 1.7;
-    color: var(--text-primary);
+    # Build paragraph sequence text
+    paragraph_sequence = "\n\n".join([
+        f"PARAGRAPH {i+1} (ID: {p['id']}):\n{p['text']}"
+        for i, p in enumerate(paragraphs)
+    ])
     
-    &:first-child {
-      margin-top: 0;
+    # Create analysis prompt
+    analysis_prompt = f"""Analyze the following paragraph sequence for Content Editor cross-paragraph enforcement guidance.
+
+PARAGRAPH SEQUENCE:
+{paragraph_sequence}
+
+Provide cross-paragraph analysis in the following format:
+
+Cross-Paragraph Logic Issues:
+[List specific instances where paragraphs soft-reset, re-introduce context, or fail to build on preceding paragraphs. Identify which paragraphs have these issues and what context is being unnecessarily reintroduced.]
+
+Redundancy Patterns (Non-Structural):
+[Identify paragraphs that materially repeat ideas already established in earlier paragraphs. Specify which paragraphs repeat which concepts, and whether later mentions increase specificity, consequence, or decision relevance, or merely restate.]
+
+Executive Signal Hierarchy:
+[Map the progression of executive signal strength across paragraphs. Identify which paragraphs should convey clearer implications, priorities, or decision relevance than earlier ones. Note if later paragraphs fail to escalate appropriately or if the final paragraph lacks sufficient executive signal.]
+
+Actionable Guidance:
+[Provide specific guidance for Content Editor: which paragraphs need edits to eliminate soft resets, which redundant language should be reduced, and how to strengthen executive signal hierarchy through sentence-level edits only.]
+
+Provide clear, actionable guidance for the Content Editor to work across paragraphs using sentence-level edits only.
+"""
+    
+    try:
+        response = llm.invoke([HumanMessage(content=analysis_prompt)])
+        analysis_text = response.content if hasattr(response, 'content') else str(response)
+        
+        if not analysis_text or analysis_text.strip() == "":
+            logger.info("Cross-paragraph analysis returned empty response")
+            return ""
+        
+        return analysis_text
+    except Exception as e:
+        logger.error(f"Error analyzing cross-paragraph logic: {e}")
+        # Return empty string on error - no fallback values
+        return ""
+
+
+
+
+def validate_cross_paragraph_compliance(
+    original_analysis_text: str,
+    edited_result: EditorResult,
+    original_document: DocumentStructure
+) -> List[str]:
+    """
+    Use LLM to validate that Content Editor output meets cross-paragraph enforcement requirements.
+    Returns list of validation warnings (empty if compliant).
+    """
+    logger.info("VALIDATING CROSS-PARAGRAPH COMPLIANCE USING LLM")
+    
+    if not original_analysis_text or not original_analysis_text.strip():
+        logger.info("No original cross-paragraph analysis text available for validation")
+        return []
+    
+    # Extract paragraphs from original and edited documents
+    original_paragraphs = []
+    for block in original_document.blocks:
+        if block.type in ["paragraph", "bullet_item"]:
+            original_paragraphs.append(block.text)
+    
+    edited_paragraphs = []
+    for block in edited_result.blocks:
+        if block.type in ["paragraph", "bullet_item"]:
+            edited_paragraphs.append(block.suggested_text or block.original_text)
+    
+    original_text = "\n\n".join(original_paragraphs)
+    edited_text = "\n\n".join(edited_paragraphs)
+    
+    # Create validation prompt for LLM - uses exact CROSS-PARAGRAPH ENFORCEMENT requirements
+    validation_prompt = f"""You are validating that the Content Editor output meets the CROSS-PARAGRAPH ENFORCEMENT requirements.
+
+ORIGINAL CROSS-PARAGRAPH ANALYSIS (provided to Content Editor):
+{original_analysis_text}
+
+ORIGINAL PARAGRAPH SEQUENCE:
+{original_text}
+
+EDITED PARAGRAPH SEQUENCE (Content Editor output):
+{edited_text}
+
+============================================================
+CROSS-PARAGRAPH ENFORCEMENT REQUIREMENTS — VALIDATE AGAINST THESE
+============================================================
+
+The Content Editor MUST have:
+
+1. Cross-Paragraph Logic
+   Each paragraph MUST assume and build on the reader's understanding from the preceding paragraph. The Content Editor MUST have eliminated soft resets, re-introductions, or restatement of previously established context.
+
+2. Redundancy Awareness (Non-Structural)
+   If a paragraph materially repeats an idea already established elsewhere in the article, the Content Editor MUST have reduced reinforcement language and avoided adding emphasis or framing that increases redundancy. The Content Editor MUST NOT have removed or merged ideas across blocks.
+
+3. Executive Signal Hierarchy
+   The Content Editor MUST have calibrated emphasis so that later sections convey clearer implications, priorities, or decision relevance than earlier sections, without introducing new conclusions or shifting the author's intent.
+
+============================================================
+VALIDATION TASK
+============================================================
+
+Analyze the EDITED PARAGRAPH SEQUENCE against the ORIGINAL CROSS-PARAGRAPH ANALYSIS and the requirements above.
+
+For EACH requirement (1-3), check if it was met:
+- If met: No warning needed
+- If NOT met: Provide a specific warning explaining what requirement failed and what needs to be fixed
+
+Return your response as a JSON array of warnings. If all requirements are met, return an empty array [].
+Format: ["Warning 1: [specific requirement and issue]", "Warning 2: [specific requirement and issue]", ...]
+
+Be specific and actionable in your warnings. Reference the actual paragraph content where possible.
+"""
+    
+    try:
+        response = llm.invoke([HumanMessage(content=validation_prompt)])
+        content = response.content if hasattr(response, 'content') else str(response)
+        
+        # Parse warnings from LLM response
+        warnings = []
+        
+        if isinstance(content, str):
+            # Try to extract JSON array from response
+            json_match = re.search(r'\[.*\]', content, re.DOTALL)
+            if json_match:
+                try:
+                    warnings = json.loads(json_match.group(0))
+                    if not isinstance(warnings, list):
+                        warnings = []
+                except json.JSONDecodeError:
+                    # If JSON parsing fails, try to extract warnings from text
+                    # Look for list-like patterns
+                    lines = content.split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if line.startswith('-') or line.startswith('•') or (line.startswith('"') and line.endswith('"')):
+                            # Extract warning text
+                            warning = line.lstrip('-•"').rstrip('"').strip()
+                            if warning:
+                                warnings.append(warning)
+            else:
+                # If no JSON found, check if response indicates compliance
+                content_lower = content.lower()
+                if "compliant" in content_lower or "no issues" in content_lower or "all requirements met" in content_lower:
+                    warnings = []
+                elif "warning" in content_lower or "issue" in content_lower or "failed" in content_lower:
+                    # Extract warnings from text format
+                    lines = content.split('\n')
+                    for line in lines:
+                        if any(keyword in line.lower() for keyword in ['warning', 'issue', 'failed', 'not met', 'missing']):
+                            warning = line.strip().lstrip('-•1234567890.').strip()
+                            if warning and len(warning) > 10:  # Filter out very short lines
+                                warnings.append(warning)
+        
+        if warnings:
+            logger.info(f"Cross-paragraph validation found {len(warnings)} issues")
+        else:
+            logger.info("Cross-paragraph validation: All requirements met")
+        
+        return warnings if isinstance(warnings, list) else []
+        
+    except Exception as e:
+        logger.error(f"Error validating cross-paragraph compliance: {e}")
+        # Return empty list on error - don't block workflow
+        return []
+
+
+# ---------------------------------------------------------------------
+# EDITOR NODES (EXECUTE EXACTLY ONCE)
+# ---------------------------------------------------------------------
+def development_editor_node(state: SupervisorState) -> SupervisorState:
+    logger.info("RUNNING: development_editor_tool")
+    
+    article_analysis = state.get("article_analysis")
+    result = run_editor_engine("development", state["document"].blocks, article_analysis)
+
+    return {
+        "editor_results": state["editor_results"] + [result]
+    }
+
+
+# ---------------------------------------------------------------------
+# DEVELOPMENT EDITOR RETRY NODE
+# ---------------------------------------------------------------------
+def development_editor_retry_node(state: SupervisorState) -> SupervisorState:
+    """Retry Development Editor using validation score and feedback to improve."""
+    retry_count = state.get("dev_editor_retry_count", 0) + 1
+    logger.info(f"RUNNING: development_editor_retry_node (attempt {retry_count})")
+    
+    article_analysis = state.get("article_analysis")
+    validation_result = state.get("validation_result")
+    validation_feedback = None
+    validation_score = None
+    
+    if validation_result:
+        if hasattr(validation_result, 'feedback_remarks'):
+            validation_feedback = validation_result.feedback_remarks
+        if hasattr(validation_result, 'score'):
+            validation_score = validation_result.score
+            logger.info(f"Using previous validation score: {validation_score}/10 to improve")
+        
+        if validation_feedback:
+            failed_criteria = [fb for fb in validation_feedback if not fb.passed]
+            passed_criteria = [fb for fb in validation_feedback if fb.passed]
+            logger.info(f"Parsed validation feedback: {len(failed_criteria)} failed, {len(passed_criteria)} passed")
+            
+            if failed_criteria:
+                logger.info("Failed criteria to address:")
+                for i, fb in enumerate(failed_criteria[:3], 1):  # Show first 3
+                    logger.info(f"  {i}. {fb.feedback[:80]}...")
+        else:
+            logger.info("No validation feedback found in previous result")
+    else:
+        logger.info("No previous validation result found in state")
+    
+    # Always use ORIGINAL document blocks for retry (not previously edited blocks)
+    # This ensures each retry starts from the same baseline
+    result = run_editor_engine(
+        "development", 
+        state["document"].blocks,  # Original blocks
+        article_analysis,
+        validation_feedback=validation_feedback,
+        validation_score=validation_score
+    )
+
+    return {
+        "editor_results": state["editor_results"] + [result],
+        "dev_editor_retry_count": retry_count
+    }
+
+
+def content_editor_node(state: SupervisorState) -> SupervisorState:
+    logger.info("RUNNING: content_editor_tool")
+    
+    # Get cross-paragraph analysis if available
+    cross_paragraph_analysis = state.get("cross_paragraph_analysis")
+    
+    # Get validation feedback if retrying
+    validation_result = state.get("content_validation_result")
+    validation_feedback = None
+    validation_score = None
+    
+    if validation_result:
+        if hasattr(validation_result, 'feedback_remarks'):
+            validation_feedback = validation_result.feedback_remarks
+        if hasattr(validation_result, 'score'):
+            validation_score = validation_result.score
+            logger.info(f"Using previous validation score: {validation_score}/10 to improve")
+        
+        if validation_feedback:
+            failed_count = sum(1 for fb in validation_feedback if not fb.passed)
+            logger.info(f"Addressing {failed_count} failed validation criteria")
+    
+    # Run editor engine with cross-paragraph analysis and validation feedback
+    result = run_editor_engine(
+        "content", 
+        state["document"].blocks, 
+        cross_paragraph_analysis_text=cross_paragraph_analysis,
+        validation_feedback=validation_feedback,
+        validation_score=validation_score
+    )
+
+    return {
+        "editor_results": state["editor_results"] + [result]
+    }
+
+
+# ---------------------------------------------------------------------
+def content_editor_retry_node(state: SupervisorState) -> SupervisorState:
+    """Retry Content Editor using validation score and feedback to improve."""
+    retry_count = state.get("content_editor_retry_count", 0) + 1
+    logger.info(f"RUNNING: content_editor_retry_node (attempt {retry_count})")
+    
+    cross_paragraph_analysis = state.get("cross_paragraph_analysis")
+    validation_result = state.get("content_validation_result")
+    validation_feedback = None
+    validation_score = None
+    
+    if validation_result:
+        if hasattr(validation_result, 'feedback_remarks'):
+            validation_feedback = validation_result.feedback_remarks
+        if hasattr(validation_result, 'score'):
+            validation_score = validation_result.score
+            logger.info(f"Using previous validation score: {validation_score}/10 to improve")
+        
+        if validation_feedback:
+            failed_criteria = [fb for fb in validation_feedback if not fb.passed]
+            passed_criteria = [fb for fb in validation_feedback if fb.passed]
+            logger.info(f"Parsed validation feedback: {len(failed_criteria)} failed, {len(passed_criteria)} passed")
+            
+            if failed_criteria:
+                logger.info("Failed criteria to address:")
+                for i, fb in enumerate(failed_criteria[:3], 1):  # Show first 3
+                    logger.info(f"  {i}. {fb.feedback[:80]}...")
+        else:
+            logger.info("No validation feedback found in previous result")
+    else:
+        logger.info("No previous validation result found in state")
+    
+    # Always use ORIGINAL document blocks for retry (not previously edited blocks)
+    result = run_editor_engine(
+        "content", 
+        state["document"].blocks,  # Original blocks
+        cross_paragraph_analysis_text=cross_paragraph_analysis,
+        validation_feedback=validation_feedback,
+        validation_score=validation_score
+    )
+
+    return {
+        "editor_results": state["editor_results"] + [result],
+        "content_editor_retry_count": retry_count
+    }
+
+
+def line_editor_node(state: SupervisorState) -> SupervisorState:
+    logger.info("RUNNING: line_editor_tool")
+    raw_blocks = line_editor_tool.invoke(
+        {"blocks": state["document"].blocks}
+    )
+
+    result = normalize_editor_output("line", raw_blocks)
+
+    return {
+        "editor_results": state["editor_results"] + [result]
+    }
+
+
+def copy_editor_node(state: SupervisorState) -> SupervisorState:
+    logger.info("RUNNING: copy_editor_tool")
+    raw_blocks = copy_editor_tool.invoke(
+        {"blocks": state["document"].blocks}
+    )
+
+    result = normalize_editor_output("copy", raw_blocks)
+
+    return {
+        "editor_results": state["editor_results"] + [result]
+    }
+
+
+def brand_editor_node(state: SupervisorState) -> SupervisorState:
+    logger.info("RUNNING: brand_editor_tool")
+    raw_blocks = brand_editor_tool.invoke(
+        {"blocks": state["document"].blocks}
+    )
+
+    result = normalize_editor_output("brand-alignment", raw_blocks)
+
+    return {
+        "editor_results": state["editor_results"] + [result]
+    }
+
+
+# ---------------------------------------------------------------------
+# MERGE TWO EDITOR RESULTS INTO ONE
+# ---------------------------------------------------------------------
+def merge_two_editor_results(
+    result1: EditorResult,
+    result2: EditorResult,
+    combined_editor_type: str
+) -> EditorResult:
+    """Merge two EditorResult objects into one, combining feedback and suggestions."""
+    logger.info(f"MERGING {result1.editor_type} + {result2.editor_type} into {combined_editor_type}")
+    
+    result1_blocks = {blk.id: blk for blk in result1.blocks}
+    result2_blocks = {blk.id: blk for blk in result2.blocks}
+    all_block_ids = set(result1_blocks.keys()) | set(result2_blocks.keys())
+    
+    merged_blocks = []
+    for block_id in sorted(all_block_ids, key=lambda x: int(x[1:]) if x[1:].isdigit() else 999):
+        blk1 = result1_blocks.get(block_id)
+        blk2 = result2_blocks.get(block_id)
+        
+        original_text = blk1.original_text if blk1 else (blk2.original_text if blk2 else "")
+        
+        # Priority rules: line+copy -> Line Editor (result1) takes priority
+        #                  development+content -> Content Editor (result2) takes priority
+        if combined_editor_type == "line+copy":
+            # Line Editor takes priority for line+copy
+            suggested_text = (blk1.suggested_text if blk1 and blk1.suggested_text 
+                             else blk2.suggested_text if blk2 and blk2.suggested_text 
+                             else original_text)
+        elif combined_editor_type == "development+content":
+            # Content Editor takes priority for development+content
+            suggested_text = (blk2.suggested_text if blk2 and blk2.suggested_text 
+                             else blk1.suggested_text if blk1 and blk1.suggested_text 
+                             else original_text)
+        else:
+            # Default: second editor takes priority
+            suggested_text = (blk2.suggested_text if blk2 and blk2.suggested_text 
+                             else blk1.suggested_text if blk1 and blk1.suggested_text 
+                             else original_text)
+        
+        combined_feedback = []
+        if blk1 and blk1.feedback_edit:
+            combined_feedback.extend(blk1.feedback_edit)
+        if blk2 and blk2.feedback_edit:
+            combined_feedback.extend(blk2.feedback_edit)
+        
+        merged_blocks.append(
+            BlockEditResult(
+                id=block_id,
+                type=blk1.type if blk1 else (blk2.type if blk2 else "paragraph"),
+                level=blk1.level if blk1 else (blk2.level if blk2 else 0),
+                original_text=original_text,
+                suggested_text=suggested_text,
+                has_changes=suggested_text != original_text,
+                feedback_edit=combined_feedback
+            )
+        )
+    
+    return EditorResult(
+        editor_type=combined_editor_type,
+        blocks=merged_blocks,
+        warnings=list(result1.warnings) + list(result2.warnings),
+        raw_output=None
+    )
+
+
+# ---------------------------------------------------------------------
+# COMBINED EDITOR NODES (reuse existing nodes)
+# ---------------------------------------------------------------------
+def development_content_combined_node(state: SupervisorState) -> SupervisorState:
+    """Run Development + Content editors together by reusing existing nodes."""
+    logger.info("RUNNING: development_content_combined_node")
+    
+    original_results = state.get("editor_results", [])
+    original_document = state["document"]  # Preserve original for validation
+    
+    # Run article analysis if needed
+    if not state.get("article_analysis"):
+        state = {**state, **article_analysis_node(state)}
+    
+    # Run Development Editor
+    dev_state = development_editor_node(state)
+    dev_result = dev_state["editor_results"][-1]
+    
+    # Validate Development Editor result using article_validation_node
+    # Ensure original document is used for validation
+    # IMPORTANT: dev_state must come last to preserve editor_results with development editor result
+    validation_input_state = {
+        **state,
+        **dev_state,  # dev_state comes last to preserve editor_results (includes development editor result)
+        "document": original_document  # Explicitly use original document
+    }
+    # Debug: Log editor_results to verify development editor result is present
+    editor_results_count = len(validation_input_state.get("editor_results", []))
+    validation_state = article_validation_node(validation_input_state)
+    dev_state = {**dev_state, **validation_state}
+    
+    # Update document with Development's suggestions for Content Editor
+    updated_doc = DocumentStructure(blocks=[
+        DocumentBlock(id=b.id, type=b.type, level=b.level, 
+                     text=b.suggested_text or b.original_text)
+        for b in dev_result.blocks
+    ])
+    
+    # Run cross-paragraph analysis if needed (using validated dev_result document)
+    if not state.get("cross_paragraph_analysis"):
+        analysis_state = cross_paragraph_analysis_node({"document": updated_doc, **state})
+        state = {**state, **analysis_state}
+    
+    # Run Content Editor on updated document (with validation result and cross-paragraph analysis in state)
+    content_state = content_editor_node({
+        **dev_state,
+        **state,
+        "document": updated_doc  # Use updated document for Content Editor
+    })
+    content_result = content_state["editor_results"][-1]
+    
+    # Validate Content Editor result using content_validation_node
+    # Ensure original document is used for validation (not updated_doc)
+    # IMPORTANT: content_state must come last to preserve editor_results with content editor result
+    content_validation_input_state = {
+        **state,
+        **content_state,  # content_state comes last to preserve editor_results (includes content editor result)
+        "document": original_document  # Explicitly use original document for validation
+    }
+    # Debug: Log editor_results to verify content editor result is present
+    editor_results_count = len(content_validation_input_state.get("editor_results", []))
+    logger.info(f"Validating content editor: {editor_results_count} editor results in state")
+    content_validation_state = content_validation_node(content_validation_input_state)
+    content_state = {**content_state, **content_validation_state}
+    
+    # Merge results (after both validations)
+    merged_result = merge_two_editor_results(dev_result, content_result, "development+content")
+    
+    return {
+        "editor_results": original_results + [merged_result],
+        "article_analysis": state.get("article_analysis"),
+        "cross_paragraph_analysis": state.get("cross_paragraph_analysis")
+    }
+
+
+def line_copy_combined_node(state: SupervisorState) -> SupervisorState:
+    """Run Line + Copy editors together by reusing existing nodes."""
+    logger.info("RUNNING: line_copy_combined_node")
+    
+    original_results = state.get("editor_results", [])
+    
+    # Run Line Editor
+    line_state = line_editor_node(state)
+    line_result = line_state["editor_results"][-1]
+    
+    # Update document with Line's suggestions for Copy Editor
+    updated_doc = DocumentStructure(blocks=[
+        DocumentBlock(id=b.id, type=b.type, level=b.level,
+                     text=b.suggested_text or b.original_text)
+        for b in line_result.blocks
+    ])
+    
+    # Run Copy Editor on updated document
+    copy_state = copy_editor_node({**line_state, "document": updated_doc})
+    copy_result = copy_state["editor_results"][-1]
+    
+    # Merge results
+    merged_result = merge_two_editor_results(line_result, copy_result, "line+copy")
+    
+    return {
+        "editor_results": original_results + [merged_result]
+    }
+
+
+# ---------------------------------------------------------------------
+# RESOLVE COMBINED EDITOR CONFLICTS (consolidate node via prompt)
+# Used for development+content (content priority) and line+copy (line priority).
+# ---------------------------------------------------------------------
+def resolve_combined_editor_conflicts_node(state: SupervisorState) -> SupervisorState:
+    """
+    After merging two editors, call LLM with the appropriate prompt to resolve conflicts.
+    development+content: Content editor takes priority on same span.
+    line+copy: Line editor takes priority on same span.
+    Replaces the last editor_result with the resolved result.
+    """
+    editor_results = state.get("editor_results", [])
+    if not editor_results:
+        return state
+    last = editor_results[-1]
+    combined_type = last.editor_type
+    if combined_type == "development+content":
+        resolve_prompt = DEVELOPMENT_CONTENT_RESOLVE_CONFLICTS_PROMPT
+    elif combined_type == "line+copy":
+        resolve_prompt = LINE_COPY_RESOLVE_CONFLICTS_PROMPT
+    else:
+        return state
+
+    logger.info(f"RUNNING: resolve_combined_editor_conflicts_node ({combined_type})")
+    merged_result = last
+    blocks_by_id = {b.id: b for b in merged_result.blocks}
+
+    input_blocks = []
+    for b in merged_result.blocks:
+        feedback_edit = [
+            {"editor": sef.editor, "items": [item.model_dump() for item in sef.items]}
+            for sef in (b.feedback_edit or [])
+        ]
+        input_blocks.append({
+            "id": b.id,
+            "original_text": b.original_text,
+            "suggested_text": b.suggested_text or b.original_text,
+            "feedback_edit": feedback_edit,
+        })
+    input_payload = {"blocks": input_blocks}
+    prompt_text = f"""{resolve_prompt}
+
+INPUT (merged feedback; resolve and return resolved feedback_edit per block):
+
+{json.dumps(input_payload, indent=2)}
+"""
+
+    try:
+        response = llm.invoke([HumanMessage(content=prompt_text)])
+        raw = response.content if hasattr(response, "content") else str(response)
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```\s*$", "", raw)
+        data = json.loads(raw)
+        resolved_blocks_data = data.get("blocks", [])
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.warning(f"Resolve conflicts LLM output parse failed, keeping merged result: {e}")
+        return state
+
+    resolved_blocks = []
+    for blk_data in resolved_blocks_data:
+        block_id = blk_data.get("id")
+        orig_block = blocks_by_id.get(block_id)
+        if not orig_block:
+            continue
+        suggested_text = blk_data.get("suggested_text") or orig_block.original_text
+        feedback_edit = []
+        for sef_data in blk_data.get("feedback_edit", []):
+            editor_name = sef_data.get("editor")
+            items_data = sef_data.get("items", [])
+            try:
+                items = [FeedbackItem(**item) for item in items_data]
+                feedback_edit.append(SingleEditorFeedback(editor=editor_name, items=items))
+            except (TypeError, ValueError):
+                continue
+        resolved_blocks.append(
+            BlockEditResult(
+                id=orig_block.id,
+                type=orig_block.type,
+                level=orig_block.level,
+                original_text=orig_block.original_text,
+                suggested_text=suggested_text,
+                has_changes=suggested_text != orig_block.original_text,
+                feedback_edit=feedback_edit,
+            )
+        )
+
+    resolved_result = EditorResult(
+        editor_type=combined_type,
+        blocks=resolved_blocks,
+        warnings=list(merged_result.warnings),
+        raw_output=None,
+    )
+    new_editor_results = list(editor_results[:-1]) + [resolved_result]
+    return {"editor_results": new_editor_results}
+
+
+# ---------------------------------------------------------------------
+# ARTICLE-LEVEL ANALYSIS NODE (runs before Development Editor)
+# ---------------------------------------------------------------------
+def article_analysis_node(state: SupervisorState) -> SupervisorState:
+    """Analyze article before Development Editor runs."""
+    logger.info("RUNNING: article_analysis_node")
+    
+    analysis = analyze_article(state["document"])
+    
+    return {
+        "article_analysis": analysis
+    }
+
+
+# ---------------------------------------------------------------------
+# ARTICLE-LEVEL VALIDATION NODE (runs after Development Editor)
+# ---------------------------------------------------------------------
+def article_validation_node(state: SupervisorState) -> SupervisorState:
+    """Validate Development Editor output and return score."""
+    retry_count = state.get("dev_editor_retry_count", 0)
+    attempt_label = "initial" if retry_count == 0 else f"retry {retry_count}"
+    logger.info(f"RUNNING: article_validation_node ({attempt_label})")
+    
+    article_analysis_text = state.get("article_analysis") or ""
+    editor_results = state.get("editor_results", [])
+    
+    dev_editor_result = None
+    for result in reversed(editor_results):
+        if result.editor_type == "development":
+            dev_editor_result = result
+            break
+    
+    if not dev_editor_result:
+        logger.error("No Development Editor result found for validation")
+        return {
+            "validation_result": DevelopmentEditorValidationResult(
+                score=0,
+                feedback_remarks=[]
+            )
+        }
+    
+    validation_result = validate_development_editor(
+        article_analysis_text,
+        dev_editor_result,
+        state["document"]
+    )
+    
+    score = validation_result.score
+    previous_score = None
+    previous_validation = state.get("validation_result")
+    if previous_validation and hasattr(previous_validation, 'score'):
+        previous_score = previous_validation.score
+    
+    if previous_score is not None:
+        score_change = score - previous_score
+        change_indicator = "↑" if score_change > 0 else "↓" if score_change < 0 else "→"
+        logger.info(f"Development Editor validation ({attempt_label}): score={score}/10 {change_indicator} (previous: {previous_score}/10, change: {score_change:+d})")
+    else:
+        logger.info(f"Development Editor validation ({attempt_label}): score={score}/10")
+    
+    return {
+        "validation_result": validation_result
+    }
+
+
+# ---------------------------------------------------------------------
+# CROSS-PARAGRAPH ANALYSIS NODE (runs before Content Editor)
+# ---------------------------------------------------------------------
+def cross_paragraph_analysis_node(state: SupervisorState) -> SupervisorState:
+    """
+    Analyze cross-paragraph logic before Content Editor runs.
+    Stores analysis in state for use by Content Editor.
+    """
+    logger.info("RUNNING: cross_paragraph_analysis_node")
+    
+    analysis = analyze_cross_paragraph_logic(state["document"])
+    
+    return {
+        "cross_paragraph_analysis": analysis
+    }
+
+
+# ---------------------------------------------------------------------
+# CROSS-PARAGRAPH VALIDATION NODE (runs after Content Editor)
+# ---------------------------------------------------------------------
+def content_validation_node(state: SupervisorState) -> SupervisorState:
+    """Validate Content Editor output and return score."""
+    retry_count = state.get("content_editor_retry_count", 0)
+    attempt_label = "initial" if retry_count == 0 else f"retry {retry_count}"
+    logger.info(f"RUNNING: content_validation_node ({attempt_label})")
+    
+    cross_paragraph_analysis_text = state.get("cross_paragraph_analysis") or ""
+    editor_results = state.get("editor_results", [])
+    
+    content_editor_result = None
+    for result in reversed(editor_results):
+        if result.editor_type == "content":
+            content_editor_result = result
+            break
+    
+    if not content_editor_result:
+        logger.error("No Content Editor result found for validation")
+        return {
+            "content_validation_result": ContentEditorValidationResult(
+                score=0,
+                feedback_remarks=[]
+            )
+        }
+    
+    validation_result = validate_content_editor(
+        cross_paragraph_analysis_text,
+        content_editor_result,
+        state["document"]
+    )
+    
+    score = validation_result.score
+    previous_score = None
+    previous_validation = state.get("content_validation_result")
+    if previous_validation and hasattr(previous_validation, 'score'):
+        previous_score = previous_validation.score
+    
+    if previous_score is not None:
+        score_change = score - previous_score
+        change_indicator = "↑" if score_change > 0 else "↓" if score_change < 0 else "→"
+        logger.info(f"Content Editor validation ({attempt_label}): score={score}/10 {change_indicator} (previous: {previous_score}/10, change: {score_change:+d})")
+    else:
+        logger.info(f"Content Editor validation ({attempt_label}): score={score}/10")
+    
+    return {
+        "content_validation_result": validation_result
+    }
+
+
+def normalize_editor_output(
+    editor_type: str,
+    raw_output,
+) -> EditorResult:
+    """
+    Normalize editor tool output into EditorResult.
+    Handles:
+      - JSON string
+      - list[dict]
+      - {"blocks": list[dict]}
+    """
+
+    # ---------------------------
+    # Step 1: Parse JSON string
+    # ---------------------------
+    if isinstance(raw_output, str):
+        try:
+            raw_output = json.loads(raw_output)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"{editor_type} editor returned invalid JSON"
+            ) from e
+
+    # ---------------------------
+    # Step 2: Unwrap dict form
+    # ---------------------------
+    if isinstance(raw_output, dict):
+        if "blocks" in raw_output:
+            raw_blocks = raw_output["blocks"]
+        else:
+            raise TypeError(
+                f"{editor_type} editor dict output missing 'blocks' key"
+            )
+    else:
+        raw_blocks = raw_output
+
+    # ---------------------------
+    # Step 3: Validate list
+    # ---------------------------
+    if not isinstance(raw_blocks, list):
+        raise TypeError(
+            f"{editor_type} editor output must be a list of blocks, "
+            f"got {type(raw_blocks)}"
+        )
+
+    # ---------------------------
+    # Step 4: Convert to models
+    # ---------------------------
+    block_results = []
+    for blk in raw_blocks:
+        if not isinstance(blk, dict):
+            raise TypeError(
+                f"{editor_type} editor block must be dict, got {type(blk)}"
+            )
+        block_results.append(BlockEditResult(**blk))
+
+    return EditorResult(
+        editor_type=editor_type,
+        blocks=block_results,
+        warnings=[],
+    )
+
+# ---------------------------------------------------------------------
+# MERGE NODE (FINAL STEP)
+# ---------------------------------------------------------------------
+def merge_node(state: SupervisorState) -> SupervisorState:
+    logger.info("MERGING EDITOR RESULTS")
+    # Keyed by block id to ensure true merging
+    blocks_by_id: dict[str, ConsolidatedBlockEdit] = {}
+
+    # Map incoming editor names to internal EditorFeedback attribute names
+    editor_attr_map = {
+        "development": "development",
+        "content": "content",
+        "copy": "copy",
+        "line": "line",
+        # external editor name maps to internal 'brand'
+        "brand": "brand",
+        "brand-alignment": "brand",
+    }
+
+    for editor in state.get("editor_results", []):
+        for blk in editor.blocks:
+
+            # Initialize consolidated block once
+            if blk.id not in blocks_by_id:
+                blocks_by_id[blk.id] = ConsolidatedBlockEdit(
+                    id=blk.id,
+                    type=blk.type,
+                    level=blk.level,
+                    original_text=blk.original_text,
+                    final_text=blk.suggested_text or blk.original_text,
+                    editorial_feedback=EditorFeedback(),
+                )
+
+            consolidated = blocks_by_id[blk.id]
+            feedback = consolidated.editorial_feedback
+
+            # If editor returned feedback, merge it
+            if blk.feedback_edit:
+                for sef in blk.feedback_edit:
+                    attr = editor_attr_map.get(sef.editor)
+                    if not attr:
+                        # unknown editor, skip
+                        continue
+                    getattr(feedback, attr).extend(sef.items)
+
+            # prefer explicit suggested_text as final text
+            if blk.suggested_text:
+                consolidated.final_text = blk.suggested_text
+
+    final = ConsolidateResult(
+        blocks=list(blocks_by_id.values())
+    )
+    return {"final_result": final}
+
+
+# ---------------------------------------------------------------------
+# SEQUENTIAL ROUTER (routes to single editor based on index)
+# ---------------------------------------------------------------------
+def route_sequential_editor(state: SupervisorState):
+    """Route to current editor based on current_editor_index."""
+    current_idx = state.get("current_editor_index", 0)
+    selected_editors = state.get("selected_editors", [])
+    
+    if current_idx >= len(selected_editors):
+        return "merge"
+    
+    editor_name = selected_editors[current_idx]
+    
+    # Handle combined editor types first
+    if editor_name == "development+content":
+        # Check if we've already run the combined node
+        editor_results = state.get("editor_results", [])
+        has_combined_result = any(r.editor_type == "development+content" for r in editor_results)
+        
+        if has_combined_result:
+            # Already ran, proceed to merge
+            return "merge"
+        
+        # Check if we need article analysis first
+        article_analysis = state.get("article_analysis")
+        if not article_analysis:
+            return "article_analysis"
+        
+        # Analysis done, run combined node
+        return "development_content_combined"
+    
+    if editor_name == "line+copy":
+        # Check if we've already run the combined node
+        editor_results = state.get("editor_results", [])
+        has_combined_result = any(r.editor_type == "line+copy" for r in editor_results)
+        
+        if not has_combined_result:
+            return "line_copy_combined"
+        else:
+            # Already ran, proceed to merge
+            return "merge"
+    
+    # Handle individual editors (for backward compatibility)
+    if editor_name == "development":
+        article_analysis = state.get("article_analysis")
+        editor_results = state.get("editor_results", [])
+        has_dev_result = any(r.editor_type == "development" for r in editor_results)
+        
+        if not article_analysis and not has_dev_result:
+            return "article_analysis"
+        elif article_analysis and not has_dev_result:
+            return "development_editor_tool"
+        elif has_dev_result:
+            return "article_validation"
+    
+    # Special handling for Content Editor: check if analysis needed
+    if editor_name == "content":
+        cross_paragraph_analysis = state.get("cross_paragraph_analysis")
+        # Check if we just completed analysis (by checking if analysis exists but no editor results yet)
+        editor_results = state.get("editor_results", [])
+        has_content_result = any(r.editor_type == "content" for r in editor_results)
+        
+        if not cross_paragraph_analysis and not has_content_result:
+            # Need to run analysis first
+            logger.info("ROUTING TO CROSS-PARAGRAPH ANALYSIS (before Content Editor)")
+            return "cross_paragraph_analysis"
+        elif cross_paragraph_analysis and not has_content_result:
+            # Analysis done, now run Content Editor
+            logger.info("ROUTING TO CONTENT EDITOR (after analysis)")
+            return "content_editor_tool"
+        elif has_content_result:
+            # Content Editor done, now validate
+            logger.info("ROUTING TO CONTENT VALIDATION (after Content Editor)")
+            return "content_validation"
+    
+    # Map editor name to node name for other editors
+    editor_node_map = {
+        "line": "line_editor_tool",
+        "copy": "copy_editor_tool",
+        "brand-alignment": "brand_editor_tool",
     }
     
-    &:last-child {
-      margin-bottom: 0;
-    }
-  }
+    return editor_node_map.get(editor_name, "merge")
 
-  // Style for lists (proper ordering)
-  ul, ol {
-    display: block;
-    margin: 0.5em 0;
-    padding-left: 2em;
-    line-height: 1.7;
-    color: var(--text-primary);
-    text-align: left;
-  }
 
-  ul {
-    list-style-type: disc;
-    list-style-position: outside;
+# ---------------------------------------------------------------------
+# SEQUENTIAL MERGE NODE (merges only current editor result)
+# ---------------------------------------------------------------------
+def sequential_merge_node(state: SupervisorState) -> SupervisorState:
+    """
+    Merge only the current editor's result for sequential flow.
+    Reuses existing merge_node logic but filters to current editor only.
+    """
+    logger.info("MERGING CURRENT EDITOR RESULT (SEQUENTIAL)")
     
-    ul {
-      list-style-type: circle;
-      margin-top: 0.5em;
-      margin-bottom: 0.5em;
-      
-      ul {
-        list-style-type: square;
-      }
-    }
-  }
-
-  ol {
-    list-style-type: decimal;
-    list-style-position: outside;
+    current_idx = state.get("current_editor_index", 0)
+    editor_results = state.get("editor_results", [])
     
-    ol {
-      list-style-type: lower-alpha;
-      margin-top: 0.5em;
-      margin-bottom: 0.5em;
-      
-      ol {
-        list-style-type: lower-roman;
-      }
-    }
-  }
-
-  li {
-    display: list-item;
-    margin: 0.25em 0;
-    line-height: 1.7;
-    padding-left: 0.5em;
+    if not editor_results:
+        return {"final_result": None}
     
-    p {
-      margin: 0.5em 0;
-      display: block;
-    }
-  }
-
-  // Citation superscript links (same as other article output)
-  .citation-superscript,
-  sup .citation-superscript {
-    vertical-align: super;
-    font-size: 0.75em;
-  }
-}
-
-.export-actions {
-  display: flex;
-  gap: 12px;
-  margin-top: 20px;
-  flex-wrap: wrap;
-}
-
-.export-btn {
-  padding: 10px 20px;
-  border-radius: 0px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: 2px solid transparent;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  
-  &:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  }
-  
-  svg {
-    width: 16px;
-    height: 16px;
-  }
-}
-
-.pdf-btn {
-  background-color: #DC2626;
-  color: white;
-  border-color: #DC2626;
-  
-  &:hover {
-    background-color: #B91C1C;
-    border-color: #B91C1C;
-  }
-}
-
-.docx-btn {
-  background-color: #2563EB;
-  color: white;
-  border-color: #2563EB;
-  
-  &:hover {
-    background-color: #1D4ED8;
-    border-color: #1D4ED8;
-  }
-}
-
-.copy-btn {
-  background-color: #6B7280;
-  color: white;
-  border-color: #6B7280;
-  
-  &:hover {
-    background-color: #4B5563;
-    border-color: #4B5563;
-  }
-}
-.helper-text {
-  font-size: 12px;
-  color: #6c757d;
-  margin: 4px 0 8px;
-}
-
-// Sequential Workflow Progress Indicator
-.sequential-progress {
-  margin: 24px 0;
-  padding: 16px;
-  background: #F9FAFB;
-  border: 1px solid #E5E7EB;
-  border-radius: 0px;
-}
-
-.progress-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.progress-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0;
-}
-
-.progress-badge {
-  padding: 4px 12px;
-  background: #3B82F6;
-  color: white;
-  border-radius: 0px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.progress-bar-container {
-  width: 100%;
-  height: 8px;
-  background: #E5E7EB;
-  border-radius: 0px ;
-  overflow: hidden;
-  margin-bottom: 12px;
-}
-
-.progress-bar {
-  height: 100%;
-  background: linear-gradient(90deg, #3B82F6, #60A5FA);
-  border-radius: 0px ;
-  transition: width 0.3s ease;
-}
-
-.progress-text {
-  font-size: 14px;
-  color: var(--text-secondary);
-  margin: 0;
-  
-  strong {
-    color: var(--text-primary);
-    font-weight: 600;
-  }
-}
-
-// Horizontal Editor Timeline
-.editor-timeline.horizontal {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  margin: 16px 0 20px;
-  padding: 16px 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  
-  // Hide scrollbar but keep functionality
-  scrollbar-width: thin;
-  scrollbar-color: #E5E7EB transparent;
-  
-  &::-webkit-scrollbar {
-    height: 6px;
-  }
-  
-  &::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  
-  &::-webkit-scrollbar-thumb {
-    background: #E5E7EB;
-    border-radius: 0px;
+    # Get only the current editor's result (last one added)
+    current_editor_result = editor_results[-1]
     
-    &:hover {
-      background: #D1D5DB;
+    # Create temporary state with only current editor for merging
+    temp_state = {
+        **state,
+        "editor_results": [current_editor_result],  # Only current editor
     }
-  }
-}
+    
+    # Reuse existing merge_node
+    merged = merge_node(temp_state)
+    
+    return merged
 
-.timeline-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 120px;
-  text-align: center;
-  flex-shrink: 0;
-}
 
-.timeline-marker {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: #d0d0d0;
-  color: #333;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  transition: all 0.2s ease;
-}
+# ---------------------------------------------------------------------
+# ROUTER AFTER CONTENT VALIDATION
+# ---------------------------------------------------------------------
+def route_after_content_validation(state: SupervisorState) -> str:
+    """After validation: retry if score < 8 (max 2 retries), else merge when score >= 8."""
+    validation_result = state.get("content_validation_result")
+    retry_count = state.get("content_editor_retry_count", 0)
+    MAX_RETRIES = 2
+    
+    if validation_result:
+        score = validation_result.score
+        logger.info(f"Content validation score: {score}/10, Retry count: {retry_count}/{MAX_RETRIES}")
+        
+        # Merge if score >= 8 (passing threshold)
+        if score >= 8:
+            logger.info(f"Score {score} >= 8, proceeding to merge")
+            return "merge"
+        
+        # Retry if score < 8 and retries remaining
+        if retry_count < MAX_RETRIES:
+            logger.info(f"Score {score} < 8, retrying (attempt {retry_count + 1}/{MAX_RETRIES})")
+            return "content_editor_retry"
+        else:
+            logger.info(f"Score {score} < 8 but max retries ({MAX_RETRIES}) reached, proceeding to merge")
+            return "merge"
+    
+    # No validation result, proceed to merge
+    return "merge"
 
-.timeline-item.completed .timeline-marker {
-  background: #2e7d32;
-  color: #fff;
-}
 
-.timeline-item.active .timeline-marker {
-  background: #1976d2;
-  color: #fff;
-  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.2);
-  
-  &.blink-marker {
-    box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.4);
-    animation: blink-marker 1.2s ease-in-out infinite;
-  }
-}
+# ---------------------------------------------------------------------
+# ROUTER AFTER VALIDATION
+# ---------------------------------------------------------------------
+def route_after_validation(state: SupervisorState) -> str:
+    """After validation: retry if score < 8 (max 2 retries), else merge when score >= 8."""
+    validation_result = state.get("validation_result")
+    retry_count = state.get("dev_editor_retry_count", 0)
+    MAX_RETRIES = 2
+    
+    if validation_result:
+        score = validation_result.score
+        logger.info(f"Validation score: {score}/10, Retry count: {retry_count}/{MAX_RETRIES}")
+        
+        # Merge if score >= 8 (passing threshold)
+        if score >= 8:
+            logger.info(f"Score {score} >= 8, proceeding to merge")
+            return "merge"
+        
+        # Retry if score < 8 and retries remaining
+        if retry_count < MAX_RETRIES:
+            logger.info(f"Score {score} < 8, retrying (attempt {retry_count + 1}/{MAX_RETRIES})")
+            return "development_editor_retry"
+        else:
+            logger.info(f"Score {score} < 8 but max retries ({MAX_RETRIES}) reached, proceeding to merge")
+            return "merge"
+    
+    # No validation result, proceed to merge
+    return "merge"
 
-.timeline-item.upcoming .timeline-marker {
-  background: #d0d0d0;
-  color: #666;
-}
 
-.timeline-editor-name {
-  margin-top: 6px;
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--text-primary);
-  line-height: 1.3;
-  max-width: 120px;
-  word-wrap: break-word;
-}
+# ---------------------------------------------------------------------
+# ROUTER FOR SEQUENTIAL FLOW (after merge)
+# ---------------------------------------------------------------------
+def route_sequential_after_merge(state: SupervisorState):
+    """
+    After merging current editor result, interrupt for user approval.
+    """
+    current_idx = state.get("current_editor_index", 0)
+    selected_editors = state.get("selected_editors", [])
+    
+    if current_idx >= len(selected_editors):
+        return "end"
+    
+    # Interrupt for user approval
+    return "__interrupt__"
 
-.timeline-item.completed .timeline-editor-name {
-  color: #2e7d32;
-}
 
-.timeline-item.active .timeline-editor-name {
-  color: #1976d2;
-  font-weight: 700;
-}
+# ---------------------------------------------------------------------
+# CUSTOM REDIS CHECKPOINTER (for multi-pod deployments)
+# ---------------------------------------------------------------------
+import pickle
 
-.timeline-item.upcoming .timeline-editor-name {
-  color: #666;
-}
+class CustomRedisCheckpointer(BaseCheckpointSaver):
+    """
+    Custom Redis checkpointer that behaves EXACTLY like MemorySaver.
+    Drop-in replacement for MemorySaver with Redis persistence.
+    Uses pickle for serialization to preserve Python object types.
+    """
+    
+    def __init__(self, redis_client: Redis, ttl_seconds: int = 86400):
+        super().__init__()
+        self.redis = redis_client
+        self.ttl_seconds = ttl_seconds
+        logger.info(f"CustomRedisCheckpointer initialized with TTL={ttl_seconds}s")
+    
+    def _make_redis_key(
+        self, 
+        thread_id: str, 
+        checkpoint_ns: str = "", 
+        checkpoint_id: Optional[str] = None,
+        suffix: Optional[str] = None
+    ) -> str:
+        """Generate Redis key matching MemorySaver's internal key structure."""
+        parts = ["checkpoint", thread_id, checkpoint_ns]
+        parts.append(checkpoint_id if checkpoint_id else "latest")
+        if suffix:
+            parts.append(suffix)
+        return ":".join(parts)
+    
+    def _parse_config(self, config: Optional[RunnableConfig]) -> Tuple[str, str, Optional[str]]:
+        """Extract thread_id, checkpoint_ns, and checkpoint_id from config."""
+        if not config:
+            raise ValueError("Config is required")
+        
+        configurable = config.get("configurable", {})
+        thread_id = configurable.get("thread_id")
+        
+        if not thread_id:
+            raise ValueError("thread_id is required in config.configurable")
+        
+        checkpoint_ns = configurable.get("checkpoint_ns", "")
+        checkpoint_id = configurable.get("checkpoint_id")
+        
+        return thread_id, checkpoint_ns, checkpoint_id
+    
+    def put(
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: Optional[Dict[str, Any]] = None,
+    ) -> RunnableConfig:
+        """Save checkpoint to Redis. Matches MemorySaver.put() exactly."""
+        try:
+            thread_id, checkpoint_ns, _ = self._parse_config(config)
+            
+            # Generate checkpoint_id using microsecond timestamp (like MemorySaver)
+            checkpoint_id = checkpoint.get("id")
+            if not checkpoint_id:
+                checkpoint_id = str(int(datetime.now(timezone.utc).timestamp() * 1_000_000))
+            
+            # Ensure checkpoint has the ID
+            if isinstance(checkpoint, dict):
+                checkpoint["id"] = checkpoint_id
+            
+            # Build parent_config if parent_checkpoint_id exists
+            parent_config = None
+            if metadata and metadata.get("parent_checkpoint_id"):
+                parent_checkpoint_id = metadata["parent_checkpoint_id"]
+                parent_config = {
+                    "configurable": {
+                        "thread_id": thread_id,
+                        "checkpoint_ns": checkpoint_ns,
+                        "checkpoint_id": parent_checkpoint_id
+                    }
+                }
+            
+            # pending_writes is always empty list - writes stored separately via put_writes()
+            checkpoint_tuple_data = {
+                "checkpoint": checkpoint,
+                "metadata": metadata if metadata else {},
+                "parent_config": parent_config,
+                "pending_writes": []
+            }
+            
+            # Store checkpoint data using pickle to preserve types
+            checkpoint_key = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id)
+            serialized = pickle.dumps(checkpoint_tuple_data)
+            self.redis.setex(checkpoint_key, self.ttl_seconds, serialized)
+            
+            # Update "latest" pointer (store as string)
+            latest_key = self._make_redis_key(thread_id, checkpoint_ns, None)
+            self.redis.setex(latest_key, self.ttl_seconds, checkpoint_id.encode('utf-8'))
+            
+            # Add to sorted set for chronological listing
+            list_key = self._make_redis_key(thread_id, checkpoint_ns, suffix="list")
+            score = float(checkpoint_id) if checkpoint_id.replace('.', '', 1).isdigit() else 0
+            self.redis.zadd(list_key, {checkpoint_id: score})
+            self.redis.expire(list_key, self.ttl_seconds)
+            
+            logger.debug(f"Saved checkpoint: thread={thread_id}, ns={checkpoint_ns}, id={checkpoint_id}")
+            
+            # Return updated config
+            return {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": checkpoint_ns,
+                    "checkpoint_id": checkpoint_id
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"CustomRedisCheckpointer.put failed: {e}", exc_info=True)
+            raise
+    
+    def get_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:
+        """Retrieve checkpoint tuple from Redis. Matches MemorySaver.get_tuple() exactly."""
+        try:
+            thread_id, checkpoint_ns, checkpoint_id = self._parse_config(config)
+            
+            # If no checkpoint_id specified, get the latest one
+            if not checkpoint_id:
+                latest_key = self._make_redis_key(thread_id, checkpoint_ns, None)
+                latest_checkpoint_id_bytes = self.redis.get(latest_key)
+                
+                if not latest_checkpoint_id_bytes:
+                    logger.debug(f"No checkpoints found: thread={thread_id}, ns={checkpoint_ns}")
+                    return None
+                
+                checkpoint_id = (
+                    latest_checkpoint_id_bytes.decode('utf-8') 
+                    if isinstance(latest_checkpoint_id_bytes, bytes) 
+                    else latest_checkpoint_id_bytes
+                )
+            
+            # Retrieve checkpoint data
+            checkpoint_key = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id)
+            data_bytes = self.redis.get(checkpoint_key)
+            
+            if not data_bytes:
+                logger.debug(f"Checkpoint not found: {checkpoint_key}")
+                return None
+            
+            # Deserialize using pickle to preserve types
+            checkpoint_tuple_data = pickle.loads(data_bytes)
+            
+            # Load pending_writes from separate put_writes() calls
+            pending_writes = []
+            writes_pattern = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id, suffix="writes:*")
+            
+            # Get all write keys for this checkpoint
+            write_keys = self.redis.keys(writes_pattern)
+            for write_key_bytes in write_keys:
+                write_key = write_key_bytes.decode('utf-8') if isinstance(write_key_bytes, bytes) else write_key_bytes
+                write_data_bytes = self.redis.get(write_key)
+                
+                if write_data_bytes:
+                    # Deserialize writes using pickle
+                    write_data = pickle.loads(write_data_bytes)
+                    
+                    task_id = write_data.get("task_id")
+                    writes_list = write_data.get("writes", [])
+                    
+                    # Convert to MemorySaver format: (task_id, channel, value)
+                    for channel, value in writes_list:
+                        pending_writes.append((task_id, channel, value))
+            
+            # Build config for this checkpoint
+            current_config = {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": checkpoint_ns,
+                    "checkpoint_id": checkpoint_id
+                }
+            }
+            
+            # Return CheckpointTuple with pending_writes as list
+            return CheckpointTuple(
+                config=current_config,
+                checkpoint=checkpoint_tuple_data["checkpoint"],
+                metadata=checkpoint_tuple_data.get("metadata", {}),
+                parent_config=checkpoint_tuple_data.get("parent_config"),
+                pending_writes=pending_writes
+            )
+            
+        except Exception as e:
+            logger.error(f"CustomRedisCheckpointer.get_tuple failed: {e}", exc_info=True)
+            return None
+    
+    def list(
+        self,
+        config: RunnableConfig,
+        *,
+        filter: Optional[Dict[str, Any]] = None,
+        before: Optional[RunnableConfig] = None,
+        limit: Optional[int] = None,
+    ) -> Iterator[CheckpointTuple]:
+        """List checkpoints in reverse chronological order. Matches MemorySaver.list() exactly."""
+        try:
+            thread_id, checkpoint_ns, _ = self._parse_config(config)
+            
+            list_key = self._make_redis_key(thread_id, checkpoint_ns, suffix="list")
+            
+            # Determine range for iteration
+            max_score = "+inf"
+            if before:
+                before_checkpoint_id = before.get("configurable", {}).get("checkpoint_id")
+                if before_checkpoint_id:
+                    max_score = f"({before_checkpoint_id}"
+            
+            # Get checkpoint IDs in reverse chronological order
+            checkpoint_ids = self.redis.zrevrangebyscore(
+                list_key,
+                max_score,
+                "-inf",
+                start=0,
+                num=limit if limit else -1
+            )
+            
+            if not checkpoint_ids:
+                logger.debug(f"No checkpoints in list: thread={thread_id}, ns={checkpoint_ns}")
+                return
+            
+            # Yield each checkpoint
+            for checkpoint_id_bytes in checkpoint_ids:
+                checkpoint_id = (
+                    checkpoint_id_bytes.decode('utf-8') 
+                    if isinstance(checkpoint_id_bytes, bytes) 
+                    else checkpoint_id_bytes
+                )
+                
+                checkpoint_key = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id)
+                data_bytes = self.redis.get(checkpoint_key)
+                
+                if not data_bytes:
+                    continue
+                
+                # Deserialize using pickle
+                checkpoint_tuple_data = pickle.loads(data_bytes)
+                
+                # Apply metadata filter if provided
+                if filter:
+                    metadata = checkpoint_tuple_data.get("metadata", {})
+                    if not all(metadata.get(k) == v for k, v in filter.items()):
+                        continue
+                
+                # Load pending_writes for this checkpoint
+                pending_writes = []
+                writes_pattern = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id, suffix="writes:*")
+                write_keys = self.redis.keys(writes_pattern)
+                
+                for write_key_bytes in write_keys:
+                    write_key = write_key_bytes.decode('utf-8') if isinstance(write_key_bytes, bytes) else write_key_bytes
+                    write_data_bytes = self.redis.get(write_key)
+                    
+                    if write_data_bytes:
+                        # Deserialize using pickle
+                        write_data = pickle.loads(write_data_bytes)
+                        
+                        task_id = write_data.get("task_id")
+                        writes_list = write_data.get("writes", [])
+                        
+                        # Convert to MemorySaver format: (task_id, channel, value)
+                        for channel, value in writes_list:
+                            pending_writes.append((task_id, channel, value))
+                
+                current_config = {
+                    "configurable": {
+                        "thread_id": thread_id,
+                        "checkpoint_ns": checkpoint_ns,
+                        "checkpoint_id": checkpoint_id
+                    }
+                }
+                
+                yield CheckpointTuple(
+                    config=current_config,
+                    checkpoint=checkpoint_tuple_data["checkpoint"],
+                    metadata=checkpoint_tuple_data.get("metadata", {}),
+                    parent_config=checkpoint_tuple_data.get("parent_config"),
+                    pending_writes=pending_writes
+                )
+                
+        except Exception as e:
+            logger.error(f"CustomRedisCheckpointer.list failed: {e}", exc_info=True)
+    
+    def put_writes(
+        self,
+        config: RunnableConfig,
+        writes: Sequence[Tuple[str, Any]],
+        task_id: str,
+    ) -> None:
+        """Save incremental writes to Redis. Matches MemorySaver.put_writes() exactly."""
+        try:
+            thread_id, checkpoint_ns, checkpoint_id = self._parse_config(config)
+            
+            # If no checkpoint_id, get the latest
+            if not checkpoint_id:
+                latest_key = self._make_redis_key(thread_id, checkpoint_ns, None)
+                latest_checkpoint_id_bytes = self.redis.get(latest_key)
+                
+                if latest_checkpoint_id_bytes:
+                    checkpoint_id = (
+                        latest_checkpoint_id_bytes.decode('utf-8') 
+                        if isinstance(latest_checkpoint_id_bytes, bytes) 
+                        else latest_checkpoint_id_bytes
+                    )
+                else:
+                    checkpoint_id = str(int(datetime.now(timezone.utc).timestamp() * 1_000_000))
+            
+            # Store writes
+            writes_key = self._make_redis_key(
+                thread_id, 
+                checkpoint_ns, 
+                checkpoint_id, 
+                suffix=f"writes:{task_id}"
+            )
+            
+            # Store writes data using pickle to preserve types
+            writes_data = {
+                "writes": [[channel, value] for channel, value in writes],
+                "task_id": task_id,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+            serialized = pickle.dumps(writes_data)
+            self.redis.setex(writes_key, self.ttl_seconds, serialized)
+            
+            logger.debug(f"Saved writes: thread={thread_id}, checkpoint={checkpoint_id}, task={task_id}")
+            
+        except Exception as e:
+            logger.error(f"CustomRedisCheckpointer.put_writes failed: {e}", exc_info=True)
+# ---------------------------------------------------------------------
+# SHARED CHECKPOINTER FOR SEQUENTIAL GRAPH
+# ---------------------------------------------------------------------
+# IMPORTANT: Use a single shared checkpointer instance so state persists
+# across multiple graph instances AND multiple pods (initial request and /next requests)
 
-.timeline-status {
-  margin-top: 2px;
-  font-size: 12px;
-  color: #666;
-  font-weight: 500;
-}
+if config.APP_ENV == "local":
+    _sequential_checkpointer = MemorySaver()
+    logger.info("Using MemorySaver for local development")
+else:
+    try:
+        redis_client = Redis(
+            host=config.REDIS_HOST,
+            port=config.REDIS_PORT,
+            password=config.REDIS_PASSWORD,
+            ssl=True,
+            decode_responses=False
+        )
+        # Test connection with PING
+        redis_client.ping()
+        logger.info(f"Redis connection successful: {config.REDIS_HOST}:{config.REDIS_PORT}")
+        
+        # Use custom checkpointer that doesn't require JSON module
+        _sequential_checkpointer = CustomRedisCheckpointer(
+            redis_client=redis_client,
+            ttl_seconds=86400  # 24 hour TTL
+        )
+        logger.info("Using CustomRedisCheckpointer for multi-pod deployment")
+        
+    except Exception as e:
+        logger.error(f"Redis connection failed: {e}")
+        logger.warning("FALLBACK: Using MemorySaver - state will NOT persist across pod restarts")
+        _sequential_checkpointer = MemorySaver()
 
-.timeline-item.completed .timeline-status {
-  color: #2e7d32;
-}
 
-.timeline-item.active .timeline-status {
-  color: #1976d2;
-  font-weight: 600;
-  
-  &.loading-status {
-    color: #1976d2;
-  }
-}
-
-// Blinking animation for "In Progress" status
-.blink-animation {
-  animation: blink 1.5s ease-in-out infinite;
-}
-
-@keyframes blink {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
-}
-
-// Blinking animation for timeline marker numbers
-.blink-marker {
-  animation: blink-marker 1.2s ease-in-out infinite !important;
-}
-
-.blink-number {
-  animation: blink-number 1.2s ease-in-out infinite !important;
-  display: inline-block;
-}
-
-@keyframes blink-marker {
-  0%, 100% {
-    opacity: 1;
-    transform: scale(1);
-    box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.4);
-  }
-  50% {
-    opacity: 0.6;
-    transform: scale(1.15);
-    box-shadow: 0 0 0 5px rgba(25, 118, 210, 0.6);
-  }
-}
-
-@keyframes blink-number {
-  0%, 100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.3;
-    transform: scale(1.2);
-  }
-}
-
-.timeline-connector {
-  flex: 1;
-  height: 2px;
-  background: #d0d0d0;
-  margin-top: 13px;
-  min-width: 20px;
-  transition: background 0.2s ease;
-}
-
-.timeline-connector.completed {
-  background: #2e7d32;
-}
-
-// Feedback decision summary inside sequential progress card
-.paragraph-status-summary {
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid #E5E7EB;
-}
-
-.status-summary-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0 0 12px 0;
-}
-
-.feedback-pills {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.status-pill {
-  border: 1px solid #e5e7eb;
-  background: #ffffff;
-  padding: 8px 12px;
-  border-radius: 0px;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-
-  &:hover:not(:disabled) {
-    transform: translateY(-1px);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
-  }
-
-  &:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-    transform: none;
-    box-shadow: none;
-  }
-
-  &:focus {
-    outline: 2px solid #fd5108;
-    outline-offset: 2px;
-  }
-
-  strong {
-    font-weight: 700;
-  }
-
-  &.approved {
-    border-color: #10b981;
-    color: #059669;
-    background: #f0fdf4;
-  }
-
-  &.rejected {
-    border-color: #ef4444;
-    color: #dc2626;
-    background: #fef2f2;
-  }
-
-  &.pending {
-    border-color: #f59e0b;
-    color: #92400e;
-    background: #fffbeb;
-  }
-}
-
-// Sequential Actions Container (holds both Next Editor and Generate Final Output)
-.sequential-actions-container {
-  margin: 24px 0;
-  display: flex;
-  flex-direction: row;
-  gap: 16px;
-  align-items: flex-start;
-
-  .final-output-actions,
-  .next-editor-actions {
-    flex: 1;
-    padding: 20px;
-    background: #F0F7FF;
-    border: 1px solid #BFDBFE;
-    border-radius: 0px;
-    text-align: center;
-  }
-
-}
-
-// // Next Editor Button
-// .next-editor-actions {
-//   padding: 20px;
-//   background: #F0F7FF;
-//   border: 1px solid #BFDBFE;
-//   border-radius: 0px;
-//   text-align: center;
-// }
-
-.next-editor-btn {
-  padding: 12px 24px;
-  background: #3B82F6;
-  color: white;
-  border: none;
-  border-radius: 0px;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  
-  &:hover:not(:disabled) {
-    background: #2563EB;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(59, 130, 246, 0.3);
-  }
-  
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-  
-  .spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: white;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-}
-
-.next-editor-hint {
-  margin-top: 12px;
-  font-size: 13px;
-  color: #6B7280;
-  margin-bottom: 0;
-}
-
-// Final Output Actions (updated for sequential mode)
-.final-output-actions {
-  margin: 24px 0;
-  padding: 20px;
-  background: #F0F7FF;
-  border: 1px solid #BFDBFE;
-  border-radius: 0px;
-  text-align: center;
-
-  .sequential-actions-container & {
-    margin: 0;
-  }
-
-}
-
-.final-output-btn {
-  padding: 12px 24px;
-  background: #10B981;
-  color: white;
-  border: none;
-  border-radius: 0px;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  
-  &:hover:not(:disabled) {
-    background: #059669;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(16, 185, 129, 0.3);
-  }
-  
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-  
-  .spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: white;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-}
-
-.final-output-hint {
-  margin-top: 12px;
-  font-size: 13px;
-  color: #6B7280;
-  margin-bottom: 0;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-// Notification Toast Styles
-.notification-toast {
-  position: fixed;
-  top: 20px;
-  right: 20px;
-  z-index: 10000;
-  min-width: 300px;
-  max-width: 500px;
-  background: white;
-  border-radius: 0px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  border: 1px solid #E5E7EB;
-  animation: slideInRight 0.3s ease-out;
-  
-  &[data-type="success"] {
-    border-left: 4px solid #10B981;
-  }
-  
-  &[data-type="error"] {
-    border-left: 4px solid #DC2626;
-  }
-}
-
-.notification-content {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 20px;
-  
-  svg {
-    flex-shrink: 0;
-    width: 20px;
-    height: 20px;
-  }
-  
-  span {
-    flex: 1;
-    font-size: 14px;
-    font-weight: 500;
-    color: #1F2937;
-  }
-  
-  // Success notification
-  .notification-toast[data-type="success"] & svg {
-    color: #10B981;
-    stroke: #10B981;
-  }
-  
-  // Error notification
-  .notification-toast[data-type="error"] & svg {
-    color: #DC2626;
-    stroke: #DC2626;
-  }
-}
-
-@keyframes slideInRight {
-  from {
-    transform: translateX(100%);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
-}
-
-// Responsive: Adjust notification position on mobile
-@media (max-width: 768px) {
-  .notification-toast {
-    right: 10px;
-    left: 10px;
-    min-width: auto;
-    max-width: none;
-  }
-}
+# ---------------------------------------------------------------------
+# BUILD SEQUENTIAL GRAPH (reuses existing graph nodes)
+# ---------------------------------------------------------------------
+def build_sequential_graph():
+    """
+    Build a sequential graph that runs editors one at a time with interrupts.
+    REUSES all existing editor nodes, merge_node, and graph structure.
+    
+    Flow:
+    1. route_sequential_editor -> routes to current editor node
+    2. editor node -> runs current editor (reuses existing editor nodes)
+    3. sequential_merge_node -> merges only current editor result
+    4. route_sequential_after_merge -> interrupts for user approval
+    5. Resume -> continues to next editor (when state updated externally)
+    
+    NOTE: All graph instances share the same checkpointer (_sequential_checkpointer)
+    to ensure state persistence across requests.
+    """
+    graph = StateGraph(SupervisorState)
+    
+    # ---------------------------------------------------------------------
+    # ADD NODES (organized by category)
+    # ---------------------------------------------------------------------
+    
+    # Analysis nodes (run before editors)
+    graph.add_node("article_analysis", article_analysis_node)
+    graph.add_node("cross_paragraph_analysis", cross_paragraph_analysis_node)
+    
+    # Individual editor nodes
+    graph.add_node("development_editor_tool", development_editor_node)
+    graph.add_node("development_editor_retry", development_editor_retry_node)
+    graph.add_node("content_editor_tool", content_editor_node)
+    graph.add_node("content_editor_retry", content_editor_retry_node)
+    graph.add_node("line_editor_tool", line_editor_node)
+    graph.add_node("copy_editor_tool", copy_editor_node)
+    graph.add_node("brand_editor_tool", brand_editor_node)
+    
+    # Combined editor nodes
+    graph.add_node("development_content_combined", development_content_combined_node)
+    graph.add_node("line_copy_combined", line_copy_combined_node)
+    graph.add_node("resolve_combined_editor_conflicts", resolve_combined_editor_conflicts_node)
+    
+    # Validation nodes (run after editors)
+    graph.add_node("article_validation", article_validation_node)
+    graph.add_node("content_validation", content_validation_node)
+    
+    # Merge node (final step)
+    graph.add_node("merge", sequential_merge_node)
+    
+    # ---------------------------------------------------------------------
+    # SET CONDITIONAL ENTRY POINT (routes to appropriate node)
+    # ---------------------------------------------------------------------
+    graph.set_conditional_entry_point(
+        route_sequential_editor,
+        {
+            # Analysis nodes
+            "article_analysis": "article_analysis",
+            "cross_paragraph_analysis": "cross_paragraph_analysis",
+            
+            # Individual editor nodes
+            "development_editor_tool": "development_editor_tool",
+            "development_editor_retry": "development_editor_retry",
+            "content_editor_tool": "content_editor_tool",
+            "content_editor_retry": "content_editor_retry",
+            "line_editor_tool": "line_editor_tool",
+            "copy_editor_tool": "copy_editor_tool",
+            "brand_editor_tool": "brand_editor_tool",
+            
+            # Combined editor nodes
+            "development_content_combined": "development_content_combined",
+            "line_copy_combined": "line_copy_combined",
+            
+            # Validation nodes
+            "article_validation": "article_validation",
+            "content_validation": "content_validation",
+            
+            # Merge node
+            "merge": "merge",
+        }
+    )
+    
+    # Article analysis routes conditionally based on editor type
+    graph.add_conditional_edges(
+        "article_analysis",
+        route_sequential_editor,
+        {
+            "development_editor_tool": "development_editor_tool",
+            "development_content_combined": "development_content_combined",
+            "merge": "merge"
+        }
+    )
+    graph.add_edge("development_editor_tool", "article_validation")
+    
+    # Combined editors: run -> same resolve node (prompt) -> merge
+    graph.add_edge("development_content_combined", "resolve_combined_editor_conflicts")
+    graph.add_edge("line_copy_combined", "resolve_combined_editor_conflicts")
+    graph.add_edge("resolve_combined_editor_conflicts", "merge")
+    
+    graph.add_conditional_edges(
+        "article_validation",
+        route_after_validation,
+        {
+            "development_editor_retry": "development_editor_retry",
+            "merge": "merge"
+        }
+    )
+    
+    graph.add_edge("development_editor_retry", "article_validation")
+    
+    graph.add_edge("cross_paragraph_analysis", "content_editor_tool")
+    graph.add_edge("content_editor_tool", "content_validation")
+    
+    graph.add_conditional_edges(
+        "content_validation",
+        route_after_content_validation,
+        {
+            "content_editor_retry": "content_editor_retry",
+            "merge": "merge"
+        }
+    )
+    
+    graph.add_edge("content_editor_retry", "content_validation")
+    
+    for node in ["line_editor_tool", "copy_editor_tool", "brand_editor_tool"]:
+        graph.add_edge(node, "merge")
+    
+    return graph.compile(checkpointer=_sequential_checkpointer, interrupt_after=["merge"]) 
