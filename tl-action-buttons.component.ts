@@ -518,24 +518,12 @@ def brand_editor_node(state: SupervisorState) -> SupervisorState:
 # ---------------------------------------------------------------------
 # MERGE TWO EDITOR RESULTS INTO ONE
 # ---------------------------------------------------------------------
-def _apply_feedback_fixes_to_text(text: str, feedback_edit: List[SingleEditorFeedback]) -> str:
-    """Apply each feedback item's issue->fix into text so both editors' micro-fixes appear in final suggested text."""
-    if not text or not feedback_edit:
-        return text
-    result = text
-    for sef in feedback_edit:
-        for item in sef.items:
-            if item.issue and item.fix is not None and item.issue in result:
-                result = result.replace(item.issue, item.fix, 1)
-    return result
-
-
 def merge_two_editor_results(
     result1: EditorResult,
     result2: EditorResult,
     combined_editor_type: str
 ) -> EditorResult:
-    """Merge two EditorResult objects into one, combining feedback and suggestions from both."""
+    """Merge two EditorResult objects into one, combining feedback and suggestions."""
     logger.info(f"MERGING {result1.editor_type} + {result2.editor_type} into {combined_editor_type}")
     
     result1_blocks = {blk.id: blk for blk in result1.blocks}
@@ -548,19 +536,15 @@ def merge_two_editor_results(
         blk2 = result2_blocks.get(block_id)
         
         original_text = blk1.original_text if blk1 else (blk2.original_text if blk2 else "")
-        # Base: use both blk1 and blk2 (result1 first, then result2), else original
-        suggested_text = (blk1.suggested_text if blk1 and blk1.suggested_text else "") or (
-            blk2.suggested_text if blk2 and blk2.suggested_text else ""
-        ) or original_text
+        suggested_text = (blk2.suggested_text if blk2 and blk2.suggested_text 
+                         else blk1.suggested_text if blk1 and blk1.suggested_text 
+                         else original_text)
         
         combined_feedback = []
         if blk1 and blk1.feedback_edit:
             combined_feedback.extend(blk1.feedback_edit)
         if blk2 and blk2.feedback_edit:
             combined_feedback.extend(blk2.feedback_edit)
-        
-        # Apply both editors' feedback fixes into suggested_text so combined merge includes all edits
-        suggested_text = _apply_feedback_fixes_to_text(suggested_text, combined_feedback)
         
         merged_blocks.append(
             BlockEditResult(
@@ -600,32 +584,32 @@ def development_content_combined_node(state: SupervisorState) -> SupervisorState
     dev_state = development_editor_node(state)
     dev_result = dev_state["editor_results"][-1]
     
-    # Validate Development Editor result using article_validation_node
-    # Ensure original document is used for validation
-    # IMPORTANT: dev_state must come last to preserve editor_results with development editor result
-    validation_input_state = {
-        **state,
-        **dev_state,  # dev_state comes last to preserve editor_results (includes development editor result)
-        "document": original_document  # Explicitly use original document
-    }
-    # Debug: Log editor_results to verify development editor result is present
-    editor_results_count = len(validation_input_state.get("editor_results", []))
-    validation_state = article_validation_node(validation_input_state)
-    dev_state = {**dev_state, **validation_state}
-    
-    # Update document with Development's suggestions for Content Editor
+    # Update document with Development's suggestions (same pattern as line update uses copy)
     updated_doc = DocumentStructure(blocks=[
         DocumentBlock(id=b.id, type=b.type, level=b.level, 
                      text=b.suggested_text or b.original_text)
         for b in dev_result.blocks
     ])
     
+    # Validate Development Editor result using article_validation_node
+    # Use updated development content for validation (same pattern as line update uses copy)
+    # IMPORTANT: dev_state must come last to preserve editor_results with development editor result
+    validation_input_state = {
+        **state,
+        **dev_state,  # dev_state comes last to preserve editor_results (includes development editor result)
+        "document": updated_doc  # Use updated development content
+    }
+    # Debug: Log editor_results to verify development editor result is present
+    editor_results_count = len(validation_input_state.get("editor_results", []))
+    validation_state = article_validation_node(validation_input_state)
+    dev_state = {**dev_state, **validation_state}
+    
     # Run cross-paragraph analysis if needed (using validated dev_result document)
     if not state.get("cross_paragraph_analysis"):
         analysis_state = cross_paragraph_analysis_node({"document": updated_doc, **state})
         state = {**state, **analysis_state}
     
-    # Run Content Editor on Development-updated document (with validation result and cross-paragraph analysis in state)
+    # Run Content Editor on original document only (with validation result and cross-paragraph analysis in state)
     content_state = content_editor_node({
         **dev_state,
         **state,
@@ -667,8 +651,15 @@ def line_copy_combined_node(state: SupervisorState) -> SupervisorState:
     line_state = line_editor_node(state)
     line_result = line_state["editor_results"][-1]
     
-    # Run Copy Editor on original document only
-    copy_state = copy_editor_node({**line_state, "document": state["document"]})
+    # Update document with Line Editor's suggestions (same pattern as development uses copy)
+    updated_doc = DocumentStructure(blocks=[
+        DocumentBlock(id=b.id, type=b.type, level=b.level, 
+                     text=b.suggested_text or b.original_text)
+        for b in line_result.blocks
+    ])
+    
+    # Run Copy Editor on updated line editor content (same pattern as development uses copy)
+    copy_state = copy_editor_node({**line_state, "document": updated_doc})
     copy_result = copy_state["editor_results"][-1]
     
     # Merge results
