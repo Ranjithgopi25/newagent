@@ -2322,12 +2322,7 @@ INPUT: You will receive a JSON object with a "blocks" array. Each block has:
 OUTPUT: Return a single JSON object with a "blocks" array. Each block MUST have:
 - "id": same as input
 - "suggested_text": same as input (unchanged)
-- "feedback_edit": array of SingleEditorFeedback. For overlapping items (same line/sentence), create a merged "line+copy" item. The structure should be:
-  * { "editor": "line+copy", "items": [merged_item] } - the merged combined item
-  * { "editor": "line", "items": [all_line_items including the merged_item] } - all line editor items PLUS the merged item
-  * { "editor": "copy", "items": [all_copy_items including the merged_item] } - all copy editor items PLUS the merged item
-  * For non-overlapping items, include them with their original editor in the appropriate block above.
-  The merged "line+copy" item must appear in THREE places: as its own "line+copy" editor block, inside the "line" editor block, and inside the "copy" editor block.
+- "feedback_edit": array of SingleEditorFeedback. For overlapping items (same line/sentence), create a merged "line+copy" item AND include both original "line" and "copy" items. For non-overlapping items, include them with their original editor. The structure should be: [ { "editor": "line+copy", "items": [merged_item] }, { "editor": "line", "items": [all_line_items] }, { "editor": "copy", "items": [all_copy_items] } ]
 
 Two feedback items address the "same line/sentence" when their "issue" (quoted original text) refers to the same or overlapping part of the block (e.g. same phrase, same sentence, or one contains the other). When merging: Line Editor's "issue" shows the original problem, and you must generate a combined "fix" that incorporates improvements from both Line and Copy Editor suggestions.
 
