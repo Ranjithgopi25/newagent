@@ -584,36 +584,36 @@ def development_content_combined_node(state: SupervisorState) -> SupervisorState
     dev_state = development_editor_node(state)
     dev_result = dev_state["editor_results"][-1]
     
-    # Update document with Development's suggestions (same pattern as line update uses copy)
-    updated_doc = DocumentStructure(blocks=[
-        DocumentBlock(id=b.id, type=b.type, level=b.level, 
-                     text=b.suggested_text or b.original_text)
-        for b in dev_result.blocks
-    ])
-    
     # Validate Development Editor result using article_validation_node
-    # Use updated development content for validation (same pattern as line update uses copy)
+    # Ensure original document is used for validation
     # IMPORTANT: dev_state must come last to preserve editor_results with development editor result
     validation_input_state = {
         **state,
         **dev_state,  # dev_state comes last to preserve editor_results (includes development editor result)
-        "document": updated_doc  # Use updated development content
+        "document": original_document  # Explicitly use original document
     }
     # Debug: Log editor_results to verify development editor result is present
     editor_results_count = len(validation_input_state.get("editor_results", []))
     validation_state = article_validation_node(validation_input_state)
     dev_state = {**dev_state, **validation_state}
     
+    # Update document with Development's suggestions for Content Editor
+    updated_doc = DocumentStructure(blocks=[
+        DocumentBlock(id=b.id, type=b.type, level=b.level, 
+                     text=b.suggested_text or b.original_text)
+        for b in dev_result.blocks
+    ])
+    
     # Run cross-paragraph analysis if needed (using validated dev_result document)
     if not state.get("cross_paragraph_analysis"):
         analysis_state = cross_paragraph_analysis_node({"document": updated_doc, **state})
         state = {**state, **analysis_state}
     
-    # Run Content Editor on original document only (with validation result and cross-paragraph analysis in state)
+    # Run Content Editor on updated document (with validation result and cross-paragraph analysis in state)
     content_state = content_editor_node({
         **dev_state,
         **state,
-        "document": original_document  # Content Editor parses original document only
+        "document": updated_doc  # Use updated document for Content Editor
     })
     content_result = content_state["editor_results"][-1]
     
@@ -651,14 +651,14 @@ def line_copy_combined_node(state: SupervisorState) -> SupervisorState:
     line_state = line_editor_node(state)
     line_result = line_state["editor_results"][-1]
     
-    # Update document with Line Editor's suggestions (same pattern as development uses copy)
+    # Update document with Line's suggestions for Copy Editor
     updated_doc = DocumentStructure(blocks=[
-        DocumentBlock(id=b.id, type=b.type, level=b.level, 
+        DocumentBlock(id=b.id, type=b.type, level=b.level,
                      text=b.suggested_text or b.original_text)
         for b in line_result.blocks
     ])
     
-    # Run Copy Editor on updated line editor content (same pattern as development uses copy)
+    # Run Copy Editor on updated document
     copy_state = copy_editor_node({**line_state, "document": updated_doc})
     copy_result = copy_state["editor_results"][-1]
     
