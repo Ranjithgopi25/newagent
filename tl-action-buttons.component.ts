@@ -514,6 +514,17 @@ def brand_editor_node(state: SupervisorState) -> SupervisorState:
 # ---------------------------------------------------------------------
 # MERGE TWO EDITOR RESULTS INTO ONE
 # ---------------------------------------------------------------------
+def _feedback_issue_same_sentence(issue1: str, issue2: str) -> bool:
+    """Return True if the two feedback issue strings refer to the same sentence."""
+    n1 = " ".join((issue1 or "").split()).strip().lower()
+    n2 = " ".join((issue2 or "").split()).strip().lower()
+    if n1 == n2:
+        return True
+    if len(n1) < 15 and len(n2) < 15:
+        return False
+    return n1 in n2 or n2 in n1
+
+
 def merge_two_editor_results(
     result1: EditorResult,
     result2: EditorResult,
@@ -536,11 +547,27 @@ def merge_two_editor_results(
                          else blk1.suggested_text if blk1 and blk1.suggested_text 
                          else original_text)
         
-        combined_feedback = []
-        if blk1 and blk1.feedback_edit:
-            combined_feedback.extend(blk1.feedback_edit)
-        if blk2 and blk2.feedback_edit:
-            combined_feedback.extend(blk2.feedback_edit)
+        if combined_editor_type == "development+content":
+            content_issues = []
+            if blk2 and blk2.feedback_edit:
+                for sef in blk2.feedback_edit:
+                    for item in sef.items:
+                        content_issues.append(item.issue)
+            filtered_dev_feedback = []
+            if blk1 and blk1.feedback_edit:
+                for sef in blk1.feedback_edit:
+                    kept = [item for item in sef.items if not any(
+                        _feedback_issue_same_sentence(item.issue, ci) for ci in content_issues
+                    )]
+                    if kept:
+                        filtered_dev_feedback.append(SingleEditorFeedback(editor=sef.editor, items=kept))
+            combined_feedback = filtered_dev_feedback + (blk2.feedback_edit if blk2 and blk2.feedback_edit else [])
+        else:
+            combined_feedback = []
+            if blk1 and blk1.feedback_edit:
+                combined_feedback.extend(blk1.feedback_edit)
+            if blk2 and blk2.feedback_edit:
+                combined_feedback.extend(blk2.feedback_edit)
         
         merged_blocks.append(
             BlockEditResult(
