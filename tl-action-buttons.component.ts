@@ -34,7 +34,10 @@ from .schema import (
     SingleEditorFeedback
 )
 
-from .prompt import DEVELOPMENT_CONTENT_RESOLVE_CONFLICTS_PROMPT
+from .prompt import (
+    DEVELOPMENT_CONTENT_RESOLVE_CONFLICTS_PROMPT,
+    LINE_COPY_RESOLVE_CONFLICTS_PROMPT,
+)
 from .tools import (
     development_editor_tool,
     content_editor_tool,
@@ -606,11 +609,11 @@ def development_content_combined_node(state: SupervisorState) -> SupervisorState
         analysis_state = cross_paragraph_analysis_node({"document": updated_doc, **state})
         state = {**state, **analysis_state}
     
-    # Run Content Editor on updated document (with validation result and cross-paragraph analysis in state)
+    # Run Content Editor on original document only (with validation result and cross-paragraph analysis in state)
     content_state = content_editor_node({
         **dev_state,
         **state,
-        "document": updated_doc  # Use updated document for Content Editor
+        "document": original_document  # Content Editor parses original document only
     })
     content_result = content_state["editor_results"][-1]
     
@@ -648,15 +651,8 @@ def line_copy_combined_node(state: SupervisorState) -> SupervisorState:
     line_state = line_editor_node(state)
     line_result = line_state["editor_results"][-1]
     
-    # Update document with Line's suggestions for Copy Editor
-    updated_doc = DocumentStructure(blocks=[
-        DocumentBlock(id=b.id, type=b.type, level=b.level,
-                     text=b.suggested_text or b.original_text)
-        for b in line_result.blocks
-    ])
-    
-    # Run Copy Editor on updated document
-    copy_state = copy_editor_node({**line_state, "document": updated_doc})
+    # Run Copy Editor on original document only
+    copy_state = copy_editor_node({**line_state, "document": state["document"]})
     copy_result = copy_state["editor_results"][-1]
     
     # Merge results
@@ -668,22 +664,29 @@ def line_copy_combined_node(state: SupervisorState) -> SupervisorState:
 
 
 # ---------------------------------------------------------------------
-# RESOLVE DEVELOPMENT + CONTENT CONFLICTS (consolidate node via prompt)
+# RESOLVE COMBINED EDITOR CONFLICTS (consolidate node via prompt)
+# Used for development+content (content priority) and line+copy (line priority).
 # ---------------------------------------------------------------------
-def resolve_development_content_conflicts_node(state: SupervisorState) -> SupervisorState:
+def resolve_combined_editor_conflicts_node(state: SupervisorState) -> SupervisorState:
     """
-    After merging Development and Content editors, call LLM with a prompt to resolve
-    conflicts: content editor takes priority where both address the same line/sentence.
-    Replaces the last editor_result (development+content) with the resolved result.
+    After merging two editors, call LLM with the appropriate prompt to resolve conflicts.
+    development+content: Content editor takes priority on same span.
+    line+copy: Line editor takes priority on same span.
+    Replaces the last editor_result with the resolved result.
     """
     editor_results = state.get("editor_results", [])
     if not editor_results:
         return state
     last = editor_results[-1]
-    if last.editor_type != "development+content":
+    combined_type = last.editor_type
+    if combined_type == "development+content":
+        resolve_prompt = DEVELOPMENT_CONTENT_RESOLVE_CONFLICTS_PROMPT
+    elif combined_type == "line+copy":
+        resolve_prompt = LINE_COPY_RESOLVE_CONFLICTS_PROMPT
+    else:
         return state
 
-    logger.info("RUNNING: resolve_development_content_conflicts_node (prompt-based)")
+    logger.info(f"RUNNING: resolve_combined_editor_conflicts_node ({combined_type})")
     merged_result = last
     blocks_by_id = {b.id: b for b in merged_result.blocks}
 
@@ -700,9 +703,9 @@ def resolve_development_content_conflicts_node(state: SupervisorState) -> Superv
             "feedback_edit": feedback_edit,
         })
     input_payload = {"blocks": input_blocks}
-    prompt_text = f"""{DEVELOPMENT_CONTENT_RESOLVE_CONFLICTS_PROMPT}
+    prompt_text = f"""{resolve_prompt}
 
-INPUT (merged Development + Content feedback; resolve and return only resolved feedback_edit per block):
+INPUT (merged feedback; resolve and return resolved feedback_edit per block):
 
 {json.dumps(input_payload, indent=2)}
 """
@@ -749,7 +752,7 @@ INPUT (merged Development + Content feedback; resolve and return only resolved f
         )
 
     resolved_result = EditorResult(
-        editor_type="development+content",
+        editor_type=combined_type,
         blocks=resolved_blocks,
         warnings=list(merged_result.warnings),
         raw_output=None,
@@ -1610,7 +1613,7 @@ def build_sequential_graph():
     # Combined editor nodes
     graph.add_node("development_content_combined", development_content_combined_node)
     graph.add_node("line_copy_combined", line_copy_combined_node)
-    graph.add_node("resolve_development_content_conflicts", resolve_development_content_conflicts_node)
+    graph.add_node("resolve_combined_editor_conflicts", resolve_combined_editor_conflicts_node)
     
     # Validation nodes (run after editors)
     graph.add_node("article_validation", article_validation_node)
@@ -1663,10 +1666,10 @@ def build_sequential_graph():
     )
     graph.add_edge("development_editor_tool", "article_validation")
     
-    # Development+Content: combined node -> resolve conflicts (prompt) -> merge
-    graph.add_edge("development_content_combined", "resolve_development_content_conflicts")
-    graph.add_edge("resolve_development_content_conflicts", "merge")
-    graph.add_edge("line_copy_combined", "merge")
+    # Combined editors: run -> same resolve node (prompt) -> merge
+    graph.add_edge("development_content_combined", "resolve_combined_editor_conflicts")
+    graph.add_edge("line_copy_combined", "resolve_combined_editor_conflicts")
+    graph.add_edge("resolve_combined_editor_conflicts", "merge")
     
     graph.add_conditional_edges(
         "article_validation",
