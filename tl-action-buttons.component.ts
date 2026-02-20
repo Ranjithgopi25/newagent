@@ -2291,27 +2291,21 @@ Return ONLY valid JSON. No markdown fences, no commentary. The top-level key mus
 LINE_COPY_RESOLVE_CONFLICTS_PROMPT = """
 You are resolving conflicts between Line Editor and Copy Editor suggestions for the same document blocks.
 
-CONTEXT: Line Editor and Copy Editor operate at similar granularity levels, both addressing sentence-level and line-level improvements. When both editors suggest changes for the same line or sentence, you must merge their suggestions into a combined feedback item while also preserving their individual items.
-
-RULE: When both editors address the same line or sentence, merge them into a combined "line+copy" feedback item AND include both individual editor items.
-- Where both editors suggest a change for the same line/sentence in a block, create a merged "line+copy" feedback item that combines both suggestions.
-- Include ALL individual Line Editor items (even if merged).
-- Include ALL individual Copy Editor items (even if merged).
-- Include ALL non-overlapping suggestions from both editors.
+RULE: Merge both editors where both address the same line or sentence.
+- Where both editors suggest a change for the same line/sentence in a block, MERGE them into a SINGLE feedback item.
+- Include ALL non-overlapping Line Editor suggestions.
+- Include ALL non-overlapping Copy Editor suggestions.
 
 IMPORTANT MERGING RULES: When both editors address the same line/sentence:
-- Create ONE merged feedback item with editor "line+copy":
-  * "issue": Use Line Editor's "issue" field (references the original problematic text)
-  * "fix": Generate a COMBINED fix that intelligently merges both Line Editor's "fix" and Copy Editor's "fix". The combined fix should incorporate improvements from both editors, not just use one editor's fix.
-  * "impact": Combine both impacts into a list format: [Line Editor's impact, Copy Editor's impact]. If impacts are similar, you may combine them into a single comprehensive impact statement.
-  * "rule_used": Combine both rules: "[Line Editor's rule_used] + [Copy Editor's rule_used]" or create a combined rule description that captures both.
+- Create ONE merged feedback item with:
+  * "issue": Use Line Editor's "issue" field (references the ORIGINAL text)
+  * "fix": Generate a new merged fix that intelligently combines both Line Editor's "fix" and Copy Editor's "fix". The merged fix should incorporate the best aspects of both suggestions into a coherent solution.
+  * "impact": Format as an array string combining both impacts: "['Impact from Line Editor', 'Impact from Copy Editor']"
+  * "rule_used": Format as an array string combining both rules: "['Line Editor - Rule X', 'Copy Editor - Rule Y']"
   * "priority": Use the higher priority between the two (Critical > Important > Enhancement)
-  * "editor": Use "line+copy"
-- ALSO include the original Line Editor item with editor "line" (preserve it as-is).
-- ALSO include the original Copy Editor item with editor "copy" (preserve it as-is).
-- ALSO include the merged "line+copy" item INSIDE the "line" editor block (add it to the line editor's items array).
-- ALSO include the merged "line+copy" item INSIDE the "copy" editor block (add it to the copy editor's items array).
-- The block's feedback_edit array will contain: [merged "line+copy" item as separate block, "line" block with all line items + merged item, "copy" block with all copy items + merged item, plus any non-overlapping items].
+  * "editor": Use "line+copy" (since this is a merged item from both editors)
+- Do NOT include separate Line Editor and Copy Editor items for the same line - merge them.
+- Only include separate items when they address DIFFERENT lines/sentences.
 
 INPUT: You will receive a JSON object with a "blocks" array. Each block has:
 - "id": block id (e.g. "b1")
@@ -2322,9 +2316,9 @@ INPUT: You will receive a JSON object with a "blocks" array. Each block has:
 OUTPUT: Return a single JSON object with a "blocks" array. Each block MUST have:
 - "id": same as input
 - "suggested_text": same as input (unchanged)
-- "feedback_edit": array of SingleEditorFeedback. For overlapping items (same line/sentence), create a merged "line+copy" item AND include both original "line" and "copy" items. For non-overlapping items, include them with their original editor. The structure should be: [ { "editor": "line+copy", "items": [merged_item] }, { "editor": "line", "items": [all_line_items] }, { "editor": "copy", "items": [all_copy_items] } ]
+- "feedback_edit": array of SingleEditorFeedback. For overlapping items (same line/sentence), merge into ONE item using Line Editor's "issue" + intelligently merged "fix" combining both editors. For non-overlapping items, include them separately. Preserve the exact structure: [ { "editor": "line" | "copy" | "line+copy", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] } ]
 
-Two feedback items address the "same line/sentence" when their "issue" (quoted original text) refers to the same or overlapping part of the block (e.g. same phrase, same sentence, or one contains the other). When merging: Line Editor's "issue" shows the original problem, and you must generate a combined "fix" that incorporates improvements from both Line and Copy Editor suggestions.
+Two feedback items address the "same line/sentence" when their "issue" (quoted original text) refers to the same or overlapping part of the block (e.g. same phrase, same sentence, or one contains the other). When merging: Line Editor's "issue" shows the original problem, and the merged "fix" intelligently combines both editors' solutions.
 
 Return ONLY valid JSON. No markdown fences, no commentary. The top-level key must be "blocks" (array of objects with "id", "suggested_text", "feedback_edit").
 """
