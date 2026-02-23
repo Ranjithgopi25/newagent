@@ -1,93 +1,55 @@
-import { Component, Input, Output, EventEmitter } from '@angular/core';
 
-import { EditorOption } from '../../../../core/models';
-
-@Component({
-    selector: 'app-editor-selection',
-    imports: [],
-    templateUrl: './editor-selection.component.html',
-    styleUrl: './editor-selection.component.scss'
-})
-export class EditorSelectionComponent {
-  @Input() editors: EditorOption[] = [];
-  @Output() selectionChanged = new EventEmitter<EditorOption[]>();
-  @Output() submitted = new EventEmitter<string[]>();
-  @Output() cancelled = new EventEmitter<void>();
-
-  toggleEditor(editor: EditorOption): void {
-    // Prevent toggling brand-alignment as it's always required
-    if (editor.id === 'brand-alignment' || editor.alwaysSelected || editor.disabled) {
-      return;
+<div class="editor-selection">
+  <div class="editor-chips">
+    <!-- Selectable Editors (Development, Content, Line, Copy) -->
+    @for (editor of selectableEditors; track editor; let i = $index) {
+      <button
+        class="editor-chip"
+        [class.selected]="isSelected(editor.id)"
+        (click)="toggleEditor(editor)"
+        type="button">
+        <span class="editor-number">{{i + 1}}</span>
+        <span class="editor-icon">{{editor.icon}}</span>
+        <div class="editor-info">
+          <span class="editor-name" [innerHTML]="getEditorNameHtml(editor.name)"></span>
+          <span class="editor-description">{{editor.description}}</span>
+        </div>
+        @if (isSelected(editor.id)) {
+          <span class="check-mark">✓</span>
+        }
+      </button>
     }
 
-    const updatedEditors = this.editors.map(e => {
-      if (e.id === editor.id) {
-        return { ...e, selected: !e.selected };
-      }
-      return e;
-    });
-    
-    // Ensure brand-alignment is always selected
-    const editorsWithBrand = updatedEditors.map(e => {
-      if (e.id === 'brand-alignment') {
-        return { ...e, selected: true };
-      }
-      return e;
-    });
-    
-    this.editors = editorsWithBrand;
-    this.selectionChanged.emit(editorsWithBrand);
-  }
-
-  isSelected(editorId: string): boolean {
-    return this.editors.find(e => e.id === editorId)?.selected || false;
-  }
-
-  /** Same as Edit Content flow: bold text before first parenthesis for display. */
-  getEditorNameHtml(name: string): string {
-    if (!name) return '';
-    const escape = (s: string) => s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const idx = name.indexOf('(');
-    if (idx >= 0) {
-      const before = escape(name.slice(0, idx).trim());
-      const inBracket = escape(name.slice(idx));
-      return `<strong>${before}</strong> ${inBracket}`;
+    <!-- PwC Brand Alignment Editor (Disabled, Always ON) -->
+    @if (brandAlignmentEditor) {
+      <button
+        class="editor-chip selected disabled"
+        type="button"
+        disabled>
+        <span class="editor-number">{{selectableEditors.length + 1}}</span>
+        <span class="editor-icon">{{brandAlignmentEditor.icon}}</span>
+        <div class="editor-info">
+          <span class="editor-name" [innerHTML]="getEditorNameHtml(brandAlignmentEditor.name)"></span>
+          <span class="editor-description">{{brandAlignmentEditor.description}}</span>
+        </div>
+        <span class="check-mark">✓</span>
+      </button>
     }
-    return `<strong>${escape(name)}</strong>`;
-  }
+  </div>
 
-  /**
-   * Get selectable editors (excluding brand-alignment which is always enabled)
-   */
-  get selectableEditors(): EditorOption[] {
-    return this.editors.filter(editor => editor.id !== 'brand-alignment');
-  }
-
-  /**
-   * Get brand alignment editor info
-   */
-  get brandAlignmentEditor(): EditorOption | undefined {
-    return this.editors.find(editor => editor.id === 'brand-alignment');
-  }
-
-  submitSelection(): void {
-    // Always include brand-alignment in the submitted list
-    const selectedIds = this.editors.filter(e => e.selected).map(e => e.id);
-    if (!selectedIds.includes('brand-alignment')) {
-      selectedIds.push('brand-alignment');
-    }
-    this.submitted.emit(selectedIds);
-  }
-
-  cancelSelection(): void {
-    this.cancelled.emit();
-  }
-
-  get canSubmit(): boolean {
-    return this.editors.some(e => e.selected);
-  }
-
-  get selectedCount(): number {
-    return this.editors.filter(e => e.selected).length;
-  }
-}
+  <div class="editor-actions">
+    <button
+      class="cancel-button"
+      (click)="cancelSelection()"
+      type="button">
+      Cancel
+    </button>
+    <button
+      class="submit-button"
+      [disabled]="!canSubmit"
+      (click)="submitSelection()"
+      type="button">
+      Continue with {{selectedCount}} {{selectedCount === 1 ? 'Editor' : 'Editors'}}
+    </button>
+  </div>
+</div>
