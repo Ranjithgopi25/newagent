@@ -1,3 +1,4 @@
+
 import { Injectable, inject } from '@angular/core';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { BehaviorSubject, Observable, Subject, firstValueFrom } from 'rxjs';
@@ -92,38 +93,24 @@ export class ChatEditWorkflowService {
   private readonly MAX_FILE_SIZE_MB = 5;
 
   readonly editorOptions: EditorOption[] = [
-    { 
-      id: 'development', 
-      name: 'Development Editor', 
-      icon: '🚀', 
-      description: 'Reviews and restructures content for alignment and coherence',
+    {
+      id: 'development+content',
+      name: 'Strengthen content structure and key messaging (clarify positioning, flow, and key points)',
+      icon: '🚀',
+      description: 'Development and Content editors run together, then combined into one result',
       selected: false
     },
-    { 
-      id: 'content', 
-      name: 'Content Editor', 
-      icon: '📄', 
-      description: "Refines language to align with the author's objectives",
+    {
+      id: 'line+copy',
+      name: 'Copyedit (smooth phrasing, grammar, and consistency)',
+      icon: '📝',
+      description: 'Line and Copy editors run together, then combined into one result',
       selected: false
     },
-    { 
-      id: 'line', 
-      name: 'Line Editor', 
-      icon: '📝', 
-      description: 'Improves sentence flow, readability and style preserving voice',
-      selected: false
-    },
-    { 
-      id: 'copy', 
-      name: 'Copy Editor', 
-      icon: '✏️', 
-      description: 'Corrects grammar, punctuation and typos',
-      selected: false
-    },
-    { 
-      id: 'brand-alignment', 
-      name: 'PwC Brand Alignment Editor', 
-      icon: '🎯', 
+    {
+      id: 'brand-alignment',
+      name: 'Align to PwC brand standards (tone, terminology, and formatting)',
+      icon: '🎯',
       description: 'Aligns content writing standards with PwC brand',
       selected: true
     }
@@ -557,7 +544,7 @@ export class ChatEditWorkflowService {
       if (numberMatches) {
         numberMatches.forEach(numStr => {
           const num = parseInt(numStr);
-          if (num >= 1 && num <= 5 && !optedOut.includes(num)) {
+          if (num >= 1 && num <= this.editorOptions.length && !optedOut.includes(num)) {
             optedOut.push(num);
           }
         });
@@ -1374,8 +1361,8 @@ export class ChatEditWorkflowService {
 
   private createEditorSelectionMessage(content: string, editorOptions?: EditorOption[]): Message {
     const editors = editorOptions || this.cloneEditorOptions();
-    // Set default selection state (only brand-alignment selected by default, and always selected)
-    const defaultSelectedIds = ['brand-alignment'];
+    // Same as guided journey: all 3 selected by default; brand-alignment always selected and disabled
+    const defaultSelectedIds = ['development+content', 'line+copy', 'brand-alignment'];
     const editorsWithSelection = editors.map(editor => ({
       ...editor,
       selected: defaultSelectedIds.includes(editor.id),
