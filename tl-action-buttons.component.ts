@@ -1,856 +1,1210 @@
-@import '../../../shared/ui/styles/design-tokens';
-@import '../../../shared/ui/styles/mixins';
-@import '../../ddc/brand-format-flow/brand-format-flow.component.scss';
+import { Component, OnInit, OnDestroy, ViewChild, ElementRef, Output, EventEmitter } from '@angular/core';
 
-.upload-instructions {
-  //margin-bottom: 16px;
-  margin-top: 8px;
+import { FormsModule } from '@angular/forms';
+import { MatSelectModule } from '@angular/material/select';
+import { MatOptionModule } from '@angular/material/core';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { Subject, Subscription, takeUntil, Observable } from 'rxjs';
+import { TlFlowService } from '../../../core/services/tl-flow.service';
+import { ChatService } from '../../../core/services/chat.service';
+import { AuthFetchService } from '../../../core/services/auth-fetch.service';
+import { FileUploadComponent } from '../../../shared/ui/components/file-upload/file-upload.component';
+import { environment } from '../../../../environments/environment';
+import { toSnakeCase } from '../../../core/utils/string.utils';
+import { ThoughtLeadershipMetadata } from '../../../core/models';
 
-  .form-label {
-    font-size: 11.5px;
-    font-weight: 500;
-    margin-bottom: 8px;
-  }
-
-  .text-input {
-    resize: vertical;
-    min-height: 60px;
-  }
-}
- // Introduction text styling
-.panel-title {
-  font-size: 14px;
-  color: var(--text-primary);
-  margin-bottom: 24px;
-  line-height: 1.5;
-}
-
-.conditional-field {
-  margin-top: 12px;
-  padding: 16px;
-  background: #FFF5EB;
-  border-radius: 0px;
-
-  &.editor-options, &.research-options {
-    padding: 16px;
-  }
-
-  // All sub-option text should be 11.5px
-  .form-label,
-  .text-input,
-  .editor-title,
-  .editor-description,
-  .toggle-label,
-  .checkbox-label,
-  .source-section-title {
-    font-size: 11.5px !important;
-  }
-}
-
-// Word limit input box styling
-.word-limit-input-box {
-  position: absolute;
-  right: 0;
-  top: 30%;
-  transform: translateY(-50%);
-  width: 80px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.word-limit-input {
-  width: 112px;
-  height: 30px;
-  padding: 4px 8px;
-  font-size: 16px;
-  text-align: left;
-  border: 1px solid #ccc;
-  border-radius: 0px ;
-  background: #fff;
-  color: #222;
-  box-sizing: border-box;
-}
-
-.text-input {
-  width: 100%;
-  padding: 10px 14px;
-  border: 2px solid var(--border-color);
-  border-radius: 0px;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-size: 0.9rem;
-  transition: all 0.2s;
-
-  &:focus {
-    outline: none;
-    border-color: #FFAA72;
-  }
-
-  &::placeholder {
-    color: #aaa;
-  }
-}
-
-.custom-select {
-  width: 100%;
-  display: block;
+@Component({
+    selector: 'app-refine-content-flow',
+    imports: [FormsModule, FileUploadComponent, MatSelectModule, MatOptionModule, MatFormFieldModule],
+    templateUrl: './refine-content-flow.component.html',
+    styleUrls: ['./refine-content-flow.component.scss']
+})
+export class RefineContentFlowComponent implements OnInit, OnDestroy {
+  @Output() contentGenerated = new EventEmitter<string>();
+  @Output() streamToChat = new EventEmitter<{userMessage: string, streamObservable: any, fileName?: string, metadata?: ThoughtLeadershipMetadata}>();
+  isGenerating = false;
+  refinedContent = '';
+  refinedTitle = '';
+  refinedContentBody = '';
   
-  // Remove Material underline and make it look like a regular input
-  ::ng-deep {
-    // Hide subscript area (removes space for hints/errors)
-    .mat-mdc-form-field-subscript-wrapper {
-      display: none !important;
-    }
-    
-    // Remove bottom border line
-    .mat-mdc-form-field-bottom-align {
-      display: none !important;
-    }
-    
-    // Remove underline/ripple
-    .mdc-line-ripple {
-      display: none !important;
-    }
-    
-    .mat-mdc-text-field-wrapper {
-      padding: 0 !important;
-    }
-    
-    // Main container - 40px height to match text inputs
-    .mat-mdc-form-field-flex {
-      align-items: center;
-      padding: 0 14px !important;
-      height: 40px !important;
-      border: 2px solid var(--border-color) !important;
-      border-radius: 8px !important;
-      background: var(--bg-primary) !important;
-      transition: all 0.2s;
-    }
-    
-    // Remove focus overlay
-    .mat-mdc-form-field-focus-overlay {
-      display: none !important;
-    }
-    
-    // Remove infix padding
-    .mat-mdc-form-field-infix {
-      padding: 0 !important;
-      border: none !important;
-      min-height: auto !important;
-    }
-    
-    .mat-mdc-select {
-      font-size: 11.5px;
-      color: var(--text-primary);
-    }
-    
-    .mat-mdc-select-placeholder {
-      color: #aaa;
-      font-size: 11.5px;
-    }
-    
-    .mat-mdc-select-value {
-      font-size: 11.5px;
-    }
-    
-    .mat-mdc-select-arrow {
-      color: #FFAA72;
-    }
-    
-    // Ensure trigger takes full height
-    .mat-mdc-select-trigger {
-      height: 100%;
-      display: flex;
-      align-items: center;
-    }
-  }
+  // File upload
+  uploadedFile: File | null = null;
+  uploadedFileWordCount = 'uploaded content';
+  documentUploadError = false;
   
-  // Focus state - orange border with subtle shadow
-  &:hover ::ng-deep .mat-mdc-form-field-flex {
-    border-color: #FFAA72 !important;
-  }
+  // Service toggles - all ON by default
+  expandCompressContent = false;
+  adjustAudienceTone = false;
+  enhanceResearch = false;
+  editContent = false;
+  provideSuggestions = false;
+  expandGuidelines = '';
   
-  // When focused - orange border
-  &.mat-focused ::ng-deep .mat-mdc-form-field-flex {
-    border-color: #FFAA72 !important;
-    outline: none !important;
-    box-shadow: 0 0 0 2px rgba(208, 74, 2, 0.08) !important;
+  // Edit Content sub-options (editor types) - all ON by default
+  developmentEditor = true;
+  contentEditor = true;
+  lineEditor = true;
+  copyEditor = true;
+  pwcBrandEditor = true; // Always true, disabled in UI
+  
+  // Enhance Research sub-options - sources ON by default
+  researchTopics = '';
+  researchGuidelines = '';
+  pwcContentLink = true;
+  pwcProprietaryResearch = true;
+  pwcLicensedThirdParty = true;
+  externalResearch = true;
+  researchDocumentFile: File | null = null;
+  researchDocInstructions = '';
+  researchLinks = '';
+  
+  // Multi-file support for research documents
+  researchDocumentFiles: File[] = [];
+  readonly MAX_RESEARCH_DOCS = 5;
+  readonly MAX_RESEARCH_TOKEN_LIMIT = 50000;
+  researchDocsTokenError = false;
+  researchDocsFileLimitError = false;
+  selectSpecificPwcSources = false;
+  allPwcProprietarySources = false;
+  pwcSource1 = false;
+  pwcSource2 = false;
+  pwcSource3 = false;
+  pwcSource4 = false;
+  allPwcThirdPartySources = false;
+  pwcThirdPartySource1 = false;
+  pwcThirdPartySource2 = false;
+  pwcThirdPartySource3 = false;
+  pwcThirdPartySource4 = false;
+  
+pwcProprietarySources = [
+    { name: 'PwC industry edge', selected: true },
+    { name: 'PwC.com', selected: true },
+    { name: 'PwC insights', selected: true },
+    { name: 's+b journal', selected: true },
+    { name: 'Executive leadership hub', selected: true },
+    { name: 'The exchange', selected: true },
+    { name: 'PwC connected source', selected: true },
+    { name: 'PwC benchmarking', selected: true },
+    //{ name: 'Insights Factory', selected: true },
+    //{ name: 'PwC Intelligence', selected: true },
+    //{ name: 'C-Suite Connection Program', selected: true },
+    //{ name: 'Viewpoint', selected: true },
+    //{ name: 'Analyst and Advisor Relations', selected: true },
+    //{ name: 'Assurance Benchmarking Tools', selected: true },
+    //{ name: 'Policy on Demand', selected: true },
+    //{ name: 'Tax Source', selected: true },
+    //{ name: 'FFG Benchmarking', selected: true },
+    //{ name: 'Client Success Stories', selected: true },
+    //{ name: 'Inside Industries', selected: true },
+    //{ name: 'Value Store', selected: true }
+  ];
+
+  pwcThirdPartySources = [
+  { name: 'Factiva, WSJ, Dow Jones', selected: true },
+    { name: 'S&P Global- Capital IQ Xpressfeed', selected: true },
+    { name: 'IBIS World', selected: true },
+    { name: 'BoardEx', selected: true },
+    // { name: 'S&P Global- Connect', selected: true },
+    // { name: 'Audit Analytics', selected: true },
+    // { name: 'S&P Global- SNL Insurance', selected: true },
+    // { name: 'Claritas', selected: true },
+    // { name: 'Equifax', selected: true },
+    // { name: 'Equifax IXI', selected: true },
+    // { name: 'Definitive Healthcare Provider Database', selected: true },
+    // { name: 'Sg2 Health Care Intelligence', selected: true },
+    // //{ name: 'Strata Market Insights', selected: true },
+    // //{ name: 'CompanyIQ', selected: true },
+    // { name: 'Global Data(Retail)', selected: true },
+    // { name: 'Technology Business Review', selected: true },
+    
+    // //{ name: 'IDC', selected: true },
+    // { name: 'CFRA Industry Surveys', selected: true }
+];
+
+  // Conditional fields
+  wordLimitExpandCompress: number = 0;
+  maxWordLimitExpandCompress: number = 0;
+  // Inline background style for the slider to color the left side up to the thumb
+  wordLimitSliderBackground = '';
+  selectedAudienceTone = '';
+  audienceToneInput = '';
+  wordLimitResearch = '';
+
+  // Audience/Tone dropdown options
+  audienceToneOptions = [
+    'Mediagenic',
+    'Professional Tone - CEO',
+    'Professional Tone - CTO',
+    'Professional Tone - CFO',
+    'Casual Tone',
+    'Others'
+  ];
+
+  private destroy$ = new Subject<void>();
+  private streamSubscription?: Subscription;
+
+  // Document upload component reference
+  @ViewChild('documentUpload') documentUploadRef?: FileUploadComponent;
+  
+  // Supporting document for Expand/Compress when slider exceeds uploaded file word count
+  @ViewChild('expandSupportingUpload', { read: ElementRef, static: false }) expandSupportingUploadRef?: ElementRef;
+  expandSupportingDocFile: File | null = null;
+  expandSupportingDocError: string | null = null;
+  
+  // Multi-file support for supporting documents
+  expandSupportingDocFiles: File[] = [];
+  readonly MAX_SUPPORTING_DOCS = 5;
+  readonly MAX_TOKEN_LIMIT = 50000;
+  supportingDocsTokenError = false;
+  supportingDocsFileLimitError = false;
+
+  constructor(
+    public tlFlowService: TlFlowService,
+    private chatService: ChatService,
+    private authFetchService: AuthFetchService
+  ) {}
+
+  ngOnInit(): void {
+    this.tlFlowService.activeFlow$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((flow: any) => {
+        if (flow === 'refine-content') {
+          // Flow opened - reset to ensure fresh state
+          this.resetForm();
+        }
+      });
   }
-}
 
-.action-buttons {
-  display: flex;
-  gap: 12px;
-  margin-top: 16px;
-  flex-wrap: wrap;
-}
-
-// Editor sub-options styling - match main toggle size
-.editor-checklist {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.editor-toggle-item {
-  position: relative;
-  cursor: pointer;
-  display: block;
-
-  &.disabled {
-    cursor: not-allowed;
-    opacity: 0.7;
+  ngOnDestroy(): void {
+    this.cancelStream();
+    this.destroy$.next();
+    this.destroy$.complete();
   }
 
-  input[type="checkbox"] {
-    position: absolute;
-    opacity: 0;
-    width: 0;
-    height: 0;
+  private cancelStream(): void {
+    if (this.streamSubscription) {
+      console.log('[RefineContentFlow] Cancelling active stream');
+      this.streamSubscription.unsubscribe();
+      this.streamSubscription = undefined;
+      this.isGenerating = false;
+    }
+  }
 
-    &:checked + .editor-toggle-switch {
-      background: #FFAA72;
-      color: black;
+  get isOpen(): boolean {
+    return this.tlFlowService.currentFlow === 'refine-content';
+  }
 
-      .editor-toggle-indicator {
-        background: rgba(255, 255, 255, 0.3);
-        
-        &::before {
-          transform: translateX(24px);
+  get isDocumentUploaded(): boolean {
+    return this.uploadedFile !== null;
+  }
+
+  onClose(): void {
+    this.cancelStream();
+    this.resetForm();
+    this.tlFlowService.closeFlow();
+  }
+
+  back(): void{
+    this.cancelStream();
+    this.documentUploadError = false;
+    this.tlFlowService.closeFlow();
+    this.tlFlowService.openGuidedDialog();
+  }
+
+  // helper: convert uploadedFileWordCount (string) to number if possible
+  private getUploadedFileWordCountNumber(): number | null {
+    const n = Number(this.uploadedFileWordCount);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+  }
+
+  // show banner when Expand/Compress is ON and slider value > uploaded file word count
+  get showExpandSupportBanner(): boolean {
+    if (!this.expandCompressContent) return false;
+    const uploadedCount = this.getUploadedFileWordCountNumber();
+    if (uploadedCount === null) return false;
+    return !!(this.wordLimitExpandCompress && this.wordLimitExpandCompress > uploadedCount);
+  }
+
+  onExpandSupportingDocSelected(file: File | null): void {
+    // Clear previous error
+    this.expandSupportingDocError = null;
+
+    if (!file) {
+      this.expandSupportingDocFile = null;
+      return;
+    }
+
+    // Prevent uploading the same file name as the required upload (name-only check)
+    if (this.uploadedFile && file.name === this.uploadedFile.name) {
+      this.expandSupportingDocFile = null;
+      this.expandSupportingDocError = 'Supporting document must have a different file name than the required upload.';
+      return;
+    }
+
+    this.expandSupportingDocFile = file;
+  }
+
+  removeExpandSupportingDoc(): void {
+    this.expandSupportingDocFile = null;
+    this.expandSupportingDocError = null;
+    // Reset underlying input so same file can be re-uploaded
+    try {
+      if (this.expandSupportingUploadRef?.nativeElement) {
+        const hostEl = this.expandSupportingUploadRef.nativeElement as HTMLElement;
+        const fileInput = hostEl.querySelector('input[type="file"]') as HTMLInputElement | null;
+        if (fileInput) {
+          fileInput.value = '';
+          fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          const nestedInput = hostEl.querySelector('input') as HTMLInputElement | null;
+          if (nestedInput) {
+            nestedInput.value = '';
+            nestedInput.dispatchEvent(new Event('change', { bubbles: true }));
+          }
         }
       }
+    } catch {
+      /* ignore errors - best effort reset */
+    }
+  }
+
+  // Multi-file supporting documents handler
+  onExpandSupportingDocsFilesChange(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      const filesArray = Array.from(input.files);
+      
+      // Check total file count limit
+      const totalFiles = this.expandSupportingDocFiles.length + filesArray.length;
+      if (totalFiles > this.MAX_SUPPORTING_DOCS) {
+        this.supportingDocsFileLimitError = true;
+        this.supportingDocsTokenError = false;
+        input.value = ''; // Reset input
+        return;
+      }
+
+      // Add files and validate
+      this.expandSupportingDocFiles = [...this.expandSupportingDocFiles, ...filesArray];
+      this.supportingDocsFileLimitError = false;
+      this.validateSupportingDocsTokenCount();
+      input.value = ''; // Reset to allow re-uploading same file
+    }
+  }
+
+  removeExpandSupportingDocAtIndex(index: number): void {
+    this.expandSupportingDocFiles = this.expandSupportingDocFiles.filter((_, i) => i !== index);
+    this.supportingDocsTokenError = false;
+    this.supportingDocsFileLimitError = false;
+    
+    // Revalidate remaining files
+    if (this.expandSupportingDocFiles.length > 0) {
+      this.validateSupportingDocsTokenCount();
+    }
+  }
+
+  async validateSupportingDocsTokenCount(): Promise<void> {
+    let totalTokens = 0;
+    
+    for (const file of this.expandSupportingDocFiles) {
+      const text = await this.extractFileText(file);
+      // Approximate: 1 token ≈ 4 characters
+      const tokens = Math.ceil(text.length / 4);
+      totalTokens += tokens;
     }
 
-    &:disabled + .editor-toggle-switch {
-      background: #BDBDBD;
-      color: white;
-      cursor: not-allowed;
+    if (totalTokens > this.MAX_TOKEN_LIMIT) {
+      this.supportingDocsTokenError = true;
+      // Auto-remove the last file added
+      this.expandSupportingDocFiles = this.expandSupportingDocFiles.slice(0, -1);
+    } else {
+      this.supportingDocsTokenError = false;
+    }
+  }
 
-      .editor-toggle-indicator::before {
-        transform: translateX(24px);
+  // ensure state cleared on reset/close
+  resetForm(): void {
+    this.uploadedFile = null;
+    this.uploadedFileWordCount = 'uploaded content';
+    this.documentUploadError = false;
+    this.expandCompressContent = false;
+    this.adjustAudienceTone = false;
+    this.enhanceResearch = false;
+    this.editContent = false;
+    this.provideSuggestions = false;
+    this.developmentEditor = true;
+    this.contentEditor = true;
+    this.lineEditor = true;
+    this.copyEditor = true;
+    this.pwcBrandEditor = true;
+    this.researchTopics = '';
+    this.pwcContentLink = false;
+    this.pwcProprietaryResearch = true;
+    this.pwcLicensedThirdParty = true;
+    this.externalResearch = true;
+    this.researchDocumentFile = null;
+    this.researchLinks = '';
+    this.selectSpecificPwcSources = false;
+  this.allPwcProprietarySources = true;
+  this.pwcSource1 = true;
+  this.pwcSource2 = true;
+  this.pwcSource3 = true;
+  this.pwcSource4 = true;
+  this.allPwcThirdPartySources = true;
+  this.pwcThirdPartySource1 = true;
+  this.pwcThirdPartySource2 = true;
+  this.pwcThirdPartySource3 = true;
+  this.pwcThirdPartySource4 = true;
+    this.wordLimitExpandCompress = 0;
+    this.maxWordLimitExpandCompress = 0;
+    this.updateSliderBackground(this.wordLimitExpandCompress);
+    this.selectedAudienceTone = '';
+    this.audienceToneInput = '';
+    this.wordLimitResearch = '';
+    this.refinedContent = '';
+    this.refinedTitle = '';
+    this.refinedContentBody = '';
+    this.isGenerating = false;
+    this.expandSupportingDocFile = null;
+    this.expandSupportingDocFiles = [];
+    this.supportingDocsTokenError = false;
+    this.supportingDocsFileLimitError = false;
+    this.researchDocumentFiles = [];
+    this.researchDocsTokenError = false;
+    this.researchDocsFileLimitError = false;
+    this.researchDocInstructions= '';
+    this.researchGuidelines = '';
+    this.expandGuidelines = '';
+
+    // Ensure per-source selected flags are in sync with defaults
+    try {
+      this.pwcProprietarySources.forEach(s => s.selected = true);
+      this.pwcThirdPartySources.forEach(s => s.selected = true);
+    } catch (e) {
+      // ignore if arrays not initialized yet
+    }
+  }
+
+  private parseRefinedContent(): void {
+    if (!this.refinedContent) {
+      this.refinedTitle = '';
+      this.refinedContentBody = '';
+      return;
+    }
+
+    // Parse title from format: **Title**\n\nContent
+    const titleMatch = this.refinedContent.match(/^\*\*(.+?)\*\*\s*\n\n/);
+    if (titleMatch) {
+      this.refinedTitle = titleMatch[1];
+      // Extract content after title (skip title line and blank line)
+      const contentStart = titleMatch[0].length;
+      this.refinedContentBody = this.refinedContent.substring(contentStart).trim();
+    } else {
+      // Try alternative format: **Title**\nContent (single newline)
+      const titleMatchAlt = this.refinedContent.match(/^\*\*(.+?)\*\*\s*\n/);
+      if (titleMatchAlt) {
+        this.refinedTitle = titleMatchAlt[1];
+        const contentStart = titleMatchAlt[0].length;
+        this.refinedContentBody = this.refinedContent.substring(contentStart).trim();
+      } else {
+        // No title found, use entire content as body
+        this.refinedTitle = '';
+        this.refinedContentBody = this.refinedContent;
       }
     }
   }
-}
 
-.editor-toggle-switch {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  background: #F5F5F5;
-  border-radius: 0px;
-  transition: all 0.3s ease;
-  min-height: 48px;
-
-  &.disabled {
-    cursor: not-allowed;
-  }
-}
-
-.editor-toggle-indicator {
-  flex-shrink: 0;
-  width: 48px;
-  height: 24px;
-  background: #E0E0E0;
-  border-radius: 9px;
-  position: relative;
-  transition: all 0.3s ease;
-
-  &::before {
-    content: '';
-    position: absolute;
-    width: 20px;
-    height: 20px;
-    background: var(--bg-primary);
-    border-radius: 50%;
-    top: 2px;
-    left: 2px;
-    transition: transform 0.3s ease;
-  }
-}
-
-.editor-content {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-}
-
-.editor-title {
-  font-weight: 600;
-  font-size: 0.9rem;
-}
-
-.editor-description {
-  font-size: 0.8rem;
-  opacity: 0.85;
-  font-style: italic;
-}
-
-// Research options styling
-.research-sources-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.source-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.toggle-item.compact {
-  .toggle-switch {
-    padding: 10px 14px;
-    min-height: 44px;
-  }
-
-  .toggle-label {
-    font-size: 0.9rem;
-  }
-  
-  input[type="checkbox"]:checked + .toggle-switch {
-    background: #FFAA72;
-    border-color: #FFAA72;
+  onFileSelected(file: File): void {
+    // Validate file format - reject PPTX files
+    const acceptedFormats = ['.doc', '.docx', '.pdf', '.txt'];
+    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+    const isValidFormat = acceptedFormats.includes(fileExtension);
     
-    .toggle-indicator {
-      background: rgba(255, 255, 255, 0.3);
+    if (!isValidFormat) {
+      console.warn(`[RefineContentFlow] Invalid file format: ${file.name}. Accepted formats: .doc, .docx, .pdf, .txt`);
+      this.documentUploadError = true;
+      // Reset the file upload component to prevent invalid file from being stored
+      if (this.documentUploadRef) {
+        this.documentUploadRef.reset();
+      }
+      return;
     }
     
-    .toggle-label {
-      color: black;
-    }
-  }
-}
-
-// Checkbox styling
-.checkbox-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  margin-bottom: 8px;
-
-  input[type="checkbox"] {
-    width: 18px;
-    height: 18px;
-    cursor: pointer;
-    accent-color: #FFAA72;
+    this.documentUploadError = false;
+    this.uploadedFile = file;
+    // Extract word count from file
+    this.extractWordCount(file);
   }
 
-  .checkbox-label {
-    font-size: 13px;
-    color: var(--text-primary);
-    cursor: pointer;
-  }
-}
-
-.checkbox-label {
-  font-size: 0.9rem;
-  cursor: pointer;
-}
-
-.source-section {
-  margin-bottom: 16px;
-
-  &:last-child {
-    margin-bottom: 0;
-  }
-}
-
-.source-title {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 12px;
-}
-
-.source-section-title {
-  font-size: 0.95rem;
-  font-weight: 600;
-  margin: 0 0 12px 0;
-  font-style: italic;
-}
-
-// Refined content output styling
-.refined-title {
-  font-size: 1.25rem;
-  font-weight: 700;
-  color: #FFAA72;
-  margin: 0 0 16px 0;
-  padding-bottom: 12px;
-  border-bottom: 2px solid #E0E0E0;
-}
-
-.refined-content-body {
-  font-size: 1rem;
-  line-height: 1.6;
-  color: var(--text-primary);
-  white-space: pre-wrap;
-  word-wrap: break-word;
-}
-
-.toggle-label-sources {
-  font-size: 9px !important;
-  font-weight: 500;
-  color: #333;
-  transition: color 0.2s ease;
-}
-
-.source-toggle input[type="checkbox"]:checked ~ .toggle-switch .toggle-label-sources {
-  color: white;
-}
-
-.source-toggle-switch {
-  width: 40px;
-  height: 20px;
-  border-radius: 0px;
-  background: #E0E0E0;
-  position: relative;
-  cursor: pointer;
-  transition: background 0.3s;
-
-  &.active {
-    background: #FFAA72;
-  }
-
-  .toggle-indicator {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #FFFFFF;
-    position: absolute;
-    top: 1px;
-    left: 1px;
-    transition: left 0.3s;
-
-    .active & {
-      left: 21px;
-    }
-  }
-}
-
-.source-grid-extended {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  max-height: 400px;
-  overflow-y: auto;
-  padding: 8px;
-  
-  // Custom scrollbar
-  &::-webkit-scrollbar {
-    width: 8px;
-  }
-  
-  &::-webkit-scrollbar-track {
-    background: #f1f1f1;
-    border-radius: 0px ;
-  }
-  
-  &::-webkit-scrollbar-thumb {
-    background: #888;
-    border-radius: 0px ;
+  onDocumentRemoved(): void {
+    // Clear the uploaded file
+    this.uploadedFile = null;
+    this.uploadedFileWordCount = 'uploaded content';
+    this.documentUploadError = false;
     
-    &:hover {
-      background: #555;
-    }
-  }
-}
-
-// Word Count Slider Styling
-.word-limit-slider-container {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 12px;
-}
-
-.word-count-slider {
-  width: 100%;
-  height: 6px;
-  border-radius: 0px;
-  background: var(--slider-fill, linear-gradient(to right, #FFAA72 0%, #FFAA72 50%, #E5E7EB 50%, #E5E7EB 100%));
-  outline: none;
-  -webkit-appearance: none;
-  appearance: none;
-  cursor: pointer;
-
-  // Chrome, Safari, Edge
-  &::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    background: #FFAA72;
-    cursor: pointer;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-    transition: all 0.2s ease;
-
-    &:hover {
-      background: #FE7C39;
-      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
-      transform: scale(1.1);
-    }
-
-    &:active {
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-    }
+    // Disable all service toggles by resetting them
+    this.expandCompressContent = false;
+    this.adjustAudienceTone = false;
+    this.enhanceResearch = false;
+    this.editContent = false;
+    this.provideSuggestions = false;
+    
+    // Reset conditional fields
+    this.wordLimitExpandCompress = 0;
+    this.maxWordLimitExpandCompress = 0;
+    this.updateSliderBackground(this.wordLimitExpandCompress);
+    this.selectedAudienceTone = '';
+    this.audienceToneInput = '';
+    this.wordLimitResearch = '';
   }
 
-  // Firefox
-  &::-moz-range-thumb {
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    background: #FFAA72;
-    cursor: pointer;
-    border: none;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-    transition: all 0.2s ease;
-
-    &:hover {
-      background: #FE7C39;
-      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
-      transform: scale(1.1);
+  private async extractWordCount(file: File): Promise<void> {
+    const fileExtension = file.name.toLowerCase().split('.').pop() || '';
+    
+    // Show processing state for PDF/DOCX files
+    if (fileExtension === 'pdf' || fileExtension === 'docx' || fileExtension === 'doc' || fileExtension === 'pptx') {
+      this.uploadedFileWordCount = 'processing...';
     }
-
-    &:active {
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    
+    try {
+      const text = await this.extractFileText(file);
+      if (text && text.trim()) {
+        const wordCount = text.trim().split(/\s+/).length;
+        this.uploadedFileWordCount = `${wordCount}`;
+        // Calculate max word limit and set initial slider value
+        this.calculateMaxWordLimit(wordCount);
+        this.wordLimitExpandCompress = wordCount;
+        this.updateSliderBackground(this.wordLimitExpandCompress);
+      } else {
+        this.uploadedFileWordCount = 'uploaded content';
+        this.calculateMaxWordLimit(100); // Default fallback
+        this.wordLimitExpandCompress = 100;
+        this.updateSliderBackground(this.wordLimitExpandCompress);
+      }
+    } catch (error) {
+      console.error('Error reading file for word count:', error);
+      this.uploadedFileWordCount = 'uploaded content';
+      this.calculateMaxWordLimit(100); // Default fallback
+      this.wordLimitExpandCompress = 100;
+      this.updateSliderBackground(this.wordLimitExpandCompress);
     }
   }
 
-  // Firefox track
-  &::-moz-range-track {
-    background: transparent;
-    border: none;
+  private calculateMaxWordLimit(wordCount: number): void {
+    // Calculate max as 3x word count, rounded to nearest 100
+    const maxLimit = Math.round((wordCount * 3) / 100) * 100;
+    this.maxWordLimitExpandCompress = maxLimit;
   }
 
-  &::-moz-range-progress {
-    background: #FFAA72;
-    height: 6px;
-    border-radius: 0px;
-  }
-}
-
-.word-limit-display {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  justify-content: center;
-
-  .word-limit-value {
-    font-size: 20px;
-    font-weight: 600;
-    color: #FFAA72;
-  }
-
-  .word-limit-label {
-    font-size: 10px;
-    color: var(--text-secondary);
-    font-weight: 400;
-  }
-}
-
-.slider-bounds {
-  display: flex;
-  justify-content: space-between;
-  padding: 0 4px;
-
-  .bound-label {
-    font-size: 12px;
-    color: var(--text-secondary);
-    font-weight: 500;
-  }
-}
-
-/* Ensure supporting upload banner matches Required Upload banner visuals exactly */
-.required-upload-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
-  border-radius: 0px;
-  border: 1px solid rgba(208, 74, 2, 0.08);
-  background: rgba(208, 74, 2, 0.06);
-  color: var(--text-primary);
-  font-family: inherit;
-  box-shadow: none;
-
-  .uploaded-file-left {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-
-    .file-icon {
-      color: #FFAA72;
-      min-width: 20px;
+  private async extractFileText(file: File): Promise<string> {
+    const fileExtension = file.name.toLowerCase().split('.').pop() || '';
+    
+    // For text-based files, read directly
+    if (fileExtension === 'txt' || fileExtension === 'md') {
+      return await file.text();
     }
-
-    .uploaded-file-meta {
-      display: flex;
-      flex-direction: column;
-      line-height: 1.2;
-    }
-
-    .uploaded-file-name {
-      margin: 0;
-      font-size: 11.5px; /* match Required Upload font-size */
-      font-weight: 400;
-      color: var(--text-primary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .uploaded-file-size {
-      margin: 0;
-      font-size: 11px; /* subtle smaller text for file size */
-      color: #6b6b6b;
-    }
-  }
-
-  .remove-file-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: transparent;
-    border: none;
-    padding: 6px;
-    margin-left: 12px;
-    cursor: pointer;
-    color: #6b6b6b;
-    border-radius: 0px;
-    min-width: 34px;
-    min-height: 34px;
-
-    svg {
-      display: block;
-    }
-
-    &:hover {
-      background: rgba(0,0,0,0.03);
-      color: #000;
-    }
-
-    &:focus {
-      outline: 2px solid rgba(208,74,2,0.16);
-      outline-offset: 2px;
-    }
-  }
-}
-.helper-text {
-  font-size: 12px;
-  color: #6c757d;
-  margin: 4px 0 8px;
-}
-// OR Divider styling
-.or-divider {
-  text-align: center;
-  margin: 16px 0;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: #999;
-  position: relative;
-  
-  &::before,
-  &::after {
-    content: '';
-    position: absolute;
-    top: 50%;
-    width: 45%;
-    height: 1px;
-    background: #ddd;
-  }
-  
-  &::before {
-    left: 0;
-  }
-  
-  &::after {
-    right: 0;
-  }
-}
-.error-msg {
-    color: #FE7C39;
-    font-size: 11px;
-    font-weight: 600;
-    margin-left: 4px;
-}
-
-.upload-error-message {
-  color: #FE7C39;
-  font-size: 11px;
-  font-weight: 500;
-  padding: 4px 0;
-}
-
-// Multi-file upload button styling - matches file-upload component
-.upload-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 3px 10px;
-  min-height: 36px;
-  background: var(--bg-primary);
-  border: 2px dashed var(--border-color);
-  border-radius: 0px;
-  color: #FE7C39;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  width: 100%;
-  max-width: 100%;
-  text-align: center;
-  box-sizing: border-box;
-
-  svg {
-    flex-shrink: 0;
-    stroke: #FE7C39;
-    min-width: 20px;
-  }
-
-  .upload-text {
-    color: #FE7C39;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
-  }
-
-  &:hover:not(:disabled) {
-    background: rgba(208, 74, 2, 0.05);
-    border-color: #FFAA72;
-  }
-
-  &:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-}
-
-.uploaded-files-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.services-checklist {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-  max-width: 100%;
-  overflow: hidden;
-  box-sizing: border-box;
-
-  .toggle-item {
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    overflow: hidden;
-
-    .toggle-switch {
-      width: 100%;
-      overflow: hidden;
-
-      .toggle-label {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        min-width: 0;
+    
+    // For PDF, DOCX, DOC - use backend API
+    if (fileExtension === 'pdf' || fileExtension === 'docx' || fileExtension === 'doc' || fileExtension === 'pptx') {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      try {
+        // Get API URL from environment (supports runtime config via window._env)
+        const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+        const response = await this.authFetchService.authenticatedFetchFormData(`${apiUrl}/api/v1/export/extract-text`, {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`[RefineContentFlow] Extract text failed: ${response.status} ${response.statusText}`, errorText);
+          throw new Error(`Failed to extract text from ${fileExtension.toUpperCase()} file: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        if (!data.text || !data.text.trim()) {
+          throw new Error(`No text content extracted from ${fileExtension.toUpperCase()} file`);
+        }
+        
+        return data.text;
+      } catch (error) {
+        console.error(`[RefineContentFlow] Error extracting text from ${fileExtension} file:`, error);
+        throw error;
       }
     }
-  }
-}
-
-.uploaded-file-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 0px;
-  background: var(--bg-primary);
-  max-width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-
-  svg {
-    flex-shrink: 0;
-    color: #FFAA72;
-  }
-
-  .file-name {
-    flex: 1;
-    font-size: 11.5px;
-    color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
-  }
-
-  .remove-file-btn {
-    flex-shrink: 0;
-    padding: 4px;
-    border: none;
-    background: none;
-    color: #666;
-    cursor: pointer;
-    border-radius: 0px ;
-    transition: all 0.2s;
-
-    &:hover {
-      color: #dc3545;
-      background: rgba(220, 53, 69, 0.1);
-    }
-
-    svg {
-      color: inherit;
+    
+    // Fallback: try to read as text
+    try {
+      return await file.text();
+    } catch (error) {
+      console.error('[RefineContentFlow] Error reading file as text:', error);
+      throw new Error('Unable to read file content. Please ensure the file is a supported format (PDF, DOCX, TXT, MD).');
     }
   }
-}
 
-.helper-info {
-  font-size: 10px;
-  color: #666;
-  margin-top: 4px;
-}
-.form-label {
-  display: block;
-  font-weight: 500;
-  color: var(--text-primary);
-  margin-bottom: 8px;
-  font-size: 11.5px;
-
-  .required {
-    color: #FE7C39;
-    margin-left: 4px;
+  onServiceToggle(service: string): void {
+    // Clear conditional fields when service is toggled off
+    if (service === 'expand-compress' && !this.expandCompressContent) {
+      this.wordLimitExpandCompress = this.uploadedFileWordCount ? parseInt(this.uploadedFileWordCount.toString()) : 0;
+      this.updateSliderBackground(this.wordLimitExpandCompress);
+    }
+    if (service === 'audience-tone' && !this.adjustAudienceTone) {
+      this.selectedAudienceTone = '';
+      this.audienceToneInput = '';
+    }
+    if (service === 'research' && !this.enhanceResearch) {
+      this.wordLimitResearch = '';
+      this.researchTopics = '';
+      this.pwcContentLink = false;
+      this.pwcProprietaryResearch = true;
+      this.pwcLicensedThirdParty = true;
+      this.externalResearch = true;
+      this.researchDocumentFile = null;
+      this.researchLinks = '';
+      this.selectSpecificPwcSources = false;
+      this.allPwcProprietarySources = false;
+      this.pwcSource1 = false;
+      this.pwcSource2 = false;
+      this.pwcSource3 = false;
+      this.pwcSource4 = false;
+      this.allPwcThirdPartySources = false;
+      this.pwcThirdPartySource1 = false;
+      this.pwcThirdPartySource2 = false;
+      this.pwcThirdPartySource3 = false;
+      this.pwcThirdPartySource4 = false;
+    }
+    if (service === 'edit-content' && !this.editContent) {
+      // Reset editor selections to defaults when Edit Content is toggled off
+      this.developmentEditor = true;
+      this.contentEditor = true;
+      this.lineEditor = true;
+      this.copyEditor = true;
+      this.pwcBrandEditor = true;
+    }
   }
 
-}
-.section-label {
-  display: block;
-  font-weight: 500;
-  color: var(--text-primary);
-  margin-bottom: 8px;
-  font-size: 11.5px;
- 
-  .required {
-    color: #FE7C39;
-    margin-left: 4px;
+  onWordLimitChange(): void {
+    // Update the slider background to color the track to the left of the thumb
+    this.updateSliderBackground(this.wordLimitExpandCompress);
   }
+
+  private updateSliderBackground(value: number): void {
+    const min = 50;
+    const max = this.maxWordLimitExpandCompress || Math.max(value, min);
+    // guard against division by zero
+    const pct = max > min ? Math.round(((value - min) / (max - min)) * 100) : 0;
+    const clamped = Math.max(0, Math.min(100, pct));
+    this.wordLimitSliderBackground = `linear-gradient(to right, #FFAA72 0%, #FFAA72 ${clamped}%, #E5E7EB ${clamped}%, #E5E7EB 100%)`;
+  }
+
+    // Handle word count textbox change
+  onWordLimitTextboxChange(value: string | number): void {
+    let num = Number(value);
+    if (isNaN(num)) return;
+    if (num < 50) num = 50;
+    if (this.maxWordLimitExpandCompress && num > this.maxWordLimitExpandCompress) {
+      num = this.maxWordLimitExpandCompress;
+      // Force the input value to max if exceeded
+      setTimeout(() => {
+        const input = document.querySelector('.word-limit-input') as HTMLInputElement;
+        if (input) input.value = String(this.maxWordLimitExpandCompress);
+      }, 0);
+    }
+    this.wordLimitExpandCompress = num;
+    this.onWordLimitChange();
+  }
+
+  onResearchDocumentSelected(file: File): void {
+    this.researchDocumentFile = file;
+  }
+
+  // Multi-file research documents handler
+  onResearchDocumentsFilesChange(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      const filesArray = Array.from(input.files);
+      
+      // Check total file count limit
+      const totalFiles = this.researchDocumentFiles.length + filesArray.length;
+      if (totalFiles > this.MAX_RESEARCH_DOCS) {
+        this.researchDocsFileLimitError = true;
+        this.researchDocsTokenError = false;
+        input.value = ''; // Reset input
+        return;
+      }
+
+      // Add files and validate
+      this.researchDocumentFiles = [...this.researchDocumentFiles, ...filesArray];
+      this.researchDocsFileLimitError = false;
+      input.value = ''; // Reset to allow re-uploading same file
+    }
+  }
+
+  removeResearchDocAtIndex(index: number): void {
+    this.researchDocumentFiles = this.researchDocumentFiles.filter((_, i) => i !== index);
+    this.researchDocsFileLimitError = false;
+  }
+
+  async validateResearchDocsTokenCount(): Promise<void> {
+    let totalTokens = 0;
+    
+    for (const file of this.researchDocumentFiles) {
+      const text = await this.extractFileText(file);
+      // Approximate: 1 token ≈ 4 characters
+      const tokens = Math.ceil(text.length / 4);
+      totalTokens += tokens;
+    }
+
+    if (totalTokens > this.MAX_RESEARCH_TOKEN_LIMIT) {
+      this.researchDocsTokenError = true;
+      // Auto-remove the last file added
+      this.researchDocumentFiles = this.researchDocumentFiles.slice(0, -1);
+    } else {
+      this.researchDocsTokenError = false;
+    }
+  }
+
+  onAllPwcProprietarySourcesChange(): void {
+    const value = this.allPwcProprietarySources;
+    this.pwcSource1 = value;
+    this.pwcSource2 = value;
+    this.pwcSource3 = value;
+    this.pwcSource4 = value;
+  }
+
+  onAllPwcProprietaryToggle(value: boolean): void {
+    this.pwcProprietarySources.forEach(source => source.selected = value);
+  }
+
+  onPwcProprietarySourceChange(): void {
+    this.allPwcProprietarySources = this.pwcProprietarySources.every(s => s.selected);
+  }
+
+  onAllPwcThirdPartySourcesChange(): void {
+    const value = this.allPwcThirdPartySources;
+    this.pwcThirdPartySource1 = value;
+    this.pwcThirdPartySource2 = value;
+    this.pwcThirdPartySource3 = value;
+    this.pwcThirdPartySource4 = value;
+  }
+
+  onAllPwcThirdPartyToggle(value: boolean): void {
+  this.allPwcThirdPartySources = value;
+  this.pwcThirdPartySources.forEach(source => source.selected = value);
+}
+
+
+onPwcThirdPartySourceChange(): void {
+  this.allPwcThirdPartySources = this.pwcThirdPartySources.every(s => s.selected);
+}
+
+  get showPwcSourceSelection(): boolean {
+    return this.enhanceResearch && (this.pwcProprietaryResearch || this.pwcLicensedThirdParty);
+  }
+  get invalidLinks(): boolean {
+    if (!this.researchLinks) return false;
+
+    return this.researchLinks
+      .split('\n')
+      .map(l => l.trim())
+      .filter(Boolean)
+      .some(link => /^https?:\/\/.+/.test(link));
+  }
+  get canRefine(): boolean {
+    if (!this.uploadedFile) return false;
+    
+    // At least one service must be selected
+    if (!this.expandCompressContent && !this.adjustAudienceTone && 
+        !this.enhanceResearch && !this.editContent && !this.provideSuggestions) {
+      return false;
+    }
+    
+    // Expand/Compress - require a word limit
+    if (this.expandCompressContent && !this.wordLimitExpandCompress) {
+      return false;
+    }
+
+    // Supporting documents are now optional - no longer required even when slider exceeds file word count
+    
+    // When PwC Content/Link is selected, require either document files or research links
+    if (this.pwcContentLink) {
+      const hasDocuments = this.researchDocumentFiles.length > 0 || this.researchDocumentFile !== null;
+      const hasLinks = this.researchLinks && this.researchLinks.trim().length > 0;
+      
+      if (!hasDocuments && !hasLinks) {
+        return false;
+      }
+    }
+    
+    if (this.adjustAudienceTone) {
+      if (!this.audienceToneInput || !this.audienceToneInput.trim()) {
+        return false;
+      }
+    }
+
+    // Enhance Research - require research topics
+    if (this.enhanceResearch) {
+      if (!this.researchTopics || !this.researchTopics.trim()) {
+        return false;
+      }
+    }
+    
+    return true;
+  }
+
+  async refineContent(): Promise<void> {
+    if (!this.uploadedFile) {
+      console.error('No file uploaded');
+      return;
+    }
+
+    this.isGenerating = true;
+    this.refinedContent = '';
+    this.refinedTitle = '';
+    this.refinedContentBody = '';
+
+    try {
+      // Extract text from uploaded file
+      const contentText = await this.extractFileText(this.uploadedFile);
+      
+      // Get original word count
+      const originalWordCount = contentText.trim().split(/\s+/).length;
+      
+      // Build services array in the required structured format
+      // All services are included with isSelected flag based on toggle state
+      const services: any[] = [];
+      
+      // 1. Expand/Compress Content - always include with isSelected flag
+      const expandCompressService: any = {
+        isSelected: this.expandCompressContent || (this.enhanceResearch && !this.expandCompressContent),
+        type: this.expandCompressContent 
+          ? (this.wordLimitExpandCompress >= originalWordCount ? 'expand' : 'compress')
+          : 'expand',  // Default to expand when only enhanceResearch is ON
+        original_word_count: originalWordCount,
+        expected_word_count: this.expandCompressContent 
+          ? (this.wordLimitExpandCompress || originalWordCount)
+          : originalWordCount  // Default to original word count when only enhanceResearch is ON
+      };
+      
+      // Add supporting document text - handle both single and multiple files
+      if (this.expandCompressContent) {
+        try {
+          if (this.expandSupportingDocFiles.length > 0) {
+            // Multiple files: combine with separators
+            const extractedDocs = await Promise.all(
+              this.expandSupportingDocFiles.map(async (file, index) => ({
+                filename: file.name,
+                text: await this.extractFileText(file),
+                index: index + 1
+              }))
+            );
+            const combinedSupportingDocs = extractedDocs
+              .map(doc => `--- Supporting Document ${doc.index}: ${doc.filename} ---\n${doc.text}`)
+              .join('\n\n');
+            expandCompressService.supportingDoc = combinedSupportingDocs;
+          } else if (this.expandSupportingDocFile) {
+            // Single file (legacy support)
+            const supportingText = await this.extractFileText(this.expandSupportingDocFile);
+            expandCompressService.supportingDoc = supportingText;
+          }
+                  // Add expand guidelines if provided
+             if (this.expandGuidelines) {
+              expandCompressService.expand_guidelines = this.expandGuidelines;
+          }
+        } catch (error) {
+          console.error('[RefineContentFlow] Error extracting supporting document:', error);
+        }
+      }
+      
+      services.push(expandCompressService);
+      
+      // 2. Adjust Audience/Tone - always include with isSelected flag
+      const audienceToneService: any = {
+        isSelected: this.adjustAudienceTone,
+        type: 'adjust_audience_tone'
+      };
+      
+      // Add audience_tone only if service is selected and value is provided
+      if (this.adjustAudienceTone && this.audienceToneInput?.trim()) {
+        audienceToneService.audience_tone = this.audienceToneInput.trim();
+      }
+      
+      services.push(audienceToneService);
+      
+      // 3. Provide Suggestions - always include with isSelected flag
+      services.push({
+        isSelected: this.provideSuggestions,
+        type: 'improvement_suggestions',
+        suggestion_type: 'general'
+      });
+      
+      // 4. Enhance Research - always include with isSelected flag
+      const researchService: any = {
+        isSelected: this.enhanceResearch,
+        type: 'enhanced_with_research'
+      };
+      
+      // Add research fields only if service is selected
+      if (this.enhanceResearch) {
+        // Add research topics if provided
+        if (this.researchTopics.trim()) {
+          researchService.research_topics = this.researchTopics;
+        }
+        
+        // Add word limit if provided
+        if (this.wordLimitResearch) {
+          researchService.word_limit = this.wordLimitResearch;
+        }
+        
+        // Add research guidelines if provided
+        if (this.researchGuidelines) {
+          researchService.research_guidelines = this.researchGuidelines;
+        }
+        
+        // PwC Content - always include with isSelected flag
+        researchService.pwc_content = {
+          isSelected: this.pwcContentLink
+        };
+        
+        // Add pwc_content fields only if toggle is ON
+        if (this.pwcContentLink) {
+          // Add research document text - handle both single and multiple files
+          if (this.researchDocumentFiles.length > 0) {
+            // Multiple files: combine with separators
+            try {
+              const extractedDocs = await Promise.all(
+                this.researchDocumentFiles.map(async (file, index) => ({
+                  filename: file.name,
+                  text: await this.extractFileText(file),
+                  index: index + 1
+                }))
+              );
+              const combinedResearchDocs = extractedDocs
+                .map(doc => `--- Research Document ${doc.index}: ${doc.filename} ---\n${doc.text}`)
+                .join('\n\n');
+              researchService.pwc_content.supportingDoc = combinedResearchDocs;
+            } catch (error) {
+              console.error('[RefineContentFlow] Error extracting research documents:', error);
+            }
+          } else if (this.researchDocumentFile) {
+            // Single file (legacy support)
+            try {
+              const researchDocText = await this.extractFileText(this.researchDocumentFile);
+              researchService.pwc_content.supportingDoc = researchDocText;
+            } catch (error) {
+              console.error('[RefineContentFlow] Error extracting research document:', error);
+            }
+          }
+          
+          // Add instructions if provided
+          if (this.researchDocInstructions) {
+            researchService.pwc_content.supportingDoc_instructions = this.researchDocInstructions;
+          }
+          
+          // Add research links if provided
+          if (this.researchLinks) {
+            researchService.pwc_content.research_links = this.researchLinks;
+          }
+        }
+        
+        // Proprietary Sources - always include with isSelected flag
+        researchService.proprietary = {
+          isSelected: this.pwcProprietaryResearch,
+          sources: []
+        };
+        
+        // Add selected sources only if toggle is ON
+        if (this.pwcProprietaryResearch) {
+          researchService.proprietary.sources = this.pwcProprietarySources
+            .filter(s => s.selected)
+            .map(s => toSnakeCase(s.name));
+        }
+        
+        // Third Party Sources - always include with isSelected flag
+        researchService.thirdParty = {
+          isSelected: this.pwcLicensedThirdParty,
+          sources: []
+        };
+        
+        // Add selected sources only if toggle is ON
+        if (this.pwcLicensedThirdParty) {
+          researchService.thirdParty.sources = this.pwcThirdPartySources
+            .filter(s => s.selected)
+            .map(s => toSnakeCase(s.name));
+        }
+        
+        // External Research - always include with isSelected flag
+        researchService.externalResearch = {
+          isSelected: this.externalResearch
+        };
+        
+        // Add research links only if toggle is ON and links are provided
+        if (this.externalResearch && this.researchLinks) {
+          researchService.externalResearch.research_links = this.researchLinks;
+        }
+      }
+      
+      services.push(researchService);
+      
+      // 5. Edit Content - always include with isSelected flag
+      const editContentService: any = {
+        isSelected: this.editContent,
+        type: 'edit_content',
+        editors: []
+      };
+      
+      // Add selected editors only if service is selected
+      if (this.editContent) {
+        const selectedEditors = [];
+        if (this.developmentEditor) selectedEditors.push('Development Editor');
+        if (this.contentEditor) selectedEditors.push('Content Editor');
+        if (this.lineEditor) selectedEditors.push('Line Editor');
+        if (this.copyEditor) selectedEditors.push('Copy Editor');
+        selectedEditors.push('PwC Brand Alignment Editor'); // Always included
+        
+        editContentService.editors = selectedEditors;
+      }
+      
+      services.push(editContentService);
+      
+      // Build the original prompt text for the content field
+      let prompt = 'Please refine the following content using these services:\n\n';
+      
+      // Build service descriptions for the prompt (original format)
+      const serviceDescriptions: any[] = [];
+      
+      if (this.expandCompressContent && this.wordLimitExpandCompress) {
+        serviceDescriptions.push({
+          name: 'Expand or Compress Content',
+          params: `Word limit: ${this.wordLimitExpandCompress}`
+        });
+      }
+      
+      if (this.adjustAudienceTone && this.audienceToneInput) {
+        serviceDescriptions.push({
+          name: 'Adjust for Audience / Tone',
+          params: `Audience and tone: ${this.audienceToneInput}`
+        });
+      }
+      
+      if (this.provideSuggestions) {
+        serviceDescriptions.push({
+          name: 'Provide Suggestions on Improving Content',
+          params: 'General improvement suggestions'
+        });
+      }
+      
+      if (this.enhanceResearch && this.researchTopics.trim()) {
+        let researchParams = `Research Topics: ${this.researchTopics}\n`;
+        
+        if (this.wordLimitResearch) {
+          researchParams += `   Word Limit: ${this.wordLimitResearch}\n`;
+        }
+        
+        if (this.researchGuidelines) {
+          researchParams += `   Research Guidelines: ${this.researchGuidelines}\n`;
+        }
+        
+        const sourcesSelected = [];
+        if (this.pwcContentLink) sourcesSelected.push('PwC Content or Link');
+        if (this.pwcProprietaryResearch) sourcesSelected.push('PwC Proprietary Research');
+        if (this.pwcLicensedThirdParty) sourcesSelected.push('PwC Licensed Third Party Tools');
+        if (this.externalResearch) sourcesSelected.push('External Research');
+        
+        if (sourcesSelected.length > 0) {
+          researchParams += `   Sources: ${sourcesSelected.join(', ')}\n`;
+        }
+        
+        if (this.researchLinks) {
+          researchParams += `   Research Links: ${this.researchLinks}\n`;
+        }
+        
+        serviceDescriptions.push({
+          name: 'Enhance with Additional Research',
+          params: researchParams.trim()
+        });
+      }
+      
+      if (this.editContent) {
+        const selectedEditors = [];
+        if (this.developmentEditor) selectedEditors.push('Development Editor');
+        if (this.contentEditor) selectedEditors.push('Content Editor');
+        if (this.lineEditor) selectedEditors.push('Line Editor');
+        if (this.copyEditor) selectedEditors.push('Copy Editor');
+        selectedEditors.push('PwC Brand Alignment Editor');
+        
+        serviceDescriptions.push({
+          name: 'Edit Content',
+          params: `Using: ${selectedEditors.join(', ')}`
+        });
+      }
+      
+      // Build prompt with service descriptions
+      serviceDescriptions.forEach((service, index) => {
+        prompt += `${index + 1}. ${service.name}\n   ${service.params}\n\n`;
+      });
+      
+      // Add content section with supporting document handling
+      let finalContent = contentText;
+      if (this.expandCompressContent) {
+        if (this.expandSupportingDocFiles.length > 0) {
+          // Multiple files: combine with separators
+          const extractedDocs = await Promise.all(
+            this.expandSupportingDocFiles.map(async (file, index) => ({
+              filename: file.name,
+              text: await this.extractFileText(file),
+              index: index + 1
+            }))
+          );
+          const combinedSupportingDocs = extractedDocs
+            .map(doc => `--- Supporting Document ${doc.index}: ${doc.filename} ---\n${doc.text}`)
+            .join('\n\n');
+          
+          finalContent = `PRIMARY DOCUMENT (BASE CONTENT):
+${contentText}
+
+SUPPORTING DOCUMENTS (FOR EXPANSION ONLY):
+${combinedSupportingDocs}
+
+INSTRUCTION:
+Use the supporting documents ONLY to add new substance where needed.
+Do NOT invent facts.
+Do NOT contradict the primary document.`;
+        } else if (this.expandSupportingDocFile) {
+          // Single file (legacy support)
+          const supportingText = await this.extractFileText(this.expandSupportingDocFile);
+          finalContent = `PRIMARY DOCUMENT (BASE CONTENT):
+${contentText}
+
+SUPPORTING DOCUMENT (FOR EXPANSION ONLY):
+${supportingText}
+
+INSTRUCTION:
+Use the supporting document ONLY to add new substance where needed.
+Do NOT invent facts.
+Do NOT contradict the primary document.`;
+        }
+      }
+      
+      prompt += `\nContent to Refine:\n${finalContent}`;
+      
+      // Build the complete payload: keep messages (original prompt) but put original_content and services outside
+      const messagePayload = {
+        messages: [{ role: 'user' as const, content: prompt }],
+        original_content: contentText,
+        services: services,
+        stream: true
+      };
+
+      console.log('[RefineContentFlow] Sending structured request:', {
+        fileName: this.uploadedFile.name,
+        servicesCount: services.length,
+        services: services.map(s => s.type)
+      });
+
+      // Build user message for chat display
+      const userMessageText = `Refine content: ${services.map(s => s.type.replace(/_/g, ' ')).join(', ')}`;
+      
+      // Create stream observable with structured message
+  const streamObservable = this.chatService.streamRefineContent(messagePayload as any);
+      
+      // Build metadata for the refined content
+      const metadata: ThoughtLeadershipMetadata = {
+        contentType: 'refine-content',
+        topic: this.uploadedFile.name || 'Refined Content',
+        fullContent: '', // Will be populated by the chat component from streamed content
+        showActions: true
+      };
+      
+      // Close panel immediately
+      this.tlFlowService.closeFlow();
+      
+      // Emit to chat component to handle streaming
+      this.streamToChat.emit({
+        userMessage: userMessageText,
+        streamObservable: streamObservable,
+        fileName: this.uploadedFile.name,
+        metadata: metadata
+      });
+      
+      // Reset state
+      this.isGenerating = false;
+      this.refinedContent = '';
+      this.refinedTitle = '';
+      this.refinedContentBody = '';
+    } catch (error) {
+      console.error('[RefineContentFlow] Exception:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      
+      // Close panel
+      this.tlFlowService.closeFlow();
+      
+      // Build error message for chat
+      let chatErrorMessage = 'I apologize, but I encountered an error refining your content.';
+      if (errorMessage.includes('extract text') || errorMessage.includes('read file')) {
+        chatErrorMessage = `Error: ${errorMessage}\n\nPlease ensure your PDF file is not corrupted and try again.`;
+      } else {
+        chatErrorMessage = `Error: ${errorMessage}\n\nPlease try again or contact support if the issue persists.`;
+      }
+      
+      // Build error metadata
+      const errorMetadata: ThoughtLeadershipMetadata = {
+        contentType: 'refine-content',
+        topic: 'Error',
+        fullContent: chatErrorMessage,
+        showActions: false
+      };
+      
+      // Add error message to chat
+      this.streamToChat.emit({
+        userMessage: 'Refine content',
+        streamObservable: new Observable(observer => {
+          observer.next({ type: 'content', content: chatErrorMessage });
+          observer.complete();
+        }),
+        metadata: errorMetadata
+      });
+      
+      // Reset state
+      this.isGenerating = false;
+      this.refinedContent = '';
+      this.refinedTitle = '';
+      this.refinedContentBody = '';
+    }
+  }
+
+  downloadContent(format: 'txt' | 'docx'): void {
+    // Include title in download if present
+    const contentToDownload = this.refinedTitle 
+      ? `${this.refinedTitle}\n\n${this.refinedContentBody}`
+      : this.refinedContent;
+    const blob = new Blob([contentToDownload], { type: 'text/plain' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `refined-content.${format}`;
+    link.click();
+    window.URL.revokeObjectURL(url);
+  }
+
+  copyToClipboard(): void {
+    // Include title in copy if present
+    const contentToCopy = this.refinedTitle 
+      ? `${this.refinedTitle}\n\n${this.refinedContentBody}`
+      : this.refinedContent;
+    navigator.clipboard.writeText(contentToCopy);
+  }
+
+  // Return human friendly file size (e.g. "1.23 MB")
+  formatFileSize(file: File | null): string {
+    if (!file || typeof file.size !== 'number') return '';
+    const bytes = file.size;
+    if (bytes === 0) return '0 bytes';
+    const units = ['bytes', 'KB', 'MB', 'GB', 'TB'];
+    const exponent = Math.floor(Math.log(bytes) / Math.log(1024));
+    const size = Number((bytes / Math.pow(1024, exponent)).toFixed(2));
+    return `${size} ${units[exponent]}`;
+  }
+
 }
