@@ -2317,6 +2317,12 @@ OUTPUT: Return a single JSON object with a "blocks" array. Each block MUST have:
 
 Two feedback items address the "same line/sentence" when their "issue" (quoted original text) refers to the same or overlapping part of the block (e.g. same phrase, same sentence, or one contains the other). When merging: Line Editor's "issue" shows the original problem, and the merged "fix" intelligently combines ALL solutions from ALL overlapping items (both Line Editor and all Copy Editor items addressing that line). Include ALL impacts and ALL rules from all merged items in the arrays.
 
+VALIDATION BEFORE OUTPUT (mandatory — fix any failure before returning):
+1. No overlapping items: Scan every block's feedback_edit. No two items (across any editor group) may address the same line/sentence. If two items' "issue" fields refer to the same or overlapping text in the block, they MUST be merged into one item. Re-merge and re-check until no overlaps remain.
+2. Editor property check: Every entry in feedback_edit MUST have "editor" set to exactly "line" or "copy" (lowercase). Merged items (from overlapping Line + Copy suggestions) MUST have "editor": "line". Do not use "Line", "Copy", or any other value.
+3. Structure check: Each block MUST have "id", "suggested_text", and "feedback_edit". Each feedback_edit entry MUST have "editor" and "items" (array). Each item MUST have "issue", "fix", "impact", "rule_used", "priority" (all non-empty).
+4. After building the output, run the overlap check again: for each block, ensure no two items in the combined list (across all editor groups) have overlapping "issue" text. If any overlap is found, merge those items and repeat validation.
+
 Return ONLY valid JSON. No markdown fences, no commentary. The top-level key must be "blocks" (array of objects with "id", "suggested_text", "feedback_edit").
 """
 
