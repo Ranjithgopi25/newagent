@@ -1,1724 +1,847 @@
-from typing import TypedDict, List, Dict, Optional, Annotated, Iterator, Tuple, Sequence, Any
-import operator
-import json
-import pickle
-import re
-from datetime import datetime, timezone
-from langgraph.graph import StateGraph
-from langchain_core.messages import BaseMessage, HumanMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.base import (
-    BaseCheckpointSaver,
-    Checkpoint,
-    CheckpointMetadata,
-    CheckpointTuple,
-    ChannelVersions,
-)
-from redis import Redis
-from app.core.config import config
-from app.core.deps import get_llm_client_agent
-import logging
+/**
+ * Shared utility functions for Edit Content workflow
+ * Ensures deterministic results across Quick Start and Guided Journey flows
+ * 
+ * NOTE: EDITOR_ORDER and EDITOR_NAME_MAP must match backend constants in
+ * edit_content_service.py for consistent behavior between frontend and backend
+ */
+import { environment } from "../../../environments/environment";
+import { marked } from 'marked';
+// Editor processing order (must match backend EDITOR_ORDER in edit_content_service.py) - 3 options
+export const EDITOR_ORDER = ['development+content', 'line+copy', 'brand-alignment'] as const;
 
-from .schema import (
-    DocumentStructure,
-    EditorResult,
-    ConsolidateResult,
-    ConsolidatedBlockEdit,
-    BlockEditResult,
-    EditorFeedback,
-    DevelopmentEditorValidationResult,
-    ContentEditorValidationResult,
-    DocumentBlock,
-    FeedbackItem,
-    SingleEditorFeedback
-)
+export type EditorType = 'development+content' | 'line+copy' | 'brand-alignment';
 
-from .prompt import (
-    DEVELOPMENT_CONTENT_RESOLVE_CONFLICTS_PROMPT,
-    LINE_COPY_RESOLVE_CONFLICTS_PROMPT,
-)
-from .tools import (
-    development_editor_tool,
-    content_editor_tool,
-    line_editor_tool,
-    copy_editor_tool,
-    brand_editor_tool,
-    run_editor_engine,
-    validate_development_editor,
-    validate_content_editor,
-)
+/**
+ * Normalize editor IDs to ensure consistent ordering for deterministic results.
+ * Ensures brand-alignment is always included and editors are in the correct order.
+ * 
+ * @param editorIds - Array of editor IDs to normalize
+ * @returns Normalized array of editor IDs in EDITOR_ORDER sequence
+ */
+export function normalizeEditorOrder(editorIds: string[]): string[] {
+  // Create a copy to avoid mutating the input
+  let normalized = [...editorIds];
+  
+  // Ensure brand-alignment is always included
+  if (!normalized.includes('brand-alignment')) {
+    normalized.push('brand-alignment');
+  }
+  
+  // Filter and order according to EDITOR_ORDER for deterministic results
+  return EDITOR_ORDER.filter(editor => normalized.includes(editor));
+}
 
-logger = logging.getLogger(__name__)
+/**
+ * Normalize content text to ensure consistent processing.
+ * Trims whitespace and normalizes line endings.
+ * 
+ * @param content - Content text to normalize
+ * @returns Normalized content text
+ */
+export function normalizeContent(content: string): string {
+  if (!content) {
+    return '';
+  }
+  
+  // Trim leading/trailing whitespace
+  let normalized = content.trim();
+  
+  // Normalize line endings to \n (Unix-style)
+  normalized = normalized.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  
+  // Remove trailing whitespace from each line (but preserve structure)
+  // This ensures consistent processing without changing content meaning
+  normalized = normalized.split('\n')
+    .map(line => line.trimEnd())
+    .join('\n');
+  
+  return normalized;
+}
 
-# ---------------------------------------------------------------------
-# LLM (shared)
-# ---------------------------------------------------------------------
-llm = get_llm_client_agent()
+/**
+ * Compute a simple hash of content for verification purposes.
+ * Used to verify identical inputs are being processed.
+ * 
+ * @param content - Content to hash
+ * @returns Hash string
+ */
+export function hashContent(content: string): string {
+  if (!content) {
+    return 'empty';
+  }
+  
+  // Simple hash function for verification
+  let hash = 0;
+  for (let i = 0; i < content.length; i++) {
+    const char = content.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  
+  return Math.abs(hash).toString(36);
+}
 
-# ---------------------------------------------------------------------
-# GRAPH STATE
-# ---------------------------------------------------------------------
-class SupervisorState(TypedDict):
-    messages: List[BaseMessage]
-    document: DocumentStructure
-    selected_editors: List[str]
-    editor_results: Annotated[List[EditorResult], operator.add]
-    final_result: Optional[ConsolidateResult]
-    current_editor_index: Optional[int]  # For sequential execution
-    thread_id: Optional[str]  # For checkpointing
-    article_analysis: Optional[str]  # Article-level analysis text for Development Editor (LLM-based, not schema)
-    cross_paragraph_analysis: Optional[str]  # Cross-paragraph analysis text for Content Editor (LLM-based, not schema)
-    dev_editor_retry_count: Optional[int]  # Retry count for Development Editor (retries until score >= 8, max 2 retries)
-    content_editor_retry_count: Optional[int]  # Retry count for Content Editor (retries until score >= 8, max 2 retries)
-    content_validation_result: Optional[ContentEditorValidationResult]  # Validation result for Content Editor
-    validation_result: Optional[DevelopmentEditorValidationResult]  # Validation result for Development Editor
+/**
+ * Extract document title from content.
+ * Checks for H1 heading first, then first line if it looks like a title,
+ * otherwise falls back to filename.
+ * 
+ * @param content - Document content text
+ * @param filename - Optional filename to use as fallback
+ * @returns Extracted title
+ */
+export function extractDocumentTitle(content: string, filename?: string): string {
+  if (!content || !content.trim()) {
+    // Fallback to filename if no content
+    if (filename) {
+      return filename.replace(/\.[^/.]+$/, '').trim();
+    }
+    return 'Revised Article';
+  }
 
+  const normalizedContent = normalizeContent(content);
+  const lines = normalizedContent.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 
-# ---------------------------------------------------------------------
-# ARTICLE-LEVEL ANALYSIS AND VALIDATION HELPERS
-# ---------------------------------------------------------------------
-def analyze_article(document: DocumentStructure) -> str:
-    """
-    Analyze the entire article using LLM.
-    Returns formatted text analysis for Development Editor guidance.
-    No schema parsing - direct LLM text response.
-    """
-    logger.info("ANALYZING ARTICLE FOR DEVELOPMENT EDITOR")
+  if (lines.length === 0) {
+    // Fallback to filename if no content lines
+    if (filename) {
+      return filename.replace(/\.[^/.]+$/, '').trim();
+    }
+    return 'Revised Article';
+  }
+
+  // Check for H1 heading at the start (# Title)
+  const firstLine = lines[0];
+  const h1Match = firstLine.match(/^#\s+(.+)$/);
+  if (h1Match && h1Match[1]) {
+    return h1Match[1].trim();
+  }
+
+  // Check if first line looks like a title
+  // Criteria: short (less than 100 chars), starts with capital, no ending punctuation (except ? or !)
+  if (firstLine.length > 0 && firstLine.length < 100) {
+    const firstChar = firstLine[0];
+    const lastChar = firstLine[firstLine.length - 1];
     
-    # Calculate article length
-    full_text = " ".join([block.text for block in document.blocks])
-    word_count = len(full_text.split())
+    // Check if starts with capital letter or number
+    const startsWithCapital = /^[A-Z0-9]/.test(firstChar);
     
-    # Count sections (headings)
-    section_count = sum(1 for block in document.blocks if block.type == "heading")
+    // Check if doesn't end with period, comma, or semicolon (but allow ? or !)
+    const endsWithPunctuation = /[.,;]$/.test(lastChar);
     
-    # Create analysis prompt - request formatted text, not JSON
-    analysis_prompt = f"""Analyze the following article for Development Editor guidance.
-
-ARTICLE:
-{full_text}
-
-Provide article-level analysis in the following format:
-
-CENTRAL ARGUMENT:
-[Articulate the article's central argument in ONE clear, assertive sentence. This must appear explicitly in the introduction.]
-
-PRIMARY POINT OF VIEW:
-[Identify the primary point of view: advisor/collaborator, observer, analyst, etc.]
-
-REPETITION PATTERNS:
-[List specific core ideas/concepts that appear in multiple sections. Be specific about what concepts are repeated and where they appear.]
-
-ARTICLE METRICS:
-- Original length: {word_count} words
-- Sections: {section_count}
-- Has redundancy: [yes/no - indicate if the article has redundant or repetitive content]
-
-ACTIONABLE GUIDANCE:
-[Provide specific guidance on what needs to be addressed: which sections need consolidation, which ideas are repeated, what POV should be maintained, etc.]
-
-Provide clear, actionable guidance for the Development Editor to work at the article level, not paragraph-by-paragraph.
-"""
+    // Check if it's not a list item or code block
+    const isListItem = /^[-*+\d.]\s/.test(firstLine);
+    const isCodeBlock = firstLine.startsWith('```') || firstLine.startsWith('`');
     
-    try:
-        response = llm.invoke([HumanMessage(content=analysis_prompt)])
-        analysis_text = response.content if hasattr(response, 'content') else str(response)
-        
-        if not analysis_text or analysis_text.strip() == "":
-            logger.info("Article analysis returned empty response")
-            return ""
-        
-        return analysis_text
-    except Exception as e:
-        logger.error(f"Error analyzing article: {e}")
-        # Return empty string on error - no fallback values
-        return ""
+    if (startsWithCapital && !endsWithPunctuation && !isListItem && !isCodeBlock) {
+      return firstLine;
+    }
+  }
 
+  // Fallback to filename
+  if (filename) {
+    return filename.replace(/\.[^/.]+$/, '').trim();
+  }
 
-def analyze_cross_paragraph_logic(document: DocumentStructure) -> str:
-    """
-    Analyze cross-paragraph progression using LLM.
-    Returns formatted text analysis for Content Editor guidance.
-    No schema parsing - direct LLM text response.
-    """
-    logger.info("ANALYZING CROSS-PARAGRAPH LOGIC FOR CONTENT EDITOR")
-    
-    # Extract paragraphs (paragraph and bullet_item blocks)
-    paragraphs = []
-    for i, block in enumerate(document.blocks):
-        if block.type in ["paragraph", "bullet_item"]:
-            paragraphs.append({
-                "id": block.id,
-                "index": i,
-                "text": block.text
-            })
-    
-    if len(paragraphs) < 2:
-        logger.info("Not enough paragraphs for cross-paragraph analysis")
-        return ""
-    
-    # Build paragraph sequence text
-    paragraph_sequence = "\n\n".join([
-        f"PARAGRAPH {i+1} (ID: {p['id']}):\n{p['text']}"
-        for i, p in enumerate(paragraphs)
-    ])
-    
-    # Create analysis prompt
-    analysis_prompt = f"""Analyze the following paragraph sequence for Content Editor cross-paragraph enforcement guidance.
+  return 'Revised Article';
+}
 
-PARAGRAPH SEQUENCE:
-{paragraph_sequence}
+/** Editor name mapping (must match backend EDITOR_NAMES in edit_content_service.py) */
+const EDITOR_NAME_MAP: { [key: string]: string } = {
+  'development+content': 'Strengthen content structure and key messaging (clarify positioning, flow, and key points)',
+  'line+copy': 'Copyedit (smooth phrasing, grammar, and consistency)',
+  'brand-alignment': 'Align to PwC brand standards (tone, terminology, formatting)',
+  'development': 'Development Editor',
+  'content': 'Content Editor',
+  'line': 'Line Editor',
+  'copy': 'Copy Editor',
+};
 
-Provide cross-paragraph analysis in the following format:
+/** Get editor display name by ID */
+export function getEditorDisplayName(editorId: string): string {
+  return EDITOR_NAME_MAP[editorId] || editorId;
+}
 
-Cross-Paragraph Logic Issues:
-[List specific instances where paragraphs soft-reset, re-introduce context, or fail to build on preceding paragraphs. Identify which paragraphs have these issues and what context is being unnecessarily reintroduced.]
+/** Format markdown text to HTML for basic formatting (bold, italic, line breaks) */
+export function formatMarkdown(text: string): string {
+  let formatted = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  formatted = formatted.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  formatted = formatted.replace(/\n/g, '<br>');
+  return formatted;
+}
 
-Redundancy Patterns (Non-Structural):
-[Identify paragraphs that materially repeat ideas already established in earlier paragraphs. Specify which paragraphs repeat which concepts, and whether later mentions increase specificity, consequence, or decision relevance, or merely restate.]
+/** Render markdown the same way as Quick Start / chat (marked.parse + list styles + link target + citation superscript in <p> only). Use this for final article display instead of convertMarkdownToHtml. */
+export function renderMarkdownForDisplay(markdown: string): string {
+  if (!markdown || !markdown.trim()) return '';
+  // Process <sup>[ ⁿ ]</sup>(URL) BEFORE marked.parse — marked autolinks URLs and would break our pattern
+  const esc = (s: string) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let preProcessed = markdown.replace(/<sup>\s*\[\s*([⁰¹²³⁴⁵⁶⁷⁸⁹,\s]+)\s*\]\s*<\/sup>\s*\((https?:\/\/[^)]+|#)\)/gi, (_m: string, text: string, url: string) => {
+    const t = (text || '').trim();
+    const href = url === '#' ? '#' : url;
+    const urlDisplay = href === '#' ? '#' : `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer" class="citation-url-link">${esc(href)}</a>`;
+    return `<sup><a href="${esc(href)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">${t}</a></sup>(${urlDisplay})`;
+  });
+  let html = (marked.parse(preProcessed) as string) || '';
+  html = html.replace(/<ul>\n?/g, '<ul style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+  html = html.replace(/<ol>\n?/g, '<ol style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+  html = html.replace(/<li>/g, '<li style="margin: 0; padding: 0; line-height: 1.4;">');
+  html = html.replace(/<\/li>\n?/g, '</li>');
+  html = html.replace(/<a\s+([^>]*?)href=(["'])(.*?)\2([^>]*)>/gi, (_m: string, pre: string, quote: string, url: string, post: string) => {
+    const attrs = (pre + ' ' + post).toLowerCase();
+    if (/\btarget\s*=/.test(attrs) || /\brel\s*=/.test(attrs)) return _m;
+    return `<a ${pre}href=${quote}${url}${quote}${post} target="_blank" rel="noopener noreferrer">`;
+  });
+  // Convert <sup>[N](URL)</sup> (unparsed markdown inside raw HTML) to clickable superscript — backend may send this; marked does not parse inside raw HTML
+  html = html.replace(/<sup>\s*\[(\d+)\]\((https?:\/\/[^)]+)\)\s*<\/sup>/gi, (_m: string, num: string, url: string) =>
+    `<sup><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">[${num}]</a></sup>`
+  );
+  // Convert <sup>[ ⁿ ]</sup>(URL) — edit content format: superscript and URL both clickable
+  html = html.replace(/<sup>\s*\[\s*([⁰¹²³⁴⁵⁶⁷⁸⁹,\s]+)\s*\]\s*<\/sup>\s*\((https?:\/\/[^)]+|#)\)/gi, (_m: string, text: string, url: string) => {
+    const t = (text || '').trim();
+    const href = url === '#' ? '#' : url;
+    const urlDisplay = href === '#' ? '#' : `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer" class="citation-url-link">${esc(href)}</a>`;
+    return `<sup><a href="${esc(href)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">${t}</a></sup>(${urlDisplay})`;
+  });
+  // Convert ALL <sup>[ [ⁿ](URL) ]</sup>: [ⁿ] = citation link (clickable), URL shown as-is in brackets (clickable)
+  const clickableSupRegex = /<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((https?:\/\/[^)]+)\)\s*\]\s*<\/sup>/gi;
+  html = html.replace(clickableSupRegex, (_m: string, superscriptText: string, url: string) => {
+    const text = (superscriptText || '').trim();
+    const urlLink = `<a class="citation-url-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+    return `<sup><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">[${text}]</a></sup> [${urlLink}]`;
+  });
+  html = html.replace(/<p>([\s\S]*?)<\/p>/gi, (_pMatch: string, inner: string) => {
+    let paragraphHtml = inner;
+    // Citation links [³](url) or [1](url): marked outputs <a href="url">³</a> or <a href="url">1</a> — wrap in <sup> and keep link
+    paragraphHtml = paragraphHtml.replace(/<a\s+([^>]*?)href=(["'])([^"']*)\2([^>]*)>([^<]*)<\/a>/gi, (match: string, pre: string, quote: string, url: string, post: string, linkText: string) => {
+      const trimmed = (linkText || '').trim();
+      const isUnicodeSup = /^\[?[⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+\]?$/.test(trimmed) && /[⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(trimmed);
+      const isDigitBracket = /^\[\d+\]$/.test(trimmed);
+      if (isUnicodeSup || isDigitBracket) {
+        return `<sup><a ${pre}href=${quote}${url}${quote}${post} target="_blank" rel="noopener noreferrer" class="citation-superscript">${trimmed}</a></sup>`;
+      }
+      return match;
+    });
+    // Already converted above on full HTML; keep same replace here for any that are only in paragraph context
+    paragraphHtml = paragraphHtml.replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((https?:\/\/[^)]+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, url: string) => {
+      const text = (superscriptText || '').trim();
+      const urlLink = `<a class="citation-url-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+      return `<sup><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">[${text}]</a></sup> [${urlLink}]`;
+    });
+    // Inline paragraph URLs in brackets (Title [URL] format from backend) — make [https://...] clickable
+    paragraphHtml = paragraphHtml.replace(/\[(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)\]/g, (_match: string, url: string) => {
+      const urlTrimmed = url.replace(/\n/g, ' ').trim();
+      return `[<a class="citation-url-link" href="${esc(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${esc(urlTrimmed)}</a>]`;
+    });
+    return `<p>${paragraphHtml}</p>`;
+  });
+  return html;
+}
 
-Executive Signal Hierarchy:
-[Map the progression of executive signal strength across paragraphs. Identify which paragraphs should convey clearer implications, priorities, or decision relevance than earlier ones. Note if later paragraphs fail to escalate appropriately or if the final paragraph lacks sufficient executive signal.]
+/** Convert markdown text to HTML with proper formatting for headings, lists, paragraphs, etc. */
+export function convertMarkdownToHtml(markdown: string): string {
+  if (!markdown || !markdown.trim()) {
+    return '';
+  }
 
-Actionable Guidance:
-[Provide specific guidance for Content Editor: which paragraphs need edits to eliminate soft resets, which redundant language should be reduced, and how to strengthen executive signal hierarchy through sentence-level edits only.]
+  // Process <sup>[ ⁿ ]</sup>(URL) first — convert to clickable superscript + URL before other transforms
+  const escC = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let html = markdown.replace(/<sup>\s*\[\s*([⁰¹²³⁴⁵⁶⁷⁸⁹,\s]+)\s*\]\s*<\/sup>\s*\((https?:\/\/[^)]+|#)\)/gi, (_m: string, text: string, url: string) => {
+    const t = (text || '').trim();
+    const href = url === '#' ? '#' : url;
+    const urlDisplay = href === '#' ? '#' : `<a href="${escC(href)}" target="_blank" rel="noopener noreferrer" class="citation-url-link">${escC(href)}</a>`;
+    return `<sup><a href="${escC(href)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">${t}</a></sup>(${urlDisplay})`;
+  });
+  // Convert ALL <sup>[ [ⁿ](URL) ]</sup> (backend format): [ⁿ] = citation link, URL shown as-is in brackets
+  html = html.replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((https?:\/\/[^)]+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, url: string) => {
+    const text = (superscriptText || '').trim();
+    const urlLink = `<a class="citation-url-link" href="${escC(url)}" target="_blank" rel="noopener noreferrer">${escC(url)}</a>`;
+    return `<sup><a href="${escC(url)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">[${text}]</a></sup> [${urlLink}]`;
+  });
 
-Provide clear, actionable guidance for the Content Editor to work across paragraphs using sentence-level edits only.
-"""
-    
-    try:
-        response = llm.invoke([HumanMessage(content=analysis_prompt)])
-        analysis_text = response.content if hasattr(response, 'content') else str(response)
-        
-        if not analysis_text or analysis_text.strip() == "":
-            logger.info("Cross-paragraph analysis returned empty response")
-            return ""
-        
-        return analysis_text
-    except Exception as e:
-        logger.error(f"Error analyzing cross-paragraph logic: {e}")
-        # Return empty string on error - no fallback values
-        return ""
+  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
 
+  html = html.replace(/^---$/gm, '<hr>');
+  html = html.replace(/^\*\*\*$/gm, '<hr>');
 
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
 
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
 
-def validate_cross_paragraph_compliance(
-    original_analysis_text: str,
-    edited_result: EditorResult,
-    original_document: DocumentStructure
-) -> List[str]:
-    """
-    Use LLM to validate that Content Editor output meets cross-paragraph enforcement requirements.
-    Returns list of validation warnings (empty if compliant).
-    """
-    logger.info("VALIDATING CROSS-PARAGRAPH COMPLIANCE USING LLM")
-    
-    if not original_analysis_text or not original_analysis_text.strip():
-        logger.info("No original cross-paragraph analysis text available for validation")
-        return []
-    
-    # Extract paragraphs from original and edited documents
-    original_paragraphs = []
-    for block in original_document.blocks:
-        if block.type in ["paragraph", "bullet_item"]:
-            original_paragraphs.append(block.text)
-    
-    edited_paragraphs = []
-    for block in edited_result.blocks:
-        if block.type in ["paragraph", "bullet_item"]:
-            edited_paragraphs.append(block.suggested_text or block.original_text)
-    
-    original_text = "\n\n".join(original_paragraphs)
-    edited_text = "\n\n".join(edited_paragraphs)
-    
-    # Create validation prompt for LLM - uses exact CROSS-PARAGRAPH ENFORCEMENT requirements
-    validation_prompt = f"""You are validating that the Content Editor output meets the CROSS-PARAGRAPH ENFORCEMENT requirements.
+  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
 
-ORIGINAL CROSS-PARAGRAPH ANALYSIS (provided to Content Editor):
-{original_analysis_text}
+  // Links:
+  // - Standard markdown: [text](https://example.com)
+  // - Backend citation variant: [Title](URL: https://example.com)
+  //   If we don't strip "URL:", the href becomes invalid ("URL: https://...").
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, linkText, rawHref) => {
+    const textRaw = String(linkText ?? '');
+    const hrefRaw = String(rawHref ?? '').trim();
 
-ORIGINAL PARAGRAPH SEQUENCE:
-{original_text}
+    // Minimal escaping to avoid breaking attributes / HTML structure.
+    // Note: this utility already does simplistic markdown->HTML transforms elsewhere.
+    const escHtml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escAttr = (s: string) => escHtml(s).replace(/"/g, '&quot;');
+    const text = escHtml(textRaw);
 
-EDITED PARAGRAPH SEQUENCE (Content Editor output):
-{edited_text}
-
-============================================================
-CROSS-PARAGRAPH ENFORCEMENT REQUIREMENTS — VALIDATE AGAINST THESE
-============================================================
-
-The Content Editor MUST have:
-
-1. Cross-Paragraph Logic
-   Each paragraph MUST assume and build on the reader's understanding from the preceding paragraph. The Content Editor MUST have eliminated soft resets, re-introductions, or restatement of previously established context.
-
-2. Redundancy Awareness (Non-Structural)
-   If a paragraph materially repeats an idea already established elsewhere in the article, the Content Editor MUST have reduced reinforcement language and avoided adding emphasis or framing that increases redundancy. The Content Editor MUST NOT have removed or merged ideas across blocks.
-
-3. Executive Signal Hierarchy
-   The Content Editor MUST have calibrated emphasis so that later sections convey clearer implications, priorities, or decision relevance than earlier sections, without introducing new conclusions or shifting the author's intent.
-
-============================================================
-VALIDATION TASK
-============================================================
-
-Analyze the EDITED PARAGRAPH SEQUENCE against the ORIGINAL CROSS-PARAGRAPH ANALYSIS and the requirements above.
-
-For EACH requirement (1-3), check if it was met:
-- If met: No warning needed
-- If NOT met: Provide a specific warning explaining what requirement failed and what needs to be fixed
-
-Return your response as a JSON array of warnings. If all requirements are met, return an empty array [].
-Format: ["Warning 1: [specific requirement and issue]", "Warning 2: [specific requirement and issue]", ...]
-
-Be specific and actionable in your warnings. Reference the actual paragraph content where possible.
-"""
-    
-    try:
-        response = llm.invoke([HumanMessage(content=validation_prompt)])
-        content = response.content if hasattr(response, 'content') else str(response)
-        
-        # Parse warnings from LLM response
-        warnings = []
-        
-        if isinstance(content, str):
-            # Try to extract JSON array from response
-            json_match = re.search(r'\[.*\]', content, re.DOTALL)
-            if json_match:
-                try:
-                    warnings = json.loads(json_match.group(0))
-                    if not isinstance(warnings, list):
-                        warnings = []
-                except json.JSONDecodeError:
-                    # If JSON parsing fails, try to extract warnings from text
-                    # Look for list-like patterns
-                    lines = content.split('\n')
-                    for line in lines:
-                        line = line.strip()
-                        if line.startswith('-') or line.startswith('•') or (line.startswith('"') and line.endswith('"')):
-                            # Extract warning text
-                            warning = line.lstrip('-•"').rstrip('"').strip()
-                            if warning:
-                                warnings.append(warning)
-            else:
-                # If no JSON found, check if response indicates compliance
-                content_lower = content.lower()
-                if "compliant" in content_lower or "no issues" in content_lower or "all requirements met" in content_lower:
-                    warnings = []
-                elif "warning" in content_lower or "issue" in content_lower or "failed" in content_lower:
-                    # Extract warnings from text format
-                    lines = content.split('\n')
-                    for line in lines:
-                        if any(keyword in line.lower() for keyword in ['warning', 'issue', 'failed', 'not met', 'missing']):
-                            warning = line.strip().lstrip('-•1234567890.').strip()
-                            if warning and len(warning) > 10:  # Filter out very short lines
-                                warnings.append(warning)
-        
-        if warnings:
-            logger.info(f"Cross-paragraph validation found {len(warnings)} issues")
-        else:
-            logger.info("Cross-paragraph validation: All requirements met")
-        
-        return warnings if isinstance(warnings, list) else []
-        
-    except Exception as e:
-        logger.error(f"Error validating cross-paragraph compliance: {e}")
-        # Return empty list on error - don't block workflow
-        return []
-
-
-# ---------------------------------------------------------------------
-# EDITOR NODES (EXECUTE EXACTLY ONCE)
-# ---------------------------------------------------------------------
-def development_editor_node(state: SupervisorState) -> SupervisorState:
-    logger.info("RUNNING: development_editor_tool")
-    
-    article_analysis = state.get("article_analysis")
-    result = run_editor_engine("development", state["document"].blocks, article_analysis)
-
-    return {
-        "editor_results": state["editor_results"] + [result]
+    // Handle "(URL: https://...)" (case-insensitive). URL can wrap across newlines so long citation URLs are fully clickable.
+    const citationUrlMatch = hrefRaw.match(/^url:\s*(https?:\/\/[^\s)]*(?:\n[^\s)]*)*)\s*$/i);
+    if (citationUrlMatch && citationUrlMatch[1]) {
+      const url = citationUrlMatch[1].replace(/\n/g, '').trim();
+      const urlAttr = escAttr(url);
+      const urlText = escHtml(url);
+      // Show both the title and the URL (common expectation for citation blocks)
+      // return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(${urlText})</span>`;
+      return `<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${text}</a> <span class="citation-inline-url">(<a href="${urlAttr}" target="_blank" rel="noopener noreferrer">${urlText}</a>)</span>`;
     }
 
+    // Standard markdown link
+    return `<a href="${escAttr(hrefRaw)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+  });
 
-# ---------------------------------------------------------------------
-# DEVELOPMENT EDITOR RETRY NODE
-# ---------------------------------------------------------------------
-def development_editor_retry_node(state: SupervisorState) -> SupervisorState:
-    """Retry Development Editor using validation score and feedback to improve."""
-    retry_count = state.get("dev_editor_retry_count", 0) + 1
-    logger.info(f"RUNNING: development_editor_retry_node (attempt {retry_count})")
-    
-    article_analysis = state.get("article_analysis")
-    validation_result = state.get("validation_result")
-    validation_feedback = None
-    validation_score = None
-    
-    if validation_result:
-        if hasattr(validation_result, 'feedback_remarks'):
-            validation_feedback = validation_result.feedback_remarks
-        if hasattr(validation_result, 'score'):
-            validation_score = validation_result.score
-            logger.info(f"Using previous validation score: {validation_score}/10 to improve")
-        
-        if validation_feedback:
-            failed_criteria = [fb for fb in validation_feedback if not fb.passed]
-            passed_criteria = [fb for fb in validation_feedback if fb.passed]
-            logger.info(f"Parsed validation feedback: {len(failed_criteria)} failed, {len(passed_criteria)} passed")
-            
-            if failed_criteria:
-                logger.info("Failed criteria to address:")
-                for i, fb in enumerate(failed_criteria[:3], 1):  # Show first 3
-                    logger.info(f"  {i}. {fb.feedback[:80]}...")
-        else:
-            logger.info("No validation feedback found in previous result")
-    else:
-        logger.info("No previous validation result found in state")
-    
-    # Always use ORIGINAL document blocks for retry (not previously edited blocks)
-    # This ensures each retry starts from the same baseline
-    result = run_editor_engine(
-        "development", 
-        state["document"].blocks,  # Original blocks
-        article_analysis,
-        validation_feedback=validation_feedback,
-        validation_score=validation_score
-    )
+  // Spacing: ensure one space before (https:// when preceded by ), ], or superscript (e.g. )²(https:// -> )² (https://)
+  html = html.replace(/([)\]⁰¹²³⁴⁵⁶⁷⁸⁹])(\s*)(\()(https?:\/\/)/g, '$1 $3$4');
 
-    return {
-        "editor_results": state["editor_results"] + [result],
-        "dev_editor_retry_count": retry_count
+  // Plain URLs: in References "Title [https://...]", in-paragraph "(https://...)" or "[https://...]" -> one full clickable link
+  // Match "[https://...]" so the entire URL is one <a> (no break in middle); class citation-url-link for styling.
+  const escAttr = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const escHtml = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Format "[https://...]" as [<a>full URL</a>] so the whole URL is one clickable link when it wraps
+  html = html.replace(/\[(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)\]/g, (_match, url) => {
+    const urlTrimmed = url.replace(/\n/g, ' ').trim();
+    return `[<a class="citation-url-link" href="${escAttr(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${escHtml(urlTrimmed)}</a>]`;
+  });
+  // Standalone https:// (no brackets) -> clickable; do not match when URL is already inside an <a> (before would be ">")
+  html = html.replace(/(^|[\s.)])(https?:\/\/[^ \t<"\]]*(?:\n[^ \t<"\]]*)*)/g, (_match, before, url) => {
+    const urlTrimmed = url.replace(/\n/g, ' ').trim();
+    return before + `<a class="citation-url-link" href="${escAttr(urlTrimmed)}" target="_blank" rel="noopener noreferrer">${escHtml(urlTrimmed)}</a>`;
+  });
+
+  // List styles: match paragraph/export (11pt, Helvetica/Arial, line-height 1.5), tight spacing between list items (citations)
+  const listBlockStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.25em; margin-bottom: 0.5em;";
+  const listBlockStyleAfterHeading = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.5; margin-top: 0.2em; margin-bottom: 0.5em;";
+  const listItemStyle = "display: list-item; margin: 0.05em 0 0.2em 0;";
+
+  const lines = html.split('\n');
+  const processedLines: string[] = [];
+  let inUnorderedList = false;
+  let inOrderedList = false;
+  let lastOrderedNumber = 0; // Track last number to detect gaps
+
+  const lastProcessedLineIsHeading = () => {
+    for (let j = processedLines.length - 1; j >= 0; j--) {
+      const s = processedLines[j].trim();
+      if (!s) continue;
+      return /<\/h[1-6]>$/i.test(s) || /^<h[1-6]\b/i.test(s);
+    }
+    return false;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmedLine = line.trim();
+
+    const unorderedMatch = trimmedLine.match(/^[-*]\s+(.+)$/);
+    const orderedMatch = trimmedLine.match(/^(\d+)\.\s+(.+)$/);
+
+    if (unorderedMatch) {
+      if (!inUnorderedList) {
+        if (inOrderedList) {
+          processedLines.push('</ol>');
+          inOrderedList = false;
+          lastOrderedNumber = 0; // Reset counter when closing ordered list
+        }
+        processedLines.push(`<ul style="${listBlockStyle}">`);
+        inUnorderedList = true;
+      }
+      processedLines.push(`<li style="${listItemStyle}">${unorderedMatch[1]}</li>`);
+    } else if (orderedMatch) {
+      const originalNumber = parseInt(orderedMatch[1], 10);
+      const itemText = orderedMatch[2];
+      
+      // Check if this is a new ordered list (gap in numbering or first item)
+      const isNewList = !inOrderedList || (lastOrderedNumber > 0 && originalNumber < lastOrderedNumber);
+      
+      if (isNewList) {
+        if (inUnorderedList) {
+          processedLines.push('</ul>');
+          inUnorderedList = false;
+        }
+        if (inOrderedList) {
+          processedLines.push('</ol>');
+        }
+        const olStyle = lastProcessedLineIsHeading() ? listBlockStyleAfterHeading : listBlockStyle;
+        processedLines.push(`<ol style="${olStyle}">`);
+        inOrderedList = true;
+        lastOrderedNumber = 0; // Reset counter for new list
+      }
+      
+      // Preserve original number using value attribute to maintain correct citation order
+      // This is critical for citations which must maintain their original numbering (1, 2, 3...)
+      processedLines.push(`<li value="${originalNumber}" style="${listItemStyle}">${itemText}</li>`);
+      lastOrderedNumber = originalNumber;
+    } else {
+      if (inUnorderedList) {
+        processedLines.push('</ul>');
+        inUnorderedList = false;
+      }
+      if (inOrderedList) {
+        processedLines.push('</ol>');
+        inOrderedList = false;
+        lastOrderedNumber = 0; // Reset counter when closing ordered list
+      }
+
+      if (trimmedLine) {
+        if (trimmedLine.startsWith('<')) {
+          processedLines.push(line);
+        } else {
+          processedLines.push(`<p>${trimmedLine}</p>`);
+        }
+      } else {
+        processedLines.push('');
+      }
+    }
+  }
+
+  if (inUnorderedList) {
+    processedLines.push('</ul>');
+  }
+  if (inOrderedList) {
+    processedLines.push('</ol>');
+    lastOrderedNumber = 0; // Reset counter when closing ordered list
+  }
+
+  html = processedLines.join('\n');
+  html = html.replace(/(<p><\/p>\n?)+/g, '<p></p>');
+  html = html.replace(/<p>\s*<\/p>/g, '');
+
+  return html;
+}
+
+/** 
+ * Extract text from uploaded file
+ * Note: This uses fetch() without auth headers. For authenticated requests,
+ * callers should use their injected HttpClient or AuthFetchService instead.
+ * This function is kept for backward compatibility but may not work if
+ * backend requires authentication.
+ * 
+ * @deprecated Use HttpClient or AuthFetchService in components/services instead
+ */
+export async function extractFileText(file: File): Promise<string> {
+  const formData = new FormData();
+  formData.append('file', file);
+  
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  
+  // Get auth token if available (for non-Angular contexts)
+  const headers: HeadersInit = {};
+  
+  // Try to get token from sessionStorage (MSAL stores it there)
+  // This is a workaround since we can't inject AuthService in a utility function
+  try {
+    // Check if we're in a browser environment
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      // Look for MSAL tokens in sessionStorage
+      // MSAL stores tokens with keys like: "<clientId>.<tenantId>.<idtoken/accesstoken>"
+      const keys = Object.keys(sessionStorage);
+      const idTokenKey = keys.find(key => 
+        key.includes('idtoken') && 
+        key.includes(environment.clientId || '')
+      );
+      
+      if (idTokenKey) {
+        const tokenData = sessionStorage.getItem(idTokenKey);
+        if (tokenData) {
+          try {
+            const parsed = JSON.parse(tokenData);
+            const secret = parsed.secret;
+            if (secret) {
+              headers['Authorization'] = `Bearer ${secret}`;
+              console.log('[extractFileText] Added auth token from sessionStorage');
+            }
+          } catch (e) {
+            console.warn('[extractFileText] Failed to parse token from sessionStorage:', e);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[extractFileText] Failed to get auth token:', e);
+  }
+  
+  const response = await fetch(`${apiUrl}/api/v1/export/extract-text`, {
+    method: 'POST',
+    headers: headers,
+    body: formData
+  });
+  
+  if (!response.ok) {
+    throw new Error('Failed to extract text from file');
+  }
+  
+  const data = await response.json();
+  return data.text || '';
+}
+
+export interface EditorialFeedbackItem {
+  issue: string;
+  rule?: string;
+  impact?: string;
+  fix?: string;
+  priority?: string;
+}
+
+/**
+ * Parse editorial feedback text into structured items.
+ * Handles lines that start with "- Issue:", "- Rule:", "- Impact:", "- Fix:", "- Priority:".
+ */
+export function parseEditorialFeedback(text: string): EditorialFeedbackItem[] {
+  if (!text) return [];
+
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
+
+  const items: EditorialFeedbackItem[] = [];
+  let current: EditorialFeedbackItem | null = null;
+
+  const stripQuotes = (s: string) => s.trim().replace(/^["“]+|["”]+$/g, '').trim();
+
+  for (let raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    const issueMatch = line.match(/^-+\s*\*{0,2}Issue\*{0,2}:\s*(.*)/i);
+    const ruleMatch = line.match(/^-+\s*\*{0,2}Rule\*{0,2}:\s*(.*)/i);
+    const impactMatch = line.match(/^-+\s*\*{0,2}Impact\*{0,2}:\s*(.*)/i);
+    const fixMatch = line.match(/^-+\s*\*{0,2}Fix\*{0,2}:\s*(.*)/i);
+    const priorityMatch = line.match(/^-+\s*\*{0,2}Priority\*{0,2}:\s*(.*)/i);
+
+    if (issueMatch) {
+      // push previous
+      if (current) items.push(current);
+      current = { issue: stripQuotes(issueMatch[1] || '') };
+      continue;
     }
 
-
-def content_editor_node(state: SupervisorState) -> SupervisorState:
-    logger.info("RUNNING: content_editor_tool")
-    
-    # Get cross-paragraph analysis if available
-    cross_paragraph_analysis = state.get("cross_paragraph_analysis")
-    
-    # Get validation feedback if retrying
-    validation_result = state.get("content_validation_result")
-    validation_feedback = None
-    validation_score = None
-    
-    if validation_result:
-        if hasattr(validation_result, 'feedback_remarks'):
-            validation_feedback = validation_result.feedback_remarks
-        if hasattr(validation_result, 'score'):
-            validation_score = validation_result.score
-            logger.info(f"Using previous validation score: {validation_score}/10 to improve")
-        
-        if validation_feedback:
-            failed_count = sum(1 for fb in validation_feedback if not fb.passed)
-            logger.info(f"Addressing {failed_count} failed validation criteria")
-    
-    # Run editor engine with cross-paragraph analysis and validation feedback
-    result = run_editor_engine(
-        "content", 
-        state["document"].blocks, 
-        cross_paragraph_analysis_text=cross_paragraph_analysis,
-        validation_feedback=validation_feedback,
-        validation_score=validation_score
-    )
-
-    return {
-        "editor_results": state["editor_results"] + [result]
+    if (!current) {
+      // ignore lines outside an issue block
+      continue;
     }
 
-
-# ---------------------------------------------------------------------
-def content_editor_retry_node(state: SupervisorState) -> SupervisorState:
-    """Retry Content Editor using validation score and feedback to improve."""
-    retry_count = state.get("content_editor_retry_count", 0) + 1
-    logger.info(f"RUNNING: content_editor_retry_node (attempt {retry_count})")
-    
-    cross_paragraph_analysis = state.get("cross_paragraph_analysis")
-    validation_result = state.get("content_validation_result")
-    validation_feedback = None
-    validation_score = None
-    
-    if validation_result:
-        if hasattr(validation_result, 'feedback_remarks'):
-            validation_feedback = validation_result.feedback_remarks
-        if hasattr(validation_result, 'score'):
-            validation_score = validation_result.score
-            logger.info(f"Using previous validation score: {validation_score}/10 to improve")
-        
-        if validation_feedback:
-            failed_criteria = [fb for fb in validation_feedback if not fb.passed]
-            passed_criteria = [fb for fb in validation_feedback if fb.passed]
-            logger.info(f"Parsed validation feedback: {len(failed_criteria)} failed, {len(passed_criteria)} passed")
-            
-            if failed_criteria:
-                logger.info("Failed criteria to address:")
-                for i, fb in enumerate(failed_criteria[:3], 1):  # Show first 3
-                    logger.info(f"  {i}. {fb.feedback[:80]}...")
-        else:
-            logger.info("No validation feedback found in previous result")
-    else:
-        logger.info("No previous validation result found in state")
-    
-    # Always use ORIGINAL document blocks for retry (not previously edited blocks)
-    result = run_editor_engine(
-        "content", 
-        state["document"].blocks,  # Original blocks
-        cross_paragraph_analysis_text=cross_paragraph_analysis,
-        validation_feedback=validation_feedback,
-        validation_score=validation_score
-    )
-
-    return {
-        "editor_results": state["editor_results"] + [result],
-        "content_editor_retry_count": retry_count
+    if (ruleMatch) {
+      current.rule = ruleMatch[1].trim();
+      continue;
+    }
+    if (impactMatch) {
+      current.impact = impactMatch[1].trim();
+      continue;
+    }
+    if (fixMatch) {
+      current.fix = fixMatch[1].trim();
+      continue;
+    }
+    if (priorityMatch) {
+      current.priority = priorityMatch[1].trim();
+      continue;
     }
 
-
-def line_editor_node(state: SupervisorState) -> SupervisorState:
-    logger.info("RUNNING: line_editor_tool")
-    raw_blocks = line_editor_tool.invoke(
-        {"blocks": state["document"].blocks}
-    )
-
-    result = normalize_editor_output("line", raw_blocks)
-
-    return {
-        "editor_results": state["editor_results"] + [result]
+    // If line starts with '-' but no recognized label, try to append to last field (fix or impact)
+    const dashContent = line.replace(/^-+\s*/, '');
+    if (dashContent) {
+      // prefer appending to fix > impact > rule
+      if (current.fix) current.fix += ' ' + dashContent;
+      else if (current.impact) current.impact += ' ' + dashContent;
+      else if (current.rule) current.rule += ' ' + dashContent;
     }
+  }
+
+  if (current) items.push(current);
+  return items;
+}
+
+/**
+ * Render editorial feedback items into a simple HTML string (escaped).
+ * Use ngFor in templates if possible instead of innerHTML.
+ */
+export function renderEditorialFeedbackHtml(items: EditorialFeedbackItem[]): string {
+  if (!items || items.length === 0) return '';
+
+  const esc = (s?: string) =>
+    (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const cards = items.map(it => {
+    const badge = it.priority ? `<span class="ef-priority">${esc(it.priority)}</span>` : '';
+    return `
+      <div class="ef-card">
+        <div class="ef-header">
+          <div class="ef-issue">${esc(it.issue)}</div>
+          ${badge}
+        </div>
+        <div class="ef-body">
+          ${it.rule ? `<div class="ef-row"><strong>Rule:</strong> ${esc(it.rule)}</div>` : ''}
+          ${it.impact ? `<div class="ef-row"><strong>Impact:</strong> ${esc(it.impact)}</div>` : ''}
+          ${it.fix ? `<div class="ef-row"><strong>Fix:</strong> ${esc(it.fix)}</div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('\n');
+
+  return `<div class="ef-container">${cards}</div>`;
+}
 
 
-def copy_editor_node(state: SupervisorState) -> SupervisorState:
-    logger.info("RUNNING: copy_editor_tool")
-    raw_blocks = copy_editor_tool.invoke(
-        {"blocks": state["document"].blocks}
-    )
-
-    result = normalize_editor_output("copy", raw_blocks)
-
-    return {
-        "editor_results": state["editor_results"] + [result]
-    }
+/**
+ * Block type information for formatting
+ */
+export interface BlockTypeInfo {
+  index: number;
+  type: string;
+  level?: number;
+}
 
 
-def brand_editor_node(state: SupervisorState) -> SupervisorState:
-    logger.info("RUNNING: brand_editor_tool")
-    raw_blocks = brand_editor_tool.invoke(
-        {"blocks": state["document"].blocks}
-    )
+/**
+ * Format final article with block type information to produce semantic HTML.
+ * Groups consecutive bullet_item blocks into proper <ul> or <ol> lists.
+ * 
+ * @param article - The article content (markdown or plain text)
+ * @param blockTypes - Array of block type information with index, type, and optional level
+ * @returns Formatted HTML with proper semantic structure
+ */
+export function formatFinalArticleWithBlockTypes(
+  article: string, 
+  blockTypes: BlockTypeInfo[]
+): string {
+  if (!blockTypes || blockTypes.length === 0) {
+    // If no block types, just convert markdown to HTML
+    return convertMarkdownToHtml(article);
+  }
 
-    result = normalize_editor_output("brand-alignment", raw_blocks)
+  // Split article into paragraphs (assuming double newline separation)
+  const paragraphs = article.split(/\n\n+/);
+  
+  // Create a map of index to block type
+  const blockTypeMap = new Map<number, {type: string, level?: number}>();
+  blockTypes.forEach(bt => {
+    blockTypeMap.set(bt.index, {type: bt.type, level: bt.level});
+  });
 
-    return {
-        "editor_results": state["editor_results"] + [result]
-    }
+  // First pass: format individual paragraphs
+  /** 'numbered' = preserve 1., 2., A., i. etc. (use <ol>); 'bullet' = use • (use <ul>) */
+  type ListKind = 'numbered' | 'bullet';
+  interface ParagraphBlock {
+    type: string;
+    content: string;
+    level: number;
+    rawContent?: string;
+    hasBulletIcon?: boolean;
+    listKind?: ListKind;   // For bullet_item: preserve numbers/letters vs force bullet
+    listValue?: number;   // For numbered: value for <li value="..."> (1, 2, 3...)
+  }
 
+  const formattedParagraphs = paragraphs
+    .map((para, idx): ParagraphBlock | null => {
+      const trimmedPara = para.trim();
+      if (!trimmedPara) return null; // Filter out empty paragraphs
 
-# ---------------------------------------------------------------------
-# MERGE TWO EDITOR RESULTS INTO ONE
-# ---------------------------------------------------------------------
-def merge_two_editor_results(
-    result1: EditorResult,
-    result2: EditorResult,
-    combined_editor_type: str
-) -> EditorResult:
-    """Merge two EditorResult objects into one, combining feedback and suggestions."""
-    logger.info(f"MERGING {result1.editor_type} + {result2.editor_type} into {combined_editor_type}")
-    
-    result1_blocks = {blk.id: blk for blk in result1.blocks}
-    result2_blocks = {blk.id: blk for blk in result2.blocks}
-    all_block_ids = set(result1_blocks.keys()) | set(result2_blocks.keys())
-    
-    merged_blocks = []
-    for block_id in sorted(all_block_ids, key=lambda x: int(x[1:]) if x[1:].isdigit() else 999):
-        blk1 = result1_blocks.get(block_id)
-        blk2 = result2_blocks.get(block_id)
+      const blockInfo = blockTypeMap.get(idx);
+      if (!blockInfo) {
+        // Default to paragraph if no block type info
+        const formatted = convertMarkdownToHtml(trimmedPara);
+        const content = formatted.startsWith('<') ? formatted : `<p>${formatted}</p>`;
+        return {
+          type: 'paragraph',
+          content: content,
+          level: 0
+        };
+      }
+
+      // Convert markdown in the paragraph first
+      let formatted = convertMarkdownToHtml(trimmedPara);
+      
+      // Remove wrapping <p> tags if they exist at the start/end (we'll add our own based on block type)
+      // Only remove if the entire content is wrapped in a single <p> tag
+      formatted = formatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+
+      // Apply block type formatting (matches backend export formatting)
+      switch (blockInfo.type) {
+        case 'title':
+          // Title: 24pt font (matches PDF), bold, center aligned, spacing matches backend
+          // Note: Title is typically on cover page in export, but for UI display we show it
+          return {
+            type: 'title',
+            content: `<h1 style="font-size: 24pt; font-weight: 700; font-family: 'Helvetica', 'Arial', sans-serif; display: block; margin-top: 1.25em; margin-bottom: 0.35em; text-align: center; color: #FFAA72;">${formatted}</h1>`,
+            level: 0
+          };
         
-        original_text = blk1.original_text if blk1 else (blk2.original_text if blk2 else "")
+        case 'heading':
+          // Heading: 14pt font, bold (Helvetica-Bold), black, spacing matches backend (0.9em top, 0.2em bottom)
+          const headingLevel = blockInfo.level || 1;
+          const headingTag = `h${Math.min(Math.max(headingLevel, 1), 6)}`;
+          return {
+            type: 'heading',
+            content: `<${headingTag} style="font-size: 14pt; font-weight: 700; font-family: 'Helvetica-Bold', 'Arial Bold', sans-serif; display: block; margin-top: 0.9em; margin-bottom: 0.2em; color: #000000;">${formatted}</${headingTag}>`,
+            level: headingLevel
+          };
         
-        # Priority rules: line+copy -> Line Editor (result1) takes priority
-        #                  development+content -> Content Editor (result2) takes priority
-        if combined_editor_type == "line+copy":
-            # Line Editor takes priority for line+copy
-            suggested_text = (blk1.suggested_text if blk1 and blk1.suggested_text 
-                             else blk2.suggested_text if blk2 and blk2.suggested_text 
-                             else original_text)
-        elif combined_editor_type == "development+content":
-            # Content Editor takes priority for development+content
-            suggested_text = (blk2.suggested_text if blk2 and blk2.suggested_text 
-                             else blk1.suggested_text if blk1 and blk1.suggested_text 
-                             else original_text)
-        else:
-            # Default: second editor takes priority
-            suggested_text = (blk2.suggested_text if blk2 and blk2.suggested_text 
-                             else blk1.suggested_text if blk1 and blk1.suggested_text 
-                             else original_text)
-        
-        combined_feedback = []
-        if blk1 and blk1.feedback_edit:
-            combined_feedback.extend(blk1.feedback_edit)
-        if blk2 and blk2.feedback_edit:
-            combined_feedback.extend(blk2.feedback_edit)
-        
-        merged_blocks.append(
-            BlockEditResult(
-                id=block_id,
-                type=blk1.type if blk1 else (blk2.type if blk2 else "paragraph"),
-                level=blk1.level if blk1 else (blk2.level if blk2 else 0),
-                original_text=original_text,
-                suggested_text=suggested_text,
-                has_changes=suggested_text != original_text,
-                feedback_edit=combined_feedback
-            )
-        )
-    
-    return EditorResult(
-        editor_type=combined_editor_type,
-        blocks=merged_blocks,
-        warnings=list(result1.warnings) + list(result2.warnings),
-        raw_output=None
-    )
+        case 'bullet_item': {
+          // Preserve numbered/lettered list prefixes (match backend FINAL_FORMATTING_PROMPT).
+          // Only use bullet icon (•) when content has bullet prefix (•, -, *) or no prefix.
+          const numPrefixMatch = trimmedPara.match(/^(\d+)[.)]\s+(.+)$/s);
+          const romanPrefixMatch = trimmedPara.match(/^([ivxlcdmIVXLCDM]+)[.)]\s+(.+)$/i);
+          const letterPrefixMatch = trimmedPara.match(/^([A-Za-z])[.)]\s+(.+)$/s);
+          const bulletPrefixMatch = trimmedPara.match(/^[•\-\*]\s+(.+)$/s);
 
+          let listKind: ListKind = 'bullet';
+          let listValue: number | undefined;
+          let processedContent: string;
+          let prefix = '';
 
-# ---------------------------------------------------------------------
-# COMBINED EDITOR NODES (reuse existing nodes)
-# ---------------------------------------------------------------------
-def development_content_combined_node(state: SupervisorState) -> SupervisorState:
-    """Run Development + Content editors together by reusing existing nodes."""
-    logger.info("RUNNING: development_content_combined_node")
-    
-    original_results = state.get("editor_results", [])
-    original_document = state["document"]  # Preserve original for validation
-    
-    # Run article analysis if needed
-    if not state.get("article_analysis"):
-        state = {**state, **article_analysis_node(state)}
-    
-    # Run Development Editor
-    dev_state = development_editor_node(state)
-    dev_result = dev_state["editor_results"][-1]
-    
-    # Validate Development Editor result using article_validation_node
-    # Ensure original document is used for validation
-    # IMPORTANT: dev_state must come last to preserve editor_results with development editor result
-    validation_input_state = {
-        **state,
-        **dev_state,  # dev_state comes last to preserve editor_results (includes development editor result)
-        "document": original_document  # Explicitly use original document
-    }
-    # Debug: Log editor_results to verify development editor result is present
-    editor_results_count = len(validation_input_state.get("editor_results", []))
-    validation_state = article_validation_node(validation_input_state)
-    dev_state = {**dev_state, **validation_state}
-    
-    # Update document with Development's suggestions for Content Editor
-    updated_doc = DocumentStructure(blocks=[
-        DocumentBlock(id=b.id, type=b.type, level=b.level, 
-                     text=b.suggested_text or b.original_text)
-        for b in dev_result.blocks
-    ])
-    
-    # Run cross-paragraph analysis if needed (using validated dev_result document)
-    if not state.get("cross_paragraph_analysis"):
-        analysis_state = cross_paragraph_analysis_node({"document": updated_doc, **state})
-        state = {**state, **analysis_state}
-    
-    # Run Content Editor on updated document (with validation result and cross-paragraph analysis in state)
-    content_state = content_editor_node({
-        **dev_state,
-        **state,
-        "document": updated_doc  # Use updated document for Content Editor
+          if (numPrefixMatch) {
+            listKind = 'numbered';
+            listValue = parseInt(numPrefixMatch[1], 10);
+            prefix = numPrefixMatch[1] + '. ';
+            processedContent = numPrefixMatch[2].trim();
+          } else if (romanPrefixMatch) {
+            listKind = 'numbered';
+            prefix = romanPrefixMatch[1] + '. ';
+            processedContent = romanPrefixMatch[2].trim();
+          } else if (letterPrefixMatch) {
+            listKind = 'numbered';
+            prefix = letterPrefixMatch[1] + '. ';
+            processedContent = letterPrefixMatch[2].trim();
+          } else if (bulletPrefixMatch) {
+            prefix = '• ';
+            processedContent = bulletPrefixMatch[1].trim();
+          } else {
+            prefix = '• ';
+            processedContent = trimmedPara;
+          }
+
+          // Format text before ":" as bold, after ":" as normal (for both numbered and bullet)
+          const colonIndex = processedContent.indexOf(':');
+          if (colonIndex > 0) {
+            const beforeColon = processedContent.substring(0, colonIndex).trim();
+            const afterColon = processedContent.substring(colonIndex + 1).trim();
+            let beforeFormatted = convertMarkdownToHtml(beforeColon);
+            let afterFormatted = convertMarkdownToHtml(afterColon);
+            beforeFormatted = beforeFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+            afterFormatted = afterFormatted.replace(/^<p>(.*)<\/p>$/s, '$1');
+            processedContent = `${prefix}<strong>${beforeFormatted}</strong>: ${afterFormatted}`;
+          } else {
+            processedContent = convertMarkdownToHtml(processedContent);
+            processedContent = processedContent.replace(/^<p>(.*)<\/p>$/s, '$1');
+            processedContent = prefix + processedContent;
+          }
+
+          return {
+            type: 'bullet_item',
+            content: processedContent,
+            level: blockInfo.level || 0,
+            rawContent: trimmedPara,
+            hasBulletIcon: listKind === 'bullet',
+            listKind,
+            listValue
+          };
+        }
+        
+        case 'paragraph':
+        default:
+          // Paragraph: 11pt font, line-height 1.5 (matches backend), justify alignment, spacing matches backend
+          // margin-top: 0.15em (2pt), margin-bottom: 0.7em (8pt)
+          return {
+            type: 'paragraph',
+            content: `<p style="font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; display: block; text-align: justify; margin-top: 0.15em; margin-bottom: 0.7em; line-height: 1.5;">${formatted}</p>`,
+            level: 0
+          };
+      }
     })
-    content_result = content_state["editor_results"][-1]
-    
-    # Validate Content Editor result using content_validation_node
-    # Ensure original document is used for validation (not updated_doc)
-    # IMPORTANT: content_state must come last to preserve editor_results with content editor result
-    content_validation_input_state = {
-        **state,
-        **content_state,  # content_state comes last to preserve editor_results (includes content editor result)
-        "document": original_document  # Explicitly use original document for validation
+    .filter((para): para is ParagraphBlock => para !== null);
+
+  // Second pass: group consecutive bullet_item blocks into <ol> (numbered) or <ul> (bullet)
+  const finalOutput: string[] = [];
+  type ListItem = { content: string; level: number; rawContent: string; hasBulletIcon?: boolean; listKind?: ListKind; listValue?: number };
+  let currentList: ListItem[] = [];
+  let prevBlockType: string | null = null;
+  let prevBlockIndex: number = -1;
+
+  const flushList = (list: ListItem[], marginTop: string, marginBottom: string) => {
+    if (list.length === 0) return;
+    const isNumbered = list.every(item => item.listKind === 'numbered');
+    // Tighter spacing for citations/references: less gap between list and heading, and between list items
+    const listStyle = "font-size: 11pt; font-family: 'Helvetica', 'Arial', sans-serif; padding-left: 1.5em; margin-top: " + marginTop + "; margin-bottom: " + marginBottom + "; line-height: 1.4;";
+    const liStyle = "display: list-item; margin: 0.15em 0; line-height: 1.4;";
+    if (isNumbered) {
+      // Preserve numbered/lettered prefixes (content already has "1. ", "A. ", "i. " etc.)
+      finalOutput.push(`<ol style="${listStyle} list-style-type: none;">`);
+      list.forEach(item => finalOutput.push(`<li style="${liStyle}">${item.content}</li>`));
+      finalOutput.push('</ol>');
+    } else {
+      finalOutput.push(`<ul style="${listStyle} list-style-type: none;">`);
+      list.forEach(item => finalOutput.push(`<li style="${liStyle}">${item.content}</li>`));
+      finalOutput.push('</ul>');
     }
-    # Debug: Log editor_results to verify content editor result is present
-    editor_results_count = len(content_validation_input_state.get("editor_results", []))
-    logger.info(f"Validating content editor: {editor_results_count} editor results in state")
-    content_validation_state = content_validation_node(content_validation_input_state)
-    content_state = {**content_state, **content_validation_state}
+  };
+
+  for (let i = 0; i < formattedParagraphs.length; i++) {
+    const para = formattedParagraphs[i];
+    const nextPara = i < formattedParagraphs.length - 1 ? formattedParagraphs[i + 1] : null;
     
-    # Merge results (after both validations)
-    merged_result = merge_two_editor_results(dev_result, content_result, "development+content")
-    
-    return {
-        "editor_results": original_results + [merged_result],
-        "article_analysis": state.get("article_analysis"),
-        "cross_paragraph_analysis": state.get("cross_paragraph_analysis")
-    }
+    if (para.type === 'bullet_item') {
+      currentList.push({
+        content: para.content,
+        level: para.level,
+        rawContent: para.rawContent || '',
+        hasBulletIcon: para.hasBulletIcon,
+        listKind: para.listKind,
+        listValue: para.listValue
+      });
+      prevBlockType = 'bullet_item';
+      prevBlockIndex = i;
+    } else {
+      // Close any open list before processing non-list item
+      if (currentList.length > 0) {
+        const listMarginTop = prevBlockType === 'heading' ? '0.1em' : (prevBlockType === 'paragraph' ? '0.2em' : '0.4em');
+        const listMarginBottom = nextPara && nextPara.type === 'paragraph' ? '0.2em' : '0.4em';
+        flushList(currentList, listMarginTop, listMarginBottom);
+        currentList = [];
+      }
 
-
-def line_copy_combined_node(state: SupervisorState) -> SupervisorState:
-    """Run Line + Copy editors together by reusing existing nodes."""
-    logger.info("RUNNING: line_copy_combined_node")
-    
-    original_results = state.get("editor_results", [])
-    
-    # Run Line Editor
-    line_state = line_editor_node(state)
-    line_result = line_state["editor_results"][-1]
-    
-    # Update document with Line's suggestions for Copy Editor
-    updated_doc = DocumentStructure(blocks=[
-        DocumentBlock(id=b.id, type=b.type, level=b.level,
-                     text=b.suggested_text or b.original_text)
-        for b in line_result.blocks
-    ])
-    
-    # Run Copy Editor on updated document
-    copy_state = copy_editor_node({**line_state, "document": updated_doc})
-    copy_result = copy_state["editor_results"][-1]
-    
-    # Merge results
-    merged_result = merge_two_editor_results(line_result, copy_result, "line+copy")
-    
-    return {
-        "editor_results": original_results + [merged_result]
-    }
-
-
-# ---------------------------------------------------------------------
-# RESOLVE COMBINED EDITOR CONFLICTS (consolidate node via prompt)
-# Used for development+content (content priority) and line+copy (line priority).
-# ---------------------------------------------------------------------
-def resolve_combined_editor_conflicts_node(state: SupervisorState) -> SupervisorState:
-    """
-    After merging two editors, call LLM with the appropriate prompt to resolve conflicts.
-    development+content: Content editor takes priority on same span.
-    line+copy: Line editor takes priority on same span.
-    Replaces the last editor_result with the resolved result.
-    """
-    editor_results = state.get("editor_results", [])
-    if not editor_results:
-        return state
-    last = editor_results[-1]
-    combined_type = last.editor_type
-    if combined_type == "development+content":
-        resolve_prompt = DEVELOPMENT_CONTENT_RESOLVE_CONFLICTS_PROMPT
-    elif combined_type == "line+copy":
-        resolve_prompt = LINE_COPY_RESOLVE_CONFLICTS_PROMPT
-    else:
-        return state
-
-    logger.info(f"RUNNING: resolve_combined_editor_conflicts_node ({combined_type})")
-    merged_result = last
-    blocks_by_id = {b.id: b for b in merged_result.blocks}
-
-    input_blocks = []
-    for b in merged_result.blocks:
-        feedback_edit = [
-            {"editor": sef.editor, "items": [item.model_dump() for item in sef.items]}
-            for sef in (b.feedback_edit or [])
-        ]
-        input_blocks.append({
-            "id": b.id,
-            "original_text": b.original_text,
-            "suggested_text": b.suggested_text or b.original_text,
-            "feedback_edit": feedback_edit,
-        })
-    input_payload = {"blocks": input_blocks}
-    prompt_text = f"""{resolve_prompt}
-
-INPUT (merged feedback; resolve and return resolved feedback_edit per block):
-
-{json.dumps(input_payload, indent=2)}
-"""
-
-    try:
-        response = llm.invoke([HumanMessage(content=prompt_text)])
-        raw = response.content if hasattr(response, "content") else str(response)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```\s*$", "", raw)
-        data = json.loads(raw)
-        resolved_blocks_data = data.get("blocks", [])
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.warning(f"Resolve conflicts LLM output parse failed, keeping merged result: {e}")
-        return state
-
-    resolved_blocks = []
-    for blk_data in resolved_blocks_data:
-        block_id = blk_data.get("id")
-        orig_block = blocks_by_id.get(block_id)
-        if not orig_block:
-            continue
-        suggested_text = blk_data.get("suggested_text") or orig_block.original_text
-        feedback_edit = []
-        for sef_data in blk_data.get("feedback_edit", []):
-            editor_name = sef_data.get("editor")
-            items_data = sef_data.get("items", [])
-            try:
-                items = [FeedbackItem(**item) for item in items_data]
-                feedback_edit.append(SingleEditorFeedback(editor=editor_name, items=items))
-            except (TypeError, ValueError):
-                continue
-        resolved_blocks.append(
-            BlockEditResult(
-                id=orig_block.id,
-                type=orig_block.type,
-                level=orig_block.level,
-                original_text=orig_block.original_text,
-                suggested_text=suggested_text,
-                has_changes=suggested_text != orig_block.original_text,
-                feedback_edit=feedback_edit,
-            )
-        )
-
-    resolved_result = EditorResult(
-        editor_type=combined_type,
-        blocks=resolved_blocks,
-        warnings=list(merged_result.warnings),
-        raw_output=None,
-    )
-    new_editor_results = list(editor_results[:-1]) + [resolved_result]
-    return {"editor_results": new_editor_results}
-
-
-# ---------------------------------------------------------------------
-# ARTICLE-LEVEL ANALYSIS NODE (runs before Development Editor)
-# ---------------------------------------------------------------------
-def article_analysis_node(state: SupervisorState) -> SupervisorState:
-    """Analyze article before Development Editor runs."""
-    logger.info("RUNNING: article_analysis_node")
-    
-    analysis = analyze_article(state["document"])
-    
-    return {
-        "article_analysis": analysis
-    }
-
-
-# ---------------------------------------------------------------------
-# ARTICLE-LEVEL VALIDATION NODE (runs after Development Editor)
-# ---------------------------------------------------------------------
-def article_validation_node(state: SupervisorState) -> SupervisorState:
-    """Validate Development Editor output and return score."""
-    retry_count = state.get("dev_editor_retry_count", 0)
-    attempt_label = "initial" if retry_count == 0 else f"retry {retry_count}"
-    logger.info(f"RUNNING: article_validation_node ({attempt_label})")
-    
-    article_analysis_text = state.get("article_analysis") or ""
-    editor_results = state.get("editor_results", [])
-    
-    dev_editor_result = None
-    for result in reversed(editor_results):
-        if result.editor_type == "development":
-            dev_editor_result = result
-            break
-    
-    if not dev_editor_result:
-        logger.error("No Development Editor result found for validation")
-        return {
-            "validation_result": DevelopmentEditorValidationResult(
-                score=0,
-                feedback_remarks=[]
-            )
+      // Adjust paragraph margins based on context (matches backend export)
+      if (para.type === 'paragraph') {
+        // Reduce bottom margin if followed by bullet list (0.25em/3pt matches backend)
+        if (nextPara && nextPara.type === 'bullet_item') {
+          para.content = para.content.replace(/margin-bottom:\s*[^;]+;?/g, 'margin-bottom: 0.25em;');
         }
-    
-    validation_result = validate_development_editor(
-        article_analysis_text,
-        dev_editor_result,
-        state["document"]
-    )
-    
-    score = validation_result.score
-    previous_score = None
-    previous_validation = state.get("validation_result")
-    if previous_validation and hasattr(previous_validation, 'score'):
-        previous_score = previous_validation.score
-    
-    if previous_score is not None:
-        score_change = score - previous_score
-        change_indicator = "↑" if score_change > 0 else "↓" if score_change < 0 else "→"
-        logger.info(f"Development Editor validation ({attempt_label}): score={score}/10 {change_indicator} (previous: {previous_score}/10, change: {score_change:+d})")
-    else:
-        logger.info(f"Development Editor validation ({attempt_label}): score={score}/10")
-    
-    return {
-        "validation_result": validation_result
-    }
-
-
-# ---------------------------------------------------------------------
-# CROSS-PARAGRAPH ANALYSIS NODE (runs before Content Editor)
-# ---------------------------------------------------------------------
-def cross_paragraph_analysis_node(state: SupervisorState) -> SupervisorState:
-    """
-    Analyze cross-paragraph logic before Content Editor runs.
-    Stores analysis in state for use by Content Editor.
-    """
-    logger.info("RUNNING: cross_paragraph_analysis_node")
-    
-    analysis = analyze_cross_paragraph_logic(state["document"])
-    
-    return {
-        "cross_paragraph_analysis": analysis
-    }
-
-
-# ---------------------------------------------------------------------
-# CROSS-PARAGRAPH VALIDATION NODE (runs after Content Editor)
-# ---------------------------------------------------------------------
-def content_validation_node(state: SupervisorState) -> SupervisorState:
-    """Validate Content Editor output and return score."""
-    retry_count = state.get("content_editor_retry_count", 0)
-    attempt_label = "initial" if retry_count == 0 else f"retry {retry_count}"
-    logger.info(f"RUNNING: content_validation_node ({attempt_label})")
-    
-    cross_paragraph_analysis_text = state.get("cross_paragraph_analysis") or ""
-    editor_results = state.get("editor_results", [])
-    
-    content_editor_result = None
-    for result in reversed(editor_results):
-        if result.editor_type == "content":
-            content_editor_result = result
-            break
-    
-    if not content_editor_result:
-        logger.error("No Content Editor result found for validation")
-        return {
-            "content_validation_result": ContentEditorValidationResult(
-                score=0,
-                feedback_remarks=[]
-            )
+        // Reduce top margin if following heading - decrease line spacing between heading and paragraph
+        if (prevBlockType === 'heading') {
+          para.content = para.content.replace(/margin-top:\s*[^;]+;?/g, 'margin-top: 0.05em;');
         }
-    
-    validation_result = validate_content_editor(
-        cross_paragraph_analysis_text,
-        content_editor_result,
-        state["document"]
-    )
-    
-    score = validation_result.score
-    previous_score = None
-    previous_validation = state.get("content_validation_result")
-    if previous_validation and hasattr(previous_validation, 'score'):
-        previous_score = previous_validation.score
-    
-    if previous_score is not None:
-        score_change = score - previous_score
-        change_indicator = "↑" if score_change > 0 else "↓" if score_change < 0 else "→"
-        logger.info(f"Content Editor validation ({attempt_label}): score={score}/10 {change_indicator} (previous: {previous_score}/10, change: {score_change:+d})")
-    else:
-        logger.info(f"Content Editor validation ({attempt_label}): score={score}/10")
-    
-    return {
-        "content_validation_result": validation_result
+      }
+
+      // Add non-list paragraph
+      finalOutput.push(para.content);
+      prevBlockType = para.type;
+      prevBlockIndex = i;
     }
+  }
 
+  // Close any remaining open list
+  if (currentList.length > 0) {
+    const listMarginTop = prevBlockType === 'heading' ? '0.1em' : (prevBlockType === 'paragraph' ? '0.2em' : '0.4em');
+    flushList(currentList, listMarginTop, '0.4em');
+  }
 
-def normalize_editor_output(
-    editor_type: str,
-    raw_output,
-) -> EditorResult:
-    """
-    Normalize editor tool output into EditorResult.
-    Handles:
-      - JSON string
-      - list[dict]
-      - {"blocks": list[dict]}
-    """
-
-    # ---------------------------
-    # Step 1: Parse JSON string
-    # ---------------------------
-    if isinstance(raw_output, str):
-        try:
-            raw_output = json.loads(raw_output)
-        except json.JSONDecodeError as e:
-            raise ValueError(
-                f"{editor_type} editor returned invalid JSON"
-            ) from e
-
-    # ---------------------------
-    # Step 2: Unwrap dict form
-    # ---------------------------
-    if isinstance(raw_output, dict):
-        if "blocks" in raw_output:
-            raw_blocks = raw_output["blocks"]
-        else:
-            raise TypeError(
-                f"{editor_type} editor dict output missing 'blocks' key"
-            )
-    else:
-        raw_blocks = raw_output
-
-    # ---------------------------
-    # Step 3: Validate list
-    # ---------------------------
-    if not isinstance(raw_blocks, list):
-        raise TypeError(
-            f"{editor_type} editor output must be a list of blocks, "
-            f"got {type(raw_blocks)}"
-        )
-
-    # ---------------------------
-    # Step 4: Convert to models
-    # ---------------------------
-    block_results = []
-    for blk in raw_blocks:
-        if not isinstance(blk, dict):
-            raise TypeError(
-                f"{editor_type} editor block must be dict, got {type(blk)}"
-            )
-        block_results.append(BlockEditResult(**blk))
-
-    return EditorResult(
-        editor_type=editor_type,
-        blocks=block_results,
-        warnings=[],
-    )
-
-# ---------------------------------------------------------------------
-# MERGE NODE (FINAL STEP)
-# ---------------------------------------------------------------------
-def merge_node(state: SupervisorState) -> SupervisorState:
-    logger.info("MERGING EDITOR RESULTS")
-    # Keyed by block id to ensure true merging
-    blocks_by_id: dict[str, ConsolidatedBlockEdit] = {}
-
-    # Map incoming editor names to internal EditorFeedback attribute names
-    editor_attr_map = {
-        "development": "development",
-        "content": "content",
-        "copy": "copy",
-        "line": "line",
-        # external editor name maps to internal 'brand'
-        "brand": "brand",
-        "brand-alignment": "brand",
-    }
-
-    for editor in state.get("editor_results", []):
-        for blk in editor.blocks:
-
-            # Initialize consolidated block once
-            if blk.id not in blocks_by_id:
-                blocks_by_id[blk.id] = ConsolidatedBlockEdit(
-                    id=blk.id,
-                    type=blk.type,
-                    level=blk.level,
-                    original_text=blk.original_text,
-                    final_text=blk.suggested_text or blk.original_text,
-                    editorial_feedback=EditorFeedback(),
-                )
-
-            consolidated = blocks_by_id[blk.id]
-            feedback = consolidated.editorial_feedback
-
-            # If editor returned feedback, merge it
-            if blk.feedback_edit:
-                for sef in blk.feedback_edit:
-                    attr = editor_attr_map.get(sef.editor)
-                    if not attr:
-                        # unknown editor, skip
-                        continue
-                    getattr(feedback, attr).extend(sef.items)
-
-            # prefer explicit suggested_text as final text
-            if blk.suggested_text:
-                consolidated.final_text = blk.suggested_text
-
-    final = ConsolidateResult(
-        blocks=list(blocks_by_id.values())
-    )
-    return {"final_result": final}
-
-
-# ---------------------------------------------------------------------
-# SEQUENTIAL ROUTER (routes to single editor based on index)
-# ---------------------------------------------------------------------
-def route_sequential_editor(state: SupervisorState):
-    """Route to current editor based on current_editor_index."""
-    current_idx = state.get("current_editor_index", 0)
-    selected_editors = state.get("selected_editors", [])
-    
-    if current_idx >= len(selected_editors):
-        return "merge"
-    
-    editor_name = selected_editors[current_idx]
-    
-    # Handle combined editor types first
-    if editor_name == "development+content":
-        # Check if we've already run the combined node
-        editor_results = state.get("editor_results", [])
-        has_combined_result = any(r.editor_type == "development+content" for r in editor_results)
-        
-        if has_combined_result:
-            # Already ran, proceed to merge
-            return "merge"
-        
-        # Check if we need article analysis first
-        article_analysis = state.get("article_analysis")
-        if not article_analysis:
-            return "article_analysis"
-        
-        # Analysis done, run combined node
-        return "development_content_combined"
-    
-    if editor_name == "line+copy":
-        # Check if we've already run the combined node
-        editor_results = state.get("editor_results", [])
-        has_combined_result = any(r.editor_type == "line+copy" for r in editor_results)
-        
-        if not has_combined_result:
-            return "line_copy_combined"
-        else:
-            # Already ran, proceed to merge
-            return "merge"
-    
-    # Handle individual editors (for backward compatibility)
-    if editor_name == "development":
-        article_analysis = state.get("article_analysis")
-        editor_results = state.get("editor_results", [])
-        has_dev_result = any(r.editor_type == "development" for r in editor_results)
-        
-        if not article_analysis and not has_dev_result:
-            return "article_analysis"
-        elif article_analysis and not has_dev_result:
-            return "development_editor_tool"
-        elif has_dev_result:
-            return "article_validation"
-    
-    # Special handling for Content Editor: check if analysis needed
-    if editor_name == "content":
-        cross_paragraph_analysis = state.get("cross_paragraph_analysis")
-        # Check if we just completed analysis (by checking if analysis exists but no editor results yet)
-        editor_results = state.get("editor_results", [])
-        has_content_result = any(r.editor_type == "content" for r in editor_results)
-        
-        if not cross_paragraph_analysis and not has_content_result:
-            # Need to run analysis first
-            logger.info("ROUTING TO CROSS-PARAGRAPH ANALYSIS (before Content Editor)")
-            return "cross_paragraph_analysis"
-        elif cross_paragraph_analysis and not has_content_result:
-            # Analysis done, now run Content Editor
-            logger.info("ROUTING TO CONTENT EDITOR (after analysis)")
-            return "content_editor_tool"
-        elif has_content_result:
-            # Content Editor done, now validate
-            logger.info("ROUTING TO CONTENT VALIDATION (after Content Editor)")
-            return "content_validation"
-    
-    # Map editor name to node name for other editors
-    editor_node_map = {
-        "line": "line_editor_tool",
-        "copy": "copy_editor_tool",
-        "brand-alignment": "brand_editor_tool",
-    }
-    
-    return editor_node_map.get(editor_name, "merge")
-
-
-# ---------------------------------------------------------------------
-# SEQUENTIAL MERGE NODE (merges only current editor result)
-# ---------------------------------------------------------------------
-def sequential_merge_node(state: SupervisorState) -> SupervisorState:
-    """
-    Merge only the current editor's result for sequential flow.
-    Reuses existing merge_node logic but filters to current editor only.
-    """
-    logger.info("MERGING CURRENT EDITOR RESULT (SEQUENTIAL)")
-    
-    current_idx = state.get("current_editor_index", 0)
-    editor_results = state.get("editor_results", [])
-    
-    if not editor_results:
-        return {"final_result": None}
-    
-    # Get only the current editor's result (last one added)
-    current_editor_result = editor_results[-1]
-    
-    # Create temporary state with only current editor for merging
-    temp_state = {
-        **state,
-        "editor_results": [current_editor_result],  # Only current editor
-    }
-    
-    # Reuse existing merge_node
-    merged = merge_node(temp_state)
-    
-    return merged
-
-
-# ---------------------------------------------------------------------
-# ROUTER AFTER CONTENT VALIDATION
-# ---------------------------------------------------------------------
-def route_after_content_validation(state: SupervisorState) -> str:
-    """After validation: retry if score < 8 (max 2 retries), else merge when score >= 8."""
-    validation_result = state.get("content_validation_result")
-    retry_count = state.get("content_editor_retry_count", 0)
-    MAX_RETRIES = 2
-    
-    if validation_result:
-        score = validation_result.score
-        logger.info(f"Content validation score: {score}/10, Retry count: {retry_count}/{MAX_RETRIES}")
-        
-        # Merge if score >= 8 (passing threshold)
-        if score >= 8:
-            logger.info(f"Score {score} >= 8, proceeding to merge")
-            return "merge"
-        
-        # Retry if score < 8 and retries remaining
-        if retry_count < MAX_RETRIES:
-            logger.info(f"Score {score} < 8, retrying (attempt {retry_count + 1}/{MAX_RETRIES})")
-            return "content_editor_retry"
-        else:
-            logger.info(f"Score {score} < 8 but max retries ({MAX_RETRIES}) reached, proceeding to merge")
-            return "merge"
-    
-    # No validation result, proceed to merge
-    return "merge"
-
-
-# ---------------------------------------------------------------------
-# ROUTER AFTER VALIDATION
-# ---------------------------------------------------------------------
-def route_after_validation(state: SupervisorState) -> str:
-    """After validation: retry if score < 8 (max 2 retries), else merge when score >= 8."""
-    validation_result = state.get("validation_result")
-    retry_count = state.get("dev_editor_retry_count", 0)
-    MAX_RETRIES = 2
-    
-    if validation_result:
-        score = validation_result.score
-        logger.info(f"Validation score: {score}/10, Retry count: {retry_count}/{MAX_RETRIES}")
-        
-        # Merge if score >= 8 (passing threshold)
-        if score >= 8:
-            logger.info(f"Score {score} >= 8, proceeding to merge")
-            return "merge"
-        
-        # Retry if score < 8 and retries remaining
-        if retry_count < MAX_RETRIES:
-            logger.info(f"Score {score} < 8, retrying (attempt {retry_count + 1}/{MAX_RETRIES})")
-            return "development_editor_retry"
-        else:
-            logger.info(f"Score {score} < 8 but max retries ({MAX_RETRIES}) reached, proceeding to merge")
-            return "merge"
-    
-    # No validation result, proceed to merge
-    return "merge"
-
-
-# ---------------------------------------------------------------------
-# ROUTER FOR SEQUENTIAL FLOW (after merge)
-# ---------------------------------------------------------------------
-def route_sequential_after_merge(state: SupervisorState):
-    """
-    After merging current editor result, interrupt for user approval.
-    """
-    current_idx = state.get("current_editor_index", 0)
-    selected_editors = state.get("selected_editors", [])
-    
-    if current_idx >= len(selected_editors):
-        return "end"
-    
-    # Interrupt for user approval
-    return "__interrupt__"
-
-
-# ---------------------------------------------------------------------
-# CUSTOM REDIS CHECKPOINTER (for multi-pod deployments)
-# ---------------------------------------------------------------------
-import pickle
-
-class CustomRedisCheckpointer(BaseCheckpointSaver):
-    """
-    Custom Redis checkpointer that behaves EXACTLY like MemorySaver.
-    Drop-in replacement for MemorySaver with Redis persistence.
-    Uses pickle for serialization to preserve Python object types.
-    """
-    
-    def __init__(self, redis_client: Redis, ttl_seconds: int = 86400):
-        super().__init__()
-        self.redis = redis_client
-        self.ttl_seconds = ttl_seconds
-        logger.info(f"CustomRedisCheckpointer initialized with TTL={ttl_seconds}s")
-    
-    def _make_redis_key(
-        self, 
-        thread_id: str, 
-        checkpoint_ns: str = "", 
-        checkpoint_id: Optional[str] = None,
-        suffix: Optional[str] = None
-    ) -> str:
-        """Generate Redis key matching MemorySaver's internal key structure."""
-        parts = ["checkpoint", thread_id, checkpoint_ns]
-        parts.append(checkpoint_id if checkpoint_id else "latest")
-        if suffix:
-            parts.append(suffix)
-        return ":".join(parts)
-    
-    def _parse_config(self, config: Optional[RunnableConfig]) -> Tuple[str, str, Optional[str]]:
-        """Extract thread_id, checkpoint_ns, and checkpoint_id from config."""
-        if not config:
-            raise ValueError("Config is required")
-        
-        configurable = config.get("configurable", {})
-        thread_id = configurable.get("thread_id")
-        
-        if not thread_id:
-            raise ValueError("thread_id is required in config.configurable")
-        
-        checkpoint_ns = configurable.get("checkpoint_ns", "")
-        checkpoint_id = configurable.get("checkpoint_id")
-        
-        return thread_id, checkpoint_ns, checkpoint_id
-    
-    def put(
-        self,
-        config: RunnableConfig,
-        checkpoint: Checkpoint,
-        metadata: CheckpointMetadata,
-        new_versions: Optional[Dict[str, Any]] = None,
-    ) -> RunnableConfig:
-        """Save checkpoint to Redis. Matches MemorySaver.put() exactly."""
-        try:
-            thread_id, checkpoint_ns, _ = self._parse_config(config)
-            
-            # Generate checkpoint_id using microsecond timestamp (like MemorySaver)
-            checkpoint_id = checkpoint.get("id")
-            if not checkpoint_id:
-                checkpoint_id = str(int(datetime.now(timezone.utc).timestamp() * 1_000_000))
-            
-            # Ensure checkpoint has the ID
-            if isinstance(checkpoint, dict):
-                checkpoint["id"] = checkpoint_id
-            
-            # Build parent_config if parent_checkpoint_id exists
-            parent_config = None
-            if metadata and metadata.get("parent_checkpoint_id"):
-                parent_checkpoint_id = metadata["parent_checkpoint_id"]
-                parent_config = {
-                    "configurable": {
-                        "thread_id": thread_id,
-                        "checkpoint_ns": checkpoint_ns,
-                        "checkpoint_id": parent_checkpoint_id
-                    }
-                }
-            
-            # pending_writes is always empty list - writes stored separately via put_writes()
-            checkpoint_tuple_data = {
-                "checkpoint": checkpoint,
-                "metadata": metadata if metadata else {},
-                "parent_config": parent_config,
-                "pending_writes": []
-            }
-            
-            # Store checkpoint data using pickle to preserve types
-            checkpoint_key = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id)
-            serialized = pickle.dumps(checkpoint_tuple_data)
-            self.redis.setex(checkpoint_key, self.ttl_seconds, serialized)
-            
-            # Update "latest" pointer (store as string)
-            latest_key = self._make_redis_key(thread_id, checkpoint_ns, None)
-            self.redis.setex(latest_key, self.ttl_seconds, checkpoint_id.encode('utf-8'))
-            
-            # Add to sorted set for chronological listing
-            list_key = self._make_redis_key(thread_id, checkpoint_ns, suffix="list")
-            score = float(checkpoint_id) if checkpoint_id.replace('.', '', 1).isdigit() else 0
-            self.redis.zadd(list_key, {checkpoint_id: score})
-            self.redis.expire(list_key, self.ttl_seconds)
-            
-            logger.debug(f"Saved checkpoint: thread={thread_id}, ns={checkpoint_ns}, id={checkpoint_id}")
-            
-            # Return updated config
-            return {
-                "configurable": {
-                    "thread_id": thread_id,
-                    "checkpoint_ns": checkpoint_ns,
-                    "checkpoint_id": checkpoint_id
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"CustomRedisCheckpointer.put failed: {e}", exc_info=True)
-            raise
-    
-    def get_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:
-        """Retrieve checkpoint tuple from Redis. Matches MemorySaver.get_tuple() exactly."""
-        try:
-            thread_id, checkpoint_ns, checkpoint_id = self._parse_config(config)
-            
-            # If no checkpoint_id specified, get the latest one
-            if not checkpoint_id:
-                latest_key = self._make_redis_key(thread_id, checkpoint_ns, None)
-                latest_checkpoint_id_bytes = self.redis.get(latest_key)
-                
-                if not latest_checkpoint_id_bytes:
-                    logger.debug(f"No checkpoints found: thread={thread_id}, ns={checkpoint_ns}")
-                    return None
-                
-                checkpoint_id = (
-                    latest_checkpoint_id_bytes.decode('utf-8') 
-                    if isinstance(latest_checkpoint_id_bytes, bytes) 
-                    else latest_checkpoint_id_bytes
-                )
-            
-            # Retrieve checkpoint data
-            checkpoint_key = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id)
-            data_bytes = self.redis.get(checkpoint_key)
-            
-            if not data_bytes:
-                logger.debug(f"Checkpoint not found: {checkpoint_key}")
-                return None
-            
-            # Deserialize using pickle to preserve types
-            checkpoint_tuple_data = pickle.loads(data_bytes)
-            
-            # Load pending_writes from separate put_writes() calls
-            pending_writes = []
-            writes_pattern = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id, suffix="writes:*")
-            
-            # Get all write keys for this checkpoint
-            write_keys = self.redis.keys(writes_pattern)
-            for write_key_bytes in write_keys:
-                write_key = write_key_bytes.decode('utf-8') if isinstance(write_key_bytes, bytes) else write_key_bytes
-                write_data_bytes = self.redis.get(write_key)
-                
-                if write_data_bytes:
-                    # Deserialize writes using pickle
-                    write_data = pickle.loads(write_data_bytes)
-                    
-                    task_id = write_data.get("task_id")
-                    writes_list = write_data.get("writes", [])
-                    
-                    # Convert to MemorySaver format: (task_id, channel, value)
-                    for channel, value in writes_list:
-                        pending_writes.append((task_id, channel, value))
-            
-            # Build config for this checkpoint
-            current_config = {
-                "configurable": {
-                    "thread_id": thread_id,
-                    "checkpoint_ns": checkpoint_ns,
-                    "checkpoint_id": checkpoint_id
-                }
-            }
-            
-            # Return CheckpointTuple with pending_writes as list
-            return CheckpointTuple(
-                config=current_config,
-                checkpoint=checkpoint_tuple_data["checkpoint"],
-                metadata=checkpoint_tuple_data.get("metadata", {}),
-                parent_config=checkpoint_tuple_data.get("parent_config"),
-                pending_writes=pending_writes
-            )
-            
-        except Exception as e:
-            logger.error(f"CustomRedisCheckpointer.get_tuple failed: {e}", exc_info=True)
-            return None
-    
-    def list(
-        self,
-        config: RunnableConfig,
-        *,
-        filter: Optional[Dict[str, Any]] = None,
-        before: Optional[RunnableConfig] = None,
-        limit: Optional[int] = None,
-    ) -> Iterator[CheckpointTuple]:
-        """List checkpoints in reverse chronological order. Matches MemorySaver.list() exactly."""
-        try:
-            thread_id, checkpoint_ns, _ = self._parse_config(config)
-            
-            list_key = self._make_redis_key(thread_id, checkpoint_ns, suffix="list")
-            
-            # Determine range for iteration
-            max_score = "+inf"
-            if before:
-                before_checkpoint_id = before.get("configurable", {}).get("checkpoint_id")
-                if before_checkpoint_id:
-                    max_score = f"({before_checkpoint_id}"
-            
-            # Get checkpoint IDs in reverse chronological order
-            checkpoint_ids = self.redis.zrevrangebyscore(
-                list_key,
-                max_score,
-                "-inf",
-                start=0,
-                num=limit if limit else -1
-            )
-            
-            if not checkpoint_ids:
-                logger.debug(f"No checkpoints in list: thread={thread_id}, ns={checkpoint_ns}")
-                return
-            
-            # Yield each checkpoint
-            for checkpoint_id_bytes in checkpoint_ids:
-                checkpoint_id = (
-                    checkpoint_id_bytes.decode('utf-8') 
-                    if isinstance(checkpoint_id_bytes, bytes) 
-                    else checkpoint_id_bytes
-                )
-                
-                checkpoint_key = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id)
-                data_bytes = self.redis.get(checkpoint_key)
-                
-                if not data_bytes:
-                    continue
-                
-                # Deserialize using pickle
-                checkpoint_tuple_data = pickle.loads(data_bytes)
-                
-                # Apply metadata filter if provided
-                if filter:
-                    metadata = checkpoint_tuple_data.get("metadata", {})
-                    if not all(metadata.get(k) == v for k, v in filter.items()):
-                        continue
-                
-                # Load pending_writes for this checkpoint
-                pending_writes = []
-                writes_pattern = self._make_redis_key(thread_id, checkpoint_ns, checkpoint_id, suffix="writes:*")
-                write_keys = self.redis.keys(writes_pattern)
-                
-                for write_key_bytes in write_keys:
-                    write_key = write_key_bytes.decode('utf-8') if isinstance(write_key_bytes, bytes) else write_key_bytes
-                    write_data_bytes = self.redis.get(write_key)
-                    
-                    if write_data_bytes:
-                        # Deserialize using pickle
-                        write_data = pickle.loads(write_data_bytes)
-                        
-                        task_id = write_data.get("task_id")
-                        writes_list = write_data.get("writes", [])
-                        
-                        # Convert to MemorySaver format: (task_id, channel, value)
-                        for channel, value in writes_list:
-                            pending_writes.append((task_id, channel, value))
-                
-                current_config = {
-                    "configurable": {
-                        "thread_id": thread_id,
-                        "checkpoint_ns": checkpoint_ns,
-                        "checkpoint_id": checkpoint_id
-                    }
-                }
-                
-                yield CheckpointTuple(
-                    config=current_config,
-                    checkpoint=checkpoint_tuple_data["checkpoint"],
-                    metadata=checkpoint_tuple_data.get("metadata", {}),
-                    parent_config=checkpoint_tuple_data.get("parent_config"),
-                    pending_writes=pending_writes
-                )
-                
-        except Exception as e:
-            logger.error(f"CustomRedisCheckpointer.list failed: {e}", exc_info=True)
-    
-    def put_writes(
-        self,
-        config: RunnableConfig,
-        writes: Sequence[Tuple[str, Any]],
-        task_id: str,
-    ) -> None:
-        """Save incremental writes to Redis. Matches MemorySaver.put_writes() exactly."""
-        try:
-            thread_id, checkpoint_ns, checkpoint_id = self._parse_config(config)
-            
-            # If no checkpoint_id, get the latest
-            if not checkpoint_id:
-                latest_key = self._make_redis_key(thread_id, checkpoint_ns, None)
-                latest_checkpoint_id_bytes = self.redis.get(latest_key)
-                
-                if latest_checkpoint_id_bytes:
-                    checkpoint_id = (
-                        latest_checkpoint_id_bytes.decode('utf-8') 
-                        if isinstance(latest_checkpoint_id_bytes, bytes) 
-                        else latest_checkpoint_id_bytes
-                    )
-                else:
-                    checkpoint_id = str(int(datetime.now(timezone.utc).timestamp() * 1_000_000))
-            
-            # Store writes
-            writes_key = self._make_redis_key(
-                thread_id, 
-                checkpoint_ns, 
-                checkpoint_id, 
-                suffix=f"writes:{task_id}"
-            )
-            
-            # Store writes data using pickle to preserve types
-            writes_data = {
-                "writes": [[channel, value] for channel, value in writes],
-                "task_id": task_id,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-            
-            serialized = pickle.dumps(writes_data)
-            self.redis.setex(writes_key, self.ttl_seconds, serialized)
-            
-            logger.debug(f"Saved writes: thread={thread_id}, checkpoint={checkpoint_id}, task={task_id}")
-            
-        except Exception as e:
-            logger.error(f"CustomRedisCheckpointer.put_writes failed: {e}", exc_info=True)
-# ---------------------------------------------------------------------
-# SHARED CHECKPOINTER FOR SEQUENTIAL GRAPH
-# ---------------------------------------------------------------------
-# IMPORTANT: Use a single shared checkpointer instance so state persists
-# across multiple graph instances AND multiple pods (initial request and /next requests)
-
-if config.APP_ENV == "local":
-    _sequential_checkpointer = MemorySaver()
-    logger.info("Using MemorySaver for local development")
-else:
-    try:
-        redis_client = Redis(
-            host=config.REDIS_HOST,
-            port=config.REDIS_PORT,
-            password=config.REDIS_PASSWORD,
-            ssl=True,
-            decode_responses=False
-        )
-        # Test connection with PING
-        redis_client.ping()
-        logger.info(f"Redis connection successful: {config.REDIS_HOST}:{config.REDIS_PORT}")
-        
-        # Use custom checkpointer that doesn't require JSON module
-        _sequential_checkpointer = CustomRedisCheckpointer(
-            redis_client=redis_client,
-            ttl_seconds=86400  # 24 hour TTL
-        )
-        logger.info("Using CustomRedisCheckpointer for multi-pod deployment")
-        
-    except Exception as e:
-        logger.error(f"Redis connection failed: {e}")
-        logger.warning("FALLBACK: Using MemorySaver - state will NOT persist across pod restarts")
-        _sequential_checkpointer = MemorySaver()
-
-
-# ---------------------------------------------------------------------
-# BUILD SEQUENTIAL GRAPH (reuses existing graph nodes)
-# ---------------------------------------------------------------------
-def build_sequential_graph():
-    """
-    Build a sequential graph that runs editors one at a time with interrupts.
-    REUSES all existing editor nodes, merge_node, and graph structure.
-    
-    Flow:
-    1. route_sequential_editor -> routes to current editor node
-    2. editor node -> runs current editor (reuses existing editor nodes)
-    3. sequential_merge_node -> merges only current editor result
-    4. route_sequential_after_merge -> interrupts for user approval
-    5. Resume -> continues to next editor (when state updated externally)
-    
-    NOTE: All graph instances share the same checkpointer (_sequential_checkpointer)
-    to ensure state persistence across requests.
-    """
-    graph = StateGraph(SupervisorState)
-    
-    # ---------------------------------------------------------------------
-    # ADD NODES (organized by category)
-    # ---------------------------------------------------------------------
-    
-    # Analysis nodes (run before editors)
-    graph.add_node("article_analysis", article_analysis_node)
-    graph.add_node("cross_paragraph_analysis", cross_paragraph_analysis_node)
-    
-    # Individual editor nodes
-    graph.add_node("development_editor_tool", development_editor_node)
-    graph.add_node("development_editor_retry", development_editor_retry_node)
-    graph.add_node("content_editor_tool", content_editor_node)
-    graph.add_node("content_editor_retry", content_editor_retry_node)
-    graph.add_node("line_editor_tool", line_editor_node)
-    graph.add_node("copy_editor_tool", copy_editor_node)
-    graph.add_node("brand_editor_tool", brand_editor_node)
-    
-    # Combined editor nodes
-    graph.add_node("development_content_combined", development_content_combined_node)
-    graph.add_node("line_copy_combined", line_copy_combined_node)
-    graph.add_node("resolve_combined_editor_conflicts", resolve_combined_editor_conflicts_node)
-    
-    # Validation nodes (run after editors)
-    graph.add_node("article_validation", article_validation_node)
-    graph.add_node("content_validation", content_validation_node)
-    
-    # Merge node (final step)
-    graph.add_node("merge", sequential_merge_node)
-    
-    # ---------------------------------------------------------------------
-    # SET CONDITIONAL ENTRY POINT (routes to appropriate node)
-    # ---------------------------------------------------------------------
-    graph.set_conditional_entry_point(
-        route_sequential_editor,
-        {
-            # Analysis nodes
-            "article_analysis": "article_analysis",
-            "cross_paragraph_analysis": "cross_paragraph_analysis",
-            
-            # Individual editor nodes
-            "development_editor_tool": "development_editor_tool",
-            "development_editor_retry": "development_editor_retry",
-            "content_editor_tool": "content_editor_tool",
-            "content_editor_retry": "content_editor_retry",
-            "line_editor_tool": "line_editor_tool",
-            "copy_editor_tool": "copy_editor_tool",
-            "brand_editor_tool": "brand_editor_tool",
-            
-            # Combined editor nodes
-            "development_content_combined": "development_content_combined",
-            "line_copy_combined": "line_copy_combined",
-            
-            # Validation nodes
-            "article_validation": "article_validation",
-            "content_validation": "content_validation",
-            
-            # Merge node
-            "merge": "merge",
-        }
-    )
-    
-    # Article analysis routes conditionally based on editor type
-    graph.add_conditional_edges(
-        "article_analysis",
-        route_sequential_editor,
-        {
-            "development_editor_tool": "development_editor_tool",
-            "development_content_combined": "development_content_combined",
-            "merge": "merge"
-        }
-    )
-    graph.add_edge("development_editor_tool", "article_validation")
-    
-    # Combined editors: run -> same resolve node (prompt) -> merge
-    graph.add_edge("development_content_combined", "resolve_combined_editor_conflicts")
-    graph.add_edge("line_copy_combined", "resolve_combined_editor_conflicts")
-    graph.add_edge("resolve_combined_editor_conflicts", "merge")
-    
-    graph.add_conditional_edges(
-        "article_validation",
-        route_after_validation,
-        {
-            "development_editor_retry": "development_editor_retry",
-            "merge": "merge"
-        }
-    )
-    
-    graph.add_edge("development_editor_retry", "article_validation")
-    
-    graph.add_edge("cross_paragraph_analysis", "content_editor_tool")
-    graph.add_edge("content_editor_tool", "content_validation")
-    
-    graph.add_conditional_edges(
-        "content_validation",
-        route_after_content_validation,
-        {
-            "content_editor_retry": "content_editor_retry",
-            "merge": "merge"
-        }
-    )
-    
-    graph.add_edge("content_editor_retry", "content_validation")
-    
-    for node in ["line_editor_tool", "copy_editor_tool", "brand_editor_tool"]:
-        graph.add_edge(node, "merge")
-    
-    return graph.compile(checkpointer=_sequential_checkpointer, interrupt_after=["merge"]) 
+  return finalOutput.join('\n');
+}
