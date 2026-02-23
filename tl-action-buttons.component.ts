@@ -2290,57 +2290,57 @@ Return ONLY valid JSON. No markdown fences, no commentary. The top-level key mus
 # LINE + COPY CONFLICT RESOLUTION (consolidate node)
 # ------------------------------------------------------------
 LINE_COPY_RESOLVE_CONFLICTS_PROMPT = """
-You are resolving conflicts between Line Editor and Copy Editor suggestions for the same document blocks.
+ROLE: You resolve conflicts between Line Editor and Copy Editor suggestions for the same document blocks. Your output MUST be strict JSON only; no commentary, no markdown fences.
 
-RULE: Merge both editors where both address the same line or sentence.
-- Where both editors suggest a change for the same line/sentence in a block, MERGE them into a SINGLE feedback item.
-- Include ALL non-overlapping Line Editor suggestions.
-- Include ALL non-overlapping Copy Editor suggestions.
+--- OBJECTIVE (MANDATORY) ---
+1. Where both editors suggest a change for the same line/sentence in a block: MERGE into a SINGLE feedback item.
+2. Include ALL non-overlapping Line Editor suggestions as separate items.
+3. Include ALL non-overlapping Copy Editor suggestions as separate items.
+4. Only output separate items when they address DIFFERENT lines/sentences.
 
-IMPORTANT MERGING RULES: When both editors address the same line/sentence:
-- Create ONE merged feedback item that combines ALL overlapping items from both editors.
-- If Line Editor has 1 item and Copy Editor has 2+ items addressing the same line, merge ALL of them into ONE feedback item.
-- The merged feedback item must have:
-  * "issue": Use Line Editor's "issue" field (references the ORIGINAL text). If multiple Line Editor items overlap, use the most comprehensive one.
-  * "fix": Generate a new merged fix that intelligently combines ALL fixes from Line Editor item(s) AND ALL fixes from Copy Editor item(s) addressing the same line. The merged fix should incorporate the best aspects of all suggestions into a coherent solution.
-  * "impact": Format as an array string combining ALL impacts from ALL overlapping items. Example: "['Impact from Line Editor', 'Impact from Copy Editor Item 1', 'Impact from Copy Editor Item 2']" (include all impacts, no duplicates)
-  * "rule_used": Format as an array string combining ALL rules from ALL overlapping items. Example: "['Line Editor - Rule X', 'Copy Editor - Rule Y', 'Copy Editor - Rule Z']" (include all rules)
-  * "priority": Use the HIGHEST priority among all overlapping items (Critical > Important > Enhancement)
-  * "editor": Use "line" (keep as Line Editor to ensure feedback is displayed correctly in the frontend)
-- Do NOT include separate Line Editor and Copy Editor items for the same line - merge ALL of them into ONE item.
-- Only include separate items when they address DIFFERENT lines/sentences.
+--- MERGED FEEDBACK ITEM FIELDS (MANDATORY) ---
+When merging overlapping Line + Copy items into ONE item, the merged item MUST have exactly:
 
-============================================================
-FORBIDDEN — OUTPUT (NON-NEGOTIABLE)
-============================================================
-- FORBIDDEN in your output: Two or more feedback items (in the same block) whose "issue" refers to the same or overlapping part of the block (same phrase, same sentence, or one contains the other).
-- FORBIDDEN: Any overlapping Line and Copy items for the same span left unmerged — they MUST be merged into ONE item.
+- "issue": Line Editor "issue" (references ORIGINAL text). If multiple Line items overlap, use the most comprehensive one. No editor name prefixes.
+- "fix": ONLY the exact replacement text that appears in suggested_text for that span. Merge overlapping fixes into this single replacement string. FORBIDDEN in fix: parentheticals, "Also consider...", optional notes, or any text not in suggested_text; put such context in "impact" only.
+- "impact": Array string combining ALL impacts from ALL overlapping items. Example: "['Impact A', 'Impact B']". No duplicates.
+- "rule_used": Array string combining ALL rules from ALL overlapping items. Example: "['Line Editor - X', 'Copy Editor - Y']".
+- "priority": HIGHEST among overlapping items: Critical > Important > Enhancement.
+- "editor": MUST be "line" (for frontend display).
 
-============================================================
-VALIDATION — REQUIRED BEFORE OUTPUT
-============================================================
-Before returning your JSON, you MUST verify:
-- For each block, no two items in feedback_edit refer to the same or overlapping part of the block (same phrase, same sentence, or one contains the other).
-- Every overlapping set from the input has been merged into exactly one output item (Line + Copy for that span → one merged item with editor "line").
-- Non-overlapping Line and Copy items are preserved as separate items.
-If validation fails, merge overlapping items again and then return; do not output until the checklist passes.
+--- FORBIDDEN (NON-NEGOTIABLE) ---
+- Two or more feedback items in the same block whose "issue" refers to the same or overlapping part of the block.
+- Leaving overlapping Line and Copy items for the same span unmerged (they MUST be one item).
+- Any content in "fix" that is not the exact replacement in suggested_text (e.g. "(Also consider...)", "(You may want to...)"); use "impact" for such notes.
 
-INPUT: You will receive a JSON object with a "blocks" array. Each block has:
-- "id": block id (e.g. "b1")
-- "original_text": original block text
-- "suggested_text": final suggested text (already Line-preferenced; do not change)
-- "feedback_edit": array of { "editor": "line" | "copy", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] } for both editors
+--- OVERLAP DEFINITION ---
+Two items address the "same line/sentence" when their "issue" (quoted original text) refers to the same or overlapping part of the block: same phrase, same sentence, or one contains the other.
 
-OUTPUT: Return a single JSON object with a "blocks" array. Each block MUST have:
-- "id": same as input
-- "suggested_text": same as input (unchanged)
-- "feedback_edit": array of SingleEditorFeedback. For overlapping items (same line/sentence), merge ALL overlapping items from both editors into ONE item using Line Editor's "issue" + intelligently merged "fix" combining ALL fixes from all overlapping items + combined impacts array + combined rules array, and set "editor" to "line". For non-overlapping items, include them separately. Preserve the exact structure: [ { "editor": "line" | "copy", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] } ]
+--- INPUT SCHEMA ---
+You receive JSON: { "blocks": [ { "id", "original_text", "suggested_text", "feedback_edit" } ] }.
+- feedback_edit: array of { "editor": "line"|"copy", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] }.
+- suggested_text is final Line-preferenced text; do not change it.
 
-Two feedback items address the "same line/sentence" when their "issue" (quoted original text) refers to the same or overlapping part of the block (e.g. same phrase, same sentence, or one contains the other). When merging: Line Editor's "issue" shows the original problem, and the merged "fix" intelligently combines ALL solutions from ALL overlapping items (both Line Editor and all Copy Editor items addressing that line). Include ALL impacts and ALL rules from all merged items in the arrays.
+--- OUTPUT SCHEMA (STRICT) ---
+Return a single JSON object: { "blocks": [ ... ] }.
+Each block MUST have:
+- "id": same as input.
+- "suggested_text": same as input (unchanged).
+- "feedback_edit": array of { "editor": "line"|"copy", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] }.
+  For overlapping items: one merged item with editor "line", exact fix from suggested_text, combined impact/rule_used. For non-overlapping: keep as separate items.
 
-Output guarantee: In every block, each distinct part of the text (line/sentence/phrase) is addressed by at most one feedback item; there are no conflicts and no overlapping items in feedback_edit.
+--- VALIDATION BEFORE RETURN (MANDATORY) ---
+Before returning, verify:
+1. No two items in any block refer to the same or overlapping part of the block.
+2. Every overlapping input set is merged into exactly one output item (editor "line").
+3. Non-overlapping items are preserved.
+If any check fails: merge overlapping items again, then return. Do not output until all checks pass.
 
-Return ONLY valid JSON. No markdown fences, no commentary. The top-level key must be "blocks" (array of objects with "id", "suggested_text", "feedback_edit").
+--- OUTPUT GUARANTEE ---
+In every block, each distinct part of the text (line/sentence/phrase) is addressed by at most one feedback item. No conflicts. No overlapping items in feedback_edit.
+
+--- RETURN FORMAT ---
+Return ONLY valid JSON. No markdown code fences. No commentary. Top-level key MUST be "blocks" (array of objects with "id", "suggested_text", "feedback_edit").
 """
 
 # ------------------------------------------------------------
