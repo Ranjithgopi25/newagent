@@ -1,39 +1,33 @@
 
 <div class="editor-selection">
-  <div class="editor-chips">
-    <!-- Selectable Editors (Development, Content, Line, Copy) -->
-    @for (editor of selectableEditors; track editor; let i = $index) {
-      <button
-        class="editor-chip"
+  <p class="section-title">Choose the editing service(s) to apply</p>
+  <div class="services-checklist">
+    @for (editor of selectableEditors; track editor.id) {
+      <label
+        class="service-card"
         [class.selected]="isSelected(editor.id)"
-        (click)="toggleEditor(editor)"
-        type="button">
-        <span class="editor-number">{{i + 1}}</span>
-        <span class="editor-icon">{{editor.icon}}</span>
-        <div class="editor-info">
-          <span class="editor-name" [innerHTML]="getEditorNameHtml(editor.name)"></span>
-          <span class="editor-description">{{editor.description}}</span>
-        </div>
-        @if (isSelected(editor.id)) {
-          <span class="check-mark">✓</span>
-        }
-      </button>
+        [for]="'editor-' + editor.id">
+        <input
+          type="checkbox"
+          [id]="'editor-' + editor.id"
+          [checked]="isSelected(editor.id)"
+          (change)="toggleEditor(editor)"
+          [attr.aria-label]="editor.name">
+        <span class="service-card-toggle"></span>
+        <span class="service-label" [innerHTML]="getEditorNameHtml(editor.name)"></span>
+      </label>
     }
-
-    <!-- PwC Brand Alignment Editor (Disabled, Always ON) -->
     @if (brandAlignmentEditor) {
-      <button
-        class="editor-chip selected disabled"
-        type="button"
-        disabled>
-        <span class="editor-number">{{selectableEditors.length + 1}}</span>
-        <span class="editor-icon">{{brandAlignmentEditor.icon}}</span>
-        <div class="editor-info">
-          <span class="editor-name" [innerHTML]="getEditorNameHtml(brandAlignmentEditor.name)"></span>
-          <span class="editor-description">{{brandAlignmentEditor.description}}</span>
-        </div>
-        <span class="check-mark">✓</span>
-      </button>
+      <label class="service-card selected disabled" for="editor-brand-alignment">
+        <input
+          type="checkbox"
+          id="editor-brand-alignment"
+          checked
+          disabled
+          [attr.aria-label]="brandAlignmentEditor.name">
+        <span class="service-card-toggle"></span>
+        <span class="service-label" [innerHTML]="getEditorNameHtml(brandAlignmentEditor.name)"></span>
+      </label>
     }
   </div>
 
