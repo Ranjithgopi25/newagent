@@ -150,7 +150,7 @@ export class EditContentFlowComponent implements OnInit {
 
   
   formData: EditForm = {
-    selectedEditors: ['development+content', 'line+copy', 'brand-alignment'],
+    selectedEditors: ['content', 'line+copy', 'brand-alignment'],
     uploadedFile: null
   };
   
@@ -166,7 +166,7 @@ export class EditContentFlowComponent implements OnInit {
 
   editorTypes: { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] = [
     {
-      id: 'development+content' as EditorType,
+      id: 'content' as EditorType,
       name: 'Strengthen content structure and key messaging (clarify positioning, flow, and key points)',
       icon: '🚀',
       description: 'Development and Content editors run together, then combined into one result',
@@ -248,7 +248,7 @@ export class EditContentFlowComponent implements OnInit {
     this.isCopied = false;
     this.isEditorLoading = false;
     this.formData = {
-      selectedEditors: ['development+content', 'line+copy', 'brand-alignment'],
+      selectedEditors: ['content', 'line+copy', 'brand-alignment'],
       uploadedFile: null
     };
   }
