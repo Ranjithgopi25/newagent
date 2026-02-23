@@ -12,6 +12,7 @@ import { FileUploadComponent } from '../../../shared/ui/components/file-upload/f
 import { environment } from '../../../../environments/environment';
 import { toSnakeCase } from '../../../core/utils/string.utils';
 import { ThoughtLeadershipMetadata } from '../../../core/models';
+import { EditorType, normalizeEditorOrder, getEditorDisplayName } from '../../../core/utils/edit-content.utils';
 
 @Component({
     selector: 'app-refine-content-flow',
@@ -30,7 +31,6 @@ export class RefineContentFlowComponent implements OnInit, OnDestroy {
   // File upload
   uploadedFile: File | null = null;
   uploadedFileWordCount = 'uploaded content';
-  documentUploadError = false;
   
   // Service toggles - all ON by default
   expandCompressContent = false;
@@ -40,13 +40,66 @@ export class RefineContentFlowComponent implements OnInit, OnDestroy {
   provideSuggestions = false;
   expandGuidelines = '';
   
-  // Edit Content sub-options (editor types) - all ON by default
-  developmentEditor = true;
-  contentEditor = true;
-  lineEditor = true;
-  copyEditor = true;
-  pwcBrandEditor = true; // Always true, disabled in UI
-  
+  // Edit Content: same combined editor types as Edit Content flow (development+content, line+copy, brand-alignment)
+  selectedEditorTypes: EditorType[] = ['development+content', 'line+copy', 'brand-alignment'];
+  editorTypes: { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] = [
+    {
+      id: 'development+content' as EditorType,
+      name: 'Strengthen content structure and key messaging (clarify positioning, flow, and key points)',
+      icon: '🚀',
+      description: 'Development and Content editors run together, then combined into one result',
+      details: 'Development: structure, narrative, POV. Content: MECE, citations, logic. Same-sentence merge of rules and impact.',
+      disabled: false
+    },
+    {
+      id: 'line+copy' as EditorType,
+      name: 'Copyedit (smooth phrasing, grammar, and consistency)',
+      icon: '📝',
+      description: 'Line and Copy editors run together, then combined into one result',
+      details: 'Line: flow, readability, style. Copy: grammar, punctuation, typos. Same-sentence merge of rules and impact.',
+      disabled: false
+    },
+    {
+      id: 'brand-alignment' as EditorType,
+      name: 'Align to PwC brand standards (tone, terminology, and formatting)',
+      icon: '🎯',
+      description: 'Aligns content writing standards with PwC brand',
+      details: 'Checks: we/you language, contractions, active voice, prohibited words (catalyst, PwC Network), China references, brand messaging',
+      disabled: true
+    }
+  ];
+
+  toggleEditor(type: EditorType): void {
+    if (type === 'brand-alignment') return;
+    const index = this.selectedEditorTypes.indexOf(type);
+    if (index > -1) {
+      this.selectedEditorTypes.splice(index, 1);
+    } else {
+      this.selectedEditorTypes.push(type);
+    }
+    if (!this.selectedEditorTypes.includes('brand-alignment')) {
+      this.selectedEditorTypes.push('brand-alignment');
+    }
+  }
+
+  isEditorSelected(type: EditorType): boolean {
+    return this.selectedEditorTypes.includes(type);
+  }
+
+  get selectableEditors(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean }[] {
+    return this.editorTypes.filter(editor => editor.id !== 'brand-alignment');
+  }
+
+  get brandAlignmentEditor(): { id: EditorType; name: string; icon: string; description: string; details: string; disabled: boolean } | undefined {
+    return this.editorTypes.find(editor => editor.id === 'brand-alignment');
+  }
+
+  /** Bold editor name for Refine context (use for refine content) */
+  getEditorNameHtml(name: string): string {
+    if (!name) return '';
+    return `<strong>${name.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</strong>`;
+  }
+
   // Enhance Research sub-options - sources ON by default
   researchTopics = '';
   researchGuidelines = '';
@@ -61,7 +114,7 @@ export class RefineContentFlowComponent implements OnInit, OnDestroy {
   // Multi-file support for research documents
   researchDocumentFiles: File[] = [];
   readonly MAX_RESEARCH_DOCS = 5;
-  readonly MAX_RESEARCH_TOKEN_LIMIT = 50000;
+  readonly MAX_RESEARCH_TOKEN_LIMIT = 20000;
   researchDocsTokenError = false;
   researchDocsFileLimitError = false;
   selectSpecificPwcSources = false;
@@ -77,14 +130,14 @@ export class RefineContentFlowComponent implements OnInit, OnDestroy {
   pwcThirdPartySource4 = false;
   
 pwcProprietarySources = [
-    { name: 'PwC industry edge', selected: true },
+    { name: 'PwC Industry Edge', selected: true },
     { name: 'PwC.com', selected: true },
-    { name: 'PwC insights', selected: true },
-    { name: 's+b journal', selected: true },
-    { name: 'Executive leadership hub', selected: true },
-    { name: 'The exchange', selected: true },
-    { name: 'PwC connected source', selected: true },
-    { name: 'PwC benchmarking', selected: true },
+    { name: 'PwC Insights', selected: true },
+    { name: 's+b Journal', selected: true },
+    { name: 'Executive Leadership Hub', selected: true },
+    { name: 'The Exchange', selected: true },
+    { name: 'PwC Connected Source', selected: true },
+    { name: 'PwC Benchmarking', selected: true },
     //{ name: 'Insights Factory', selected: true },
     //{ name: 'PwC Intelligence', selected: true },
     //{ name: 'C-Suite Connection Program', selected: true },
@@ -143,9 +196,6 @@ pwcProprietarySources = [
   private destroy$ = new Subject<void>();
   private streamSubscription?: Subscription;
 
-  // Document upload component reference
-  @ViewChild('documentUpload') documentUploadRef?: FileUploadComponent;
-  
   // Supporting document for Expand/Compress when slider exceeds uploaded file word count
   @ViewChild('expandSupportingUpload', { read: ElementRef, static: false }) expandSupportingUploadRef?: ElementRef;
   expandSupportingDocFile: File | null = null;
@@ -154,7 +204,7 @@ pwcProprietarySources = [
   // Multi-file support for supporting documents
   expandSupportingDocFiles: File[] = [];
   readonly MAX_SUPPORTING_DOCS = 5;
-  readonly MAX_TOKEN_LIMIT = 50000;
+  readonly MAX_TOKEN_LIMIT = 20000;
   supportingDocsTokenError = false;
   supportingDocsFileLimitError = false;
 
@@ -206,7 +256,6 @@ pwcProprietarySources = [
 
   back(): void{
     this.cancelStream();
-    this.documentUploadError = false;
     this.tlFlowService.closeFlow();
     this.tlFlowService.openGuidedDialog();
   }
@@ -325,17 +374,12 @@ pwcProprietarySources = [
   resetForm(): void {
     this.uploadedFile = null;
     this.uploadedFileWordCount = 'uploaded content';
-    this.documentUploadError = false;
     this.expandCompressContent = false;
     this.adjustAudienceTone = false;
     this.enhanceResearch = false;
     this.editContent = false;
     this.provideSuggestions = false;
-    this.developmentEditor = true;
-    this.contentEditor = true;
-    this.lineEditor = true;
-    this.copyEditor = true;
-    this.pwcBrandEditor = true;
+    this.selectedEditorTypes = ['development+content', 'line+copy', 'brand-alignment'];
     this.researchTopics = '';
     this.pwcContentLink = false;
     this.pwcProprietaryResearch = true;
@@ -414,22 +458,6 @@ pwcProprietarySources = [
   }
 
   onFileSelected(file: File): void {
-    // Validate file format - reject PPTX files
-    const acceptedFormats = ['.doc', '.docx', '.pdf', '.txt'];
-    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
-    const isValidFormat = acceptedFormats.includes(fileExtension);
-    
-    if (!isValidFormat) {
-      console.warn(`[RefineContentFlow] Invalid file format: ${file.name}. Accepted formats: .doc, .docx, .pdf, .txt`);
-      this.documentUploadError = true;
-      // Reset the file upload component to prevent invalid file from being stored
-      if (this.documentUploadRef) {
-        this.documentUploadRef.reset();
-      }
-      return;
-    }
-    
-    this.documentUploadError = false;
     this.uploadedFile = file;
     // Extract word count from file
     this.extractWordCount(file);
@@ -439,7 +467,6 @@ pwcProprietarySources = [
     // Clear the uploaded file
     this.uploadedFile = null;
     this.uploadedFileWordCount = 'uploaded content';
-    this.documentUploadError = false;
     
     // Disable all service toggles by resetting them
     this.expandCompressContent = false;
@@ -575,12 +602,7 @@ pwcProprietarySources = [
       this.pwcThirdPartySource4 = false;
     }
     if (service === 'edit-content' && !this.editContent) {
-      // Reset editor selections to defaults when Edit Content is toggled off
-      this.developmentEditor = true;
-      this.contentEditor = true;
-      this.lineEditor = true;
-      this.copyEditor = true;
-      this.pwcBrandEditor = true;
+      this.selectedEditorTypes = ['development+content', 'line+copy', 'brand-alignment'];
     }
   }
 
@@ -595,7 +617,7 @@ pwcProprietarySources = [
     // guard against division by zero
     const pct = max > min ? Math.round(((value - min) / (max - min)) * 100) : 0;
     const clamped = Math.max(0, Math.min(100, pct));
-    this.wordLimitSliderBackground = `linear-gradient(to right, #FFAA72 0%, #FFAA72 ${clamped}%, #E5E7EB ${clamped}%, #E5E7EB 100%)`;
+    this.wordLimitSliderBackground = `linear-gradient(to right, #fd5108 0%, #fd5108 ${clamped}%, #E5E7EB ${clamped}%, #E5E7EB 100%)`;
   }
 
     // Handle word count textbox change
@@ -947,23 +969,19 @@ onPwcThirdPartySourceChange(): void {
       
       services.push(researchService);
       
-      // 5. Edit Content - always include with isSelected flag
+      // 5. Edit Content - same combined editor types as Edit Content flow (development+content, line+copy, brand-alignment)
       const editContentService: any = {
         isSelected: this.editContent,
         type: 'edit_content',
-        editors: []
+        editors: [],
+        editor_types: [] as string[]
       };
       
-      // Add selected editors only if service is selected
       if (this.editContent) {
-        const selectedEditors = [];
-        if (this.developmentEditor) selectedEditors.push('Development Editor');
-        if (this.contentEditor) selectedEditors.push('Content Editor');
-        if (this.lineEditor) selectedEditors.push('Line Editor');
-        if (this.copyEditor) selectedEditors.push('Copy Editor');
-        selectedEditors.push('PwC Brand Alignment Editor'); // Always included
-        
-        editContentService.editors = selectedEditors;
+        const ordered = normalizeEditorOrder([...this.selectedEditorTypes]);
+        editContentService.editor_types = ordered;
+        // Legacy display names for prompt/backward compatibility
+        editContentService.editors = ordered.map((id: string) => getEditorDisplayName(id));
       }
       
       services.push(editContentService);
@@ -1027,16 +1045,11 @@ onPwcThirdPartySourceChange(): void {
       }
       
       if (this.editContent) {
-        const selectedEditors = [];
-        if (this.developmentEditor) selectedEditors.push('Development Editor');
-        if (this.contentEditor) selectedEditors.push('Content Editor');
-        if (this.lineEditor) selectedEditors.push('Line Editor');
-        if (this.copyEditor) selectedEditors.push('Copy Editor');
-        selectedEditors.push('PwC Brand Alignment Editor');
-        
+        const ordered = normalizeEditorOrder([...this.selectedEditorTypes]);
+        const displayNames = ordered.map((id: string) => getEditorDisplayName(id));
         serviceDescriptions.push({
           name: 'Edit Content',
-          params: `Using: ${selectedEditors.join(', ')}`
+          params: `Using: ${displayNames.join(', ')}`
         });
       }
       
