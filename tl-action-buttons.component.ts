@@ -132,7 +132,7 @@ class TLAgent:
     Previous workflow: {state.get('current_workflow', 'None')}
 
     IMPORTANT DISTINCTIONS:
-    - If user input contains the words "change", "edit", "editing", "editor", "edits", "revision" or "edited" (case-insensitive), return "detect_edit_intent"
+    - Return "detect_edit_intent" if user wants to edit/review content, including: "change"/"edit"/"editing"/"editor"/"edits"/"revision"/"edited"; OR "strengthen"/"strength" with "content"/"document"/"doc"; OR line/copy: "grammar"/"copyedit"/"copy edit"/"phrasing"/"consistency"/"line edit"; OR brand: "brand"/"brand editor"/"brand edit"/"PwC brand"/"brand alignment"/"brand standards"
     - If user input contains words like "reformat", "adapt", "repurpose", "social post", "deck", "slide", "slides", "presentation", "placemat", "webpage", "web article", "web", "podcast", return "format_translator"
     - If user input contains words like "whitepaper", "thoughtpaper", "thought leadership article/blog/paper/brief","compose", "author", "produce content", "new article/blog/brief", "draft article/blog/paper/brief", "create article/blog/paper/brief", "write article/blog/paper/brief", "generate article/blog/paper/brief" , return "draft_content"
     - If user says "I want to expand my content", "lengthen", "shorten", "extend", "reduce", "condense", "expand", "compress", "make longer", "make shorter", "shrink"→ return "expand_compress_content"
@@ -152,6 +152,21 @@ class TLAgent:
         
         response = self.llm.invoke([{"role": "user", "content": intent_prompt}])
         identified_workflow = response.content.strip().lower()
+        
+        # Deterministic override: content / line+copy / brand phrasing -> detect_edit_intent (must match editor-detection keywords below)
+        last_msg = state["messages"][-1] if state["messages"] else {}
+        user_text = (last_msg.get("content") or "").lower() if isinstance(last_msg, dict) else ""
+        strength_doc = ("strengthen", "strength"), ("content", "document", "doc")
+        line_copy = ("grammar", "copyedit", "copy edit", "smooth phrasing", "consistency", "phrasing", "line edit")
+        brand_phrases = ("brand editor", "brand edit", "pwc brand", "brand alignment", "brand standards", "align to brand")
+        is_edit_route = (
+            (any(s in user_text for s in strength_doc[0]) and any(d in user_text for d in strength_doc[1]))
+            or any(k in user_text for k in line_copy)
+            or any(b in user_text for b in brand_phrases)
+            or (" brand" in user_text and any(w in user_text for w in ("align", "edit", "check", "standard")))
+        if is_edit_route and identified_workflow != "detect_edit_intent":
+            identified_workflow = "detect_edit_intent"
+            logger.info(f"[INTENT] Override to detect_edit_intent: {user_text[:80]!r}")
         
         if identified_workflow in WORKFLOW_SCHEMAS:
             if state.get("current_workflow") != identified_workflow:
@@ -1768,8 +1783,8 @@ class TLAgent:
                     elif any(p in user_lower for p in CONTENT_PHRASES):
                         detected_editors_legacy.append("content")
 
-                # Line+copy editor: any of these keywords
-                LINE_COPY_KEYWORDS = ("grammar", "copyedit", "copy edit", "smooth phrasing", "consistency", "phrasing")
+                # Line+copy editor: any of these keywords (must match intent override in _identify_intent)
+                LINE_COPY_KEYWORDS = ("grammar", "copyedit", "copy edit", "smooth phrasing", "consistency", "phrasing", "line edit")
                 if any(k in user_lower for k in LINE_COPY_KEYWORDS):
                     if "line" not in detected_editors_legacy:
                         detected_editors_legacy.append("line")
