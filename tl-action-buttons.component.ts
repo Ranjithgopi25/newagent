@@ -1673,14 +1673,13 @@ class TLAgent:
 
             ONLY IF `"is_edit_intent": true`:
 
-            Check whether the user EXPLICITLY mentions any of the following editors:
+            Check whether the user EXPLICITLY mentions any of the following editors (or equivalent phrases):
 
-            - "line"
-            - "copy"
-            - "content"
-            - "brand-alignment" (also: "brand", "brand editor", "brand edit")
+            - "line", "copy" (or any of: "grammar", "copyedit", "copy edit", "smooth phrasing", "consistency", "phrasing") -> line+copy
+            - "content" (or: "strengthen"/"strength" + "content"/"document"/"doc" anywhere in input; or "content structure", "key messaging") -> content
+            - "brand-alignment" (or: "brand", "brand editor", "brand edit", "PwC brand", "align", "brand standards") -> brand-alignment
 
-            Add ONLY the editors that appear verbatim or by these names in the input text.
+            Add ONLY the editors that appear verbatim or by these names/phrases in the input text.
             DO NOT infer, assume, or default editors.
 
             ━━━━━━━━━━━━━━━━━━━━
@@ -1755,7 +1754,36 @@ class TLAgent:
                                     detected_editors_legacy.append(valid_id)
                                 break
                 
-                # Map legacy 5 IDs: content only (no development+content), line+copy, brand-alignment
+                # ─── Keyword-based editor detection (from raw user input) ───
+                # Add editors when keywords are present. No need to list every phrase.
+                user_lower = user_input.lower().strip()
+
+                # Content editor: "strengthen"/"strength" + "content"/"document"/"doc" (e.g. "strengthen my refine doc")
+                CONTENT_STRENGTH_WORDS = ("strengthen", "strength")
+                CONTENT_TARGET_WORDS = ("content", "document", "doc")
+                CONTENT_PHRASES = ("content structure", "key messaging")
+                if "content" not in detected_editors_legacy:
+                    if (any(s in user_lower for s in CONTENT_STRENGTH_WORDS) and any(w in user_lower for w in CONTENT_TARGET_WORDS)):
+                        detected_editors_legacy.append("content")
+                    elif any(p in user_lower for p in CONTENT_PHRASES):
+                        detected_editors_legacy.append("content")
+
+                # Line+copy editor: any of these keywords
+                LINE_COPY_KEYWORDS = ("grammar", "copyedit", "copy edit", "smooth phrasing", "consistency", "phrasing")
+                if any(k in user_lower for k in LINE_COPY_KEYWORDS):
+                    if "line" not in detected_editors_legacy:
+                        detected_editors_legacy.append("line")
+                    if "copy" not in detected_editors_legacy:
+                        detected_editors_legacy.append("copy")
+
+                # Brand-alignment editor: brand aliases, " brand", "pwc brand", or "align" + "pwc", or "brand standards"
+                if "brand-alignment" not in detected_editors_legacy:
+                    if any(a in user_lower for a in brand_aliases) or " brand" in user_lower or "pwc brand" in user_lower:
+                        detected_editors_legacy.append("brand-alignment")
+                    elif ("align" in user_lower and "pwc" in user_lower) or "brand standards" in user_lower:
+                        detected_editors_legacy.append("brand-alignment")
+
+                # Build final editor list (combined IDs, fixed order)
                 combined_editor_sequence = ["content", "line+copy", "brand-alignment"]
                 detected_editors = []
                 if "content" in detected_editors_legacy:
@@ -1764,7 +1792,6 @@ class TLAgent:
                     detected_editors.append("line+copy")
                 if "brand-alignment" in detected_editors_legacy:
                     detected_editors.append("brand-alignment")
-                # Preserve order per combined_editor_sequence
                 detected_editors = [e for e in combined_editor_sequence if e in detected_editors]
                 
                 logger.info(f"Intent detection result: is_edit_intent={is_edit_intent}, confidence={confidence:.2f}, reasoning={reasoning}, detected_editors={detected_editors}")
