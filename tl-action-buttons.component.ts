@@ -130,17 +130,17 @@ class CommercialHubService:
 
         offering_id_to_page = {offering_id: current_page for offering_id, current_page in offering_id_page_pairs}
 
-        offerings_for_llm: List[Dict[str, Any]] = []
-        for offering_id, current_page in offering_id_page_pairs:
-            detail = await self.fetch_offering_detail(offering_id)
-            if not isinstance(detail, dict):
-                continue
-            offerings_for_llm.append({
-                "offering_id": offering_id,
-                "page": current_page,
-                "detail": detail,
-            })
-            print(f"[CommercialHub] Offering ID details: id={offering_id}, page={current_page}, keys={list(detail.keys())}")
+        offering_ids = [pair[0] for pair in offering_id_page_pairs]
+        details = await asyncio.gather(*[self.fetch_offering_detail(oid) for oid in offering_ids])
+
+        offerings_for_llm = [
+            {"offering_id": offering_id, "page": current_page, "detail": detail}
+            for (offering_id, current_page), detail in zip(offering_id_page_pairs, details)
+            if isinstance(detail, dict)
+        ]
+
+        if offerings_for_llm:
+            print(f"[CommercialHub] Offering ID details: {[(o['offering_id'], o['page'], list(o['detail'].keys())) for o in offerings_for_llm]}")
 
         if not offerings_for_llm:
             return {"offering_id": None, "page": None}
