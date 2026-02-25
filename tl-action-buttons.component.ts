@@ -1,155 +1,224 @@
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, Dict, List, Optional
+
 import httpx
 
 logger = logging.getLogger(__name__)
 
-# ── Gateway config ────────────────────────────────────────────────────────────
+# ── Gateway constants ─────────────────────────────────────────────────────────
 APIM_BASE_URL = "https://gif-apim-glb.pwcinternal.com/commercialhub"
-APIM_HEADERS = {
-    "Ocp-Apim-Subscription-Key": "fdf33c3ce6b7411f93f17840088ba384",
-    "Content-Type": "application/json",
-}
+APIM_SUBSCRIPTION_KEY = "fdf33c3ce6b7411f93f17840088ba384"
 TOTAL_PAGES = 4
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-async def _fetch_offerings_page(client: httpx.AsyncClient, page: int) -> list[dict]:
-    """Fetch a single page of offerings and return the list of items."""
-    url = f"{APIM_BASE_URL}/offerings"
-    params = {"page": page}
-    try:
-        response = await client.get(url, headers=APIM_HEADERS, params=params, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        # Support both {"data": [...]} and plain list responses
-        if isinstance(data, list):
-            return data
-        return data.get("data", data.get("offerings", data.get("results", [])))
-    except Exception as exc:
-        logger.error(f"Error fetching offerings page {page}: {exc}")
-        return []
+# ── LLM factory (keeps the rest of your codebase's convention) ────────────────
+def get_llm_service():
+    """Return the shared LLM service instance."""
+    from app.infrastructure.llm.llm_service import LLMService  # noqa: WPS433
+    return LLMService()
 
 
-async def fetch_all_offering_ids() -> list[str]:
+# ─────────────────────────────────────────────────────────────────────────────
+class CommercialHubService:
     """
-    Fetch all offering IDs across all 4 pages in parallel.
-    Returns a flat list of offering_id strings.
+    Commercial Hub client:
+      1. Fetch offering IDs from pages 1-4 (parallel).
+      2. Use the LLM to pick the best-matching ID for a user query.
+      3. Fetch offering detail by ID.
     """
-    async with httpx.AsyncClient() as client:
-        tasks = [_fetch_offerings_page(client, page) for page in range(1, TOTAL_PAGES + 1)]
-        pages = await asyncio.gather(*tasks)
 
-    all_ids: list[str] = []
-    for page_items in pages:
-        for item in page_items:
-            if isinstance(item, dict):
-                # Try common key names for the ID field
+    def __init__(
+        self,
+        llm_service=None,
+        base_url: Optional[str] = None,
+        subscription_key: Optional[str] = None,
+        timeout: float = 30.0,
+    ) -> None:
+        # Accept an injected llm_service or fall back to the factory
+        self.llm_service = llm_service or get_llm_service()
+        self.base_url = base_url or APIM_BASE_URL
+        self.subscription_key = subscription_key or APIM_SUBSCRIPTION_KEY
+        self._timeout = timeout
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "Ocp-Apim-Subscription-Key": self.subscription_key,
+            "Content-Type": "application/json",
+        }
+
+    async def _fetch_offerings_page(
+        self,
+        client: httpx.AsyncClient,
+        page: int,
+    ) -> List[Dict[str, Any]]:
+        """Fetch one page of offerings; return an empty list on any error."""
+        url = f"{self.base_url}/offerings"
+        try:
+            response = await client.get(
+                url,
+                headers=self._headers(),
+                params={"page": page},
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if isinstance(data, list):
+                return data
+
+            # Support common envelope shapes
+            return (
+                data.get("data")
+                or data.get("offerings")
+                or data.get("results")
+                or []
+            )
+        except Exception as exc:
+            logger.error("Error fetching offerings page %d: %s", page, exc)
+            return []
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    async def fetch_all_offering_ids(
+        self,
+        pages: Optional[List[int]] = None,
+    ) -> List[str]:
+        """
+        Fetch all offering IDs across pages 1-4 in parallel.
+        Returns a flat, deduplicated list of ID strings.
+        """
+        if pages is None:
+            pages = list(range(1, TOTAL_PAGES + 1))
+
+        async with httpx.AsyncClient() as client:
+            # Parallel fetch — one coroutine per page
+            results: List[List[Dict[str, Any]]] = await asyncio.gather(
+                *[self._fetch_offerings_page(client, page) for page in pages]
+            )
+
+        all_ids: List[str] = []
+        seen = set()
+        for page_items in results:
+            for item in page_items:
+                if not isinstance(item, dict):
+                    continue
                 oid = (
                     item.get("offering_id")
                     or item.get("id")
                     or item.get("offeringId")
                 )
-                if oid:
+                if oid and str(oid) not in seen:
+                    seen.add(str(oid))
                     all_ids.append(str(oid))
-            elif isinstance(item, str):
-                all_ids.append(item)
 
-    logger.info(f"Fetched {len(all_ids)} offering IDs across {TOTAL_PAGES} pages.")
-    return all_ids
+        logger.info("Fetched %d unique offering IDs across pages %s", len(all_ids), pages)
+        print(f"[CommercialHub] Offering IDs fetched ({len(all_ids)} total): {all_ids}")
+        return all_ids
 
-
-async def fetch_offering_detail(offering_id: str) -> Optional[dict]:
-    """Fetch full detail for a single offering."""
-    url = f"{APIM_BASE_URL}/offering/{offering_id}"
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get(url, headers=APIM_HEADERS, timeout=30)
-            response.raise_for_status()
-            return response.json()
-        except Exception as exc:
-            logger.error(f"Error fetching offering detail for {offering_id}: {exc}")
+    async def fetch_offering_detail(self, offering_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch full detail for a single offering by ID."""
+        if not offering_id:
             return None
 
+        url = f"{self.base_url}/offering/{offering_id}"
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(
+                    url,
+                    headers=self._headers(),
+                    timeout=self._timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data if isinstance(data, dict) else None
+            except Exception as exc:
+                logger.error("Error fetching offering detail for %s: %s", offering_id, exc)
+                return None
 
-# ── LLM integration ───────────────────────────────────────────────────────────
+    async def choose_best_offering_id(
+        self,
+        user_query: str,
+        pages: Optional[List[int]] = None,
+    ) -> Dict[str, Optional[str]]:
+        """
+        Full pipeline:
+          1. Fetch all offering IDs (parallel, pages 1-4).
+          2. Ask the LLM to return the single best-matching ID.
 
-def get_llm_service():
-    """
-    Returns the LLM service instance.
-    Import path assumed from your project structure — adjust if needed.
-    """
-    from app.services.llm_service import LLMService  # noqa: WPS433
-    return LLMService()
+        Returns:
+            {
+                "offering_id": "<best id>",   # None if nothing found
+                "reason":      None,          # reserved for future use
+                "offering":    None,          # reserved for future use
+            }
+        """
+        offering_ids = await self.fetch_all_offering_ids(pages=pages)
+        if not offering_ids:
+            logger.warning("No offering IDs available for LLM selection")
+            return {"offering_id": None, "reason": "No offerings available", "offering": None}
 
+        ids_formatted = "\n".join(f"- {oid}" for oid in offering_ids)
 
-async def find_best_matching_offering(user_query: str) -> Optional[str]:
-    """
-    Full pipeline:
-      1. Fetch all offering IDs from all 4 pages.
-      2. Ask the LLM to pick the best matching offering ID for the user query.
-      3. Return the best offering_id.
-    """
-    # Step 1 – get all IDs
-    offering_ids = await fetch_all_offering_ids()
-    if not offering_ids:
-        logger.warning("No offering IDs found.")
-        return None
+        system_prompt = (
+            "You are a PwC Commercial Hub assistant.\n"
+            "You will receive a user query and a list of offering IDs.\n"
+            "Your ONLY task is to return the single best-matching offering ID from the list - "
+            "no explanation, no extra text."
+        )
+        user_prompt = (
+            f'User query: "{user_query}"\n\n'
+            f"Available offering IDs:\n{ids_formatted}\n\n"
+            "Return ONLY the best matching offering ID."
+        )
 
-    logger.info(f"Total offering IDs collected: {len(offering_ids)}")
-    print(f"[CommercialHub] Offering IDs fetched ({len(offering_ids)} total): {offering_ids}")
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_prompt},
+        ]
 
-    # Step 2 – ask LLM for best match
-    ids_formatted = "\n".join(f"- {oid}" for oid in offering_ids)
-    prompt = (
-        f"You are a PwC Commercial Hub assistant.\n\n"
-        f"User query: \"{user_query}\"\n\n"
-        f"Below is the list of available offering IDs:\n{ids_formatted}\n\n"
-        f"Based on the user query, return ONLY the single best matching offering ID "
-        f"from the list above. Do not include any explanation — just the ID."
-    )
+        # ── Call the LLM ──────────────────────────────────────────────────────
+        # NOTE: Adjust method name to match your LLMService interface:
+        #   e.g.  chat_completion / generate / invoke / complete
+        try:
+            raw = await self.llm_service.chat_completion(
+                messages=messages,
+                temperature=0.0,
+            )
+            best_id = (raw or "").strip()
+        except Exception as exc:
+            logger.error("LLM call failed: %s", exc)
+            best_id = ""
 
-    llm = get_llm_service()
-    # Adjust the call signature to match your LLMService interface
-    llm_response: str = await llm.generate(prompt)
-    best_id = llm_response.strip()
+        logger.info("LLM selected offering ID: %s", best_id)
+        print(f"[CommercialHub] LLM selected offering ID: {best_id}")
 
-    print(f"[CommercialHub] LLM selected offering ID: {best_id}")
-    logger.info(f"LLM best match offering ID: {best_id}")
-    return best_id
-
-
-# ── Public entry point ────────────────────────────────────────────────────────
-
-async def handle_commercial_hub_query(user_query: str) -> dict:
-    """
-    Main service function called by the chat/data-source agent.
-
-    Returns:
-        {
-            "offering_id": "<best match id>",
-            "offering_detail": { ... }   # full detail from the offering endpoint
+        return {
+            "offering_id": best_id or None,
+            "reason": None,
+            "offering": None,
         }
-    """
-    best_offering_id = await find_best_matching_offering(user_query)
-    if not best_offering_id:
-        return {"error": "Could not determine a matching offering."}
-
-    detail = await fetch_offering_detail(best_offering_id)
-    return {
-        "offering_id": best_offering_id,
-        "offering_detail": detail,
-    }
 
 
-# ── Quick local test ──────────────────────────────────────────────────────────
+# ── Manual test runner ────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    # Usage (from project root):
+    #   python -m app.features.chat.services.data_source_agent.commercial_hub_service "your query"
+
+    import json
     import sys
 
-    query = sys.argv[1] if len(sys.argv) > 1 else "tax advisory services for large enterprises"
-    result = asyncio.run(handle_commercial_hub_query(query))
-    print("\n=== Result ===")
-    import json
-    print(json.dumps(result, indent=2))
+    async def _main() -> None:
+        query = sys.argv[1] if len(sys.argv) > 1 else "tax advisory services for large enterprises"
+
+        service = CommercialHubService()   # uses get_llm_service() internally
+
+        print(f"[CommercialHub] Query: {query}\n")
+        result = await service.choose_best_offering_id(user_query=query)
+
+        print("\n=== Result ===")
+        print(json.dumps(result, indent=2))
+
+    asyncio.run(_main())
