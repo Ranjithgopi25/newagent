@@ -2,7 +2,7 @@
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -116,18 +116,86 @@ class CommercialHubService:
                 logger.error("Error fetching offering detail for %s: %s", offering_id, error)
                 return None
 
+    async def fetch_offering_tree(self, offering_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch tree for a single offering by ID."""
+        if not offering_id:
+            return None
+        url = f"{BASE_URL}/offering/{offering_id}/tree"
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(
+                    url,
+                    headers=self.build_request_headers(),
+                    timeout=self.request_timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data if isinstance(data, dict) else {"raw": data}
+            except Exception as error:
+                logger.error("Error fetching offering tree for %s: %s", offering_id, error)
+                return None
+
+    async def fetch_offering_content(self, offering_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch content for a single offering by ID."""
+        if not offering_id:
+            return None
+        url = f"{BASE_URL}/offering/{offering_id}/content"
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(
+                    url,
+                    headers=self.build_request_headers(),
+                    timeout=self.request_timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data if isinstance(data, dict) else {"raw": data}
+            except Exception as error:
+                logger.error("Error fetching offering content for %s: %s", offering_id, error)
+                return None
+
+    async def fetch_offering_metadata(self, offering_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch metadata for a single offering by ID."""
+        if not offering_id:
+            return None
+        url = f"{BASE_URL}/offering/{offering_id}/metadata"
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(
+                    url,
+                    headers=self.build_request_headers(),
+                    timeout=self.request_timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data if isinstance(data, dict) else {"raw": data}
+            except Exception as error:
+                logger.error("Error fetching offering metadata for %s: %s", offering_id, error)
+                return None
+
+    async def fetch_offering_tree_content_metadata(
+        self, offering_id: str
+    ) -> Dict[str, Any]:
+        """Fetch tree, content, and metadata for an offering in parallel."""
+        tree, content, metadata = await asyncio.gather(
+            self.fetch_offering_tree(offering_id),
+            self.fetch_offering_content(offering_id),
+            self.fetch_offering_metadata(offering_id),
+        )
+        return {"tree": tree, "content": content, "metadata": metadata}
+
     async def choose_best_offering_id(
         self,
         user_query: str,
         pages: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         """
-        Fetch offering list, ask LLM to pick best ID, then single API call for that offering detail.
-        Returns: {"offering_id": "<id>", "page": <1-4>}.
+        Fetch offering list, ask LLM to pick best ID, fetch tree/content/metadata for that offering,
+        then ask LLM to generate a final response. Returns: {"offering_id", "page", "final_response"}.
         """
         offering_list = await self.fetch_offering_list(pages=pages)
         if not offering_list:
-            return {"offering_id": None, "page": None}
+            return {"offering_id": None, "page": None, "final_response": None}
 
         offering_id_to_page = {o["offering_id"]: o["page"] for o in offering_list}
 
@@ -153,13 +221,37 @@ class CommercialHubService:
         selected_page = offering_id_to_page.get(selected_offering_id) if selected_offering_id else None
         logger.info("LLM selected offering ID: %s (page %s)", selected_offering_id, selected_page)
 
-        detail = await self.fetch_offering_detail(selected_offering_id) if selected_offering_id else None
-        matched_name = None
-        if isinstance(detail, dict):
-            matched_name = detail.get("offering_name") or detail.get("name") or detail.get("title")
-        print(f"[CommercialHub] Matched offering: {json.dumps({'offering_id': selected_offering_id, 'offering_name': matched_name}, indent=2)}")
+        final_response = None
+        if selected_offering_id:
+            offering_data = await self.fetch_offering_tree_content_metadata(selected_offering_id)
+            response_system = (
+                "You are a PwC Commercial Hub assistant. Answer the user's question using only "
+                "the provided Commercial Hub offering data (tree, content, metadata). "
+                "Respond in clear, concise prose for the end user. Do not make up information."
+            )
+            response_user = json.dumps(
+                {"user_query": user_query, "offering_data": offering_data},
+                indent=2,
+                default=str,
+            )
+            try:
+                final_response = await self.llm_service.chat_completion(
+                    messages=[
+                        {"role": "system", "content": response_system},
+                        {"role": "user", "content": response_user},
+                    ],
+                    temperature=0.3,
+                )
+                final_response = (final_response or "").strip()
+            except Exception as error:
+                logger.error("LLM final response failed: %s", error)
+                final_response = None
 
-        return {"offering_id": selected_offering_id, "page": selected_page}
+        return {
+            "offering_id": selected_offering_id,
+            "page": selected_page,
+            "final_response": final_response,
+        }
 
 
 if __name__ == "__main__":
@@ -169,6 +261,9 @@ if __name__ == "__main__":
         print(f"[CommercialHub] Query: {query}\n")
         result = await service.choose_best_offering_id(user_query=query)
         print("\n=== Commercial Hub Test Result ===")
-        print(json.dumps(result, indent=2))
+        print(json.dumps({k: v for k, v in result.items() if k != "final_response"}, indent=2))
+        if result.get("final_response"):
+            print("\n--- Final response ---\n")
+            print(result["final_response"])
 
     asyncio.run(run_main())
