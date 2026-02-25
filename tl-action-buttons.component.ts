@@ -9,7 +9,6 @@ from app.infrastructure.llm.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
-APIM_BASE_URL = "https://gif-apim-glb.pwcinternal.com/commercialhub"
 APIM_SUBSCRIPTION_KEY = "fdf33c3ce6b7411f93f17840088ba384"
 TOTAL_PAGES = 4
 
@@ -24,15 +23,15 @@ class CommercialHubService:
     Commercial Hub client: fetch offering IDs, select best match via LLM, fetch offering detail by ID.
     """
 
+    BASE_URL = "https://gif-apim-glb.pwcinternal.com/commercialhub"
+
     def __init__(
         self,
         llm_service: Optional[LLMService] = None,
-        base_url: Optional[str] = None,
         subscription_key: Optional[str] = None,
         timeout: float = 30.0,
     ) -> None:
         self.llm_service = llm_service or get_llm_service()
-        self.base_url = base_url or APIM_BASE_URL
         self.subscription_key = subscription_key or APIM_SUBSCRIPTION_KEY
         self.request_timeout = timeout
 
@@ -48,7 +47,7 @@ class CommercialHubService:
         page_number: int,
     ) -> List[Dict[str, Any]]:
         """Fetch a single page of offerings and return the list of items."""
-        url = f"{self.base_url}/offerings"
+        url = f"{self.BASE_URL}/offerings"
         try:
             response = await client.get(
                 url,
@@ -100,7 +99,7 @@ class CommercialHubService:
         if not offering_id:
             return None
 
-        url = f"{self.base_url}/offering/{offering_id}"
+        url = f"{self.BASE_URL}/offering/{offering_id}"
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.get(
@@ -122,7 +121,7 @@ class CommercialHubService:
     ) -> Dict[str, Any]:
         """
         Fetch offering IDs, get full details, ask LLM for best match.
-        Returns: {"offering_id": "<id or None>", "page": <1-4 or None>}.
+        Returns: {"offering_id": "<id>", "page": <1-4>}.
         """
         offering_id_page_pairs = await self.fetch_all_offering_ids(pages=pages)
         if not offering_id_page_pairs:
@@ -140,7 +139,15 @@ class CommercialHubService:
         ]
 
         if offerings_for_llm:
-            print(f"[CommercialHub] Offering ID details: {[(o['offering_id'], o['page'], list(o['detail'].keys())) for o in offerings_for_llm]}")
+            for o in offerings_for_llm:
+                detail = o.get("detail") or {}
+                offering_json = {
+                    "offering_id": o.get("offering_id"),
+                    "offering_name": detail.get("offering_name") or detail.get("name") or detail.get("title"),
+                    "subtitle": detail.get("subtitle"),
+                    "description": detail.get("description"),
+                }
+                print(f"[CommercialHub] Offering API: {json.dumps(offering_json, indent=2)}")
 
         if not offerings_for_llm:
             return {"offering_id": None, "page": None}
@@ -167,9 +174,9 @@ class CommercialHubService:
 
         selected_page = offering_id_to_page.get(selected_offering_id) if selected_offering_id else None
         logger.info("LLM selected offering ID: %s (page %s)", selected_offering_id, selected_page)
-        print(f"[CommercialHub] Final LLM selected offering ID: {selected_offering_id or 'None'} (page: {selected_page})")
+        print(f"[CommercialHub] Final LLM selected offering ID: {selected_offering_id} (page: {selected_page})")
 
-        return {"offering_id": selected_offering_id or None, "page": selected_page}
+        return {"offering_id": selected_offering_id, "page": selected_page}
 
 
 if __name__ == "__main__":
