@@ -138,15 +138,6 @@ class CommercialHubService:
             if isinstance(detail, dict)
         ]
 
-        if offerings_for_llm:
-            for offering in offerings_for_llm:
-                detail = offering.get("detail") or {}
-                offering_json = {
-                    "offering_id": offering.get("offering_id"),
-                    "offering_name": detail.get("offering_name") or detail.get("name") or detail.get("title"),
-                }
-                print(f"[CommercialHub] Offering API: {json.dumps(offering_json, indent=2)}")
-
         if not offerings_for_llm:
             return {"offering_id": None, "page": None}
 
@@ -171,8 +162,11 @@ class CommercialHubService:
             selected_offering_id = ""
 
         selected_page = offering_id_to_page.get(selected_offering_id) if selected_offering_id else None
+        matched = next((o for o in offerings_for_llm if o.get("offering_id") == selected_offering_id), None)
+        detail = (matched.get("detail") or {}) if matched else {}
+        matched_name = detail.get("offering_name") or detail.get("name") or detail.get("title")
         logger.info("LLM selected offering ID: %s (page %s)", selected_offering_id, selected_page)
-        print(f"[CommercialHub] Final LLM selected offering ID: {selected_offering_id} (page: {selected_page})")
+        print(f"[CommercialHub] Matched offering: offering_id={selected_offering_id}, offering_name={matched_name}")
 
         return {"offering_id": selected_offering_id, "page": selected_page}
 
