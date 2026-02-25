@@ -131,21 +131,17 @@ class TLAgent:
 
     Previous workflow: {state.get('current_workflow', 'None')}
 
-    IMPORTANT DISTINCTIONS:
-    - Return "detect_edit_intent" if user wants to edit/review content. Any of these triggers it:
-      * Edit words: "change", "edit", "editing", "editor", "edits", "revision", "edited"
-      * Content: "strengthen" or "strength" together with "content", "document", or "doc"
-      * Line/copy: "grammar", "copyedit", "copy edit", "phrasing", "consistency", "line edit", "smooth phrasing"
-      * Brand: "brand", "brand editor", "brand edit", "PwC brand", "brand alignment", "brand standards"
+    IMPORTANT DISTINCTIONS (check in this order):
+    - FIRST: If user input contains "edit", "editing", "editor", "edits", "edited", or "revision" (e.g. "edit my content", "edit the document", "edit content") → return "detect_edit_intent". Do NOT return "unclear" when any of these words is present.
+    - Return "detect_edit_intent" also for: "strengthen"/"strength" with "content"/"document"/"doc"; line/copy: "grammar", "copyedit", "copy edit", "phrasing", "consistency", "line edit", "smooth phrasing"; brand: "brand", "brand editor", "brand edit", "PwC brand", "brand alignment", "brand standards"
     - If user input contains words like "reformat", "adapt", "repurpose", "social post", "deck", "slide", "slides", "presentation", "placemat", "webpage", "web article", "web", "podcast", return "format_translator"
     - If user input contains words like "whitepaper", "thoughtpaper", "thought leadership article/blog/paper/brief","compose", "author", "produce content", "new article/blog/brief", "draft article/blog/paper/brief", "create article/blog/paper/brief", "write article/blog/paper/brief", "generate article/blog/paper/brief" , return "draft_content"
     - If user says "I want to expand my content", "lengthen", "shorten", "extend", "reduce", "condense", "expand", "compress", "make longer", "make shorter", "shrink"→ return "expand_compress_content"
     - If user says "rephrase", "rewrite for", "tailor to", "audience shift", "adjust tone", "change tone", "different audience" → return "adjust_tone"
     - If user says "guidance", "critique", "recommendations", "what can be improved", "advice", "suggestions", "feedback", "improvements", "review" → return "provide_suggestions"
-    - If user says "refine content" or "refine" WITHOUT specifics → return "unclear"
+    - "refine content" or "refine" (when the word "edit" or "editing" or "editor" or "edits" or "edited" is NOT in the input) → return "unclear"
     - If user says "add research", "enhance with research", "include research", "research on", "add data about" → return "enhance_with_research"
-
-    - If user input contains words like "refine", "improve", "enhance", "polish", "review", "rewrite", "optimize", "update", "fix", "adjust" WITHOUT "edit", return "unclear"
+    - If user input contains "refine", "improve", "enhance", "polish", "rewrite", "optimize", "update", "fix", "adjust" and the word "edit" (or "editing", "editor", "edits", "edited") is NOT present → return "unclear". If "edit" (or variant) IS present → return "detect_edit_intent"
     - If user is having casual conversation, greetings, or small talk, return "unclear"
     - If user input contains words like "reformat", "adapt", "repurpose", "social post", "Adapt content", "translate", "convert", "transform", "change format", "social media post", "webpage", "LinkedIn", "X.com", "Twitter", return "format_translator"
     - If user asks factual questions, requests information, data, statistics, or wants to know about anything (e.g., "what is temp of goa today", "what were sales of maruti 800 in 2008", "tell me about X"), return "conduct_research"
@@ -156,7 +152,14 @@ class TLAgent:
         
         response = self.llm.invoke([{"role": "user", "content": intent_prompt}])
         identified_workflow = response.content.strip().lower()
-        
+        # Fallback: "edit" + "content"/"document"/"doc" (e.g. "edit my content") must not show unclear/3 refinement options
+        last_msg = state["messages"][-1] if state["messages"] else {}
+        user_text = (last_msg.get("content") or "").lower() if isinstance(last_msg, dict) else ""
+        edit_words = ("edit", "editing", "editor", "edits", "edited", "revision")
+        content_words = ("content", "document", "doc")
+        if identified_workflow == "unclear" and any(w in user_text for w in edit_words) and any(c in user_text for c in content_words):
+            identified_workflow = "detect_edit_intent"
+            logger.info(f"[INTENT] Override unclear -> detect_edit_intent (edit content): {user_text[:60]!r}")
         if identified_workflow in WORKFLOW_SCHEMAS:
             if state.get("current_workflow") != identified_workflow:
                 logger.info(f"Workflow changed: {state.get('current_workflow')} -> {identified_workflow}")
