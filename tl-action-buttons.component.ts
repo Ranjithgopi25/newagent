@@ -77,17 +77,17 @@ class CommercialHubService:
 
         async with httpx.AsyncClient() as client:
             page_results = await asyncio.gather(
-                *[self.fetch_offerings_page(client, page_number) for page_number in page_numbers]
+                *[self.fetch_offerings_page(client, page_no) for page_no in page_numbers]
             )
 
         offering_id_page_pairs: List[Tuple[str, int]] = []
-        for page_number, items in zip(page_numbers, page_results):
+        for current_page, items in zip(page_numbers, page_results):
             for item in items:
                 if not isinstance(item, dict):
                     continue
                 offering_id = item.get("offering_id") or item.get("id") or item.get("offeringId")
                 if offering_id:
-                    offering_id_page_pairs.append((str(offering_id), page_number))
+                    offering_id_page_pairs.append((str(offering_id), current_page))
 
         id_total = len(offering_id_page_pairs)
         logger.info("Fetched %d offering IDs across pages %s", id_total, page_numbers)
@@ -128,19 +128,19 @@ class CommercialHubService:
         if not offering_id_page_pairs:
             return {"offering_id": None, "page": None}
 
-        offering_id_to_page = {offering_id: page for offering_id, page in offering_id_page_pairs}
+        offering_id_to_page = {offering_id: current_page for offering_id, current_page in offering_id_page_pairs}
 
         offerings_for_llm: List[Dict[str, Any]] = []
-        for offering_id, page_number in offering_id_page_pairs:
+        for offering_id, current_page in offering_id_page_pairs:
             detail = await self.fetch_offering_detail(offering_id)
             if not isinstance(detail, dict):
                 continue
             offerings_for_llm.append({
                 "offering_id": offering_id,
-                "page": page_number,
+                "page": current_page,
                 "detail": detail,
             })
-            print(f"[CommercialHub] Offering ID details: id={offering_id}, page={page_number}, keys={list(detail.keys())}")
+            print(f"[CommercialHub] Offering ID details: id={offering_id}, page={current_page}, keys={list(detail.keys())}")
 
         if not offerings_for_llm:
             return {"offering_id": None, "page": None}
