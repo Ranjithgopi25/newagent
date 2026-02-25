@@ -159,7 +159,7 @@ class CommercialHubService:
         matched_name = None
         if isinstance(detail, dict):
             matched_name = detail.get("offering_name") or detail.get("name") or detail.get("title")
-        print(f"[CommercialHub] Matched offering: offering_id={selected_offering_id}, offering_name={matched_name}")
+        print(f"[CommercialHub] Matched offering: {json.dumps({'offering_id': selected_offering_id, 'offering_name': matched_name}, indent=2)}")
 
         return {"offering_id": selected_offering_id, "page": selected_page}
 
