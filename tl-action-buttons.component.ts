@@ -241,12 +241,15 @@ class CommercialHubService:
             response_system = (
                 "You are a formatting assistant for PwC Commercial Hub data.\n"
                 "You will receive structured JSON for a single offering (tree, content, metadata).\n"
-                "Your task is to present ALL of this information in a human-readable way for the user.\n"
+                "Your task is to present ALL of this information in a clear, human-readable markdown format.\n"
+                "Write it as one coherent explanation for the user, not split into separate sections called 'Tree', 'Content', or 'Metadata'.\n"
+                "You may still use bullets and paragraphs, but do not introduce headings named 'Tree', 'Content', or 'Metadata'.\n"
+                "If there are links or citations anywhere in the data, include them inline where they are relevant.\n"
                 "Very important:\n"
                 "- Do NOT drop, skip, or summarize away any information.\n"
-                "- Preserve and display all links, citations, bullet points, headings, and sections.\n"
-                "- You may reorder slightly for clarity but every piece of content must appear.\n"
-                "- If something is already human-readable text or HTML, include it as-is.\n"
+                "- Preserve and display all links, citations, bullet points, headings, and sections that already exist in the data.\n"
+                "- You may reorder slightly for clarity but every piece of content must appear somewhere.\n"
+                "- If something is already human-readable text or HTML, include it as-is (do not strip links).\n"
             )
             response_user = json.dumps(
                 {"user_query": user_query, "offering_data": offering_data},
