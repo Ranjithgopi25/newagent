@@ -64,13 +64,13 @@ class CommercialHubService:
             logger.error("Error fetching offerings page %s: %s", page_number, error)
             return []
 
-    async def fetch_all_offering_ids(
+    async def fetch_offering_list(
         self,
         pages: Optional[List[int]] = None,
-    ) -> List[Tuple[str, int]]:
+    ) -> List[Dict[str, Any]]:
         """
-        Fetch all offering IDs across pages 1–4 in parallel.
-        Returns list of (offering_id, page_number).
+        Fetch offering list across pages 1–4 in parallel.
+        Returns list of {offering_id, page, ...} from list API (no detail call).
         """
         page_numbers = pages if pages is not None else list(range(1, TOTAL_PAGES + 1))
 
@@ -79,20 +79,24 @@ class CommercialHubService:
                 *[self.fetch_offerings_page(client, page_no) for page_no in page_numbers]
             )
 
-        offering_id_page_pairs: List[Tuple[str, int]] = []
+        offering_list: List[Dict[str, Any]] = []
         for current_page, items in zip(page_numbers, page_results):
             for item in items:
                 if not isinstance(item, dict):
                     continue
                 offering_id = item.get("offering_id") or item.get("id") or item.get("offeringId")
                 if offering_id:
-                    offering_id_page_pairs.append((str(offering_id), current_page))
+                    offering_list.append({
+                        "offering_id": str(offering_id),
+                        "page": current_page,
+                        "offering_name": item.get("offering_name") or item.get("name") or item.get("title"),
+                    })
 
-        id_total = len(offering_id_page_pairs)
-        logger.info("Fetched %d offering IDs across pages %s", id_total, page_numbers)
+        id_total = len(offering_list)
+        logger.info("Fetched %d offerings across pages %s", id_total, page_numbers)
         print(f"[CommercialHub] ID total: {id_total}")
-        print(f"[CommercialHub] Offering IDs: {[pair[0] for pair in offering_id_page_pairs]}")
-        return offering_id_page_pairs
+        print(f"[CommercialHub] Offering IDs: {[o['offering_id'] for o in offering_list]}")
+        return offering_list
 
     async def fetch_offering_detail(self, offering_id: str) -> Optional[Dict[str, Any]]:
         """Fetch full detail for a single offering by ID."""
@@ -120,35 +124,22 @@ class CommercialHubService:
         pages: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         """
-        Fetch offering IDs, get full details, ask LLM for best match.
+        Fetch offering list, ask LLM to pick best ID, then single API call for that offering detail.
         Returns: {"offering_id": "<id>", "page": <1-4>}.
         """
-        offering_id_page_pairs = await self.fetch_all_offering_ids(pages=pages)
-        if not offering_id_page_pairs:
+        offering_list = await self.fetch_offering_list(pages=pages)
+        if not offering_list:
             return {"offering_id": None, "page": None}
 
-        offering_id_to_page = {offering_id: current_page for offering_id, current_page in offering_id_page_pairs}
-
-        offering_ids = [pair[0] for pair in offering_id_page_pairs]
-        details = await asyncio.gather(*[self.fetch_offering_detail(oid) for oid in offering_ids])
-
-        offerings_for_llm = [
-            {"offering_id": offering_id, "page": current_page, "detail": detail}
-            for (offering_id, current_page), detail in zip(offering_id_page_pairs, details)
-            if isinstance(detail, dict)
-        ]
-
-        if not offerings_for_llm:
-            return {"offering_id": None, "page": None}
+        offering_id_to_page = {o["offering_id"]: o["page"] for o in offering_list}
 
         system_prompt = (
             "You are a PwC Commercial Hub assistant.\n"
-            "You will receive a user query and a list of offering objects.\n"
-            "Each object has: offering_id, page, and a 'detail' dict from the API.\n"
+            "You will receive a user query and a list of offerings (offering_id, page, offering_name).\n"
             "Your ONLY task is to return the single best-matching offering_id from this list.\n"
-            "Do not explain your choice. Respond with the ID only."
+            "Do not explain. Respond with the ID only."
         )
-        user_prompt = json.dumps({"user_query": user_query, "offerings": offerings_for_llm}, indent=2)
+        user_prompt = json.dumps({"user_query": user_query, "offerings": offering_list}, indent=2)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -162,10 +153,12 @@ class CommercialHubService:
             selected_offering_id = ""
 
         selected_page = offering_id_to_page.get(selected_offering_id) if selected_offering_id else None
-        matched = next((o for o in offerings_for_llm if o.get("offering_id") == selected_offering_id), None)
-        detail = (matched.get("detail") or {}) if matched else {}
-        matched_name = detail.get("offering_name") or detail.get("name") or detail.get("title")
         logger.info("LLM selected offering ID: %s (page %s)", selected_offering_id, selected_page)
+
+        detail = await self.fetch_offering_detail(selected_offering_id) if selected_offering_id else None
+        matched_name = None
+        if isinstance(detail, dict):
+            matched_name = detail.get("offering_name") or detail.get("name") or detail.get("title")
         print(f"[CommercialHub] Matched offering: offering_id={selected_offering_id}, offering_name={matched_name}")
 
         return {"offering_id": selected_offering_id, "page": selected_page}
