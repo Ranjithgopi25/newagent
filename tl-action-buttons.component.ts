@@ -139,13 +139,11 @@ class CommercialHubService:
         ]
 
         if offerings_for_llm:
-            for o in offerings_for_llm:
-                detail = o.get("detail") or {}
+            for offering in offerings_for_llm:
+                detail = offering.get("detail") or {}
                 offering_json = {
-                    "offering_id": o.get("offering_id"),
+                    "offering_id": offering.get("offering_id"),
                     "offering_name": detail.get("offering_name") or detail.get("name") or detail.get("title"),
-                    "subtitle": detail.get("subtitle"),
-                    "description": detail.get("description"),
                 }
                 print(f"[CommercialHub] Offering API: {json.dumps(offering_json, indent=2)}")
 
