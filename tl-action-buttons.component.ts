@@ -191,11 +191,24 @@ class CommercialHubService:
     ) -> Dict[str, Any]:
         """
         Fetch offering list, ask LLM to pick best ID, fetch tree/content/metadata for that offering,
-        then ask LLM to generate a final response. Returns: {"offering_id", "page", "final_response"}.
+        then ask LLM to generate a final response.
+
+        Returns:
+            {
+                "offering_id": str | None,
+                "page": int | None,
+                "offering_data": dict,   # raw tree/content/metadata
+                "final_response": str | None,  # human-readable version of all data
+            }
         """
         offering_list = await self.fetch_offering_list(pages=pages)
         if not offering_list:
-            return {"offering_id": None, "page": None, "final_response": None}
+            return {
+                "offering_id": None,
+                "page": None,
+                "offering_data": None,
+                "final_response": None,
+            }
 
         offering_id_to_page = {o["offering_id"]: o["page"] for o in offering_list}
 
@@ -222,12 +235,18 @@ class CommercialHubService:
         logger.info("LLM selected offering ID: %s (page %s)", selected_offering_id, selected_page)
 
         final_response = None
+        offering_data: Dict[str, Any] = {}
         if selected_offering_id:
             offering_data = await self.fetch_offering_tree_content_metadata(selected_offering_id)
             response_system = (
-                "You are a PwC Commercial Hub assistant. Answer the user's question using only "
-                "the provided Commercial Hub offering data (tree, content, metadata). "
-                "Respond in clear, concise prose for the end user. Do not make up information."
+                "You are a formatting assistant for PwC Commercial Hub data.\n"
+                "You will receive structured JSON for a single offering (tree, content, metadata).\n"
+                "Your task is to present ALL of this information in a human-readable way for the user.\n"
+                "Very important:\n"
+                "- Do NOT drop, skip, or summarize away any information.\n"
+                "- Preserve and display all links, citations, bullet points, headings, and sections.\n"
+                "- You may reorder slightly for clarity but every piece of content must appear.\n"
+                "- If something is already human-readable text or HTML, include it as-is.\n"
             )
             response_user = json.dumps(
                 {"user_query": user_query, "offering_data": offering_data},
@@ -240,7 +259,7 @@ class CommercialHubService:
                         {"role": "system", "content": response_system},
                         {"role": "user", "content": response_user},
                     ],
-                    temperature=0.3,
+                    temperature=0.0,
                 )
                 final_response = (final_response or "").strip()
             except Exception as error:
@@ -250,6 +269,7 @@ class CommercialHubService:
         return {
             "offering_id": selected_offering_id,
             "page": selected_page,
+            "offering_data": offering_data,
             "final_response": final_response,
         }
 
