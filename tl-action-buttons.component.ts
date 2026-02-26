@@ -2589,7 +2589,11 @@ REFERENCE FORMAT CONVERSION — MANDATORY
 ============================================================
 
 Conversion rules:
-- "(Ref. 1)" → "[¹]"  "[1]" → "[¹]"  "(Ref. 1; Ref. 2)" → "[¹²]" or "[¹,²]"
+- "(Ref. 1)" → "[¹]"
+- "[1]" → "[¹]"
+- "(Ref. 1; Ref. 2)" → "[¹][²]" (two separate bracketed superscripts)
+- "(Ref. 1, Ref. 2, Ref. 3)" → "[¹][²][³]"
+- "(Ref. 1; Ref. 2; Ref. 3)" → "[¹][²][³]" (three separate bracketed superscripts)
 Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
 - Preserve URLs; only convert the marker. For URL after marker: wrap URL in parentheses.
 
@@ -2622,7 +2626,7 @@ STYLE REFERENCE:
 - Numbered content lists: 1. 2. 3. Alphabetical: A. B. C. or a. b. c.
 - Quote: > for blockquote.
 - References: ## References (or ## Sources / ## Bibliography) then numbered entries ONLY: 1. 2. 3. (no bullets • or - or *). If entries have no numbers, add 1., 2., 3., ... in order. One blank line between entries.
-- Inline citations: Make superscripts clickable. If input has plain Unicode superscripts (¹ ² ³) only, match ¹→ref "1." URL, ²→ref "2." URL from References and output <sup>[ [¹](URL) ]</sup>(URL), <sup>[ [²](URL) ]</sup>(URL), etc. Extract URL from "1. Title [https://...]" in References. Keep Title [URL] in References. Superscripts MUST be clickable in output.
+- Inline citations: Make bracketed superscripts clickable. If input has plain Unicode superscripts (¹ ² ³) or bracketed superscripts ([¹] [²] [³]), match ¹→ref "1." URL, ²→ref "2." URL from References and output <sup>[ [¹](URL) ]</sup>(URL), <sup>[ [²](URL) ]</sup>(URL), etc. Extract URL from "1. Title [https://...]" in References. Keep Title [URL] in References. Visible inline markers MUST use bracketed style ([¹], [²], [³]) and be clickable in output.
 
 RULES:
 - Preserve every sentence and citation; only add markdown structure; do not add or remove content.
