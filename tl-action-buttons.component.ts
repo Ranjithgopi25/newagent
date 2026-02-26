@@ -1,8 +1,11 @@
-
 import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 import httpx
 
@@ -10,8 +13,9 @@ from app.infrastructure.llm.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://gif-apim-glb.pwcinternal.com/commercialhub"
-SUBSCRIPTION_KEY = "fdf33c3ce6b7411f93f17840088ba384"
+BASE_URL = os.environ.get("COMMERCIAL_BASE_URL")
+SUBSCRIPTION_KEY = os.environ.get("COMMERCIAL_KEY")
+SUBSCRIPTION_VALUE = os.environ.get("COMMERCIAL_VALUE")
 TOTAL_PAGES = 4
 
 
@@ -31,11 +35,12 @@ class CommercialHubService:
     ) -> None:
         self.llm_service = llm_service or get_llm_service()
         self.subscription_key = SUBSCRIPTION_KEY
+        self.subscription_value = SUBSCRIPTION_VALUE
         self.request_timeout = timeout
 
     def build_request_headers(self) -> Dict[str, str]:
         return {
-            "Ocp-Apim-Subscription-Key": self.subscription_key,
+            self.subscription_key: self.subscription_value,
             "Content-Type": "application/json",
         }
 
@@ -238,7 +243,7 @@ class CommercialHubService:
         offering_data: Dict[str, Any] = {}
         if selected_offering_id:
             offering_data = await self.fetch_offering_tree_content_metadata(selected_offering_id)
-            response_system = (
+            response_prompt = (
                 "You are a formatting assistant for PwC Commercial Hub data.\n"
                 "You will receive structured JSON for a single offering (tree, content, metadata).\n"
                 "Your task is to present ALL of this information in a clear, human-readable markdown format.\n"
@@ -259,7 +264,7 @@ class CommercialHubService:
             try:
                 final_response = await self.llm_service.chat_completion(
                     messages=[
-                        {"role": "system", "content": response_system},
+                        {"role": "system", "content": response_prompt},
                         {"role": "user", "content": response_user},
                     ],
                     temperature=0.0,
@@ -279,7 +284,7 @@ class CommercialHubService:
 
 if __name__ == "__main__":
     async def run_main() -> None:
-        query = "tax advisory services for large enterprises"
+        query = "explain about ai engineering"
         service = CommercialHubService()
         print(f"[CommercialHub] Query: {query}\n")
         result = await service.choose_best_offering_id(user_query=query)
