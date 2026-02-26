@@ -1648,7 +1648,7 @@ Ensure the content:
 You MAY refine language ONLY to:
 - Correct brand voice violations
 - Enforce PwC messaging framework where intent already exists
-- Replace author-year parenthetical citations (e.g. “(Smith, 2021)”) with narrative attribution; never replace numbered reference markers “(Ref. 1)”, “(Ref. 1; Ref. 2)” with narrative attribution — you may only convert them to superscript refs (¹ ² ³) when present
+- Replace author-year parenthetical citations (e.g. “(Smith, 2021)”) with narrative attribution; never replace numbered reference markers “(Ref. 1)”, “(Ref. 1; Ref. 2)” with narrative attribution — you may only convert them to superscript refs in square brackets ([¹] [²] [³]) when present
 - Remove or neutralize non-compliant phrasing
 - Normalize tone to PwC standards
 
@@ -1731,37 +1731,37 @@ Numbered reference markers (Ref. N) — EXCLUDED
 REFERENCE FORMAT CONVERSION — MANDATORY
 ------------------------------------------------------------
 Conversion rules:
-- "(Ref. 1)" → "¹"
-- "(Ref. 2)" → "²"
-- "(Ref. 3)" → "³"
-- "[1]" → "¹" (bracket format)
-- "[2]" → "²" (bracket format)
-- "[3]" → "³" (bracket format)
-- "(Ref. 1; Ref. 2)" → "¹²" or "¹,²" (use comma if multiple distinct references)
-- "(Ref. 1, Ref. 2, Ref. 3)" → "¹,²,³"
-- "(Ref. 1; Ref. 2; Ref. 3)" → "¹²³" or "¹,²,³" (use comma for clarity with multiple references)
+- "(Ref. 1)" → "[¹]"
+- "(Ref. 2)" → "[²]"
+- "(Ref. 3)" → "[³]"
+- "[1]" → "[¹]" (bracket format)
+- "[2]" → "[²]" (bracket format)
+- "[3]" → "[³]" (bracket format)
+- "(Ref. 1; Ref. 2)" → "[¹][²]" (two separate bracketed superscripts)
+- "(Ref. 1, Ref. 2, Ref. 3)" → "[¹][²][³]"
+- "(Ref. 1; Ref. 2; Ref. 3)" → "[¹][²][³]" (three separate bracketed superscripts)
 
 Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
 
 Examples:
-- "According to research (Ref. 1), the findings show..." → "According to research¹, the findings show..."
-- "Multiple studies (Ref. 1; Ref. 2) indicate..." → "Multiple studies¹² indicate..." or "Multiple studies¹,² indicate..."
-- "The data (Ref. 1, Ref. 2, Ref. 3) supports..." → "The data¹,²,³ supports..."
+- "According to research (Ref. 1), the findings show..." → "According to research[¹], the findings show..."
+- "Multiple studies (Ref. 1; Ref. 2) indicate..." → "Multiple studies[¹][²] indicate..."
+- "The data (Ref. 1, Ref. 2, Ref. 3) supports..." → "The data[¹][²][³] supports..."
 
 CRITICAL — URL PRESERVATION:
 - When converting citation markers, ONLY convert the marker itself (e.g., "[1]" or "(Ref. 1)")
 - DO NOT remove or modify any text that follows the citation marker, including URLs
 - If a citation marker is followed by "https:" or a URL, wrap the URL in parentheses
 - Examples:
-  - "[1]https://example.com" → "¹(https://example.com)" (URL in parentheses)
-  - "[1]https:" → "¹(https:)" (URL prefix in parentheses)
-  - "Text [1]https://example.com more text" → "Text ¹(https://example.com) more text" (URL in parentheses)
-  - "(Ref. 1) https://example.com" → "¹ (https://example.com)" (URL in parentheses with space)
-  - "[1]http://example.com" → "¹(http://example.com)" (URL in parentheses)
+- "[1]https://example.com" → "[¹] (https://example.com)" (URL in parentheses)
+- "[1]https:" → "[¹] (https:)" (URL prefix in parentheses)
+- "Text [1]https://example.com more text" → "Text [¹] (https://example.com) more text" (URL in parentheses)
+- "(Ref. 1) https://example.com" → "[¹] (https://example.com)" (URL in parentheses with space)
+- "[1]http://example.com" → "[¹] (http://example.com)" (URL in parentheses)
 
 IMPORTANT:
 - Remove parentheses and "Ref." text
-- Remove square brackets from "[1]" format
+- Preserve square brackets from "[1]" format; convert the number inside the brackets to a superscript
 - Convert numbers to superscripts
 - Place superscripts immediately after the referenced text (no space before superscript)
 - For multiple references, combine superscripts or use comma-separated format for clarity
@@ -1828,7 +1828,7 @@ FAILURE CONDITION:
 ============================================================
 CITATION & SOURCE COMPLIANCE
 ============================================================
-- Narrative attribution only for author-year style; numbered reference markers “(Ref. N)” and superscript refs (¹ ² ³) are permitted
+- Narrative attribution only for author-year style; numbered reference markers “(Ref. N)” and superscript refs in square brackets ([¹] [²] [³]) are permitted
 - No parenthetical citations (i.e. no “(Author, Year)” in body text)
 - Flag anonymous, outdated, or non-credible sources
 - Do NOT add or invent sources
@@ -2384,37 +2384,37 @@ REFERENCE FORMAT CONVERSION — MANDATORY
 ============================================================
 
 Conversion rules:
-- "(Ref. 1)" → "¹"
-- "(Ref. 2)" → "²"
-- "(Ref. 3)" → "³"
-- "[1]" → "¹" (bracket format)
-- "[2]" → "²" (bracket format)
-- "[3]" → "³" (bracket format)
-- "(Ref. 1; Ref. 2)" → "¹²" or "¹,²" (use comma if multiple distinct references)
-- "(Ref. 1, Ref. 2, Ref. 3)" → "¹,²,³"
-- "(Ref. 1; Ref. 2; Ref. 3)" → "¹²³" or "¹,²,³" (use comma for clarity with multiple references)
+- "(Ref. 1)" → "[¹]"
+- "(Ref. 2)" → "[²]"
+- "(Ref. 3)" → "[³]"
+- "[1]" → "[¹]" (bracket format)
+- "[2]" → "[²]" (bracket format)
+- "[3]" → "[³]" (bracket format)
+- "(Ref. 1; Ref. 2)" → "[¹][²]" (two separate bracketed superscripts)
+- "(Ref. 1, Ref. 2, Ref. 3)" → "[¹][²][³]"
+- "(Ref. 1; Ref. 2; Ref. 3)" → "[¹][²][³]" (three separate bracketed superscripts)
 
 Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
 
 Examples:
-- "According to research (Ref. 1), the findings show..." → "According to research¹, the findings show..."
-- "Multiple studies (Ref. 1; Ref. 2) indicate..." → "Multiple studies¹² indicate..." or "Multiple studies¹,² indicate..."
-- "The data (Ref. 1, Ref. 2, Ref. 3) supports..." → "The data¹,²,³ supports..."
+- "According to research (Ref. 1), the findings show..." → "According to research[¹], the findings show..."
+- "Multiple studies (Ref. 1; Ref. 2) indicate..." → "Multiple studies[¹][²] indicate..."
+- "The data (Ref. 1, Ref. 2, Ref. 3) supports..." → "The data[¹][²][³] supports..."
 
 CRITICAL — URL PRESERVATION:
 - When converting citation markers, ONLY convert the marker itself (e.g., "[1]" or "(Ref. 1)")
 - DO NOT remove or modify any text that follows the citation marker, including URLs
 - If a citation marker is followed by "https:" or a URL, wrap the URL in parentheses
 - Examples:
-  - "[1]https://example.com" → "¹(https://example.com)" (URL in parentheses)
-  - "[1]https:" → "¹(https:)" (URL prefix in parentheses)
-  - "Text [1]https://example.com more text" → "Text ¹(https://example.com) more text" (URL in parentheses)
-  - "(Ref. 1) https://example.com" → "¹ (https://example.com)" (URL in parentheses with space)
-  - "[1]http://example.com" → "¹(http://example.com)" (URL in parentheses)
+- "[1]https://example.com" → "[¹] (https://example.com)" (URL in parentheses)
+- "[1]https:" → "[¹] (https:)" (URL prefix in parentheses)
+- "Text [1]https://example.com more text" → "Text [¹] (https://example.com) more text" (URL in parentheses)
+- "(Ref. 1) https://example.com" → "[¹] (https://example.com)" (URL in parentheses with space)
+- "[1]http://example.com" → "[¹] (http://example.com)" (URL in parentheses)
 
 IMPORTANT:
 - Remove parentheses and "Ref." text
-- Remove square brackets from "[1]" format
+- Preserve square brackets from "[1]" format; convert the number inside the brackets to a superscript
 - Convert numbers to superscripts
 - Place superscripts immediately after the referenced text (no space before superscript)
 - For multiple references, combine superscripts or use comma-separated format for clarity
@@ -2589,7 +2589,7 @@ REFERENCE FORMAT CONVERSION — MANDATORY
 ============================================================
 
 Conversion rules:
-- "(Ref. 1)" → "¹"  "[1]" → "¹"  "(Ref. 1; Ref. 2)" → "¹²" or "¹,²"
+- "(Ref. 1)" → "[¹]"  "[1]" → "[¹]"  "(Ref. 1; Ref. 2)" → "[¹²]" or "[¹,²]"
 Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
 - Preserve URLs; only convert the marker. For URL after marker: wrap URL in parentheses.
 
