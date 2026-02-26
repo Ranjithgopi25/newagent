@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 BASE_URL = os.environ.get("COMMERCIAL_BASE_URL")
 SUBSCRIPTION_KEY = os.environ.get("COMMERCIAL_KEY")
 SUBSCRIPTION_VALUE = os.environ.get("COMMERCIAL_VALUE")
-TOTAL_PAGES = 4
 
 
 def get_llm_service() -> LLMService:
@@ -72,28 +71,72 @@ class CommercialHubService:
         pages: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Fetch offering list across pages 1–4 in parallel.
+        Fetch offering list.
+
+        If `pages` is provided, fetch those pages in parallel.
+        If `pages` is None, keep fetching pages sequentially starting from 1
+        until an empty offerings page is encountered.
+
         Returns list of {offering_id, page, ...} from list API (no detail call).
         """
-        page_numbers = pages if pages is not None else list(range(1, TOTAL_PAGES + 1))
+        offering_list: List[Dict[str, Any]] = []
+
+        if pages is not None:
+            page_numbers = pages
+            async with httpx.AsyncClient() as client:
+                page_results = await asyncio.gather(
+                    *[self.fetch_offerings_page(client, page_no) for page_no in page_numbers]
+                )
+
+            for current_page, items in zip(page_numbers, page_results):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    offering_id = (
+                        item.get("offering_id")
+                        or item.get("id")
+                        or item.get("offeringId")
+                    )
+                    if offering_id:
+                        offering_list.append(
+                            {
+                                "offering_id": str(offering_id),
+                                "page": current_page,
+                                "offering_name": item.get("offering_name")
+                                or item.get("name")
+                                or item.get("title"),
+                            }
+                        )
+            return offering_list
 
         async with httpx.AsyncClient() as client:
-            page_results = await asyncio.gather(
-                *[self.fetch_offerings_page(client, page_no) for page_no in page_numbers]
-            )
+            page_number = 1
+            while True:
+                items = await self.fetch_offerings_page(client, page_number)
+                if not items:
+                    break
 
-        offering_list: List[Dict[str, Any]] = []
-        for current_page, items in zip(page_numbers, page_results):
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                offering_id = item.get("offering_id") or item.get("id") or item.get("offeringId")
-                if offering_id:
-                    offering_list.append({
-                        "offering_id": str(offering_id),
-                        "page": current_page,
-                        "offering_name": item.get("offering_name") or item.get("name") or item.get("title"),
-                    })
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    offering_id = (
+                        item.get("offering_id")
+                        or item.get("id")
+                        or item.get("offeringId")
+                    )
+                    if offering_id:
+                        offering_list.append(
+                            {
+                                "offering_id": str(offering_id),
+                                "page": page_number,
+                                "offering_name": item.get("offering_name")
+                                or item.get("name")
+                                or item.get("title"),
+                            }
+                        )
+
+                page_number += 1
+
         return offering_list
 
     async def fetch_offering_detail(self, offering_id: str) -> Optional[Dict[str, Any]]:
