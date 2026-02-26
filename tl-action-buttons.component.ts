@@ -36,6 +36,7 @@ class CommercialHubService:
         self.subscription_key = SUBSCRIPTION_KEY
         self.subscription_value = SUBSCRIPTION_VALUE
         self.request_timeout = timeout
+        self.total_pages: Optional[int] = None
 
     def build_request_headers(self) -> Dict[str, str]:
         return {
@@ -47,8 +48,8 @@ class CommercialHubService:
         self,
         client: httpx.AsyncClient,
         page_number: int,
-    ) -> Dict[str, Any]:
-        """Fetch a single page of offerings and return the full payload."""
+    ) -> List[Dict[str, Any]]:
+        """Fetch a single page of offerings and return the list of items."""
         url = f"{BASE_URL}/offerings"
         try:
             response = await client.get(
@@ -58,48 +59,60 @@ class CommercialHubService:
                 timeout=self.request_timeout,
             )
             response.raise_for_status()
-            return response.json()
+            payload = response.json()
+            if isinstance(payload, list):
+                return payload
+            return payload.get("data") or payload.get("offerings") or payload.get("results") or []
         except Exception as error:
             logger.error("Error fetching offerings page %s: %s", page_number, error)
-            return {}
+            return []
 
     async def fetch_offering_list(
         self,
         pages: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Fetch offering list page by page (1, 2, 3, ...).
-        Stops when offerings=[] in the response; total_pages = page_number - 1.
+        Fetch offering list across pages.
         Returns list of {offering_id, page, ...} from list API (no detail call).
         """
-        page_number = 1
         offering_list: List[Dict[str, Any]] = []
 
         async with httpx.AsyncClient() as client:
-            while True:
-                payload = await self.fetch_offerings_page(client, page_number)
-                items = payload.get("offerings", [])
+            if pages is not None:
+                page_numbers = pages
+                page_results = await asyncio.gather(
+                    *[self.fetch_offerings_page(client, page_no) for page_no in page_numbers]
+                )
+            else:
+                page_numbers: List[int] = []
+                page_results: List[List[Dict[str, Any]]] = []
+                current_page = 1
+                while True:
+                    items = await self.fetch_offerings_page(client, current_page)
+                    if not items:
+                        break
+                    page_numbers.append(current_page)
+                    page_results.append(items)
+                    current_page += 1
 
-                if items == []:
-                    total_pages = page_number - 1
-                    logger.info(
-                        "Page %s returned offerings=[] — stopping. Total pages: %s",
-                        page_number, total_pages,
-                    )
-                    break
+        for current_page, items in zip(page_numbers, page_results):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                offering_id = item.get("offering_id") or item.get("id") or item.get("offeringId")
+                if offering_id:
+                    offering_list.append({
+                        "offering_id": str(offering_id),
+                        "page": current_page,
+                        "offering_name": item.get("offering_name") or item.get("name") or item.get("title"),
+                    })
 
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    offering_id = item.get("offering_id") or item.get("id") or item.get("offeringId")
-                    if offering_id:
-                        offering_list.append({
-                            "offering_id": str(offering_id),
-                            "page": page_number,
-                            "offering_name": item.get("offering_name") or item.get("name") or item.get("title"),
-                        })
-
-                page_number += 1
+        # Infer total pages based on the last non-empty page we saw.
+        # Example: if page 5 returns offerings == [], then total_pages = 4.
+        if pages is not None:
+            self.total_pages = max(pages) if page_results else 0
+        else:
+            self.total_pages = page_numbers[-1] if page_numbers else 0
 
         return offering_list
 
@@ -196,6 +209,18 @@ class CommercialHubService:
         user_query: str,
         pages: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
+        """
+        Fetch offering list, ask LLM to pick best ID, fetch tree/content/metadata for that offering,
+        then ask LLM to generate a final response.
+
+        Returns:
+            {
+                "offering_id": str | None,
+                "page": int | None,
+                "offering_data": dict,   # raw tree/content/metadata
+                "final_response": str | None,  # human-readable version of all data
+            }
+        """
         offering_list = await self.fetch_offering_list(pages=pages)
         if not offering_list:
             return {
