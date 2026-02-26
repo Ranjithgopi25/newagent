@@ -61,7 +61,22 @@ class CommercialHubService:
             payload = response.json()
             if isinstance(payload, list):
                 return payload
-            return payload.get("data") or payload.get("offerings") or payload.get("results") or []
+
+            if isinstance(payload, dict):
+                # If API explicitly says offerings is an empty list, stop here.
+                offerings_value = payload.get("offerings")
+                if isinstance(offerings_value, list) and not offerings_value:
+                    return []
+
+                items = (
+                    payload.get("data")
+                    or offerings_value
+                    or payload.get("results")
+                    or []
+                )
+                return items if isinstance(items, list) else []
+
+            return []
         except Exception as error:
             logger.error("Error fetching offerings page %s: %s", page_number, error)
             return []
