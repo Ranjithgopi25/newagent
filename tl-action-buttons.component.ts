@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 import os
 
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 BASE_URL = os.environ.get("COMMERCIAL_BASE_URL")
 SUBSCRIPTION_KEY = os.environ.get("COMMERCIAL_KEY")
 SUBSCRIPTION_VALUE = os.environ.get("COMMERCIAL_VALUE")
+TOTAL_PAGES = 4
 
 
 def get_llm_service() -> LLMService:
@@ -43,32 +44,12 @@ class CommercialHubService:
             "Content-Type": "application/json",
         }
 
-    def _items_to_offering_list(
-        self, items: List[Any], current_page: int
-    ) -> List[Dict[str, Any]]:
-        """Convert raw page items to list of {offering_id, page, offering_name}."""
-        offering_list: List[Dict[str, Any]] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            offering_id = item.get("offering_id") or item.get("id") or item.get("offeringId")
-            if offering_id:
-                offering_list.append({
-                    "offering_id": str(offering_id),
-                    "page": current_page,
-                    "offering_name": item.get("offering_name") or item.get("name") or item.get("title"),
-                })
-        return offering_list
-
-    async def _fetch_offerings_page_raw(
+    async def fetch_offerings_page(
         self,
         client: httpx.AsyncClient,
         page_number: int,
-    ) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
-        """
-        Fetch a single page and return (items_list, full_payload_if_dict).
-        Payload is used to read total_pages from the first page response.
-        """
+    ) -> List[Dict[str, Any]]:
+        """Fetch a single page of offerings and return the list of items."""
         url = f"{BASE_URL}/offerings"
         try:
             response = await client.get(
@@ -80,85 +61,40 @@ class CommercialHubService:
             response.raise_for_status()
             payload = response.json()
             if isinstance(payload, list):
-                return payload, None
-            items = payload.get("data") or payload.get("offerings") or payload.get("results") or []
-            return items, payload
+                return payload
+            return payload.get("data") or payload.get("offerings") or payload.get("results") or []
         except Exception as error:
             logger.error("Error fetching offerings page %s: %s", page_number, error)
-            return [], None
-
-    def _total_pages_from_payload(self, payload: Dict[str, Any]) -> Optional[int]:
-        """Extract total page count from API response dict. Supports common field names."""
-        if not payload or not isinstance(payload, dict):
-            return None
-        total = (
-            payload.get("total_pages")
-            or payload.get("last_page")
-            or payload.get("num_pages")
-        )
-        if total is not None and isinstance(total, (int, float)):
-            return int(total)
-        return None
-
-    async def fetch_offerings_page(
-        self,
-        client: httpx.AsyncClient,
-        page_number: int,
-    ) -> List[Dict[str, Any]]:
-        """Fetch a single page of offerings and return the list of items."""
-        items, _ = await self._fetch_offerings_page_raw(client, page_number)
-        return items
+            return []
 
     async def fetch_offering_list(
         self,
         pages: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Fetch offering list: page 1 first; if empty return []. Otherwise determine
-        total pages from response or by fetching until empty, then fetch remaining
-        pages. Returns list of {offering_id, page, offering_name}.
-        When pages= is provided, fetch only those pages in parallel (no discovery).
+        Fetch offering list across pages 1–4 in parallel.
+        Returns list of {offering_id, page, ...} from list API (no detail call).
         """
+        page_numbers = pages if pages is not None else list(range(1, TOTAL_PAGES + 1))
+
         async with httpx.AsyncClient() as client:
-            if pages is not None:
-                page_results = await asyncio.gather(
-                    *[self.fetch_offerings_page(client, p) for p in pages]
-                )
-                offering_list: List[Dict[str, Any]] = []
-                for current_page, items in zip(pages, page_results):
-                    offering_list.extend(self._items_to_offering_list(items, current_page))
-                return offering_list
-
-            # Dynamic pagination: fetch page 1 first
-            page1_items, payload = await self._fetch_offerings_page_raw(client, 1)
-            if not page1_items:
-                return []
-
-            offering_list = self._items_to_offering_list(page1_items, 1)
-            total_pages = self._total_pages_from_payload(payload) if payload else None
-
-            if total_pages is None:
-                # Discover total by fetching until empty
-                page_num = 2
-                while True:
-                    items = await self.fetch_offerings_page(client, page_num)
-                    if not items:
-                        break
-                    offering_list.extend(self._items_to_offering_list(items, page_num))
-                    page_num += 1
-                return offering_list
-
-            if total_pages <= 1:
-                return offering_list
-
-            # Fetch pages 2..total_pages in parallel
-            page_numbers = list(range(2, total_pages + 1))
             page_results = await asyncio.gather(
-                *[self.fetch_offerings_page(client, p) for p in page_numbers]
+                *[self.fetch_offerings_page(client, page_no) for page_no in page_numbers]
             )
-            for current_page, items in zip(page_numbers, page_results):
-                offering_list.extend(self._items_to_offering_list(items, current_page))
-            return offering_list
+
+        offering_list: List[Dict[str, Any]] = []
+        for current_page, items in zip(page_numbers, page_results):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                offering_id = item.get("offering_id") or item.get("id") or item.get("offeringId")
+                if offering_id:
+                    offering_list.append({
+                        "offering_id": str(offering_id),
+                        "page": current_page,
+                        "offering_name": item.get("offering_name") or item.get("name") or item.get("title"),
+                    })
+        return offering_list
 
     async def fetch_offering_detail(self, offering_id: str) -> Optional[Dict[str, Any]]:
         """Fetch full detail for a single offering by ID."""
