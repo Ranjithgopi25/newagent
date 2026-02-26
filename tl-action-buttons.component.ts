@@ -1,484 +1,1113 @@
 """
-LangGraph Agent for Data Source Integration.
-Uses tool calling to intelligently fetch data from multiple sources.
+LangChain Tools for Data Sources.
+Each tool wraps a data source integration.
 """
-import time
-import os
-import json
+
+from langchain_core.tools import tool
+from typing import Optional, List
 import logging
-from typing import List, Dict, Any, Optional, AsyncIterator, Annotated, TypedDict
-from langchain_openai import AzureChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
-from app.core.deps import get_llm_service
-from app.infrastructure.llm.llm_service import LLMService
-from .prompts import SYSTEM_PROMPT
-from .tools import get_all_tools, set_services
-from .factiva_service import FactivaService
-from .capitaliq_service import CapitalIQService
-from .boardex_service import BoardExService
-from .ai_search_service import AISearchService
-from .connected_source import PassageRetrievalService
-from .tavily_service import TavilyService
-from .benchmarking_service import BenchmarkingAPIClient
-from .css_service import CSSService
-from app.features.thought_leadership.services.refine_content_service import RefineContentService
-from app.core.config import get_settings
-settings = get_settings()
-AI_SEARCH_CONFIG = {
-    "endpoint": settings.AI_SEARCH_ENDPOINT,
-    "index_name": settings.AI_SEARCH_INDEX_NAME,
-    "api_key": settings.AI_SEARCH_API_KEY
-}
+import json
+
+# from .ppt_service import PPTService
+
+# Add to service globals
+
 
 logger = logging.getLogger(__name__)
 
-class AgentState(TypedDict):
-    """State for the agent graph."""
-    messages: Annotated[List[BaseMessage], add_messages]
+# Tool instances will be injected
+_factiva_service = None
+_capitaliq_service = None
+_boardex_service = None
+_ppt_service = None
+_ai_search_service = None
+_refine_service = None
+_format_translator_service = None
+_passage_retrieval_service = None
+_tavily_service = None
+_benchmarking_service = None
+_css_service = None
 
-llm_service = get_llm_service()
+def set_services(factiva=None, capitaliq=None, boardex=None, ppt=None, ai_search=None,
+                 refine=None, format_translator=None, passage_retrieval=None, tavily=None, benchmarking=None, css=None):
+    """Inject service instances into tools."""
+    global _factiva_service, _capitaliq_service, _boardex_service, _ppt_service, _ai_search_service,_refine_service, _format_translator_service, _passage_retrieval_service, _tavily_service, _benchmarking_service, _css_service
 
-class DataSourceLangGraphAgent:
+    _factiva_service = factiva
+    _capitaliq_service = capitaliq
+    _boardex_service = boardex
+    _ppt_service = ppt
+    _ai_search_service = ai_search
+    _refine_service = refine
+    _format_translator_service = format_translator
+    _passage_retrieval_service = passage_retrieval
+    _tavily_service = tavily
+    _benchmarking_service = benchmarking
+    _css_service = css
+
+@tool
+async def search_factiva_news(
+    query: str,
+    limit: int = 5
+) -> str:
     """
-    LangGraph-based agent for data source integration.
-    Uses tool calling for intelligent routing to data sources.
+    Search for news articles from Factiva/Dow Jones.
+    
+    Use this tool when the user asks about:
+    - Recent news or headlines
+    - Wall Street Journal (WSJ) articles
+    - Press releases or media coverage
+    - Company announcements in the news
+    - Market news or industry news
+    
+    Args:
+        query: Simple search terms like "Tesla", "Apple earnings", "Microsoft AI". 
+               DO NOT use complex syntax - just plain keywords.
+        limit: Number of articles to return (default 5)
+    
+    Returns:
+        Formatted news articles with headlines, sources, and content summaries
     """
+    if not _factiva_service:
+        return "Factiva service not available"
     
-    def __init__(
-        self,
-        azure_endpoint: Optional[str] = None,
-        api_key: Optional[str] = None,
-        api_version: Optional[str] = None,
-        deployment_name: Optional[str] = None
-    ):
-        """Initialize the agent with Azure OpenAI and data source services."""
-        
-        # Get config from environment if not provided
-        self.azure_endpoint = azure_endpoint or os.getenv("AI_ENDPOINT")
-        self.api_key = api_key or os.getenv("AI_API_KEY")
-        self.api_version = api_version or os.getenv("AI_API_VERSION", "2024-08-01-preview")
-        self.deployment_name = deployment_name or os.getenv("AI_MODEL_NAME", "gpt-4o")
-        self.passage_retrieval_service = PassageRetrievalService(
-                api_url=settings.PASSAGE_RETRIEVAL_API_URL,
-                subscription_key=settings.PASSAGE_RETRIEVAL_SUBSCRIPTION_KEY,
-                sc_apikey=settings.PASSAGE_RETRIEVAL_SC_APIKEY
-            )
-        
-        if not self.azure_endpoint or not self.api_key:
-            raise ValueError("Azure OpenAI endpoint and API key are required")
-        
-        # Initialize LLM
-        self.llm = AzureChatOpenAI(
-            azure_endpoint=self.azure_endpoint,
-            api_key=self.api_key,
-            api_version=self.api_version,
-            azure_deployment=self.deployment_name,
-            temperature=0.3,
-            streaming=True
-        )
-        self.ai_search_service = AISearchService(
-            endpoint=AI_SEARCH_CONFIG["endpoint"],
-            index_name=AI_SEARCH_CONFIG["index_name"],
-            api_key=AI_SEARCH_CONFIG["api_key"]
-        )
-        # Initialize data source services
-        self.factiva_service = FactivaService()
-        self.capitaliq_service = CapitalIQService()
-        self.boardex_service = BoardExService()
-        self.refine_service = RefineContentService(llm_service=LLMService())
-        self.passage_retrieval_service = PassageRetrievalService()
-        self.tavily_service = TavilyService(api_key=settings.TAVILY_API_KEY)
-        self.benchmarking_service = BenchmarkingAPIClient()
-        self.css_service = CSSService()
-        # logger.info("[DataSourceAgent] Tavily service initialized")
-        self.tool_usage_tracker = []
-        
-        # Inject services into tools
-        set_services(
-            factiva=self.factiva_service,
-            capitaliq=self.capitaliq_service,
-            boardex=self.boardex_service,
-            ai_search=self.ai_search_service,
-            refine=self.refine_service,
-            passage_retrieval=self.passage_retrieval_service,
-            tavily=self.tavily_service,
-            benchmarking=self.benchmarking_service,
-            css=self.css_service
-        )
-        
-        # Get tools and bind to LLM
-        self.tools = get_all_tools()
-        tool_names = [tool.name for tool in self.tools]
-        logger.info(f"[DataSourceAgent] Tools registered: {tool_names}")
-        self.llm_with_tools = self.llm.bind_tools(self.tools)
-        
-        # Build the graph
-        self.graph = self._build_graph()
-        
-        # logger.info(f"[DataSourceAgent] Initialized with {len(self.tools)} tools")
+    try:
+        logger.info(f"[Tool:search_factiva_news] Query: {query}")
+        response = await _factiva_service.fetch_content(query, response_limit=limit)
+        return _factiva_service.format_response(response)
+    except Exception as e:
+        logger.error(f"[Tool:search_factiva_news] Error: {e}")
+        return f"Error fetching news: {str(e)}"
+
+
+@tool
+async def query_capitaliq_financials(
+    query_description: str,
+    company_name: Optional[str] = None,
+    data_item_name: Optional[str] = None,
+    calendar_year: Optional[int] = None,
+    period_type: Optional[str] = None,
+    custom_where_clause: Optional[str] = None,
+    select_columns: Optional[List[str]] = None,
+    limit: int = 50
+) -> str:
+    """
+    Query CapitalIQ SQL Server database for company financial data.
     
-    def clear_tool_tracker(self):
-        """Clear tool usage tracker for new request."""
-        self.tool_usage_tracker = []
-        logger.debug("[DataSourceAgent] Tool tracker cleared")
+    Table: vw_CompanyIncomeStatementFinancials
     
-    def get_tool_usage_summary(self) -> str:
-        """Generate a summary of which tools were used."""
-        if not self.tool_usage_tracker:
-            return ""
+    Available columns:
+    - companyName (VARCHAR): Name of the company
+    - CapIQ_Id (VARCHAR): Capital IQ identifier
+    - SEC_CIK (VARCHAR): SEC CIK number
+    - DUNS (VARCHAR): DUNS number
+    - periodEndDate (DATETIME): End date of the financial period
+    - filingDate (DATETIME): Date of filing
+    - periodTypeName (VARCHAR): 'Annual' or 'Quarterly'
+    - calendarYear (INT): Calendar year (e.g., 2023)
+    - dataItemId (INT): ID of the financial data item
+    - dataItemName (VARCHAR): Name of the metric - options include:
+        * 'Net Income - (IS)'
+        * 'Total Revenues'
+        * 'Gross Profit'
+        * 'Cost Of Revenues'
+        * 'Depreciation & Amortization, Total - (IS)'
+        * 'Unusual Items, Total'
+    - dataItemValue (DECIMAL): Value of the financial metric
+    
+    Use this tool when the user asks about:
+    - Revenue, income, profit, earnings
+    - Financial statements or reports
+    - EBITDA, gross profit, cost of revenues
+    - Quarterly or annual financial data
+    - Any company financial metrics
+    
+    Args:
+        query_description: Natural language description of what data is needed
+        company_name: Filter by company name (partial match with LIKE)
+        data_item_name: Filter by specific metric name (exact match or partial)
+        calendar_year: Filter by year (e.g., 2023)
+        period_type: Filter by 'Annual' or 'Quarterly'
+        custom_where_clause: Additional SQL WHERE conditions (e.g., "dataItemValue > 1000000")
+        select_columns: List of columns to return. If None, returns common columns.
+        limit: Max rows to return (default 50)
+    
+    Returns:
+        Formatted financial data results
+    """
+    if not _capitaliq_service:
+        return "CapitalIQ service not available"
+    
+    try:
+        logger.info(f"[Tool:query_capitaliq_financials] {query_description}")
         
-        tool_counts = {}
-        for usage in self.tool_usage_tracker:
-            tool_name = usage['tool']
-            tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
+        results = await _capitaliq_service.execute_flexible_query(
+            company_name=company_name,
+            data_item_name=data_item_name,
+            calendar_year=calendar_year,
+            period_type=period_type,
+            custom_where_clause=custom_where_clause,
+            select_columns=select_columns,
+            limit=limit
+        )
         
-        # Map tool names to human-readable descriptions
-        tool_descriptions = {
-            'search_factiva_news': 'Factiva News (external news and media coverage)',
-            'search_internal_knowledge': 'Internal Knowledge Base (company documents)',
-            'query_capitaliq_financials': 'CapitalIQ Financials (income statements)',
-            'query_capitaliq_balance_sheet': 'CapitalIQ Balance Sheets (assets & liabilities)',
-            'query_boardex_advisors': 'BoardEx Advisors (auditor relationships)',
-            'query_boardex_achievements': 'BoardEx Achievements (executive awards)',
-            'retrieve_knowledge_passages': 'Connected Source (PwC knowledge base)',
-            'extract_web_content': 'Web Extraction (URL content)',
-            'search_benchmarking': 'Benchmarking API (operational KPIs)',
-            'search_web_tavily': 'Tavily Web Search (comprehensive web results)',
-            'search_css_stories': 'Client Success Stories (CSS - PwC engagement examples)',
-            'generate_powerpoint_presentation': 'PowerPoint Generation',
-            'refine_content': 'Content Refinement',
-            'translate_content_format': 'Format Translation'
+        return _capitaliq_service.format_response(results)
+    except Exception as e:
+        logger.error(f"[Tool:query_capitaliq_financials] Error: {e}")
+        return f"Error querying financial data: {str(e)}"
+
+
+@tool
+async def search_benchmarking(
+    query: str
+)-> str:
+    """
+    Get benchmarking metric/KPIs for a business function.
+
+    The metrics/KPIs are retrieved from the Benchmarking API that give details of the operational efficiency KPIs. 
+    It includes Metric details and Benchmark statistics which give quantitative metrics for how companies perform 
+    in all major areas/functions of business operations.
+
+    Use this tool when user asks:
+    - For benchamarking data
+    - How a company is performing in a specific business function
+    - Quantitative metrics for how company is performing in a function
+
+    Args:
+        query: The user query - whatever the user asked.Natural language search query.
+    
+    Returns:
+        Benchmarking Metric/KPI details along with the definitions and display name.
+    """
+    if not _benchmarking_service:
+        return "Benchmarking service not available"
+    
+    try:
+        logger.info(f"[Tool:search_benchmarking] Query: {query}")
+        
+        metric_data = await _benchmarking_service.run_pipeline(query)
+        
+        # Return structured data instead of formatted text
+        return metric_data
+        
+    except Exception as e:
+        logger.error(f"[Tool:search_benchmarking] Error: {e}")
+        return f"Error retrieving metrics: {str(e)}"
+
+
+@tool
+async def query_boardex_advisors(
+    query_description: str,
+    board_name: Optional[str] = None,
+    advisor_name: Optional[str] = None,
+    advisor_type: Optional[str] = None,
+    custom_where_clause: Optional[str] = None,
+    select_columns: Optional[List[str]] = None,
+    limit: int = 50
+) -> str:
+    """
+    Query BoardEx Databricks database for company advisor relationships.
+    
+    Table: thirdpartydata_dev.boardex.company_profile_advisors
+    
+    Available columns:
+    - BoardID (INT): Unique board identifier
+    - BoardName (VARCHAR): Name of the company/board
+    - ClientCompanyID (VARCHAR): Client company identifier
+    - AdvisorName (VARCHAR): Name of the advisory firm (e.g., 'PricewaterhouseCoopers (PwC)', 'Deloitte', 'KPMG', 'Ernst & Young')
+    - AdvTypeDesc (VARCHAR): Type of advisor - 'Auditors', 'Corporate Advisors', 'Investor Relations Advisors'
+    - OrgVisible (VARCHAR): Organization visibility flag ('Yes'/'No')
+    - Last_Refreshed_Date (DATETIME): Last data refresh timestamp
+    - SrcName (VARCHAR): Source file name
+    
+    Use this tool when the user asks about:
+    - Company auditors (PwC, Deloitte, KPMG, EY)
+    - Corporate advisors
+    - Investor relations advisors
+    - Which companies a firm audits/advises
+    - Advisory relationships
+    
+    Args:
+        query_description: Natural language description of what data is needed
+        board_name: Filter by company name (partial match)
+        advisor_name: Filter by advisor firm name (e.g., 'PwC', 'Deloitte')
+        advisor_type: Filter by type - 'Auditors', 'Corporate Advisors', 'Investor Relations Advisors'
+        custom_where_clause: Additional SQL WHERE conditions
+        select_columns: List of columns to return. If None, returns common columns.
+        limit: Max rows to return (default 50)
+    
+    Returns:
+        Formatted advisor relationship data
+    """
+    if not _boardex_service:
+        return "BoardEx service not available"
+    
+    try:
+        logger.info(f"[Tool:query_boardex_advisors] {query_description}")
+        
+        results = await _boardex_service.execute_flexible_advisor_query(
+            board_name=board_name,
+            advisor_name=advisor_name,
+            advisor_type=advisor_type,
+            custom_where_clause=custom_where_clause,
+            select_columns=select_columns,
+            limit=limit
+        )
+        logger.info(f"[Tool:query_boardex_advisors] Raw results count: {len(results)}")
+        logger.info(f"[Tool:query_boardex_advisors] Raw results: {results}")
+        return _boardex_service.format_response(results, is_advisor=True)
+    except Exception as e:
+        logger.error(f"[Tool:query_boardex_advisors] Error: {e}")
+        return f"Error querying advisor data: {str(e)}"
+
+
+@tool
+async def query_boardex_achievements(
+    query_description: str,
+    director_name: Optional[str] = None,
+    company_name: Optional[str] = None,
+    achievement_keyword: Optional[str] = None,
+    custom_where_clause: Optional[str] = None,
+    select_columns: Optional[List[str]] = None,
+    limit: int = 50
+) -> str:
+    """
+    Query BoardEx Databricks database for director achievements and awards.
+    
+    Table: thirdpartydata_dev.boardex.director_profile_achievements
+    
+    Available columns:
+    - PrimaryKeyID (INT): Primary key identifier
+    - RowType (VARCHAR): Type of row (e.g., 'Achievements')
+    - DirectorID (INT): Unique director identifier
+    - DirectorName (VARCHAR): Name of the director
+    - ClientDirectorID (VARCHAR): Client director identifier
+    - CompanyID (INT): Company identifier
+    - CompanyName (VARCHAR): Name of the company
+    - ClientCompanyID (VARCHAR): Client company identifier
+    - AchievementDate (DATE): Date of achievement
+    - AchievementDateFlag (INT): Flag for achievement date precision
+    - AchievementDateDisplay (VARCHAR): Display format of achievement date
+    - Achievement (VARCHAR): Description of the achievement/award (e.g., 'Meritorious Service Medal', 'Hall of Fame Induction')
+    - Last_Refreshed_Date (DATETIME): Last data refresh timestamp
+    - SrcName (VARCHAR): Source file name
+    
+    Use this tool when the user asks about:
+    - Executive awards or achievements
+    - Director recognitions or honors
+    - Leadership medals or accolades
+    - Board member accomplishments
+    - CEO/CFO/executive achievements
+    
+    Args:
+        query_description: Natural language description of what data is needed
+        director_name: Filter by director name (partial match)
+        company_name: Filter by company name (partial match)
+        achievement_keyword: Filter achievements containing this keyword
+        custom_where_clause: Additional SQL WHERE conditions
+        select_columns: List of columns to return. If None, returns common columns.
+        limit: Max rows to return (default 50)
+    
+    Returns:
+        Formatted achievement data
+    """
+    if not _boardex_service:
+        return "BoardEx service not available"
+    
+    try:
+        logger.info(f"[Tool:query_boardex_achievements] {query_description}")
+        
+        results = await _boardex_service.execute_flexible_achievement_query(
+            director_name=director_name,
+            company_name=company_name,
+            achievement_keyword=achievement_keyword,
+            custom_where_clause=custom_where_clause,
+            select_columns=select_columns,
+            limit=limit
+        )
+        
+        return _boardex_service.format_response(results, is_advisor=False)
+    except Exception as e:
+        logger.error(f"[Tool:query_boardex_achievements] Error: {e}")
+        return f"Error querying achievement data: {str(e)}"
+
+
+@tool
+async def execute_raw_capitaliq_sql(
+    sql_query: str,
+    query_description: str
+) -> str:
+    """
+    Execute a raw SQL query against CapitalIQ SQL Server database.
+    
+    USE WITH CAUTION - Only for complex queries that can't be done with query_capitaliq_financials.
+    
+    Table available: vw_CompanyIncomeStatementFinancials
+    
+    Columns: companyName, CapIQ_Id, SEC_CIK, DUNS, periodEndDate, filingDate, 
+             periodTypeName, calendarYear, dataItemId, dataItemName, dataItemValue
+    
+    Args:
+        sql_query: Raw SQL SELECT query (must be SELECT only, no INSERT/UPDATE/DELETE)
+        query_description: Description of what this query does
+    
+    Returns:
+        Query results formatted as text
+    """
+    if not _capitaliq_service:
+        return "CapitalIQ service not available"
+    
+    try:
+        # Security: Only allow SELECT queries
+        if not sql_query.strip().upper().startswith("SELECT"):
+            return "Error: Only SELECT queries are allowed"
+        
+        logger.info(f"[Tool:execute_raw_capitaliq_sql] {query_description}")
+        logger.info(f"[Tool:execute_raw_capitaliq_sql] Query: {sql_query}")
+        
+        results = await _capitaliq_service.execute_query(sql_query)
+        return _capitaliq_service.format_response(results)
+    except Exception as e:
+        logger.error(f"[Tool:execute_raw_capitaliq_sql] Error: {e}")
+        return f"Error executing SQL query: {str(e)}"
+
+
+@tool
+async def execute_raw_boardex_sql(
+    sql_query: str,
+    query_description: str
+) -> str:
+    """
+    Execute a raw SQL query against BoardEx Databricks database.
+    
+    USE WITH CAUTION - Only for complex queries that can't be done with other BoardEx tools.
+    
+    Tables available:
+    - thirdpartydata_dev.boardex.company_profile_advisors
+    - thirdpartydata_dev.boardex.director_profile_achievements
+    
+    Args:
+        sql_query: Raw SQL SELECT query (must be SELECT only)
+        query_description: Description of what this query does
+    
+    Returns:
+        Query results formatted as text
+    """
+    if not _boardex_service:
+        return "BoardEx service not available"
+    
+    try:
+        # Security: Only allow SELECT queries
+        if not sql_query.strip().upper().startswith("SELECT"):
+            return "Error: Only SELECT queries are allowed"
+        
+        logger.info(f"[Tool:execute_raw_boardex_sql] {query_description}")
+        logger.info(f"[Tool:execute_raw_boardex_sql] Query: {sql_query}")
+        
+        results = await _boardex_service.execute_query(sql_query)
+        return _boardex_service.format_response(results, is_advisor=True)
+    except Exception as e:
+        logger.error(f"[Tool:execute_raw_boardex_sql] Error: {e}")
+        return f"Error executing SQL query: {str(e)}"
+
+
+@tool
+async def generate_powerpoint_presentation(
+    user_request: str,
+    enhanced_guidelines: Optional[str] = None
+) -> str:
+    """
+    Generate a PowerPoint presentation based on user request.
+    
+    Use this tool when the user asks to:
+    - Create a PowerPoint presentation
+    - Generate a PPT or deck
+    - Prepare slides
+    - Make a presentation
+    - Create a slideshow
+    
+    Keywords to trigger this tool:
+    - "create/generate/make/prepare a ppt"
+    - "create/generate/make/prepare a presentation"
+    - "create/generate/make/prepare a deck"
+    - "create/generate/make/prepare slides"
+    - "powerpoint"
+    
+    Args:
+        user_request: The original user request/query
+        enhanced_guidelines: Optional enhanced version of the request with more details.
+                           Only provide this if the original request is too vague or needs clarification.
+                           For example, if user says "create a ppt", you might enhance it to 
+                           "create a professional presentation about [topic] with key points on [aspects]"
+    
+    Returns:
+        Markdown formatted message with download link to the generated presentation
+    
+    Examples:
+        - "create a ppt on wildfire in Australia" → Use as-is
+        - "make a presentation about Tesla" → Enhance to "create a presentation about Tesla including company overview, financial performance, and recent developments"
+        - "prepare a deck" → Enhance to add specific topic if context allows
+    """
+    if not _ppt_service:
+        return "PowerPoint generation service not available"
+    
+    try:
+        logger.info(f"[Tool:generate_powerpoint_presentation] Request: {user_request}")
+        
+        if enhanced_guidelines:
+            logger.info(f"[Tool:generate_powerpoint_presentation] Enhanced: {enhanced_guidelines}")
+        
+        # Note: generate_presentation is now async but handles blocking operations internally
+        result = await _ppt_service.generate_presentation(
+            user_query=user_request,
+            additional_guidelines=enhanced_guidelines
+        )
+        
+        return _ppt_service.format_response(result)
+        
+    except Exception as e:
+        logger.error(f"[Tool:generate_powerpoint_presentation] Error: {e}")
+        return f"❌ Error generating presentation: {str(e)}\n\nPlease try again or contact support if the issue persists."
+    
+
+@tool
+async def query_capitaliq_balance_sheet(
+    query_description: str,
+    company_name: Optional[str] = None,
+    data_item_name: Optional[str] = None,
+    calendar_year: Optional[int] = None,
+    custom_where_clause: Optional[str] = None,
+    select_columns: Optional[List[str]] = None,
+    limit: int = 50
+) -> str:
+    """
+    Query CapitalIQ SQL Server database for company balance sheet data.
+    
+    Table: vw_CompanyBalanceSheetFinancials
+    
+    Available columns:
+    - companyName (VARCHAR): Name of the company
+    - CapIQ_Id (INT): Capital IQ identifier
+    - SEC_CIK (VARCHAR): SEC CIK number
+    - DUNS (VARCHAR): DUNS number
+    - periodEndDate (DATETIME): End date of the financial period
+    - filingDate (DATETIME): Date of filing
+    - periodTypeName (VARCHAR): 'Annual' (balance sheet is typically annual)
+    - calendarYear (INT): Calendar year (e.g., 2023)
+    - dataItemId (INT): ID of the financial data item
+    - dataItemName (VARCHAR): Name of the balance sheet metric - options include:
+        * 'Total Assets'
+        * 'Total Current Assets'
+        * 'Total Cash And Short Term Investments'
+        * 'Total Receivables'
+        * 'Net Property Plant And Equipment'
+        * 'Total Liabilities And Equity'
+        * 'Total Equity'
+        * 'Total Common Equity'
+        * 'Total Current Liabilities'
+        * 'Total Liabilities - (Standard / Utility Template)'
+        * 'Gain (Loss) on Sale of Investment, Total (Rev)'
+    - dataItemValue (DECIMAL): Value of the balance sheet metric
+    
+    Use this tool when the user asks about:
+    - Company assets (total assets, current assets, property/plant/equipment)
+    - Cash positions, cash and equivalents, short-term investments
+    - Receivables, accounts receivable
+    - Liabilities (total liabilities, current liabilities)
+    - Equity (total equity, common equity, shareholders equity)
+    - Balance sheet items, financial position, net worth
+    - Asset structure, liquidity position
+    
+    **MANDATORY when query mentions:**
+    - Total assets, current assets, fixed assets
+    - Cash, cash position, liquidity, working capital
+    - Receivables, accounts receivable, AR
+    - Liabilities, debt, current liabilities
+    - Equity, shareholders equity, net worth, book value
+    - Balance sheet, financial position, asset base
+    
+    Args:
+        query_description: Natural language description of what data is needed
+        company_name: Filter by company name (partial match with LIKE)
+        data_item_name: Filter by specific metric name (exact match or partial)
+        calendar_year: Filter by year (e.g., 2023)
+        custom_where_clause: Additional SQL WHERE conditions
+        select_columns: List of columns to return. If None, returns common columns.
+        limit: Max rows to return (default 50)
+    
+    Returns:
+        Formatted balance sheet data results
+    """
+    if not _capitaliq_service:
+        return "CapitalIQ service not available"
+    
+    try:
+        logger.info(f"[Tool:query_capitaliq_balance_sheet] {query_description}")
+        
+        results = await _capitaliq_service.execute_flexible_balance_sheet_query(
+            company_name=company_name,
+            data_item_name=data_item_name,
+            calendar_year=calendar_year,
+            custom_where_clause=custom_where_clause,
+            select_columns=select_columns,
+            limit=limit
+        )
+        
+        return _capitaliq_service.format_response(results)
+    except Exception as e:
+        logger.error(f"[Tool:query_capitaliq_balance_sheet] Error: {e}")
+        return f"Error querying balance sheet data: {str(e)}"
+
+
+@tool
+async def search_internal_knowledge(
+    query: str,
+    top: int = 5
+) -> str:
+    """
+    Search internal knowledge base (Azure AI Search) for relevant documents.
+    
+    **IMPORTANT: This tool should ALWAYS be called for EVERY user query along with search_factiva_news.**
+    
+    Use this tool to find:
+    - Internal company documents
+    - Research reports and presentations
+    - Previously analyzed data
+    - Historical presentations and reports
+    - Any information from uploaded documents
+    
+    This should be used in combination with other tools, not instead of them.
+    For example, if user asks about Tesla, call BOTH this tool AND search_factiva_news.
+    
+    Args:
+        query: Search terms to find relevant internal documents
+        top: Number of results to return (default 5)
+    
+    Returns:
+        Formatted search results from internal knowledge base
+    """
+    if not _ai_search_service:
+        return "Internal knowledge search service not available"
+    
+    try:
+        logger.info(f"[Tool:search_internal_knowledge] Query: {query}")
+        results = await _ai_search_service.search_documents(query, top=top)
+        return _ai_search_service.format_response(results)
+    except Exception as e:
+        logger.error(f"[Tool:search_internal_knowledge] Error: {e}")
+        return f"Error searching internal knowledge: {str(e)}"
+
+
+@tool
+async def refine_content(
+    original_content: str,
+    services_config: str
+) -> str:
+    """
+    Refine content using PwC editorial standards.
+    
+    Args:
+        original_content: The content to refine
+        services_config: JSON string with service configuration. Format:
+            {
+                "services": [
+                    {
+                        "type": "compress",
+                        "isSelected": true,
+                        "expected_word_count": 500
+                    },
+                    {
+                        "type": "adjust_audience_tone",
+                        "isSelected": true,
+                        "audience_tone": "conversational"
+                    }
+                ]
+            }
+    
+    Returns:
+        Refined content
+    """
+    if not _refine_service:
+        return "Refine content service not available"
+    
+    try:
+        import json
+        
+        # Parse services config
+        config = json.loads(services_config) if isinstance(services_config, str) else services_config
+        
+        # Build request_data in expected format
+        request_data = {
+            'original_content': original_content,
+            'services': config.get('services', [])
         }
         
-        summary_lines = ["**Information Sources:**"]
-        for tool_name, count in tool_counts.items():
-            description = tool_descriptions.get(tool_name, tool_name)
-            summary_lines.append(f"- {description} ({count} call{'s' if count > 1 else ''})")
+        logger.info(f"[Tool:refine_content] Calling service with {len(request_data['services'])} services")
         
-        return "\n".join(summary_lines)
+        # Collect streamed response
+        result_chunks = []
+        async for chunk in _refine_service.refine_content(request_data):
+            if chunk.startswith("data: "):
+                try:
+                    data = json.loads(chunk[6:])
+                    if data.get('type') == 'content':
+                        result_chunks.append(data['content'])
+                except:
+                    pass
+        
+        return "".join(result_chunks)
+        
+    except Exception as e:
+        logger.error(f"[Tool:refine_content] Error: {e}")
+        return f"Error refining content: {str(e)}"
+
+
+@tool
+async def translate_content_format(
+    content: str,
+    source_format: str,
+    target_format: str,
+    customization: Optional[str] = None,
+    podcast_style: Optional[str] = None,
+    speaker1_name: Optional[str] = None,
+    speaker1_voice: Optional[str] = None,
+    speaker1_accent: Optional[str] = None,
+    speaker2_name: Optional[str] = None,
+    speaker2_voice: Optional[str] = None,
+    speaker2_accent: Optional[str] = None,
+    word_limit: Optional[str] = None
+) -> str:
+    """
+    Translate content between different formats with PwC brand compliance.
     
-    def _build_graph(self) -> StateGraph:
-        """Build the LangGraph workflow."""
+    Use this tool when the user asks to:
+    - Convert content to different formats (social media, webpage, article, podcast, etc.)
+    - Refine or rewrite content in a specific style
+    - Adjust tone or word count
+    - Transform documents into different output formats
+    
+    Supported target formats:
+    - "Social Media Post" (LinkedIn, X.com/Twitter)
+    - "Webpage Ready" (HTML article)
+    - "Podcast" (audio with transcript)
+    - Any other written format
+    
+    Keywords to trigger this tool:
+    - "translate/convert/transform to [format]"
+    - "rewrite as [format]"
+    - "make this into a [format]"
+    - "refine this content"
+    - "change the tone to [style]"
+    - "compress/expand to [word count]"
+    
+    Args:
+        content: The text content to translate (can include extracted document text)
+        source_format: Original format (e.g., "Document", "Article", "Report")
+        target_format: Desired output format (e.g., "Social Media Post", "Webpage Ready", "Podcast")
+        customization: Platform-specific instructions (e.g., "LinkedIn post", "X.com tweet")
+        podcast_style: Style for podcast generation ("dialogue", "interview", etc.)
+        speaker1_name: First speaker name for podcast
+        speaker1_voice: First speaker voice type (e.g., "alloy", "echo", "nova")
+        speaker1_accent: First speaker accent
+        speaker2_name: Second speaker name for podcast
+        speaker2_voice: Second speaker voice type
+        speaker2_accent: Second speaker accent
+        word_limit: Target word count (e.g., "200", "500")
+    
+    Returns:
+        Translated content in the target format. For podcasts, returns JSON with audio_url and transcript.
+    
+    Examples:
+        - "Convert this report to a LinkedIn post" → target_format="Social Media Post", customization="LinkedIn"
+        - "Make this into a 300-word article" → target_format="Article", word_limit="300"
+        - "Turn this into a podcast" → target_format="Podcast", podcast_style="dialogue"
+    """
+    if not _format_translator_service:
+        return "Format translation service not available"
+    
+    try:
+        logger.info(f"[Tool:translate_content_format] {source_format} -> {target_format}")
         
-        # Create graph
-        graph_builder = StateGraph(AgentState)
+        # Collect all chunks
+        result_chunks = []
         
-        # Add nodes
-        graph_builder.add_node("agent", self._agent_node)
-        graph_builder.add_node("tools", ToolNode(tools=self.tools))
+        async for chunk in _format_translator_service.translate_format(
+            content=content,
+            source_format=source_format,
+            target_format=target_format,
+            customization=customization,
+            podcast_style=podcast_style,
+            speaker1_name=speaker1_name,
+            speaker1_voice=speaker1_voice,
+            speaker1_accent=speaker1_accent,
+            speaker2_name=speaker2_name,
+            speaker2_voice=speaker2_voice,
+            speaker2_accent=speaker2_accent,
+            word_limit=word_limit
+        ):
+            # Extract content from SSE format
+            if chunk.startswith("data: "):
+                try:
+                    data = json.loads(chunk[6:])
+                    if 'content' in data:
+                        result_chunks.append(data['content'])
+                    elif 'audio_url' in data:
+                        # For podcast, return the complete JSON
+                        return json.dumps(data, indent=2)
+                except:
+                    pass
         
-        # Add edges
-        graph_builder.add_edge(START, "agent")
-        graph_builder.add_conditional_edges(
-            "agent",
-            self._should_continue,
-            {
-                "continue": "tools",
-                "end": END
-            }
+        return "".join(result_chunks)
+        
+    except Exception as e:
+        logger.error(f"[Tool:translate_content_format] Error: {e}")
+        return f"Error translating content format: {str(e)}"
+
+@tool
+async def retrieve_knowledge_passages(
+    query: str
+) -> str:
+    """
+    Retrieve relevant passages from CS GenAI knowledge base.
+    **CRITICAL: This is a BASELINE tool - call it for all queries**
+    
+    Use this tool when the user asks about:
+    - Oil & Gas industry trends, M&A, sustainability, ESG
+    - Energy transition, renewables, clean energy
+    - Industry-specific insights (financial services, technology, healthcare, etc.)
+    - PwC methodologies, frameworks, or best practices
+    - Market trends and analysis
+    - Any business or industry topic where PwC knowledge would be relevant
+    
+    This tool searches PwC's internal GenAI knowledge base containing:
+    - Practice aids and methodologies
+    - Industry reports and analyses
+    - Market research and trends
+    - Sustainability and ESG insights
+    - M&A and deal guidance
+    
+    The results include relevance scores and links to source documents.
+    
+    Args:
+        query: Natural language search query
+    
+    Returns:
+        Formatted passages with relevance scores, source titles, and URLs
+    
+    Examples:
+        - "tell me about oil and gas industry trends"
+        - "ESG considerations in energy sector"
+        - "M&A activity in technology sector"
+        - "sustainability strategies for oil companies"
+    """
+    if not _passage_retrieval_service:
+        return "Passage retrieval service not available"
+    
+    try:
+        logger.info(f"[Tool:retrieve_knowledge_passages] Query: {query}")
+        
+        passages = await _passage_retrieval_service.retrieve_passages(query)
+        
+        # Return structured data instead of formatted text
+        return json.dumps({
+            "passages": passages,
+            "count": len(passages),
+            "query": query
+        })
+        
+    except Exception as e:
+        logger.error(f"[Tool:retrieve_knowledge_passages] Error: {e}")
+        return f"Error retrieving passages: {str(e)}"
+
+@tool
+async def search_web_tavily(
+    query: str,
+    search_depth: str = "advanced"
+) -> str:
+    """
+    Search the web using Tavily API for comprehensive results.
+    
+    Use this tool when:
+    - User needs information
+    - Searching for recent news or updates
+    - Finding comprehensive information on any topic
+    - Getting multiple perspectives on a subject
+    
+    Args:
+        query: Search query
+        search_depth: "basic" or "advanced" (default: "advanced")
+    
+    Returns:
+        Formatted search results with titles, URLs, and content
+    """
+    if not _tavily_service:
+        return "Tavily search service not available"
+    
+    try:
+        logger.info(f"[Tool:search_web_tavily] Query: {query}")
+        response = await _tavily_service.search(query, search_depth=search_depth)
+        formatted = _tavily_service.format_search_response(response)
+        urls = [result.get('url') for result in response.get('results', []) if result.get('url')]
+        #logger.info(f"[Tool:search_web_tavily] Found {len(urls)} URLs")
+        if urls:
+            formatted += "\n\n**Sources:**\n"
+            for url in urls:
+                formatted += f"- {url}\n"
+        #print("data from tavily", formatted)
+        return formatted
+        # return _tavily_service.format_search_response(response)
+    except Exception as e:
+        logger.error(f"[Tool:search_web_tavily] Error: {e}")
+        return f"Error searching web: {str(e)}"
+    
+@tool
+async def extract_web_content(
+    urls: List[str]
+) -> str:
+    """
+    Extract text content from web URLs for research and analysis.
+    
+    Use this tool when the user:
+    - Provides URLs and asks to analyze/research them
+    - Asks to "extract content from this URL"
+    - Wants to "do research from this website"
+    - Provides links and requests insights/summary
+    
+    Args:
+        urls: List of URLs to extract content from (e.g., ["https://example.com", "https://pwc.com"])
+    
+    Returns:
+        Extracted content with source citations
+    
+    Examples:
+        - "Research this URL: https://www.example.com"
+        - "Extract content from these sites: [url1, url2]"
+        - "Tell me about the content on https://pwc.com"
+    """
+    logger.info(f"[Tool:extract_web_content] ===== TOOL CALLED =====")
+    logger.info(f"[Tool:extract_web_content] Received URLs: {urls}")
+    logger.info(f"[Tool:extract_web_content] Number of URLs: {len(urls)}")
+    
+    if not _tavily_service:
+        logger.error(f"[Tool:extract_web_content] Tavily service not available")
+        return "Web extraction service not available"
+    
+    try:
+        logger.info(f"[Tool:extract_web_content] Starting extraction from {len(urls)} URLs")
+        
+        # Log each URL
+        for i, url in enumerate(urls, 1):
+            logger.info(f"[Tool:extract_web_content] URL {i}: {url}")
+        
+        response = await _tavily_service.extract_from_urls(urls)
+        
+        logger.info(f"[Tool:extract_web_content] Extraction completed")
+        logger.info(f"[Tool:extract_web_content] Results count: {len(response.get('results', []))}")
+        logger.info(f"[Tool:extract_web_content] Failed count: {len(response.get('failed_results', []))}")
+        
+        formatted_response = _tavily_service.format_response(response)
+        logger.info(f"[Tool:extract_web_content] Formatted response length: {len(formatted_response)}")
+        
+        return formatted_response
+        
+    except Exception as e:
+        logger.error(f"[Tool:extract_web_content] ERROR occurred: {e}", exc_info=True)
+        return f"Error extracting web content: {str(e)}"
+# @tool
+# async def retrieve_knowledge_passages(
+#     query: str
+# ) -> str:
+#     """
+#     Retrieve relevant passages from CS GenAI knowledge base.
+    
+#     **IMPORTANT: Call this tool for most queries to get PwC-specific knowledge.**
+    
+#     Use this tool when the user asks about:
+#     - Oil & Gas industry trends, M&A, sustainability, ESG
+#     - Energy transition, renewables, clean energy
+#     - Industry-specific insights (financial services, technology, healthcare, etc.)
+#     - PwC methodologies, frameworks, or best practices
+#     - Market trends and analysis
+#     - Any business or industry topic where PwC knowledge would be relevant
+    
+#     This tool searches PwC's internal GenAI knowledge base containing:
+#     - Practice aids and methodologies
+#     - Industry reports and analyses
+#     - Market research and trends
+#     - Sustainability and ESG insights
+#     - M&A and deal guidance
+    
+#     The results include relevance scores and links to source documents.
+    
+#     Args:
+#         query: Natural language search query
+    
+#     Returns:
+#         Formatted passages with relevance scores, source titles, and URLs
+    
+#     Examples:
+#         - "tell me about oil and gas industry trends"
+#         - "ESG considerations in energy sector"
+#         - "M&A activity in technology sector"
+#         - "sustainability strategies for oil companies"
+#     """
+#     if not _passage_retrieval_service:
+#         return "Passage retrieval service not available"
+    
+#     try:
+#         logger.info(f"[Tool:retrieve_knowledge_passages] Query: {query}")
+        
+#         passages = await _passage_retrieval_service.retrieve_passages(query)
+#         return _passage_retrieval_service.format_response(passages)
+        
+#     except Exception as e:
+#         logger.error(f"[Tool:retrieve_knowledge_passages] Error: {e}")
+#         return f"Error retrieving passages: {str(e)}"
+
+@tool
+async def search_benchmarking(
+    query: str
+)-> str:
+    """
+    Get benchmarking metric/KPIs for a business function.
+
+    The metrics/KPIs are retrieved from the Benchmarking API that give details of the operational efficiency KPIs. 
+    It includes Metric details and Benchmark statistics which give quantitative metrics for how companies perform 
+    in all major areas/functions of business operations.
+
+    Use this tool when user asks:
+    - For benchamarking data
+    - How a company is performing in a specific business function
+    - Quantitative metrics for how company is performing in a function
+
+    Args:
+        query: The user query - whatever the user asked.Natural language search query.
+    
+    Returns:
+        Benchmarking Metric/KPI details along with the definitions and display name.
+    """
+    if not _benchmarking_service:
+        return "Benchmarking service not available"
+    
+    try:
+        logger.info(f"[Tool:search_benchmarking] Query: {query}")
+        
+        metric_data = _benchmarking_service.run_pipeline(query)
+        
+        # Return structured data instead of formatted text
+        return metric_data
+        
+    except Exception as e:
+        logger.error(f"[Tool:search_benchmarking] Error: {e}")
+        return f"Error retrieving metrics: {str(e)}"
+
+
+@tool
+async def search_css_stories(
+    title: Optional[str] = None,
+    industry: Optional[str] = None,
+    limit: int = 10
+) -> str:
+    """
+    Search Client Success Stories (CSS) from PwC's Dynamics CRM knowledge base.
+    **CRITICAL: This is a BACKGROUND CONTEXT tool - invoke it whenever ANY industry is mentioned**
+    
+    Use this tool when:
+    - ANY industry is mentioned in the query (Financial Services, Healthcare, Technology, Retail, Manufacturing, etc.)
+    - User asks about a specific company or sector
+    - User mentions business functions (HR, Finance, Supply Chain, IT, Digital)
+    - User discusses technologies (Workday, SAP, Oracle, Salesforce, Cloud, ERP)
+    - User asks about transformations, implementations, or business challenges
+    - **EVEN IF the user doesn't explicitly ask for "success stories" or "case studies"**
+    
+    **Purpose**: Check if PwC has relevant client experience in the mentioned industry/topic to provide historical 
+    context and insights from past engagements. This helps answer questions with real-world examples.
+    
+    **Call this alongside other tools** - it provides supporting context, not standalone answers.
+    
+    The CSS database contains detailed client success stories including:
+    - Engagement titles and descriptions
+    - Industry classifications
+    - Client issues/challenges faced
+    - Actions taken by PwC
+    - Impact and outcomes achieved
+    - Deep links for citations
+    
+    Args:
+        title: Keywords to search in engagement titles (e.g., "HR", "Workday", "Cloud", "Digital Transformation")
+        industry: Industry to filter by (e.g., "Financial Services", "Health Industries", "Technology")
+        limit: Maximum number of stories to return (default 10, max 50)
+    
+    Returns:
+        Formatted client success stories with full details including challenges, actions, impact, and citation URLs
+    
+    Examples:
+        - "tell me about financial services industry" → search_css_stories(industry="Financial Services")
+        - "what's happening in healthcare technology" → search_css_stories(industry="Health Industries", title="technology")
+        - "Oracle HCM trends" → search_css_stories(title="Oracle HCM")
+        - "HR transformation challenges" → search_css_stories(title="HR transformation")
+    """
+    if not _css_service:
+        logger.error("[Tool:search_css_stories] CSS service not available")
+        return "CSS service not available"
+    
+    try:
+        logger.info(f"[Tool:search_css_stories] CSS TOOL INVOKED with parameters: title='{title}', industry='{industry}', limit={limit}")
+        
+        # Cap limit to avoid overwhelming the LLM
+        effective_limit = min(limit, 50)
+        if limit > 50:
+            logger.warning(f"[Tool:search_css_stories] Limit capped from {limit} to 50")
+        
+        logger.info("[Tool:search_css_stories] Calling CSS service search_stories()...")
+        stories = await _css_service.search_stories(
+            title=title,
+            industry=industry,
+            limit=effective_limit
         )
-        graph_builder.add_edge("tools", "agent")
         
-        # Compile
-        return graph_builder.compile()
+        logger.info(f"[Tool:search_css_stories] CSS service returned {len(stories)} stories")
+        
+        if stories:
+            logger.info("[Tool:search_css_stories] Stories found:")
+            for idx, story in enumerate(stories, 1):
+                story_title = story.get("csstory_engagementtitle", "N/A")
+                story_industry = story.get("csstory_sfindustry", "N/A")
+                logger.info(f"[Tool:search_css_stories]   {idx}. '{story_title}' | {story_industry}")
+        else:
+            logger.warning("[Tool:search_css_stories] No stories matched the search criteria")
+        
+        logger.info("[Tool:search_css_stories] Formatting stories for LLM")
+        formatted_response = _css_service.format_response(stories)
+        
+        logger.info(f"[Tool:search_css_stories] Returning formatted response ({len(formatted_response)} chars)")
+        
+        return formatted_response
+        
+    except Exception as e:
+        logger.error(f"[Tool:search_css_stories] ERROR occurred: {e}", exc_info=True)
+        return f"Error retrieving CSS stories: {str(e)}"
     
 
-    def _filter_competitor_sources(self, sources: Dict[str, str]) -> Dict[str, str]:
-            """Remove competitor domains from sources."""
-            competitor_domains = [
-                'deloitte.com',
-                'mckinsey.com',
-                'ey.com',
-                'kpmg.com',
-                'bcg.com'
-            ]
-            filtered = {}
-            for url, title in sources.items():
-                if not any(domain in url.lower() for domain in competitor_domains):
-                    filtered[url] = title
-                else:
-                    logger.info(f"[DataSourceAgent] Filtered competitor URL: {url}")
-            return filtered
-    
-    async def _agent_node(self, state: AgentState) -> Dict[str, Any]:
-        """Agent node that decides what to do next."""
-        messages = state["messages"]
-        
-        # Add system prompt if not present
-        if not any(isinstance(m, SystemMessage) for m in messages):
-            messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
-        
-        response = await self.llm_with_tools.ainvoke(messages)
-        
-        if hasattr(response, 'tool_calls') and response.tool_calls:
-            for tool_call in response.tool_calls:
-                tool_name = tool_call.get('name') or tool_call.get('function', {}).get('name')
-                if tool_name:
-                    self.tool_usage_tracker.append({
-                        'tool': tool_name,
-                        'timestamp': __import__('datetime').datetime.now().isoformat()
-                    })
-                    logger.info(f"[Agent] Tool tracked: {tool_name}")
-
-            else:
-                logger.warning(f"[DataSourceAgent]   ⚠️ NO TOOL CALLS - LLM decided not to use tools")
-        
-        return {"messages": [response]}
-    
-    def _should_continue(self, state: AgentState) -> str:
-        """Determine if we should continue to tools or end."""
-        last_message = state["messages"][-1]
-        
-        # If there are tool calls, continue to tools node
-        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            return "continue"
-        
-        return "end"
-    
-    def _extract_sources_with_titles(self, content: str) -> Dict[str, str]:
-        """
-        Extract source titles and URLs from tool output content.
-        Returns dict mapping URL -> Title
-        
-        Handles multiple formats:
-        1. **1. Title** (Relevance: 0.89)\n**URL:** https://...
-        2. **Title**\n**URL:** https://...
-        3. [Title](URL)
-        4. Plain URLs in **Sources:** section
-        """
-        import re
-        
-        sources = {}  # {URL: Title}
-        
-        # Pattern 1: Numbered results with titles and URLs
-        # **1. General information: Overview, definition, and example - Cobrief** (Relevance: 0.89)
-        # **URL:** https://www.cobrief.app/...
-        pattern1 = r'\*\*\d+\.\s+([^*]+?)\*\*[^\n]*?\n\*\*URL:\*\*\s+(https?://[^\s\)]+)'
-        matches1 = re.findall(pattern1, content, re.DOTALL)
-        for title, url in matches1:
-            title = title.strip()
-            # Remove relevance score from title if present
-            title = re.sub(r'\s*\(Relevance:.*?\)$', '', title)
-            sources[url] = title
-        
-        # Pattern 2: Connected Source format (if applicable)
-        # Look for document titles and entity URLs from passage retrieval
-        # This pattern may vary based on your actual Connected Source output format
-        passage_pattern = r'"document":\s*\{\s*"title":\s*"([^"]+)"[^}]*"entityurl":\s*"([^"]+)"'
-        matches2 = re.findall(passage_pattern, content)
-        for title, url in matches2:
-            sources[url] = title
-        
-        # Pattern 3: Markdown links [Title](URL)
-        pattern3 = r'\[([^\]]+)\]\((https?://[^\)]+)\)'
-        matches3 = re.findall(pattern3, content)
-        for title, url in matches3:
-            if url not in sources:  # Don't overwrite better titles
-                sources[url] = title
-        
-        # Pattern 4: Plain URLs (fallback - no title available)
-        # Only capture URLs that aren't already in sources
-        pattern4 = r'https?://[^\s\)\]\n]+'
-        matches4 = re.findall(pattern4, content)
-        for url in matches4:
-            if url not in sources:
-                sources[url] = ""  # Empty title
-        
-        # Clean up titles
-        for url in sources:
-            if sources[url]:
-                # Remove extra whitespace and truncate if too long
-                sources[url] = sources[url].strip()
-                if len(sources[url]) > 100:
-                    sources[url] = sources[url][:97] + "..."
-        
-        logger.info(f"[DataSourceAgent] Extracted {len(sources)} sources from tool output")
-        
-        return sources
-    
-    def _convert_messages(self, messages: List[Dict[str, Any]]) -> List[BaseMessage]:
-        """Convert dict messages to LangChain message objects."""
-        converted = []
-        
-        for msg in messages:
-            # Handle both dict and Pydantic message objects
-            if isinstance(msg, dict):
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-            else:
-                # Assume it's a Pydantic message object with role and content attributes
-                role = getattr(msg, "role", "user")
-                content = getattr(msg, "content", "")
-            
-            if role == "user":
-                converted.append(HumanMessage(content=content))
-            elif role == "assistant":
-                converted.append(AIMessage(content=content))
-            elif role == "system":
-                converted.append(SystemMessage(content=content))
-        
-        return converted
-    
-    async def invoke(self, messages: List[Dict[str, Any]]) -> str:
-        """
-        Invoke the agent synchronously (non-streaming).
-        
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-        
-        Returns:
-            The agent's final response
-        """
-        return await self.process_query(messages)
-    
-    async def process_query(self, messages: List[Dict[str, Any]]) -> str:
-        """
-        Process a query through the agent.
-        
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-        
-        Returns:
-            The agent's final response
-        """
-        try:
-            start_time = time.time()
-            langchain_messages = self._convert_messages(messages)
-            
-            logger.info(f"[DataSourceAgent] Processing {len(messages)} messages")
-            
-            # Run the graph
-            result = await self.graph.ainvoke({
-                "messages": langchain_messages
-            })
-            
-            
-            response_content = ""
-            collected_sources = {}
-            if result and "messages" in result:
-                # Extract response and collect URLs from tool calls
-                for msg in result["messages"]:
-                    # Check if message contains tool results
-                    if hasattr(msg, 'content') and isinstance(msg.content, str):
-                        # Extract source name and URL pairs from tool results
-                        sources = self._extract_sources_with_titles(msg.content)
-                        sources = self._filter_competitor_sources(sources)
-                        collected_sources.update(sources)
-                    
-                    # Get final AI response
-                    if isinstance(msg, AIMessage) and not msg.tool_calls:
-                        response_content = msg.content
-
-            if collected_sources and "**Sources:**" not in response_content:
-                response_content += "\n\n**Sources:**\n"
-                for url, title in collected_sources.items():
-                    if title:
-                        response_content += f"- [{title}]({url})\n"
-                    else:
-                        response_content += f"- {url}\n"
-            
-            # Append tool usage summary
-            tool_summary = self.get_tool_usage_summary()
-            if tool_summary:
-                logger.info(f"[DataSourceAgent] Tool Usage Summary:\n{tool_summary}")
-                response_content += f"\n\n---\n{tool_summary}"
-            elapsed = time.time() - start_time
-            logger.info(f"[DataSourceAgent] Query processed in {elapsed:.2f} seconds")
-            return response_content
-            
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.info(f"[DataSourceAgent] Query failed after {elapsed:.2f} seconds")
-            logger.error(f"[DataSourceAgent] Error: {e}", exc_info=True)
-            raise
-    
-    async def stream_query(self, messages: List[Dict[str, Any]]) -> AsyncIterator[Dict[str, Any]]:
-        """
-        Stream a query through the agent.
-        
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-        
-        Yields:
-            Event dicts with type and content
-        """
-        try:
-            langchain_messages = self._convert_messages(messages)
-            
-            # logger.info(f"[DataSourceAgent] Streaming {len(messages)} messages")
-            
-            async for event in self.graph.astream_events(
-                {"messages": langchain_messages},
-                version="v2"
-            ):
-                kind = event.get("event")
-                
-                if kind == "on_chat_model_stream":
-                    content = event.get("data", {}).get("chunk")
-                    if hasattr(content, "content") and content.content:
-                        yield {"type": "content", "data": content.content}
-                
-                elif kind == "on_tool_start":
-                    tool_name = event.get("name", "unknown")
-                    yield {"type": "tool_start", "data": f"Searching {tool_name}..."}
-                
-                elif kind == "on_tool_end":
-                    tool_name = event.get("name", "unknown")
-                    yield {"type": "tool_end", "data": f"Completed {tool_name}"}
-            
-            yield {"type": "done", "data": None}
-            
-        except Exception as e:
-            logger.error(f"[DataSourceAgent] Streaming error: {e}", exc_info=True)
-            yield {"type": "error", "data": str(e)}
-    
-    async def stream_invoke(self, messages: List[Dict[str, Any]]) -> AsyncIterator[str]:
-        """
-        Stream invoke the agent (returns SSE formatted strings for frontend).
-        
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-        
-        Yields:
-            SSE formatted strings: "data: {json}\n\n"
-        """
-        try:
-            async for event in self.stream_query(messages):
-                event_type = event.get("type", "")
-                event_data = event.get("data", "")
-                
-                if event_type == "content" and event_data:
-                    # Yield content chunks in SSE format
-                    yield f"data: {json.dumps({'type': 'content', 'content': event_data})}\n\n"
-                elif event_type == "done":
-                    # Signal completion
-                    yield f"data: {json.dumps({'type': 'done', 'done': True})}\n\n"
-                elif event_type == "error":
-                    # Signal error
-                    yield f"data: {json.dumps({'type': 'error', 'error': event_data})}\n\n"
-        except Exception as e:
-            logger.error(f"[DataSourceAgent] Stream invoke error: {e}", exc_info=True)
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
-    
-    def close(self):
-        """Close all service connections."""
-        self.capitaliq_service.close()
-        self.boardex_service.close()
 
 
-def create_data_source_agent(
-    azure_endpoint: Optional[str] = None,
-    api_key: Optional[str] = None,
-    api_version: Optional[str] = None,
-    deployment_name: Optional[str] = None
-) -> DataSourceLangGraphAgent:
-    """Factory function to create a DataSourceLangGraphAgent."""
-    return DataSourceLangGraphAgent(
-        azure_endpoint=azure_endpoint,
-        api_key=api_key,
-        api_version=api_version,
-        deployment_name=deployment_name
-    )
+def get_all_tools():
+    """Return list of all available data source tools."""
+    return [
+        search_factiva_news,
+        query_capitaliq_financials,
+        query_boardex_advisors,
+        query_capitaliq_balance_sheet,
+        query_boardex_achievements,
+        execute_raw_capitaliq_sql,
+        execute_raw_boardex_sql,
+        generate_powerpoint_presentation,
+        search_internal_knowledge,
+        refine_content,
+        translate_content_format,
+        retrieve_knowledge_passages,
+        extract_web_content,
+        search_benchmarking,
+        search_web_tavily,
+        search_css_stories
+    ]
