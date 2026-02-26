@@ -104,14 +104,14 @@ class CommercialHubService:
                                 "offering_name": item.get("offering_name") or item.get("name") or item.get("title"),
                             })
             else:
-                # Dynamic pagination: walk pages until an empty page
+                # Dynamic pagination: stop when offerings are [] or no offering_id found on page
                 current_page = 1
                 while True:
                     items = await self.fetch_offerings_page(client, current_page)
-                    if not items:
+                    if not items:  # empty [] = no more pages, stop
                         break
 
-                    fetched_pages.append(current_page)
+                    added_this_page = 0
                     for item in items:
                         if not isinstance(item, dict):
                             continue
@@ -122,7 +122,11 @@ class CommercialHubService:
                                 "page": current_page,
                                 "offering_name": item.get("offering_name") or item.get("name") or item.get("title"),
                             })
+                            added_this_page += 1
 
+                    if added_this_page == 0:  # no offering_id found on this page, stop
+                        break
+                    fetched_pages.append(current_page)
                     current_page += 1
 
         id_total = len(offering_list)
