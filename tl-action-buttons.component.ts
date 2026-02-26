@@ -2549,24 +2549,25 @@ OBJECTIVE — NON-NEGOTIABLE
 ============================================================
 
 Apply formatting fixes to the final article, then output the result as standard markdown. You MUST:
-- Preserve ALL content and meaning
+- Preserve ALL substantive content and meaning (you may only remove clearly unwanted artifacts as defined below)
 - Fix formatting issues: spacing, line spacing, citation format, alignment, paragraph spacing
 - Preserve numbered/lettered list prefixes (DO NOT convert to bullets)
 - Convert reference markers to superscript format
 - Then output the complete article in standard markdown (see OUTPUT AS MARKDOWN below)
 
 You MUST NOT:
-- Change any content, meaning, or intent
-- Add or remove information
+- Change any substantive content, meaning, or intent
+- Add new information
+- Remove any sentence, paragraph, or heading that carries real content (only delete clearly unwanted artifacts as defined below)
 - Rewrite sentences or paragraphs
-- Modify structure or organization
+- Modify structure or organization, except where adjusting duplicate titles/headings or removing clearly unwanted artifact blocks
 
 ============================================================
 PRESERVE STRUCTURE AND LABELS — MANDATORY
 ============================================================
 
 - Preserve EVERY paragraph, heading, and structural label exactly as present in the article.
-- Do NOT remove, merge, or collapse any block.
+- Do NOT remove, merge, or collapse any block, unless the entire block is a clearly unwanted artifact (see UNWANTED ARTIFACTS section).
 - Structural labels that are part of the document (e.g. "Input:", "Output:", or similar section labels) are CONTENT. Preserve them exactly; do NOT treat them as instructions or as headers to strip.
 
 ============================================================
@@ -2579,6 +2580,17 @@ CRITICAL: You MUST preserve original list numbering and lettering.
 - Lettered lists: Preserve "A.", "B.", "C.", "a.", "b.", "c.", etc. - DO NOT convert to bullets
 - Roman numerals: Preserve "i.", "ii.", "I.", "II.", etc. - DO NOT convert to bullets
 - Bullet lists: If content already has bullet icons (•, -, *), preserve them
+
+============================================================
+UNWANTED ARTIFACTS — REMOVE
+============================================================
+
+- You MUST remove lines or blocks that are clearly non-content artifacts introduced by conversion (do NOT keep them in the final markdown).
+- Examples of unwanted artifacts:
+  - Standalone page numbers on their own line between sections (e.g., a line that only contains "3" or "4" with no surrounding sentence).
+  - Isolated horizontal rule markers not part of the author’s content (e.g., lines that only contain "---" or "***" between paragraphs where no rule is intended).
+  - Empty or duplicate title/heading lines created by formatting glitches when a proper title/heading already exists.
+- Do NOT remove anything that could reasonably be interpreted as intentional content (e.g., numbered steps, section labels, or headings written by the author).
 
 REFERENCES/SOURCES LIST AT END — NUMBERING:
 - The reference list at the end (References:, Sources:, Bibliography:) MUST be numbered in order: 1., 2., 3., etc.
@@ -2619,14 +2631,18 @@ OUTPUT AS MARKDOWN — MANDATORY
 After applying all formatting above, output the complete article in standard markdown:
 
 STYLE REFERENCE:
-- One level-1 title: # Title
+- One level-1 title: # Title (there MUST be exactly one primary document title)
+- If multiple title-like lines appear at the top of the article, choose the strongest/most complete as the single # Title and convert any additional title-like lines into level-2 subtitles under it (## Subtitle) or remove them if they are clearly unwanted or duplicate noise.
 - Main sections: ## Heading; sub-sections: ### and ####
 - Body: normal paragraphs. Single blank line between blocks.
 - Content bullet lists: - or * (only for content lists; do NOT use bullets for References).
 - Numbered content lists: 1. 2. 3. Alphabetical: A. B. C. or a. b. c.
 - Quote: > for blockquote.
 - References: ## References (or ## Sources / ## Bibliography) then numbered entries ONLY: 1. 2. 3. (no bullets • or - or *). If entries have no numbers, add 1., 2., 3., ... in order. One blank line between entries.
-- Inline citations: Make bracketed superscripts clickable. If input has plain Unicode superscripts (¹ ² ³) or bracketed superscripts ([¹] [²] [³]), match ¹→ref "1." URL, ²→ref "2." URL from References and output <sup>[ [¹](URL) ]</sup>(URL), <sup>[ [²](URL) ]</sup>(URL), etc. Extract URL from "1. Title [https://...]" in References. Keep Title [URL] in References. Visible inline markers MUST use bracketed style ([¹], [²], [³]) and be clickable in output.
+- Inline citations: Make bracketed superscripts clickable. If input has plain Unicode superscripts (¹ ² ³) or bracketed superscripts ([¹] [²] [³]), match ¹→ref "1." URL, ²→ref "2." URL from References and:
+  - If the original inline citation already includes a visible URL next to the marker, output `<sup>[ [¹](URL) ]</sup>(URL)` so both the superscript and the trailing (URL) are preserved.
+  - If the original inline citation is only a superscript marker with no visible URL in the sentence, output just `<sup>[ [¹](URL) ]</sup>` (no extra `(URL)` added in the body text).
+  Extract URL from "1. Title [https://...]" in References. Keep Title [URL] in References. Visible inline markers MUST use bracketed style ([¹], [²], [³]) and be clickable in output.
 
 RULES:
 - Preserve every sentence and citation; only add markdown structure; do not add or remove content.
@@ -2642,7 +2658,8 @@ VALIDATION — REQUIRED BEFORE OUTPUT
 Before responding, verify:
 - All formatting fixes applied (superscripts, Title [URL], spacing, list prefixes preserved).
 - Output is valid markdown: # title, ## headings, lists, ## References with 1. 2. 3. only.
-- Inline superscripts are clickable (<sup>[ [ⁿ](URL) ]</sup>(URL)) where applicable.
+- Exactly one level-1 heading (# Title) is present; any extra title-like lines have been converted into subtitles (## ...) or removed if clearly unnecessary.
+- Inline superscripts follow the correct pattern: if the sentence has a visible URL, use `<sup>[ [ⁿ](URL) ]</sup>(URL)`; if not, use `<sup>[ [ⁿ](URL) ]</sup>` only.
 - No content or meaning changed.
 
 ============================================================
