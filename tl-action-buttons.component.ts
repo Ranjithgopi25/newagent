@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 BASE_URL = os.environ.get("COMMERCIAL_BASE_URL")
 SUBSCRIPTION_KEY = os.environ.get("COMMERCIAL_KEY")
 SUBSCRIPTION_VALUE = os.environ.get("COMMERCIAL_VALUE")
-TOTAL_PAGES = 4
 
 
 def get_llm_service() -> LLMService:
@@ -72,17 +71,29 @@ class CommercialHubService:
         pages: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Fetch offering list across pages 1–4 in parallel.
+        Fetch offering list across pages.
         Returns list of {offering_id, page, ...} from list API (no detail call).
         """
-        page_numbers = pages if pages is not None else list(range(1, TOTAL_PAGES + 1))
+        offering_list: List[Dict[str, Any]] = []
 
         async with httpx.AsyncClient() as client:
-            page_results = await asyncio.gather(
-                *[self.fetch_offerings_page(client, page_no) for page_no in page_numbers]
-            )
+            if pages is not None:
+                page_numbers = pages
+                page_results = await asyncio.gather(
+                    *[self.fetch_offerings_page(client, page_no) for page_no in page_numbers]
+                )
+            else:
+                page_numbers: List[int] = []
+                page_results: List[List[Dict[str, Any]]] = []
+                current_page = 1
+                while True:
+                    items = await self.fetch_offerings_page(client, current_page)
+                    if not items:
+                        break
+                    page_numbers.append(current_page)
+                    page_results.append(items)
+                    current_page += 1
 
-        offering_list: List[Dict[str, Any]] = []
         for current_page, items in zip(page_numbers, page_results):
             for item in items:
                 if not isinstance(item, dict):
