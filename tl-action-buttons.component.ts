@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 BASE_URL = os.environ.get("COMMERCIAL_BASE_URL")
 SUBSCRIPTION_KEY = os.environ.get("COMMERCIAL_KEY")
 SUBSCRIPTION_VALUE = os.environ.get("COMMERCIAL_VALUE")
+TOTAL_PAGES = 4
 
 
 def get_llm_service() -> LLMService:
@@ -36,7 +37,6 @@ class CommercialHubService:
         self.subscription_key = SUBSCRIPTION_KEY
         self.subscription_value = SUBSCRIPTION_VALUE
         self.request_timeout = timeout
-        self.total_pages: Optional[int] = None
 
     def build_request_headers(self) -> Dict[str, str]:
         return {
@@ -72,29 +72,17 @@ class CommercialHubService:
         pages: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Fetch offering list across pages.
+        Fetch offering list across pages 1–4 in parallel.
         Returns list of {offering_id, page, ...} from list API (no detail call).
         """
-        offering_list: List[Dict[str, Any]] = []
+        page_numbers = pages if pages is not None else list(range(1, TOTAL_PAGES + 1))
 
         async with httpx.AsyncClient() as client:
-            if pages is not None:
-                page_numbers = pages
-                page_results = await asyncio.gather(
-                    *[self.fetch_offerings_page(client, page_no) for page_no in page_numbers]
-                )
-            else:
-                page_numbers: List[int] = []
-                page_results: List[List[Dict[str, Any]]] = []
-                current_page = 1
-                while True:
-                    items = await self.fetch_offerings_page(client, current_page)
-                    if not items:
-                        break
-                    page_numbers.append(current_page)
-                    page_results.append(items)
-                    current_page += 1
+            page_results = await asyncio.gather(
+                *[self.fetch_offerings_page(client, page_no) for page_no in page_numbers]
+            )
 
+        offering_list: List[Dict[str, Any]] = []
         for current_page, items in zip(page_numbers, page_results):
             for item in items:
                 if not isinstance(item, dict):
@@ -106,14 +94,6 @@ class CommercialHubService:
                         "page": current_page,
                         "offering_name": item.get("offering_name") or item.get("name") or item.get("title"),
                     })
-
-        # Infer total pages based on the last non-empty page we saw.
-        # Example: if page 5 returns offerings == [], then total_pages = 4.
-        if pages is not None:
-            self.total_pages = max(pages) if page_results else 0
-        else:
-            self.total_pages = page_numbers[-1] if page_numbers else 0
-
         return offering_list
 
     async def fetch_offering_detail(self, offering_id: str) -> Optional[Dict[str, Any]]:
