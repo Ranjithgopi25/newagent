@@ -100,6 +100,7 @@ class CommercialHubService:
                     items = await self.fetch_offerings_page(client, page_no)
                     if not items:
                         break
+                    added = 0
                     for item in items:
                         if not isinstance(item, dict):
                             continue
@@ -110,6 +111,9 @@ class CommercialHubService:
                                 "page": page_no,
                                 "offering_name": item.get("offering_name") or item.get("name") or item.get("title"),
                             })
+                            added += 1
+                    if added == 0:
+                        break
                     page_no += 1
 
         return offering_list
