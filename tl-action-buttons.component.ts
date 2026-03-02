@@ -1,7 +1,7 @@
 from pathlib import Path
 import logging
 from io import BytesIO
-from typing import Optional
+from typing import Optional, Callable
 import pandas as pd
 from fastapi import HTTPException
 from mailmerge import MailMerge
@@ -132,28 +132,7 @@ def shrink_on_wrap_only(
                 for p in cell.paragraphs:
                     shrink_if_wrapping(p)
 
-    # Also shrink paragraphs that live inside text boxes (shapes).
-    # python-docx does not expose these via doc.paragraphs/doc.tables,
-    # so we walk the XML tree and look for w:p elements whose ancestors
-    # include a txbxContent node, then wrap them as Paragraph objects.
-    body_element = doc.element.body
-    for p_elem in body_element.iter():
-        # localname check without hard-coded namespace URL
-        if not p_elem.tag.endswith("}p"):
-            continue
-
-        parent = p_elem.getparent()
-        inside_textbox = False
-        while parent is not None:
-            if parent.tag.endswith("}txbxContent"):
-                inside_textbox = True
-                break
-            parent = parent.getparent()
-
-        if not inside_textbox:
-            continue
-
-        shrink_if_wrapping(Paragraph(p_elem, None))
+    _apply_to_textbox_paragraphs(doc, shrink_if_wrapping)
 
     output = BytesIO()
     doc.save(output)
@@ -170,6 +149,34 @@ def text_length_score(text: str) -> float:
         else:
             score += 1
     return score
+
+
+def _apply_to_textbox_paragraphs(
+    doc: Document,
+    fn: Callable[[Paragraph], None],
+) -> None:
+    """
+    Apply a callback to all paragraphs that live inside Word text boxes
+    (txbxContent). This is needed because python-docx does not surface
+    these via doc.paragraphs or doc.tables.
+    """
+    body_element = doc.element.body
+    for p_elem in body_element.iter():
+        if not p_elem.tag.endswith("}p"):
+            continue
+
+        parent = p_elem.getparent()
+        inside_textbox = False
+        while parent is not None:
+            if parent.tag.endswith("}txbxContent"):
+                inside_textbox = True
+                break
+            parent = parent.getparent()
+
+        if not inside_textbox:
+            continue
+
+        fn(Paragraph(p_elem, None))
 
 def shrink_merge_name_tag(docx_bytes: bytes,records: list,font_config: dict,cell_limit: int,min_font: int = 12) -> bytes:    
 
@@ -245,6 +252,9 @@ def shrink_merge_name_tag(docx_bytes: bytes,records: list,font_config: dict,cell
                 for p in cell.paragraphs:
                     progressive_shrink(p)
 
+    # text boxes (e.g., right-hand name tags implemented as shapes)
+    _apply_to_textbox_paragraphs(doc, progressive_shrink)
+
     output = BytesIO()
     doc.save(output)
     output.seek(0)
@@ -310,6 +320,9 @@ def shrink_merge_name_tag_combined(
             for cell in row.cells:
                 for p in cell.paragraphs:
                     progressive_shrink(p)
+
+    # Process paragraphs inside text boxes as well
+    _apply_to_textbox_paragraphs(doc, progressive_shrink)
 
     output = BytesIO()
     doc.save(output)
