@@ -127,34 +127,33 @@ def shrink_on_wrap_only(
             for cell in row.cells:
                 for p in cell.paragraphs:
                     shrink_if_wrapping(p)
-
     # Also shrink paragraphs that live inside text boxes (shapes).
-    # python-docx does not expose these via doc.paragraphs/doc.tables,
-    # so we walk the XML tree and look for w:p elements whose ancestors
-    # include a txbxContent node, then wrap them as Paragraph objects.
-    body_element = doc.element.body
-    for p_elem in body_element.iter():
-        # localname check without hard-coded namespace URL
-        if not p_elem.tag.endswith("}p"):
-            continue
-
-        parent = p_elem.getparent()
-        inside_textbox = False
-        while parent is not None:
-            if parent.tag.endswith("}txbxContent"):
-                inside_textbox = True
-                break
-            parent = parent.getparent()
-
-        if not inside_textbox:
-            continue
-
-        shrink_if_wrapping(Paragraph(p_elem, None))
+    for p in iter_textbox_paragraphs(doc):
+        shrink_if_wrapping(p)
 
     output = BytesIO()
     doc.save(output)
     output.seek(0)
     return output.read()
+
+
+def iter_textbox_paragraphs(doc: Document):
+    """
+    Yield Paragraph objects for any w:p inside a txbxContent (Word text box).
+    Uses local-name checks only; no schema URLs.
+    """
+    body_element = doc.element.body
+    for p_elem in body_element.iter():
+        if not p_elem.tag.endswith("}p"):
+            continue
+
+        parent = p_elem.getparent()
+        while parent is not None:
+            if parent.tag.endswith("}txbxContent"):
+                yield Paragraph(p_elem, doc)
+                break
+            parent = parent.getparent()
+
 
 def text_length_score(text: str) -> float:
     score = 0
@@ -241,6 +240,10 @@ def shrink_merge_name_tag(docx_bytes: bytes,records: list,font_config: dict,cell
                 for p in cell.paragraphs:
                     progressive_shrink(p)
 
+    # text boxes (name tags in shapes)
+    for p in iter_textbox_paragraphs(doc):
+        progressive_shrink(p)
+
     output = BytesIO()
     doc.save(output)
     output.seek(0)
@@ -306,6 +309,10 @@ def shrink_merge_name_tag_combined(
             for cell in row.cells:
                 for p in cell.paragraphs:
                     progressive_shrink(p)
+
+    # Process text boxes (paragraphs inside shapes)
+    for p in iter_textbox_paragraphs(doc):
+        progressive_shrink(p)
 
     output = BytesIO()
     doc.save(output)
@@ -510,7 +517,7 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
                 "Last_Name": 42,
             },
             "default_font": 42,
-            "min_font": 18,
+            "min_font": 22,
             "cell_limit": 800,
         },
         "banner_template_01": {
