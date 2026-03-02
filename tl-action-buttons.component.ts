@@ -1,4 +1,3 @@
-
 from pathlib import Path
 import logging
 from io import BytesIO
@@ -137,9 +136,8 @@ def shrink_on_wrap_only(
     # python-docx does not expose these via doc.paragraphs/doc.tables,
     # so we walk the XML tree and look for w:p elements whose ancestors
     # include a txbxContent node, then wrap them as Paragraph objects.
-    # Walk the whole document XML tree (body, headers, footers, shapes)
-    root_element = doc.element
-    for p_elem in root_element.iter():
+    body_element = doc.element.body
+    for p_elem in body_element.iter():
         # localname check without hard-coded namespace URL
         if not p_elem.tag.endswith("}p"):
             continue
@@ -247,27 +245,6 @@ def shrink_merge_name_tag(docx_bytes: bytes,records: list,font_config: dict,cell
                 for p in cell.paragraphs:
                     progressive_shrink(p)
 
-    # Also handle paragraphs inside text boxes (shapes), so that
-    # name tags rendered using text boxes get the same autosizing.
-    # Walk the whole document XML tree (body, headers, footers, shapes)
-    root_element = doc.element
-    for p_elem in root_element.iter():
-        if not p_elem.tag.endswith("}p"):
-            continue
-
-        parent = p_elem.getparent()
-        inside_textbox = False
-        while parent is not None:
-            if parent.tag.endswith("}txbxContent"):
-                inside_textbox = True
-                break
-            parent = parent.getparent()
-
-        if not inside_textbox:
-            continue
-
-        progressive_shrink(Paragraph(p_elem, None))
-
     output = BytesIO()
     doc.save(output)
     output.seek(0)
@@ -294,7 +271,8 @@ def shrink_merge_name_tag_combined(
         # Detect fields present in this paragraph
         for record in records:
             for field, value in record.items():
-                if value and value.strip() in text and field in font_config:
+                if value and text.strip() == value.strip() and field in font_config:
+                # if value and value.strip() in text and field in font_config:
                     
                     matched_fields.append(field)
 
@@ -333,27 +311,6 @@ def shrink_merge_name_tag_combined(
             for cell in row.cells:
                 for p in cell.paragraphs:
                     progressive_shrink(p)
-
-    # Also process paragraphs inside text boxes (shapes), so that
-    # both left and right name tags in templates that use text boxes
-    # get the same autosizing behaviour.
-    body_element = doc.element.body
-    for p_elem in body_element.iter():
-        if not p_elem.tag.endswith("}p"):
-            continue
-
-        parent = p_elem.getparent()
-        inside_textbox = False
-        while parent is not None:
-            if parent.tag.endswith("}txbxContent"):
-                inside_textbox = True
-                break
-            parent = parent.getparent()
-
-        if not inside_textbox:
-            continue
-
-        progressive_shrink(Paragraph(p_elem, None))
 
     output = BytesIO()
     doc.save(output)
