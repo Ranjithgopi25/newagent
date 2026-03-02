@@ -7,11 +7,8 @@ from fastapi import HTTPException
 from mailmerge import MailMerge
 from docx import Document
 from docx.shared import Pt
+from docx.text.paragraph import Paragraph
 from math import floor
-
-
-
-
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +127,29 @@ def shrink_on_wrap_only(
             for cell in row.cells:
                 for p in cell.paragraphs:
                     shrink_if_wrapping(p)
+
+    # Also shrink paragraphs that live inside text boxes (shapes).
+    # python-docx does not expose these via doc.paragraphs/doc.tables,
+    # so we walk the XML tree and look for w:p elements whose ancestors
+    # include a txbxContent node, then wrap them as Paragraph objects.
+    body_element = doc.element.body
+    for p_elem in body_element.iter():
+        # localname check without hard-coded namespace URL
+        if not p_elem.tag.endswith("}p"):
+            continue
+
+        parent = p_elem.getparent()
+        inside_textbox = False
+        while parent is not None:
+            if parent.tag.endswith("}txbxContent"):
+                inside_textbox = True
+                break
+            parent = parent.getparent()
+
+        if not inside_textbox:
+            continue
+
+        shrink_if_wrapping(Paragraph(p_elem, None))
 
     output = BytesIO()
     doc.save(output)
