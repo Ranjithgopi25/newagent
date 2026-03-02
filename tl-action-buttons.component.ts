@@ -1,3 +1,4 @@
+
 from pathlib import Path
 import logging
 from io import BytesIO
@@ -80,9 +81,44 @@ def shrink_on_wrap_only(
     cell_limit: int,
     min_font: int,
     default_font: Optional[int] = None,
+    font_config: Optional[dict] = None,
+    records: Optional[list] = None,
 ) -> bytes:
 
     doc = Document(BytesIO(docx_bytes))
+
+    def resolve_base_size(text: str, paragraph) -> Optional[float]:
+        """
+        Determine the base font size for this paragraph.
+
+        - If font_config and records are provided, try to map the text back
+          to merge fields and use their configured font sizes.
+        - Otherwise, fall back to the first run's font size or default_font.
+        """
+        # Field-aware path (used for table tents with font_config)
+        if font_config and records:
+            matched_fields = []
+            for record in records:
+                for field, value in record.items():
+                    if (
+                        value
+                        and value.strip() in text
+                        and field in font_config
+                    ):
+                        matched_fields.append(field)
+
+            if matched_fields:
+                return max(font_config[field] for field in matched_fields)
+
+        # Fallback to actual run font / template default
+        if paragraph.runs:
+            first_run = paragraph.runs[0]
+
+            # 🔥 DO NOT EXIT if font.size is None
+            if first_run.font.size:
+                return first_run.font.size.pt
+
+        return default_font if default_font is not None else 45
 
     def shrink_if_wrapping(paragraph):
         text = paragraph.text.strip()
@@ -92,36 +128,41 @@ def shrink_on_wrap_only(
         if not paragraph.runs:
             return
 
-        first_run = paragraph.runs[0]
-
-        # 🔥 DO NOT EXIT if font.size is None
-        if first_run.font.size:
-            current_size = first_run.font.size.pt
-        else:
-            # Fallback to template-configured table tent font (or legacy default)
-            current_size = default_font if default_font is not None else 45
+        base_size = resolve_base_size(text, paragraph)
+        if base_size is None:
+            return
 
         score = text_length_score(text)
-        estimated_width = score * current_size
+        estimated_width = score * base_size
 
         logger.info("----- SHRINK DEBUG -----")
         logger.info(f"Text: {text}")
-        logger.info(f"Current font size: {current_size}")
+        logger.info(f"Base font size: {base_size}")
         logger.info(f"Score: {score}")
         logger.info(f"Estimated width: {estimated_width}")
         logger.info(f"Cell limit: {cell_limit}")
         logger.info("------------------------")
 
-        if estimated_width > cell_limit:
+        # If it fits, keep at base_size for field-mapped paragraphs,
+        # otherwise leave the original font untouched.
+        if estimated_width <= cell_limit:
+            if font_config and records:
+                # For field-mapped content we want to enforce the configured base size.
+                for run in paragraph.runs:
+                    if run.text.strip():
+                        run.font.size = Pt(base_size)
+            return
 
-            new_size = floor(cell_limit / score)
-            new_size = max(new_size, min_font)
+        # Needs shrinking – only shrink, never grow beyond base_size
+        new_size = floor(cell_limit / score)
+        new_size = min(new_size, base_size)
+        new_size = max(new_size, min_font)
 
-            logger.info(f"Shrinking '{text}' from {current_size} → {new_size}")
+        logger.info(f"Shrinking '{text}' from {base_size} → {new_size}")
 
-            for run in paragraph.runs:
-                if run.text.strip():
-                    run.font.size = Pt(new_size)
+        for run in paragraph.runs:
+            if run.text.strip():
+                run.font.size = Pt(new_size)
 
     for p in doc.paragraphs:
         shrink_if_wrapping(p)
@@ -476,9 +517,9 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
             "Company\n**Mandatory field"
         ],
         "font_config": {
-                "First_Name": 40,
-                "Last_Name": 24,
-                "Company_Name": 14,
+                "First_name_Mandatory_field": 48,
+                "Last_name_Mandatory_field": 32,
+                "Company_Mandatory_field": 18,
             },
             "min_font": 14,
             "cell_limit": 1500,
@@ -648,6 +689,8 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
                 config["cell_limit"],
                 config.get("min_font", 25),
                 default_font,
+                font_config,
+                records if font_config else None,
             )
     except Exception as e:
         logger.warning(f"Post processing failed, returning original file: {e}")
