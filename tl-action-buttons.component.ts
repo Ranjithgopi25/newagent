@@ -1,4 +1,3 @@
-
 from pathlib import Path
 import logging
 from io import BytesIO
@@ -137,9 +136,8 @@ def shrink_on_wrap_only(
     # python-docx does not expose these via doc.paragraphs/doc.tables,
     # so we walk the XML tree and look for w:p elements whose ancestors
     # include a txbxContent node, then wrap them as Paragraph objects.
-    # Walk the whole document XML tree (body, headers, footers, shapes)
-    root_element = doc.element
-    for p_elem in root_element.iter():
+    body_element = doc.element.body
+    for p_elem in body_element.iter():
         # localname check without hard-coded namespace URL
         if not p_elem.tag.endswith("}p"):
             continue
@@ -188,24 +186,24 @@ def shrink_merge_name_tag(docx_bytes: bytes,records: list,font_config: dict,cell
         if not text:
             return
 
-        # Detect which field this text belongs to (by substring match)
-        matched_field = None
+        # detect which field this text belongs to
+        current_size = None
         for record in records:
             for field, value in record.items():
-                if value and value.strip() in text and field in font_config:
-                    matched_field = field
+                if value and text.strip() == value.strip() and field in font_config:
+                    current_size = font_config[field]
                     break
-            if matched_field:
+            if current_size:
                 break
 
-        if not matched_field:
+        if not current_size:
             return
+        
 
-        current_size = font_config[matched_field]
         score = text_length_score(text)
 
-        # Special handling for Event_Name (fixed to use the matched field)
-        if matched_field == "Event_Name":
+        # Special handling for Event_Name
+        if field == "Event_Name":
             base_size = current_size  # should be 9
             if score * base_size > cell_limit:
                 size = 8
@@ -216,6 +214,8 @@ def shrink_merge_name_tag(docx_bytes: bytes,records: list,font_config: dict,cell
                 if run.text.strip():
                     run.font.size = Pt(size)
             return
+
+        score = text_length_score(text)
 
         if score * current_size <= cell_limit:
             for run in paragraph.runs:
@@ -244,27 +244,6 @@ def shrink_merge_name_tag(docx_bytes: bytes,records: list,font_config: dict,cell
             for cell in row.cells:
                 for p in cell.paragraphs:
                     progressive_shrink(p)
-
-    # Also handle paragraphs inside text boxes (shapes), so that
-    # name tags rendered using text boxes get the same autosizing.
-    # Walk the whole document XML tree (body, headers, footers, shapes)
-    root_element = doc.element
-    for p_elem in root_element.iter():
-        if not p_elem.tag.endswith("}p"):
-            continue
-
-        parent = p_elem.getparent()
-        inside_textbox = False
-        while parent is not None:
-            if parent.tag.endswith("}txbxContent"):
-                inside_textbox = True
-                break
-            parent = parent.getparent()
-
-        if not inside_textbox:
-            continue
-
-        progressive_shrink(Paragraph(p_elem, None))
 
     output = BytesIO()
     doc.save(output)
@@ -331,29 +310,6 @@ def shrink_merge_name_tag_combined(
             for cell in row.cells:
                 for p in cell.paragraphs:
                     progressive_shrink(p)
-
-    # Also process paragraphs inside text boxes (shapes), so that
-    # both left and right name tags in templates that use text boxes
-    # get the same autosizing behaviour. We walk the whole document
-    # tree (body, headers, footers, shapes) for consistency with the
-    # other shrink helpers.
-    root_element = doc.element
-    for p_elem in root_element.iter():
-        if not p_elem.tag.endswith("}p"):
-            continue
-
-        parent = p_elem.getparent()
-        inside_textbox = False
-        while parent is not None:
-            if parent.tag.endswith("}txbxContent"):
-                inside_textbox = True
-                break
-            parent = parent.getparent()
-
-        if not inside_textbox:
-            continue
-
-        progressive_shrink(Paragraph(p_elem, None))
 
     output = BytesIO()
     doc.save(output)
