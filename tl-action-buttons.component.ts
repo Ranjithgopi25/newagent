@@ -486,12 +486,12 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
                 "Last_Name\n**Mandatory field",
             ],
             "font_config": {
-                "First_Name": 45,
-                "Last_Name": 45,
+                "First_Name": 42,
+                "Last_Name": 42,
             },
-            "default_font": 45,
-            "min_font": 25,
-            "cell_limit": 940,
+            "default_font": 42,
+            "min_font": 18,
+            "cell_limit": 800,
         },
         "banner_template_01": {
         "required_column": "Industry\n**Mandatory field",
