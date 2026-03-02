@@ -157,11 +157,12 @@ def _apply_to_textbox_paragraphs(
 ) -> None:
     """
     Apply a callback to all paragraphs that live inside Word text boxes
-    (txbxContent). This is needed because python-docx does not surface
-    these via doc.paragraphs or doc.tables.
+    (txbxContent) anywhere in the document (body, headers, shapes, etc.).
+    This is needed because python-docx does not surface these via
+    doc.paragraphs or doc.tables.
     """
-    body_element = doc.element.body
-    for p_elem in body_element.iter():
+    root_element = doc.element
+    for p_elem in root_element.iter():
         if not p_elem.tag.endswith("}p"):
             continue
 
