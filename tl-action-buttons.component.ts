@@ -357,6 +357,22 @@ def shrink_merge_name_tag_combined(
                 for p in cell.paragraphs:
                     progressive_shrink(p)
 
+    # Also process paragraphs inside text boxes (shapes)
+    body_element = doc.element.body
+    for p_elem in body_element.iter():
+        if not p_elem.tag.endswith("}p"):
+            continue
+        parent = p_elem.getparent()
+        inside_textbox = False
+        while parent is not None:
+            if parent.tag.endswith("}txbxContent"):
+                inside_textbox = True
+                break
+            parent = parent.getparent()
+        if not inside_textbox:
+            continue
+        progressive_shrink(Paragraph(p_elem, None))
+
     output = BytesIO()
     doc.save(output)
     output.seek(0)
