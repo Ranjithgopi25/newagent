@@ -81,9 +81,20 @@ def shrink_on_wrap_only(
     cell_limit: int,
     min_font: int,
     default_font: Optional[int] = None,
+    records: Optional[list] = None,
+    company_max_font: Optional[int] = None,
 ) -> bytes:
 
     doc = Document(BytesIO(docx_bytes))
+
+    def is_company_paragraph(text: str) -> bool:
+        if not records or not text:
+            return False
+        for record in records:
+            company_val = record.get("Company_Mandatory_field") or record.get("Company_Name") or ""
+            if company_val and (text.strip() == company_val.strip() or company_val.strip() in text.strip()):
+                return True
+        return False
 
     def shrink_if_wrapping(paragraph):
         text = paragraph.text.strip()
@@ -102,6 +113,10 @@ def shrink_on_wrap_only(
             # Fallback to template-configured table tent font (or legacy default)
             current_size = default_font if default_font is not None else 45
 
+        # Table tent 1: keep company smaller than name (e.g. name 26 → company max 18)
+        if company_max_font is not None and is_company_paragraph(text):
+            current_size = min(current_size, company_max_font)
+
         score = text_length_score(text)
         estimated_width = score * current_size
 
@@ -117,12 +132,20 @@ def shrink_on_wrap_only(
 
             new_size = floor(cell_limit / score)
             new_size = max(new_size, min_font)
+            if company_max_font is not None and is_company_paragraph(text):
+                new_size = min(new_size, company_max_font)
 
             logger.info(f"Shrinking '{text}' from {current_size} → {new_size}")
 
             for run in paragraph.runs:
                 if run.text.strip():
                     run.font.size = Pt(new_size)
+        else:
+            # Fits: still enforce company max so company never larger than name
+            if company_max_font is not None and is_company_paragraph(text) and current_size > company_max_font:
+                for run in paragraph.runs:
+                    if run.text.strip():
+                        run.font.size = Pt(company_max_font)
 
     for p in doc.paragraphs:
         shrink_if_wrapping(p)
@@ -482,7 +505,8 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
                 "Company_Name": 14,
             },
             "min_font": 14,
-            "cell_limit": 1500,
+            "cell_limit": 700,
+            "company_max_font": 18,
     },
         "table_tent_template_02": {
         "required_column": "First name\n**Mandatory field",
@@ -650,6 +674,8 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
                 config["cell_limit"],
                 config.get("min_font", 25),
                 default_font,
+                records=records if template_id == "table_tent_template_01" else None,
+                company_max_font=config.get("company_max_font"),
             )
     except Exception as e:
         logger.warning(f"Post processing failed, returning original file: {e}")
