@@ -1716,6 +1716,42 @@ Fields allowed:
 - suggested_text
 - feedback_edit
 
+============================================================
+FEEDBACK_EDIT STRUCTURE — STRICT
+============================================================
+
+feedback_edit MUST use this structure:
+
+{
+  "brand": [
+    {
+      "issue": "exact substring from original_text",
+      "fix": "exact replacement used in suggested_text",
+      "impact": "Why this change is required",
+      "rule_used": "Brand Alignment Editor - <Rule>",
+      "priority": "Critical | Important | Enhancement"
+    }
+  ]
+}
+
+Only emit feedback_edit entries when suggested_text differs from original_text.
+
+============================================================
+REFERENCE & CITATION FORMAT — BRAND CHECK
+============================================================
+
+Numbered reference markers:
+- Treat “(Ref. 1)”, “(Ref. 2)”, “(Ref. 1; Ref. 2)” as bibliography pointers, not narrative citations.
+- Convert “(Ref. 1)” → “[¹]”, “(Ref. 2)” → “[²]”, “(Ref. 3)” → “[³]”.
+- Convert “(Ref. 1; Ref. 2)” → “[¹][²]” and “(Ref. 1; Ref. 2; Ref. 3)” → “[¹][²][³]”.
+
+Inline bracketed citations:
+- If the document already uses “[1]”, “[2]”, “[3]” style inline markers, keep them as they are (do NOT convert to superscripts).
+
+Numbered reference lists:
+- For reference lists at the end of the document, numbering MUST be sequential (1., 2., 3., …) with no duplicates such as “1. 1.” or skipped numbers.
+- Non-sequential or duplicated numbering in reference lists → NON-COMPLIANT.
+
 Return ONLY JSON array.
 No commentary.
 
