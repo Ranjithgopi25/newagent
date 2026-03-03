@@ -82,19 +82,10 @@ def shrink_on_wrap_only(
     min_font: int,
     default_font: Optional[int] = None,
     records: Optional[list] = None,
-    company_max_font: Optional[int] = None,
 ) -> bytes:
 
     doc = Document(BytesIO(docx_bytes))
-
-    def is_company_paragraph(text: str) -> bool:
-        if not records or not text:
-            return False
-        for record in records:
-            company_val = record.get("Company_Mandatory_field") or record.get("Company_Name") or ""
-            if company_val and (text.strip() == company_val.strip() or company_val.strip() in text.strip()):
-                return True
-        return False
+    shrunk_sizes = []
 
     def shrink_if_wrapping(paragraph):
         text = paragraph.text.strip()
@@ -113,10 +104,6 @@ def shrink_on_wrap_only(
             # Fallback to template-configured table tent font (or legacy default)
             current_size = default_font if default_font is not None else 45
 
-        # Table tent 1: keep company smaller than name (e.g. name 26 → company max 18)
-        if company_max_font is not None and is_company_paragraph(text):
-            current_size = min(current_size, company_max_font)
-
         score = text_length_score(text)
         estimated_width = score * current_size
 
@@ -132,20 +119,38 @@ def shrink_on_wrap_only(
 
             new_size = floor(cell_limit / score)
             new_size = max(new_size, min_font)
-            if company_max_font is not None and is_company_paragraph(text):
-                new_size = min(new_size, company_max_font)
+            shrunk_sizes.append(new_size)
 
             logger.info(f"Shrinking '{text}' from {current_size} → {new_size}")
 
             for run in paragraph.runs:
                 if run.text.strip():
                     run.font.size = Pt(new_size)
-        else:
-            # Fits: still enforce company max so company never larger than name
-            if company_max_font is not None and is_company_paragraph(text) and current_size > company_max_font:
-                for run in paragraph.runs:
-                    if run.text.strip():
-                        run.font.size = Pt(company_max_font)
+
+    def is_company_paragraph(text: str) -> bool:
+        if not records or not text:
+            return False
+        for record in records:
+            company_val = record.get("Company_Mandatory_field") or record.get("Company_Name") or ""
+            if company_val and (text.strip() == company_val.strip() or company_val.strip() in text.strip()):
+                return True
+        return False
+
+    def cap_company_if_name_shrunk(paragraph):
+        text = paragraph.text.strip()
+        if not text or not paragraph.runs or not shrunk_sizes or not records:
+            return
+        if not is_company_paragraph(text):
+            return
+        first_run = paragraph.runs[0]
+        current = first_run.font.size.pt if first_run.font.size else (default_font if default_font is not None else 45)
+        min_name_size = min(shrunk_sizes)
+        new_size = min(current, min_name_size - 2)
+        new_size = max(new_size, min_font)
+        if new_size < current:
+            for run in paragraph.runs:
+                if run.text.strip():
+                    run.font.size = Pt(new_size)
 
     for p in doc.paragraphs:
         shrink_if_wrapping(p)
@@ -157,15 +162,10 @@ def shrink_on_wrap_only(
                     shrink_if_wrapping(p)
 
     # Also shrink paragraphs that live inside text boxes (shapes).
-    # python-docx does not expose these via doc.paragraphs/doc.tables,
-    # so we walk the XML tree and look for w:p elements whose ancestors
-    # include a txbxContent node, then wrap them as Paragraph objects.
     body_element = doc.element.body
     for p_elem in body_element.iter():
-        # localname check without hard-coded namespace URL
         if not p_elem.tag.endswith("}p"):
             continue
-
         parent = p_elem.getparent()
         inside_textbox = False
         while parent is not None:
@@ -173,11 +173,32 @@ def shrink_on_wrap_only(
                 inside_textbox = True
                 break
             parent = parent.getparent()
-
         if not inside_textbox:
             continue
-
         shrink_if_wrapping(Paragraph(p_elem, None))
+
+    # If any name was shrunk, reduce company so it stays below name size
+    if records and shrunk_sizes:
+        for p in doc.paragraphs:
+            cap_company_if_name_shrunk(p)
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        cap_company_if_name_shrunk(p)
+        for p_elem in body_element.iter():
+            if not p_elem.tag.endswith("}p"):
+                continue
+            parent = p_elem.getparent()
+            inside_textbox = False
+            while parent is not None:
+                if parent.tag.endswith("}txbxContent"):
+                    inside_textbox = True
+                    break
+                parent = parent.getparent()
+            if not inside_textbox:
+                continue
+            cap_company_if_name_shrunk(Paragraph(p_elem, None))
 
     output = BytesIO()
     doc.save(output)
@@ -506,7 +527,6 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
             },
             "min_font": 14,
             "cell_limit": 700,
-            "company_max_font": 18,
     },
         "table_tent_template_02": {
         "required_column": "First name\n**Mandatory field",
@@ -675,7 +695,6 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
                 config.get("min_font", 25),
                 default_font,
                 records=records if template_id == "table_tent_template_01" else None,
-                company_max_font=config.get("company_max_font"),
             )
     except Exception as e:
         logger.warning(f"Post processing failed, returning original file: {e}")
