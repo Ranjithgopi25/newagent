@@ -1638,13 +1638,13 @@ Numbered reference markers (Ref. N) — EXCLUDED
 
 REFERENCE FORMAT CONVERSION — MANDATORY
 ------------------------------------------------------------
-Conversion rules:
+Conversion rules (INLINE CITATIONS ONLY — do NOT change reference list entries):
 - "(Ref. 1)" → "[¹]"
 - "(Ref. 2)" → "[²]"
 - "(Ref. 3)" → "[³]"
-- "[1]" → "[¹]" (bracket format)
-- "[2]" → "[²]" (bracket format)
-- "[3]" → "[³]" (bracket format)
+- "[1]" → "[¹]" (bracket format, when used inline in a sentence)
+- "[2]" → "[²]" (bracket format, when used inline in a sentence)
+- "[3]" → "[³]" (bracket format, when used inline in a sentence)
 - "(Ref. 1; Ref. 2)" → "[¹][²]" (two separate bracketed superscripts)
 - "(Ref. 1, Ref. 2, Ref. 3)" → "[¹][²][³]"
 - "(Ref. 1; Ref. 2; Ref. 3)" → "[¹][²][³]" (three separate bracketed superscripts)
@@ -1664,6 +1664,7 @@ IMPORTANT:
 - For multiple references, combine superscripts or use comma-separated format for clarity
 - NEVER remove URLs or any text that appears after citation markers
 - URLs following citation markers must be wrapped in parentheses: (https://...) or (url)
+- Do NOT convert "[1]", "[2]", "[3]", etc. when they are part of a References/Sources/Bibliography list entry (for example at the start of a line listing the full source)
 
 FAILURE CONDITIONS:
 - If an author-year parenthetical citation remains in suggested_text → NON-COMPLIANT
@@ -2233,13 +2234,13 @@ REFERENCES/SOURCES LIST AT END — NUMBERING:
 REFERENCE FORMAT CONVERSION — MANDATORY
 ============================================================
 
-Conversion rules:
+Conversion rules (INLINE CITATIONS ONLY — do NOT change reference list entries):
 - "(Ref. 1)" → "[¹]"
 - "(Ref. 2)" → "[²]"
 - "(Ref. 3)" → "[³]"
-- "[1]" → "[¹]" (bracket format)
-- "[2]" → "[²]" (bracket format)
-- "[3]" → "[³]" (bracket format)
+- "[1]" → "[¹]" (bracket format, when used inline in a sentence)
+- "[2]" → "[²]" (bracket format, when used inline in a sentence)
+- "[3]" → "[³]" (bracket format, when used inline in a sentence)
 - "(Ref. 1; Ref. 2)" → "[¹][²]" (two separate bracketed superscripts)
 - "(Ref. 1, Ref. 2, Ref. 3)" → "[¹][²][³]"
 - "(Ref. 1; Ref. 2; Ref. 3)" → "[¹][²][³]" (three separate bracketed superscripts)
@@ -2269,6 +2270,7 @@ IMPORTANT:
 - Place superscripts immediately after the referenced text (no space before superscript)
 - For multiple references, combine superscripts or use comma-separated format for clarity
 - NEVER remove URLs or any text that appears after citation markers
+- Do NOT convert "[1]", "[2]", "[3]", etc. when they are part of a References/Sources/Bibliography list entry (for example at the start of a line listing the full source)
 
 ============================================================
 CITATION LINK FORMAT CONVERSION — MANDATORY
@@ -2450,14 +2452,15 @@ REFERENCES/SOURCES LIST AT END — NUMBERING:
 REFERENCE FORMAT CONVERSION — MANDATORY
 ============================================================
 
-Conversion rules:
+Conversion rules (INLINE CITATIONS ONLY — do NOT change reference list entries):
 - "(Ref. 1)" → "[¹]"
-- "[1]" → "[¹]"
+- "[1]" → "[¹]" (when used inline in a sentence)
 - "(Ref. 1; Ref. 2)" → "[¹][²]" (two separate bracketed superscripts)
 - "(Ref. 1, Ref. 2, Ref. 3)" → "[¹][²][³]"
 - "(Ref. 1; Ref. 2; Ref. 3)" → "[¹][²][³]" (three separate bracketed superscripts)
 Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
 - Preserve URLs; only convert the marker. For URL after marker: wrap URL in parentheses.
+- Do NOT convert "[1]", "[2]", "[3]", etc. when they are part of a References/Sources/Bibliography list entry (for example at the start of a line listing the full source)
 
 ============================================================
 CITATION LINK FORMAT CONVERSION — MANDATORY
