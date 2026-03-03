@@ -1,4 +1,3 @@
-
 from pathlib import Path
 import logging
 from io import BytesIO
@@ -206,20 +205,6 @@ def shrink_on_wrap_only(
     doc.save(output)
     output.seek(0)
     return output.read()
-
-
-def shrink_name_tag_on_wrap_only(
-    docx_bytes: bytes,
-    cell_limit: int,
-    min_font: int,
-    default_font: Optional[int] = None,
-) -> bytes:
-    """
-    Helper for name tags (template 2):
-    - Uses whatever font is set in the DOCX as the base size.
-    - Only shrinks lines whose estimated width exceeds the cell_limit.
-    """
-    return shrink_on_wrap_only(docx_bytes, cell_limit, min_font, default_font, records=None)
 
 def text_length_score(text: str) -> float:
     score = 0
@@ -672,25 +657,12 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
     try:
 
         if template_id == "name_tag_template_02":
-            # Use DOCX font sizes for first/last name and only shrink
-            # when the line is too long, similar to table tents.
-            default_font: Optional[int] = None
-            font_config = config.get("font_config")
-            if font_config:
-                try:
-                    default_font = max(font_config.values())
-                except Exception:
-                    default_font = None
-
-            if default_font is None:
-                # Reasonable fallback if font_config is missing or invalid
-                default_font = config.get("default_font", 32)
-
-            merged_bytes = shrink_name_tag_on_wrap_only(
+            merged_bytes = shrink_merge_name_tag_combined(
                 merged_bytes,
+                records,
+                config["font_config"],
                 config["cell_limit"],
-                config.get("min_font", 12),
-                default_font,
+                config.get("min_font", 12)
             )
 
         elif template_id.startswith("name_tag"):
