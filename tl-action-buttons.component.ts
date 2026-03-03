@@ -1,3 +1,4 @@
+
 from pathlib import Path
 import logging
 from io import BytesIO
@@ -632,14 +633,15 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
         elif template_id.startswith("table_tent"):
             print("tempid:", template_id)
 
+            # Same behavior for tent 1 and tent 3: use DOCX font, only shrink when line too long
             default_font: Optional[int] = None
-            font_config = config.get("font_config")
-            if font_config:
-                try:
-                    default_font = max(font_config.values())
-                except Exception:
-                    default_font = None
-
+            if template_id != "table_tent_template_01":
+                font_config = config.get("font_config")
+                if font_config:
+                    try:
+                        default_font = max(font_config.values())
+                    except Exception:
+                        default_font = None
             if default_font is None:
                 default_font = config.get("default_font", 45)
 
