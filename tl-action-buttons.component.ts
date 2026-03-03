@@ -76,6 +76,27 @@ def validate_template_columns(df: pd.DataFrame, config: dict, template_id: str):
         )
 
 
+def _all_paragraphs(doc):
+    """Yield all paragraphs in doc (body, tables, textboxes)."""
+    for p in doc.paragraphs:
+        yield p
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    yield p
+    body = doc.element.body
+    for p_elem in body.iter():
+        if not p_elem.tag.endswith("}p"):
+            continue
+        parent = p_elem.getparent()
+        while parent is not None:
+            if parent.tag.endswith("}txbxContent"):
+                yield Paragraph(p_elem, None)
+                break
+            parent = parent.getparent()
+
+
 def shrink_on_wrap_only(
     docx_bytes: bytes,
     cell_limit: int,
@@ -83,127 +104,79 @@ def shrink_on_wrap_only(
     default_font: Optional[int] = None,
     records: Optional[list] = None,
 ) -> bytes:
-
     doc = Document(BytesIO(docx_bytes))
-    shrunk_sizes = []
+    default_pt = default_font if default_font is not None else 45
+
+    name_keys = ("First_name_Mandatory_field", "Last_name_Mandatory_field", "First_Name", "Last_Name")
+    company_keys = ("Company_Mandatory_field", "Company_Name")
+    name_index = {}
+    company_index = {}
+    if records:
+        for idx, r in enumerate(records):
+            for k in name_keys:
+                v = (r.get(k) or "").strip()
+                if v:
+                    name_index.setdefault(v, set()).add(idx)
+            for k in company_keys:
+                v = (r.get(k) or "").strip()
+                if v:
+                    company_index.setdefault(v, set()).add(idx)
+
+    shrunk_name_sizes = {}
+
+    def get_role(text):
+        s = (text or "").strip()
+        if not s or not records:
+            return None, None
+        if s in name_index:
+            return next(iter(name_index[s])), "name"
+        if s in company_index:
+            return next(iter(company_index[s])), "company"
+        return None, None
 
     def shrink_if_wrapping(paragraph):
         text = paragraph.text.strip()
-        if not text:
+        if not text or not paragraph.runs:
             return
-
-        if not paragraph.runs:
-            return
-
-        first_run = paragraph.runs[0]
-
-        # 🔥 DO NOT EXIT if font.size is None
-        if first_run.font.size:
-            current_size = first_run.font.size.pt
-        else:
-            # Fallback to template-configured table tent font (or legacy default)
-            current_size = default_font if default_font is not None else 45
-
+        r0 = paragraph.runs[0]
+        pt = r0.font.size.pt if r0.font.size else default_pt
         score = text_length_score(text)
-        estimated_width = score * current_size
-
-        logger.info("----- SHRINK DEBUG -----")
-        logger.info(f"Text: {text}")
-        logger.info(f"Current font size: {current_size}")
-        logger.info(f"Score: {score}")
-        logger.info(f"Estimated width: {estimated_width}")
-        logger.info(f"Cell limit: {cell_limit}")
-        logger.info("------------------------")
-
-        if estimated_width > cell_limit:
-
-            new_size = floor(cell_limit / score)
-            new_size = max(new_size, min_font)
-            shrunk_sizes.append(new_size)
-
-            logger.info(f"Shrinking '{text}' from {current_size} → {new_size}")
-
-            for run in paragraph.runs:
-                if run.text.strip():
-                    run.font.size = Pt(new_size)
-
-    def is_company_paragraph(text: str) -> bool:
-        if not records or not text:
-            return False
-        for record in records:
-            company_val = record.get("Company_Mandatory_field") or record.get("Company_Name") or ""
-            if company_val and (text.strip() == company_val.strip() or company_val.strip() in text.strip()):
-                return True
-        return False
-
-    def cap_company_if_name_shrunk(paragraph):
-        text = paragraph.text.strip()
-        if not text or not paragraph.runs or not shrunk_sizes or not records:
+        if score * pt <= cell_limit:
             return
-        if not is_company_paragraph(text):
-            return
-        first_run = paragraph.runs[0]
-        current = first_run.font.size.pt if first_run.font.size else (default_font if default_font is not None else 45)
-        min_name_size = min(shrunk_sizes)
-        new_size = min(current, min_name_size - 2)
-        new_size = max(new_size, min_font)
-        if new_size < current:
-            for run in paragraph.runs:
-                if run.text.strip():
-                    run.font.size = Pt(new_size)
+        new_pt = max(min_font, floor(cell_limit / score))
+        for run in paragraph.runs:
+            if run.text.strip():
+                run.font.size = Pt(new_pt)
+        ridx, role = get_role(text)
+        if ridx is not None and role == "name":
+            shrunk_name_sizes[ridx] = min(shrunk_name_sizes.get(ridx, new_pt), new_pt)
 
-    for p in doc.paragraphs:
+    for p in _all_paragraphs(doc):
         shrink_if_wrapping(p)
 
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    shrink_if_wrapping(p)
+    if records and shrunk_name_sizes:
+        def adjust_company(paragraph):
+            text = paragraph.text.strip()
+            if not text or not paragraph.runs:
+                return
+            ridx, role = get_role(text)
+            if role != "company" or ridx not in shrunk_name_sizes:
+                return
+            target = shrunk_name_sizes[ridx]
+            pt = paragraph.runs[0].font.size.pt if paragraph.runs[0].font.size else default_pt
+            if pt <= target:
+                return
+            new_pt = max(min_font, target - 2)
+            for run in paragraph.runs:
+                if run.text.strip():
+                    run.font.size = Pt(new_pt)
+        for p in _all_paragraphs(doc):
+            adjust_company(p)
 
-    # Also shrink paragraphs that live inside text boxes (shapes).
-    body_element = doc.element.body
-    for p_elem in body_element.iter():
-        if not p_elem.tag.endswith("}p"):
-            continue
-        parent = p_elem.getparent()
-        inside_textbox = False
-        while parent is not None:
-            if parent.tag.endswith("}txbxContent"):
-                inside_textbox = True
-                break
-            parent = parent.getparent()
-        if not inside_textbox:
-            continue
-        shrink_if_wrapping(Paragraph(p_elem, None))
-
-    # If any name was shrunk, reduce company so it stays below name size
-    if records and shrunk_sizes:
-        for p in doc.paragraphs:
-            cap_company_if_name_shrunk(p)
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for p in cell.paragraphs:
-                        cap_company_if_name_shrunk(p)
-        for p_elem in body_element.iter():
-            if not p_elem.tag.endswith("}p"):
-                continue
-            parent = p_elem.getparent()
-            inside_textbox = False
-            while parent is not None:
-                if parent.tag.endswith("}txbxContent"):
-                    inside_textbox = True
-                    break
-                parent = parent.getparent()
-            if not inside_textbox:
-                continue
-            cap_company_if_name_shrunk(Paragraph(p_elem, None))
-
-    output = BytesIO()
-    doc.save(output)
-    output.seek(0)
-    return output.read()
+    out = BytesIO()
+    doc.save(out)
+    out.seek(0)
+    return out.read()
 
 def text_length_score(text: str) -> float:
     score = 0
