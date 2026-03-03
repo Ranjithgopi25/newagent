@@ -1,3 +1,4 @@
+
 BASE_OUTPUT_FORMAT = """
 ### BASE OUTPUT FORMAT (MANDATORY)
 
@@ -1633,48 +1634,37 @@ Correct:
 Incorrect:
 - “We redesign pricing so we can deliver better services.”
 - “We provide solutions so you can succeed.”
------------------------------------------------------------
-Numbered reference markers (Ref. N) — EXCLUDED
+Numbered reference markers (Ref. N) — LEAVE UNCHANGED
 ------------------------------------------------------------
 
 “(Ref. 1)”, “(Ref. 2)”, “(Ref. 1; Ref. 2)” are bibliography pointers, NOT parenthetical citations.
-- Do NOT replace them with narrative attribution. Do NOT remove them.
-- Convert them to superscript format as specified in the REFERENCE FORMAT CONVERSION section below.
 
-REFERENCE FORMAT CONVERSION — MANDATORY
+You MUST:
+- Preserve their existing format exactly in suggested_text.
+- Keep any bracketed numeric markers such as "[1]" or "[2]" exactly as written.
+
+You MUST NOT:
+- Convert "(Ref. N)" or "[N]" into superscripts.
+- Add new superscript reference markers.
+- Insert or modify any inline reference numbers that were not present in the original_text.
+
+CITATION STYLE — OUT OF SCOPE
 ------------------------------------------------------------
-Conversion rules (INLINE CITATIONS ONLY — do NOT change reference list entries):
-- "(Ref. 1)" → "[¹]"
-- "(Ref. 2)" → "[²]"
-- "(Ref. 3)" → "[³]"
-- "[1]" → "[¹]" (bracket format, when used inline in a sentence)
-- "[2]" → "[²]" (bracket format, when used inline in a sentence)
-- "[3]" → "[³]" (bracket format, when used inline in a sentence)
-- "(Ref. 1; Ref. 2)" → "[¹][²]" (two separate bracketed superscripts)
-- "(Ref. 1, Ref. 2, Ref. 3)" → "[¹][²][³]"
-- "(Ref. 1; Ref. 2; Ref. 3)" → "[¹][²][³]" (three separate bracketed superscripts)
 
-Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
+Citation formatting (including author–year parenthetical citations and numbered references) is OUT OF SCOPE for the Brand Alignment Editor.
 
-Examples:
-- "According to research (Ref. 1), the findings show..." → "According to research[¹], the findings show..."
-- "Multiple studies (Ref. 1; Ref. 2) indicate..." → "Multiple studies[¹][²] indicate..."
-- "The data (Ref. 1, Ref. 2, Ref. 3) supports..." → "The data[¹][²][³] supports..."
+You MUST:
+- Preserve all citation text and formatting exactly as it appears in original_text.
+- Leave author-year citations such as "(Smith, 2020)" unchanged.
 
-IMPORTANT:
-- Remove parentheses and "Ref." text
-- Preserve square brackets from "[1]" format; convert the number inside the brackets to a superscript
-- Convert numbers to superscripts
-- Place superscripts immediately after the referenced text (no space before superscript)
-- For multiple references, combine superscripts or use comma-separated format for clarity
-- NEVER remove URLs or any text that appears after citation markers
-- URLs following citation markers must be wrapped in parentheses: (https://...) or (url)
-- Do NOT convert "[1]", "[2]", "[3]", etc. when they are part of a References/Sources/Bibliography list entry (for example at the start of a line listing the full source)
+You MUST NOT:
+- Rewrite citations into narrative form.
+- Introduce or reorder reference numbers.
+- Add, remove, or reformat any citation markers, bibliographies, or reference lists.
 
 FAILURE CONDITIONS:
-- If an author-year parenthetical citation remains in suggested_text → NON-COMPLIANT
-- If an author-year citation is removed but the author/organization is not named → NON-COMPLIANT
-- Replacing or removing numbered ref markers “(Ref. N)” or superscript refs with narrative attribution → NON-COMPLIANT
+- If any citation text (including "(Ref. N)", "[N]", or author-year formats) is altered in suggested_text when it was compliant in original_text → NON-COMPLIANT.
+- If new citation markers or superscripts are added that do not exist in original_text → NON-COMPLIANT.
 - Silent removal of citations is FORBIDDEN
 ============================================================
 BRAND VOCABULARY ENFORCEMENT — BINARY
@@ -1768,17 +1758,20 @@ CITATION GOVERNANCE
 ============================================================
 
 PROHIBITED:
-- Author-year parenthetical citations.
+- Vague attribution (“some studies suggest”) when a specific source is already given in the original_text.
 
 REQUIRED:
-- Narrative attribution including author and/or organization.
-- Include publication title if present.
+- Preserve whatever citation style the author used (including author-year parenthetical citations, numbered markers, or superscripts).
+- If you flag a citation risk in feedback_edit, you MUST still keep the citation wording and format in suggested_text unless it is factually wrong.
 
 Permitted:
 - Numbered reference markers.
 - Superscript numerals.
+- Author-year parenthetical citations.
 
-No vague attribution (“some studies suggest”).
+You MUST NOT:
+- Rewrite citations solely to change format (for example, converting "(Smith, 2020)" into narrative attribution).
+- Add or remove citations that were not requested by the author.
 
 If bibliography exists:
 - Alphabetical
