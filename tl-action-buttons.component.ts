@@ -346,32 +346,52 @@ def shrink_merge_name_tag_combined(
             if run.text.strip():
                 run.font.size = Pt(size)
 
-    # Process paragraphs
-    for p in doc.paragraphs:
-        progressive_shrink(p)
-
-    # Process tables
-    for table in doc.tables:
+    def process_table_paragraphs(table):
+        """Process all paragraphs in a table and in any nested tables."""
         for row in table.rows:
             for cell in row.cells:
                 for p in cell.paragraphs:
                     progressive_shrink(p)
+                for nested in cell.tables:
+                    process_table_paragraphs(nested)
 
-    # Also process paragraphs inside text boxes (shapes)
-    body_element = doc.element.body
-    for p_elem in body_element.iter():
-        if not p_elem.tag.endswith("}p"):
-            continue
-        parent = p_elem.getparent()
-        inside_textbox = False
-        while parent is not None:
-            if parent.tag.endswith("}txbxContent"):
-                inside_textbox = True
-                break
-            parent = parent.getparent()
-        if not inside_textbox:
-            continue
-        progressive_shrink(Paragraph(p_elem, None))
+    # Process paragraphs
+    for p in doc.paragraphs:
+        progressive_shrink(p)
+
+    # Process tables (including nested tables, so both columns are covered)
+    for table in doc.tables:
+        process_table_paragraphs(table)
+
+    def process_textbox_paragraphs_in_body(body_element):
+        """Run progressive_shrink on every paragraph inside text boxes (VML or DrawingML)."""
+        for p_elem in body_element.iter():
+            if not p_elem.tag.endswith("}p"):
+                continue
+            parent = p_elem.getparent()
+            inside_textbox = False
+            while parent is not None:
+                tag = parent.tag
+                if tag.endswith("}txbxContent") or tag.endswith("}txbx"):
+                    inside_textbox = True
+                    break
+                parent = parent.getparent()
+            if not inside_textbox:
+                continue
+            progressive_shrink(Paragraph(p_elem, None))
+
+    # Process text boxes in main document body
+    process_textbox_paragraphs_in_body(doc.element.body)
+
+    # Process text boxes in headers and footers (name tag 2 may place second column there)
+    for section in doc.sections:
+        for story_name in ("header", "footer"):
+            story = getattr(section, story_name, None)
+            if story is None:
+                continue
+            body_el = getattr(story, "_element", None) or getattr(story, "_body", None)
+            if body_el is not None:
+                process_textbox_paragraphs_in_body(body_el)
 
     output = BytesIO()
     doc.save(output)
