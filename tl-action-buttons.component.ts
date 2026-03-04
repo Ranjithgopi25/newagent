@@ -8,6 +8,7 @@ from mailmerge import MailMerge
 from docx import Document
 from docx.shared import Pt, Inches
 from docx.text.paragraph import Paragraph
+from docx.oxml.ns import qn
 from math import floor
 
 
@@ -493,6 +494,28 @@ def group_records_for_two_column_layout(records: list) -> list:
     return paired_records
 
 
+def remove_trailing_page_break(docx_bytes: bytes) -> bytes:
+    """Remove last page break only when the page after it has no content."""
+    doc = Document(BytesIO(docx_bytes))
+    body = doc.element.body
+    elements = list(body.iter())
+    last_br, last_br_index = None, -1
+    for i, elem in enumerate(elements):
+        if elem.tag == qn("w:br") and elem.get(qn("w:type")) == "page":
+            last_br, last_br_index = elem, i
+    has_content = any(
+        desc.tag == qn("w:t") and (desc.text or "").strip()
+        for elem in elements[last_br_index + 1 :]
+        for desc in elem.iter()
+    )
+    if last_br and not has_content:
+        last_br.getparent().remove(last_br)
+    output = BytesIO()
+    doc.save(output)
+    output.seek(0)
+    return output.read()
+
+
 def apply_section_margins(docx_bytes: bytes, margin_inches: dict[str, float]) -> bytes:
     """Set section margins (inches). Dict keys: left, right, top, bottom."""
     doc = Document(BytesIO(docx_bytes))
@@ -557,7 +580,7 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
         },
         "min_font": 7,
         "cell_limit": 380,
-        "page_margins_inches": {"left": 0.8, "top": 0.4, "right": 0.5, "bottom": 0.3},
+        "page_margins_inches": {"left": 0.8, "top": 0.5, "right": 0.5, "bottom": 0.5},
     },
             "name_tag_template_02": {
             "required_column": "First name\n**Mandatory field",
@@ -812,5 +835,9 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
             )
     except Exception as e:
         logger.warning(f"Post processing failed, returning original file: {e}")
+
+    # Remove trailing page break that causes an extra empty page (e.g. 2 pages content -> 3rd blank page)
+    if template_id.startswith("name_tag"):
+        merged_bytes = remove_trailing_page_break(merged_bytes)
 
     return merged_bytes
