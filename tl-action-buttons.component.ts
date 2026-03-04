@@ -6,7 +6,7 @@ import pandas as pd
 from fastapi import HTTPException
 from mailmerge import MailMerge
 from docx import Document
-from docx.shared import Pt
+from docx.shared import Pt, Inches
 from docx.text.paragraph import Paragraph
 from math import floor
 
@@ -492,6 +492,25 @@ def group_records_for_two_column_layout(records: list) -> list:
 
     return paired_records
 
+
+def apply_section_margins(docx_bytes: bytes, margin_inches: dict[str, float]) -> bytes:
+    """Set section margins (inches). Dict keys: left, right, top, bottom."""
+    doc = Document(BytesIO(docx_bytes))
+    for section in doc.sections:
+        if "left" in margin_inches:
+            section.left_margin = Inches(margin_inches["left"])
+        if "right" in margin_inches:
+            section.right_margin = Inches(margin_inches["right"])
+        if "top" in margin_inches:
+            section.top_margin = Inches(margin_inches["top"])
+        if "bottom" in margin_inches:
+            section.bottom_margin = Inches(margin_inches["bottom"])
+    output = BytesIO()
+    doc.save(output)
+    output.seek(0)
+    return output.read()
+
+
 def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: str) -> bytes:
     # ----------------------------------------------------
     # Read Excel
@@ -537,7 +556,8 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
             "Event_Name": 9,
         },
         "min_font": 7,
-        "cell_limit": 380
+        "cell_limit": 380,
+        "page_margins_inches": {"left": 0.8, "top": 0.5, "right": 0.5, "bottom": 0.5},
     },
             "name_tag_template_02": {
             "required_column": "First name\n**Mandatory field",
@@ -739,6 +759,11 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
     output.seek(0)
 
     merged_bytes = output.read()
+
+    # Apply config-driven section margins so layout is consistent (e.g. 8 per page)
+    margin_inches = config.get("page_margins_inches")
+    if margin_inches is not None:
+        merged_bytes = apply_section_margins(merged_bytes, margin_inches)
 
     # -------------------------
     # POST PROCESSING
