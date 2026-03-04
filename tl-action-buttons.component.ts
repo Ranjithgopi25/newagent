@@ -557,7 +557,7 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
         },
         "min_font": 7,
         "cell_limit": 380,
-        "page_margins_inches": {"left": 0.8, "top": 0.5, "right": 0.5, "bottom": 0.5},
+        "page_margins_inches": {"left": 0.8, "top": 0.4, "right": 0.5, "bottom": 0.3},
     },
             "name_tag_template_02": {
             "required_column": "First name\n**Mandatory field",
