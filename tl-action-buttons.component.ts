@@ -1706,6 +1706,17 @@ HEADLINE REQUIREMENTS
 - Title case only for named annual studies.
 
 ============================================================
+REFERENCE FORMAT CONVERSION — MANDATORY
+============================================================
+
+INLINE CITATIONS ONLY (do NOT change References/Sources/Bibliography list entries):
+- "(Ref. N)" or "[N]" (inline) → "[ⁿ]" using Unicode superscript (¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰).
+- Multiple: "(Ref. 1; Ref. 2)" or "(Ref. 1, Ref. 2, Ref. 3)" → "[¹][²]" or "[¹][²][³]".
+- Remove "(Ref." and parentheses; convert digit to superscript inside brackets; no space before superscript.
+- Do NOT convert "[1]", "[2]", "[3]" at the start of a reference list line.
+- Superscripts are visual only — do not make them clickable; links belong in the References list.
+
+============================================================
 DETERMINISTIC EVALUATION — ABSOLUTE
 ============================================================
 
