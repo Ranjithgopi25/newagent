@@ -90,6 +90,12 @@ def shrink_on_wrap_only(
     # This lets us only cap the *matching* company line, not all companies globally.
     name_shrunk_sizes_by_company: dict[str, list[int]] = {}
 
+    # Slightly relax the width check for large display fonts (e.g. 40–45pt)
+    # so we don't over‑shrink when a bigger size would still visually fit.
+    effective_cell_limit = cell_limit
+    if default_font is not None and default_font >= 40:
+        effective_cell_limit = int(cell_limit * 1.2)
+
     def shrink_if_wrapping(paragraph):
         text = paragraph.text.strip()
         if not text:
@@ -115,12 +121,12 @@ def shrink_on_wrap_only(
         logger.info(f"Current font size: {current_size}")
         logger.info(f"Score: {score}")
         logger.info(f"Estimated width: {estimated_width}")
-        logger.info(f"Cell limit: {cell_limit}")
+        logger.info(f"Cell limit: {effective_cell_limit}")
         logger.info("------------------------")
 
-        if estimated_width > cell_limit:
+        if estimated_width > effective_cell_limit:
 
-            new_size = floor(cell_limit / score)
+            new_size = floor(effective_cell_limit / score)
             new_size = max(new_size, min_font)
 
             # For table_tent_template_01 we only want name shrinks
@@ -688,7 +694,10 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
             "merge_type": "pages",
             "field_mapping": {"First_Name": "First_Name\n**Mandatory field", "Last_Name": "Last_Name\n**Mandatory field"},
             "mandatory_fields": ["First_Name\n**Mandatory field", "Last_Name\n**Mandatory field"],
-            "min_font": 18,
+            # Allow shrinking when truly needed, but use a higher
+            # width limit so we don't over‑shrink (e.g. from 36 → 31)
+            # when 36 would still fit.
+            "min_font": 12,
             "cell_limit": 1150,
         },
         "banner_template_01": {
