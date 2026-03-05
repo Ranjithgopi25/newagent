@@ -1,3 +1,4 @@
+
 from pathlib import Path
 import logging
 from io import BytesIO
@@ -81,6 +82,8 @@ def shrink_on_wrap_only(
     min_font: int,
     default_font: Optional[int] = None,
     records: Optional[list] = None,
+    shrink_margin: float = 0.0,
+    shrink_bias_pts: int = 0,
 ) -> bytes:
 
     doc = Document(BytesIO(docx_bytes))
@@ -114,9 +117,19 @@ def shrink_on_wrap_only(
         logger.info(f"Cell limit: {cell_limit}")
         logger.info("------------------------")
 
-        if estimated_width > cell_limit:
+        # Apply optional margin so we only shrink when clearly beyond the limit
+        effective_limit = cell_limit * (1 + max(shrink_margin, 0.0))
 
-            new_size = floor(cell_limit / score)
+        if estimated_width > effective_limit:
+
+            base_new_size = floor(cell_limit / score)
+
+            # Bias slightly back toward the original size for borderline cases
+            if shrink_bias_pts > 0:
+                new_size = min(current_size, base_new_size + shrink_bias_pts)
+            else:
+                new_size = base_new_size
+
             new_size = max(new_size, min_font)
 
             if records and not is_company_paragraph(text):
@@ -670,6 +683,10 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
             },
             "min_font": 18,
         "cell_limit": 970,
+        # Tuning for heuristic shrink behaviour so we more closely
+        # match Word's no-wrap behaviour for borderline long names.
+        "shrink_margin": 0.03,      # allow ~3% over the nominal width
+        "shrink_bias_pts": 2,       # bias the computed new size slightly upward
         
     },
         "table_tent_template_03": {
@@ -822,12 +839,17 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
             if default_font is None:
                 default_font = config.get("default_font", 45)
 
+            shrink_margin = config.get("shrink_margin", 0.0)
+            shrink_bias_pts = config.get("shrink_bias_pts", 0)
+
             merged_bytes = shrink_on_wrap_only(
                 merged_bytes,
                 config["cell_limit"],
                 config.get("min_font", 25),
                 default_font,
                 records=records if template_id == "table_tent_template_01" else None,
+                shrink_margin=shrink_margin,
+                shrink_bias_pts=shrink_bias_pts,
             )
     except Exception as e:
         logger.warning(f"Post processing failed, returning original file: {e}")
