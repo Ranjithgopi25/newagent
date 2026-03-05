@@ -569,26 +569,20 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
         "merge_field": "First_name",
         "merge_type": "rows",
         "field_mapping": {
+            # Single-card-per-record layout: only base fields
             "First_name": "First name\n**Mandatory field",
             "Last_name": "Last name\n**Mandatory field",
             "Company_name": "Company",
-            "First_name1": "First name\n**Mandatory field",
-            "Last_name1": "Last name\n**Mandatory field",
-            "Company_name1": "Company",
-            
         },
         "mandatory_fields": [
             "First name\n**Mandatory field",
             "Last name\n**Mandatory field",
-
         ],
         "font_config": {
+            # Font sizes for fields actually used in the template
             "First_name": 28,
             "Last_name": 18,
             "Company_name": 12,
-            "First_name1": 28,
-            "Last_name1": 18,
-            "Company_name1": 12,
             "Event_Name": 9,
         },
         "min_font": 7,
@@ -768,8 +762,9 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
 
     # ----------------------------------------------------
     # Group records for 2-column name tag layout
+    # (Name Tag 2 & 3 only; Name Tag 1 is single-card-per-record)
     # ----------------------------------------------------
-    if template_id.startswith("name_tag"):
+    if template_id in ["name_tag_template_02", "name_tag_template_03"]:
         records = group_records_for_two_column_layout(records)
 
     # ----------------------------------------------------
