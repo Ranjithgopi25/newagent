@@ -1,4 +1,3 @@
-
 from pathlib import Path
 import logging
 from io import BytesIO
@@ -85,14 +84,7 @@ def shrink_on_wrap_only(
 ) -> bytes:
 
     doc = Document(BytesIO(docx_bytes))
-    # Track shrinks for name lines only (not company),
-    # keyed by the corresponding company text.
-    # This lets us only cap the *matching* company line, not all companies globally.
     name_shrunk_sizes_by_company: dict[str, list[int]] = {}
-
-    # Slightly relax the width check using an effective limit so we don't
-    # over‑shrink when a bigger size would still visually fit.
-    effective_cell_limit = int(cell_limit * 1.2) if default_font is not None else cell_limit
 
     def shrink_if_wrapping(paragraph):
         text = paragraph.text.strip()
@@ -119,17 +111,14 @@ def shrink_on_wrap_only(
         logger.info(f"Current font size: {current_size}")
         logger.info(f"Score: {score}")
         logger.info(f"Estimated width: {estimated_width}")
-        logger.info(f"Cell limit: {effective_cell_limit}")
+        logger.info(f"Cell limit: {cell_limit}")
         logger.info("------------------------")
 
-        if estimated_width > effective_cell_limit:
+        if estimated_width > cell_limit:
 
-            new_size = floor(effective_cell_limit / score)
+            new_size = floor(cell_limit / score)
             new_size = max(new_size, min_font)
 
-            # For table_tent_template_01 we only want name shrinks
-            # to influence the later company capping logic, and we
-            # track them per-company so only that company's line is capped.
             if records and not is_company_paragraph(text):
                 # Try to find the matching record for this name line
                 company_key: Optional[str] = None
@@ -162,10 +151,6 @@ def shrink_on_wrap_only(
 
     def cap_company_if_name_shrunk(paragraph):
         text = paragraph.text.strip()
-        # Only run this adjustment when we have:
-        # - Records (table_tent_template_01),
-        # - A non-empty paragraph with runs,
-        # - A recorded shrunk name size *for this company text*.
         if not text or not paragraph.runs or not records:
             return
         if not is_company_paragraph(text):
@@ -569,20 +554,26 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
         "merge_field": "First_name",
         "merge_type": "rows",
         "field_mapping": {
-            # Single-card-per-record layout: only base fields
             "First_name": "First name\n**Mandatory field",
             "Last_name": "Last name\n**Mandatory field",
             "Company_name": "Company",
+            "First_name1": "First name\n**Mandatory field",
+            "Last_name1": "Last name\n**Mandatory field",
+            "Company_name1": "Company",
+            
         },
         "mandatory_fields": [
             "First name\n**Mandatory field",
             "Last name\n**Mandatory field",
+
         ],
         "font_config": {
-            # Font sizes for fields actually used in the template
             "First_name": 28,
             "Last_name": 18,
             "Company_name": 12,
+            "First_name1": 28,
+            "Last_name1": 18,
+            "Company_name1": 12,
             "Event_Name": 9,
         },
         "min_font": 7,
@@ -679,10 +670,8 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
                 "Last_Name_Mandatory_field": 45,
                 "Title_Mandatory_field": 32,
             },
-            # Match table_tent_template_03 shrink behavior
-            # so long names shrink similarly.
-            "min_font": 12,
-        "cell_limit": 1150,
+            "min_font": 18,
+        "cell_limit": 970,
         
     },
         "table_tent_template_03": {
@@ -690,11 +679,8 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
             "merge_type": "pages",
             "field_mapping": {"First_Name": "First_Name\n**Mandatory field", "Last_Name": "Last_Name\n**Mandatory field"},
             "mandatory_fields": ["First_Name\n**Mandatory field", "Last_Name\n**Mandatory field"],
-            # Allow shrinking when truly needed, but use a higher
-            # width limit so we don't over‑shrink (e.g. from 36 → 31)
-            # when 36 would still fit.
-            "min_font": 12,
-            "cell_limit": 1150,
+            "min_font": 18,
+            "cell_limit": 1100,
         },
         "banner_template_01": {
         "required_column": "Industry\n**Mandatory field",
@@ -762,9 +748,8 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
 
     # ----------------------------------------------------
     # Group records for 2-column name tag layout
-    # (Name Tag 2 & 3 only; Name Tag 1 is single-card-per-record)
     # ----------------------------------------------------
-    if template_id in ["name_tag_template_02", "name_tag_template_03"]:
+    if template_id.startswith("name_tag"):
         records = group_records_for_two_column_layout(records)
 
     # ----------------------------------------------------
