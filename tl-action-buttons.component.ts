@@ -86,8 +86,9 @@ def shrink_on_wrap_only(
 
     doc = Document(BytesIO(docx_bytes))
     # Track shrinks for name lines only (not company),
-    # so company capping is only applied when a name was actually shrunk.
-    name_shrunk_sizes = []
+    # keyed by the corresponding company text.
+    # This lets us only cap the *matching* company line, not all companies globally.
+    name_shrunk_sizes_by_company: dict[str, list[int]] = {}
 
     def shrink_if_wrapping(paragraph):
         text = paragraph.text.strip()
@@ -123,9 +124,22 @@ def shrink_on_wrap_only(
             new_size = max(new_size, min_font)
 
             # For table_tent_template_01 we only want name shrinks
-            # to influence the later company capping logic.
-            if not is_company_paragraph(text):
-                name_shrunk_sizes.append(new_size)
+            # to influence the later company capping logic, and we
+            # track them per-company so only that company's line is capped.
+            if records and not is_company_paragraph(text):
+                # Try to find the matching record for this name line
+                company_key: Optional[str] = None
+                for record in records:
+                    first_val = record.get("First_name_Mandatory_field") or record.get("First_Name") or ""
+                    last_val = record.get("Last_name_Mandatory_field") or record.get("Last_Name") or ""
+                    full_name = f"{first_val} {last_val}".strip()
+                    if full_name and (text.strip() == full_name or full_name in text.strip()):
+                        company_key = (record.get("Company_Mandatory_field") or
+                                       record.get("Company_Name") or "").strip()
+                        break
+
+                if company_key:
+                    name_shrunk_sizes_by_company.setdefault(company_key, []).append(new_size)
 
             logger.info(f"Shrinking '{text}' from {current_size} → {new_size}")
 
@@ -144,17 +158,22 @@ def shrink_on_wrap_only(
 
     def cap_company_if_name_shrunk(paragraph):
         text = paragraph.text.strip()
-        # Only run this adjustment when:
-        # - We have records (table_tent_template_01),
-        # - At least one name line was shrunk,
-        # - And this paragraph is non-empty with runs.
-        if not text or not paragraph.runs or not name_shrunk_sizes or not records:
+        # Only run this adjustment when we have:
+        # - Records (table_tent_template_01),
+        # - A non-empty paragraph with runs,
+        # - A recorded shrunk name size *for this company text*.
+        if not text or not paragraph.runs or not records:
             return
         if not is_company_paragraph(text):
             return
+
+        company_key = text.strip()
+        if company_key not in name_shrunk_sizes_by_company:
+            return
+
         first_run = paragraph.runs[0]
         current = first_run.font.size.pt if first_run.font.size else (default_font if default_font is not None else 45)
-        min_name_size = min(name_shrunk_sizes)
+        min_name_size = min(name_shrunk_sizes_by_company[company_key])
         new_size = min(current, min_name_size - 2)
         new_size = max(new_size, min_font)
         if new_size < current:
@@ -189,8 +208,8 @@ def shrink_on_wrap_only(
             continue
         shrink_if_wrapping(Paragraph(p_elem, None))
 
-    # If any name was shrunk, reduce company so it stays below name size
-    if records and name_shrunk_sizes:
+    # If any name was shrunk, reduce its matching company so it stays below that name size
+    if records and name_shrunk_sizes_by_company:
         for p in doc.paragraphs:
             cap_company_if_name_shrunk(p)
         for table in doc.tables:
