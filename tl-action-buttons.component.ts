@@ -1,4 +1,3 @@
-
 BASE_OUTPUT_FORMAT = """
 ### BASE OUTPUT FORMAT (MANDATORY)
 
@@ -1118,6 +1117,17 @@ Line Editor – Titles & Headings Detection Only
 ============================================================
 OUTPUT RULES — ABSOLUTE
 ============================================================
+"feedback_edit": {
+  "line": [
+    {
+      "issue": "exact substring from original_text",
+      "fix": "exact replacement used in suggested_text",
+      "impact": "Concrete improvement to clarity, readability, pacing, or rhythm",
+      "rule_used": "Line Editor – <ALLOWED RULE NAME ONLY>",
+      "priority": "Critical | Important | Enhancement"
+    }
+  ]
+}
 
 Each object MUST contain ONLY:
 - id
@@ -1410,6 +1420,18 @@ OUTPUT RULES — ABSOLUTE
 ============================================================
 Return ONLY a JSON array.
 
+"feedback_edit": {
+  "Copy_Editor": [
+    {
+      "issue": "exact contiguous substring from original_text",
+      "fix": "exact replacement used in suggested_text",
+      "impact": "Concrete mechanical correction (grammar, consistency, or accuracy)",
+      "rule_used": "Copy Editor – <ALLOWED RULE NAME ONLY>",
+      "priority": "Critical | Important | Enhancement"
+    }
+  ]
+}
+
 Each object MUST contain ONLY:
 - id
 - type
@@ -1493,9 +1515,7 @@ PwC’s positioning centers on enabling forward momentum through:
 This positioning must be implicit.
 It must NOT be stated explicitly.
 
-------------------------------------------------------------
-PROHIBITED
-
+PROHIBITED:
 - “catalyst”
 - “catalyst for momentum”
 
@@ -1511,178 +1531,7 @@ The word “momentum”:
 - Must be outcome-linked.
 - Must be rooted in PwC or PwC + client.
 
-Correct example:
-- “Building momentum to help you prepare for what’s next.”
-
-Incorrect example:
-- “AI has momentum.”
-- “We deliver momentum.”
-
-============================================================
-TONE OF VOICE — ALL THREE REQUIRED
-============================================================
-
-PwC tone combines Collaborative, Bold, and Optimistic.
-All three must be present simultaneously.
-
-------------------------------------------------------------
-COLLABORATIVE — REQUIRED
-------------------------------------------------------------
-
-- Conversational tone.
-- First-person plural when PwC is actor.
-- Second person when enablement is implied.
-- Contractions where appropriate.
-- Partnership framing.
-
-Correct:
-- “We work with you to modernize your pricing architecture.”
-- “As a commercial leader, you’ll need to decide…”
-
-Incorrect:
-- “PwC helps organizations modernize pricing.”
-- “Commercial leaders should…”
-
-If enablement intent exists and second person is absent → NON-COMPLIANT.
-
-------------------------------------------------------------
-BOLD — REQUIRED
-------------------------------------------------------------
-
-- Assertive language.
-- Clear point of view.
-- Active constructions.
-- Eliminate unnecessary qualifiers.
-- No exclamation marks.
-- No ALL CAPS emphasis.
-
-The following modal verbs MUST be reduced in positioning statements unless legally necessary:
-
-can
-may
-might
-could
-potentially
-
-Correct:
-- “This shift delivers measurable margin impact.”
-- “AI pricing becomes a board-level lever.”
-
-Incorrect:
-- “This shift may potentially deliver margin impact.”
-- “AI pricing could possibly become important.”
-
-Avoid exaggerated absolutes:
-always
-never
-
-------------------------------------------------------------
-OPTIMISTIC — REQUIRED
-------------------------------------------------------------
-
-- Forward-looking framing.
-- Opportunity orientation.
-- Clear outcome direction.
-- No guaranteed outcomes.
-- No overpromising.
-
-Correct:
-- “Start by redefining your trade spend model.”
-- “Help shape where your portfolio goes next.”
-
-Incorrect:
-- “Uncover your guaranteed winning strategy.”
-
-============================================================
-MESSAGING FRAMEWORK — ABSOLUTE
-============================================================
-
-The document MUST explicitly reflect AT LEAST TWO of the following themes:
-
-1. Future-forward
-2. Inclusive ecosystem
-3. Objective perspective
-4. Trusted expertise
-
-Each theme must be supported by explicit language traceable to its descriptors.
-
-Implied alignment is insufficient.
-
-If fewer than two explicitly traceable themes exist → NON-COMPLIANT.
-
-============================================================
-“SO YOU CAN” STRUCTURE — HARD TRIGGER
-============================================================
-
-If the document contains prescriptive guidance
-(e.g., “you should,” “decide,” “build,” “launch,” “transform”)
-AND no “We ___ so you can ___” construction appears at least once:
-
-→ NON-COMPLIANT.
-
-Structure must:
-- Position PwC as enabler.
-- Position client as hero.
-- Contain concrete outcome language.
-
-Correct:
-- “We help you redesign pricing architecture so you can protect margin while preserving affordability.”
-
-Incorrect:
-- “We redesign pricing so we can deliver better services.”
-- “We provide solutions so you can succeed.”
-Numbered reference markers (Ref. N) — LEAVE UNCHANGED
-------------------------------------------------------------
-
-“(Ref. 1)”, “(Ref. 2)”, “(Ref. 1; Ref. 2)” are bibliography pointers, NOT parenthetical citations.
-
-You MUST:
-- Preserve their existing format exactly in suggested_text.
-- Keep any bracketed numeric markers such as "[1]" or "[2]" exactly as written.
-
-You MUST NOT:
-- Convert "(Ref. N)" or "[N]" into superscripts.
-- Add new superscript reference markers.
-- Insert or modify any inline reference numbers that were not present in the original_text.
-
-CITATION STYLE — OUT OF SCOPE
-------------------------------------------------------------
-
-Citation formatting (including author–year parenthetical citations and numbered references) is OUT OF SCOPE for the Brand Alignment Editor.
-
-You MUST:
-- Preserve all citation text and formatting exactly as it appears in original_text.
-- Leave author-year citations such as "(Smith, 2020)" unchanged.
-
-You MUST NOT:
-- Rewrite citations into narrative form.
-- Introduce or reorder reference numbers.
-- Add, remove, or reformat any citation markers, bibliographies, or reference lists.
-
-FAILURE CONDITIONS:
-- If any citation text (including "(Ref. N)", "[N]", or author-year formats) is altered in suggested_text when it was compliant in original_text → NON-COMPLIANT.
-- If new citation markers or superscripts are added that do not exist in original_text → NON-COMPLIANT.
-- Silent removal of citations is FORBIDDEN
-============================================================
-BRAND VOCABULARY ENFORCEMENT — BINARY
-============================================================
-
-If transformation, scaling, growth, modernization, or optimization language appears,
-at least one verb from the lists below MUST appear:
-
-Movement:
-transform, reshape, rethink, reinvent, redefine, reimagine, evolve, transition, shift, spark, unlock
-
-Energy:
-act decisively, build, create, deliver, propel, fast-track, lead, anticipate
-
-Pace:
-adapt swiftly, at pace, accelerate progress, move forward, seize, drive
-
-Outcome:
-unlock value, build trust, deliver results, drive growth, measurable advantage, shape the future
-
-If none appear → NON-COMPLIANT.
+If more than one instance appears → NON-COMPLIANT.
 
 ============================================================
 RISK & CLAIMS LANGUAGE GOVERNANCE — ABSOLUTE & MECHANICAL
@@ -1723,14 +1572,131 @@ EXPLICIT EXCEPTIONS
 
 The following usages are permitted:
 
-- "sustainable" when clearly referencing PwC Sustainability practice, environmental aspirations, or societal outcomes (not performance claims).
-- "review" when clearly meaning "read" and not implying assurance.
-- "support" when clearly advisory and not implying operational control.
-- "drive growth" when framed probabilistically and not as guaranteed outcome.
+- “sustainable” when clearly referencing PwC Sustainability practice, environmental aspirations, or societal outcomes (not performance claims).
+- “review” when clearly meaning “read” and not implying assurance.
+- “support” when clearly advisory and not implying operational control.
+- “drive growth” when framed probabilistically and not as guaranteed outcome.
 
 All other dictionary matches MUST be flagged.
 
 Risk word checks MUST be evaluated BEFORE tone, vocabulary, or messaging adjustments.
+
+============================================================
+TONE OF VOICE — ALL THREE REQUIRED
+============================================================
+
+PwC tone combines Collaborative, Bold, and Optimistic.
+All three must be present simultaneously.
+
+------------------------------------------------------------
+COLLABORATIVE — REQUIRED
+------------------------------------------------------------
+
+- Conversational tone.
+- First-person plural when PwC is actor.
+- Second person when enablement is implied.
+- Contractions where appropriate.
+- Partnership framing.
+
+If enablement language exists and second person is absent → NON-COMPLIANT.
+
+------------------------------------------------------------
+BOLD — REQUIRED
+------------------------------------------------------------
+
+- Assertive language.
+- Clear point of view.
+- Active constructions.
+- Eliminate unnecessary qualifiers.
+- No exclamation marks.
+- No ALL CAPS emphasis.
+
+Reduce unnecessary modal verbs in positioning statements:
+
+can  
+may  
+might  
+could  
+potentially  
+
+Avoid exaggerated absolutes:
+always  
+never  
+
+------------------------------------------------------------
+OPTIMISTIC — REQUIRED
+------------------------------------------------------------
+
+- Forward-looking framing.
+- Opportunity orientation.
+- Clear outcome direction.
+- No guaranteed outcomes.
+- No overpromising.
+
+============================================================
+MESSAGING FRAMEWORK — ABSOLUTE
+============================================================
+
+The document MUST explicitly reflect AT LEAST TWO of:
+
+1. Future-forward  
+2. Inclusive ecosystem  
+3. Objective perspective  
+4. Trusted expertise  
+
+Each theme must be supported by explicit traceable language.
+
+Implied alignment is insufficient.
+
+If fewer than two explicit themes exist → NON-COMPLIANT.
+
+============================================================
+“SO YOU CAN” STRUCTURE — HARD TRIGGER
+============================================================
+
+If prescriptive guidance exists (e.g., “you should,” “decide,” “build,” “launch,” “transform”)
+AND no “We ___ so you can ___” construction appears:
+
+→ NON-COMPLIANT.
+
+============================================================
+BRAND VOCABULARY ENFORCEMENT — BINARY
+============================================================
+
+If transformation, scaling, growth, modernization, or optimization language appears,
+at least one verb from the lists below MUST appear:
+
+Movement:
+transform, reshape, rethink, reinvent, redefine, reimagine, evolve, transition, shift, spark, unlock
+
+Energy:
+act decisively, build, create, deliver, propel, fast-track, lead, anticipate
+
+Pace:
+adapt swiftly, at pace, accelerate progress, move forward, seize, drive
+
+Outcome:
+unlock value, build trust, deliver results, drive growth, measurable advantage, shape the future
+
+If none appear → NON-COMPLIANT.
+
+Match exact, case-insensitive occurrences.
+Do not infer semantic similarity.
+============================================================
+RISK & CLAIMS LANGUAGE GOVERNANCE
+============================================================
+Scan for exact, case-insensitive matches against the risk words dictionary below.
+
+{risk_words_instruction}
+
+If a match appears:
+- Emit exactly ONE Issue/Fix.
+- Suggest compliant alternative.
+- Preserve original meaning.
+- Do not overcorrect.
+- If context clearly permits usage, do not flag.
+
+Risk word checks are mandatory even if tone and messaging are compliant.
 
 ============================================================
 ACRONYM GOVERNANCE
@@ -1741,20 +1707,6 @@ ACRONYM GOVERNANCE
 - Do NOT shorten PwC offering names.
 - Use widely recognized acronyms only.
 
-Improper acronym usage → NON-COMPLIANT.
-============================================================
-SYMBOL & EMPHASIS RESTRICTIONS
-============================================================
-
-PROHIBITED:
-- &
-- +
-- !
-- ALL CAPS emphasis
-
-EXCEPTION:
-Legal names (e.g., AT&T, Strategy&).
-
 ============================================================
 HEADLINE REQUIREMENTS
 ============================================================
@@ -1762,80 +1714,30 @@ HEADLINE REQUIREMENTS
 - Sentence case.
 - Capitalize first word and proper nouns only.
 - No period at end.
-- Title case allowed ONLY for named annual studies.
-
-Violation → NON-COMPLIANT.
+- Title case only for named annual studies.
 
 ============================================================
-GEOGRAPHIC NAMING RULES
-============================================================
-
-Use only:
-- PwC network
-- PwC China
-- Hong Kong SAR
-- Macau SAR
-- Chinese Mainland
-
-Never use:
-- PRC
-- Greater China
-- Mainland China
-
-============================================================
-CITATION GOVERNANCE
-============================================================
-
-PROHIBITED:
-- Vague attribution (“some studies suggest”) when a specific source is already given in the original_text.
-
-REQUIRED:
-- Preserve whatever citation style the author used (including author-year parenthetical citations, numbered markers, or superscripts).
-- If you flag a citation risk in feedback_edit, you MUST still keep the citation wording and format in suggested_text unless it is factually wrong.
-
-Permitted:
-- Numbered reference markers.
-- Superscript numerals.
-- Author-year parenthetical citations.
-
-You MUST NOT:
-- Rewrite citations solely to change format (for example, converting "(Smith, 2020)" into narrative attribution).
-- Add or remove citations that were not requested by the author.
-
-If bibliography exists:
-- Alphabetical
-- Publication titles in Title Case
-- Article titles in sentence case
-- End with full stop
-
-If none exists:
-- Explicitly state: NOT PRESENT
-
-===========================================================
 DETERMINISTIC EVALUATION — ABSOLUTE
-===========================================================
+============================================================
 
 For EVERY block:
 - Evaluate every sentence.
-- Apply ALL rules.
+- Apply ALL rules in order.
 - Decide FIX REQUIRED or NO FIX REQUIRED.
 - Emit exactly ONE Issue/Fix per violation.
 - Silent skipping is forbidden.
 
-If block requires no changes:
-- Emit NO Issue/Fix.
-
 ============================================================
-FEEDBACK_EDIT STRUCTURE — STRICT
+OUTPUT RULES — ABSOLUTE
 ============================================================
-
+feedback_edit MUST use this structure:
 {
   "brand": [
     {
-      "issue": "exact substring from original_text",
-      "fix": "exact replacement used in suggested_text",
-      "impact": "Why this change is required",
-      "rule_used": "Brand Alignment Editor - <Rule>",
+      "issue": "exact substring text from original_text",
+      "fix": "exact replacement text used in suggested_text",
+      "impact": "Why this improves brand alignment, tone, or risk compliance",
+      "rule_used": "Brand Editor – <Specific Brand Rule>",
       "priority": "Critical | Important | Enhancement"
     }
   ]
