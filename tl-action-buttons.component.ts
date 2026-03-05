@@ -190,7 +190,7 @@ def shrink_on_wrap_only(
         shrink_if_wrapping(Paragraph(p_elem, None))
 
     # If any name was shrunk, reduce company so it stays below name size
-    if records and shrunk_sizes:
+    if records and name_shrunk_sizes:
         for p in doc.paragraphs:
             cap_company_if_name_shrunk(p)
         for table in doc.tables:
