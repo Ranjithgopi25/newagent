@@ -82,12 +82,17 @@ def shrink_on_wrap_only(
     min_font: int,
     default_font: Optional[int] = None,
     records: Optional[list] = None,
-    shrink_margin: float = 0.0,
-    shrink_bias_pts: int = 0,
 ) -> bytes:
 
     doc = Document(BytesIO(docx_bytes))
+    # Track shrinks for name lines only (not company),
+    # keyed by the corresponding company text.
+    # This lets us only cap the *matching* company line, not all companies globally.
     name_shrunk_sizes_by_company: dict[str, list[int]] = {}
+
+    # Slightly relax the width check using an effective limit so we don't
+    # over‑shrink when a bigger size would still visually fit.
+    effective_cell_limit = int(cell_limit * 1.2) if default_font is not None else cell_limit
 
     def shrink_if_wrapping(paragraph):
         text = paragraph.text.strip()
@@ -114,24 +119,17 @@ def shrink_on_wrap_only(
         logger.info(f"Current font size: {current_size}")
         logger.info(f"Score: {score}")
         logger.info(f"Estimated width: {estimated_width}")
-        logger.info(f"Cell limit: {cell_limit}")
+        logger.info(f"Cell limit: {effective_cell_limit}")
         logger.info("------------------------")
 
-        # Apply optional margin so we only shrink when clearly beyond the limit
-        effective_limit = cell_limit * (1 + max(shrink_margin, 0.0))
+        if estimated_width > effective_cell_limit:
 
-        if estimated_width > effective_limit:
-
-            base_new_size = floor(cell_limit / score)
-
-            # Bias slightly back toward the original size for borderline cases
-            if shrink_bias_pts > 0:
-                new_size = min(current_size, base_new_size + shrink_bias_pts)
-            else:
-                new_size = base_new_size
-
+            new_size = floor(effective_cell_limit / score)
             new_size = max(new_size, min_font)
 
+            # For table_tent_template_01 we only want name shrinks
+            # to influence the later company capping logic, and we
+            # track them per-company so only that company's line is capped.
             if records and not is_company_paragraph(text):
                 # Try to find the matching record for this name line
                 company_key: Optional[str] = None
@@ -164,6 +162,10 @@ def shrink_on_wrap_only(
 
     def cap_company_if_name_shrunk(paragraph):
         text = paragraph.text.strip()
+        # Only run this adjustment when we have:
+        # - Records (table_tent_template_01),
+        # - A non-empty paragraph with runs,
+        # - A recorded shrunk name size *for this company text*.
         if not text or not paragraph.runs or not records:
             return
         if not is_company_paragraph(text):
@@ -488,7 +490,7 @@ def group_records_for_two_column_layout(records: list) -> list:
     """
     Groups records into pairs for any 2-column name tag template.
     Automatically detects base fields and their duplicate '1' fields.
-    Ignores last record if count is odd.
+    Includes last record even if count is odd (second column left blank).
     """
 
     if not records:
@@ -507,18 +509,20 @@ def group_records_for_two_column_layout(records: list) -> list:
 
     paired_records = []
 
-    # Ignore last if odd
-    limit = len(records) - (len(records) % 2)
-
-    for i in range(0, limit, 2):
+    # Walk through all records in steps of 2.
+    # If there is an odd last record, use it for the first column
+    # and leave the second-column fields blank.
+    for i in range(0, len(records), 2):
         first = records[i]
-        second = records[i + 1]
+        second = records[i + 1] if i + 1 < len(records) else None
 
         combined = {}
 
         for base in base_fields:
             combined[base] = first.get(base, "")
-            combined[duplicate_fields[base]] = second.get(base, "")
+            duplicate_key = duplicate_fields.get(base)
+            if duplicate_key:
+                combined[duplicate_key] = second.get(base, "") if second else ""
 
         paired_records.append(combined)
 
@@ -681,12 +685,10 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
                 "Last_Name_Mandatory_field": 45,
                 "Title_Mandatory_field": 32,
             },
-            "min_font": 18,
-        "cell_limit": 970,
-        # Tuning for heuristic shrink behaviour so we more closely
-        # match Word's no-wrap behaviour for borderline long names.
-        "shrink_margin": 0.03,      # allow ~3% over the nominal width
-        "shrink_bias_pts": 2,       # bias the computed new size slightly upward
+            # Match table_tent_template_03 shrink behavior
+            # so long names shrink similarly.
+            "min_font": 12,
+        "cell_limit": 1150,
         
     },
         "table_tent_template_03": {
@@ -694,8 +696,11 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
             "merge_type": "pages",
             "field_mapping": {"First_Name": "First_Name\n**Mandatory field", "Last_Name": "Last_Name\n**Mandatory field"},
             "mandatory_fields": ["First_Name\n**Mandatory field", "Last_Name\n**Mandatory field"],
-            "min_font": 18,
-            "cell_limit": 1100,
+            # Allow shrinking when truly needed, but use a higher
+            # width limit so we don't over‑shrink (e.g. from 36 → 31)
+            # when 36 would still fit.
+            "min_font": 12,
+            "cell_limit": 1150,
         },
         "banner_template_01": {
         "required_column": "Industry\n**Mandatory field",
@@ -839,17 +844,12 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
             if default_font is None:
                 default_font = config.get("default_font", 45)
 
-            shrink_margin = config.get("shrink_margin", 0.0)
-            shrink_bias_pts = config.get("shrink_bias_pts", 0)
-
             merged_bytes = shrink_on_wrap_only(
                 merged_bytes,
                 config["cell_limit"],
                 config.get("min_font", 25),
                 default_font,
                 records=records if template_id == "table_tent_template_01" else None,
-                shrink_margin=shrink_margin,
-                shrink_bias_pts=shrink_bias_pts,
             )
     except Exception as e:
         logger.warning(f"Post processing failed, returning original file: {e}")
