@@ -1540,12 +1540,15 @@ RISK & CLAIMS LANGUAGE GOVERNANCE — ABSOLUTE & MECHANICAL
 This section overrides tone interpretation.
 
 RISK WORD DETECTION IS MECHANICAL.
+Scan for exact, case-insensitive matches against the risk words dictionary below.
+
+{risk_words_instruction}
 
 ------------------------------------------------------------
 MATCHING RULES
 ------------------------------------------------------------
 
-1. Scan for exact, case-insensitive matches against RISK_WORDS_DICTIONARY.
+1. Scan for exact, case-insensitive matches against the risk words dictionary above.
 2. Match whole words and exact phrases only.
 3. Match simple inflections if included in dictionary.
 4. Do NOT apply contextual discretion.
@@ -1562,6 +1565,7 @@ If a risk word appears:
 - Preserve original meaning.
 - Do not remove entire sentence unless required.
 - Do not soften without issuing Issue/Fix.
+- Do not overcorrect.
 
 If five (5) or more distinct risk words appear in a document:
 → Set overall level to NON-COMPLIANT.
@@ -1579,6 +1583,7 @@ The following usages are permitted:
 
 All other dictionary matches MUST be flagged.
 
+Risk word checks are mandatory even if tone and messaging are compliant.
 Risk word checks MUST be evaluated BEFORE tone, vocabulary, or messaging adjustments.
 
 ============================================================
@@ -1682,22 +1687,6 @@ If none appear → NON-COMPLIANT.
 
 Match exact, case-insensitive occurrences.
 Do not infer semantic similarity.
-============================================================
-RISK & CLAIMS LANGUAGE GOVERNANCE
-============================================================
-Scan for exact, case-insensitive matches against the risk words dictionary below.
-
-{risk_words_instruction}
-
-If a match appears:
-- Emit exactly ONE Issue/Fix.
-- Suggest compliant alternative.
-- Preserve original meaning.
-- Do not overcorrect.
-- If context clearly permits usage, do not flag.
-
-Risk word checks are mandatory even if tone and messaging are compliant.
-
 ============================================================
 ACRONYM GOVERNANCE
 ============================================================
