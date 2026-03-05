@@ -1709,12 +1709,40 @@ HEADLINE REQUIREMENTS
 REFERENCE FORMAT CONVERSION — MANDATORY
 ============================================================
 
-INLINE CITATIONS ONLY (do NOT change References/Sources/Bibliography list entries):
-- "(Ref. N)" or "[N]" (inline) → "[ⁿ]" using Unicode superscript (¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰).
-- Multiple: "(Ref. 1; Ref. 2)" or "(Ref. 1, Ref. 2, Ref. 3)" → "[¹][²]" or "[¹][²][³]".
-- Remove "(Ref." and parentheses; convert digit to superscript inside brackets; no space before superscript.
-- Do NOT convert "[1]", "[2]", "[3]" at the start of a reference list line.
-- Superscripts are visual only — do not make them clickable; links belong in the References list.
+Conversion rules (INLINE CITATIONS ONLY — do NOT change reference list entries):
+- "(Ref. 1)" → "[¹]"
+- "(Ref. 2)" → "[²]"
+- "(Ref. 3)" → "[³]"
+- "[1]" → "[¹]" (bracket format, when used inline in a sentence)
+- "[2]" → "[²]" (bracket format, when used inline in a sentence)
+- "[3]" → "[³]" (bracket format, when used inline in a sentence)
+- "(Ref. 1; Ref. 2)" → "[¹][²]" (two separate bracketed superscripts)
+- "(Ref. 1, Ref. 2, Ref. 3)" → "[¹][²][³]"
+- "(Ref. 1; Ref. 2; Ref. 3)" → "[¹][²][³]" (three separate bracketed superscripts)
+
+Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
+
+Examples:
+- "According to research (Ref. 1), the findings show..." → "According to research[¹], the findings show..."
+- "Multiple studies (Ref. 1; Ref. 2) indicate..." → "Multiple studies[¹][²] indicate..."
+- "The data (Ref. 1, Ref. 2, Ref. 3) supports..." → "The data[¹][²][³] supports..."
+
+IMPORTANT:
+- Remove parentheses and "Ref." text
+- Preserve square brackets from "[1]" format; convert the number inside the brackets to a superscript
+- Convert numbers to superscripts
+- Place superscripts immediately after the referenced text (no space before superscript)
+- For multiple references, combine superscripts or use comma-separated format for clarity
+- Do NOT convert "[1]", "[2]", "[3]", etc. when they are part of a References/Sources/Bibliography list entry (for example at the start of a line listing the full source)
+
+============================================================
+SUPERSCRIPT CLICKABILITY — CLARIFICATION (MANDATORY)
+============================================================
+
+- Unicode superscript reference markers (¹ ² ³ etc.) are VISUAL INDICATORS ONLY.
+- Superscript markers MUST NOT be made clickable.
+- Do NOT attempt to embed links, markdown, or HTML into superscript characters.
+- Clickable access to sources is provided EXCLUSIVELY via URLs in the numbered References/Sources list.
 
 ============================================================
 DETERMINISTIC EVALUATION — ABSOLUTE
