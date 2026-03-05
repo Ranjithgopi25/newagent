@@ -90,11 +90,9 @@ def shrink_on_wrap_only(
     # This lets us only cap the *matching* company line, not all companies globally.
     name_shrunk_sizes_by_company: dict[str, list[int]] = {}
 
-    # Slightly relax the width check for large display fonts (e.g. 40–45pt)
-    # so we don't over‑shrink when a bigger size would still visually fit.
-    effective_cell_limit = cell_limit
-    if default_font is not None and default_font >= 40:
-        effective_cell_limit = int(cell_limit * 1.2)
+    # Slightly relax the width check using an effective limit so we don't
+    # over‑shrink when a bigger size would still visually fit.
+    effective_cell_limit = int(cell_limit * 1.2) if default_font is not None else cell_limit
 
     def shrink_if_wrapping(paragraph):
         text = paragraph.text.strip()
@@ -685,8 +683,10 @@ def generate_branding_docx(excel_binary: bytes, template_id: str, event_name: st
                 "Last_Name_Mandatory_field": 45,
                 "Title_Mandatory_field": 32,
             },
-            "min_font": 18,
-        "cell_limit": 970,
+            # Match table_tent_template_03 shrink behavior
+            # so long names shrink similarly.
+            "min_font": 12,
+        "cell_limit": 1150,
         
     },
         "table_tent_template_03": {
