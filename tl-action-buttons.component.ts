@@ -1432,18 +1432,7 @@ def _format_content_for_pdf(text: str) -> str:
     
     # Convert markdown links [text](url) BEFORE superscript conversion so citation links
     # like [³](https://...) keep the URL (link text ³ is then converted to <sup>3</sup> below)
-    # IMPORTANT: only treat links with an explicit URL scheme as clickable links.
-    # This avoids creating invalid internal PDF destinations such as "references".
-    def _markdown_link_to_pdf(m: re.Match) -> str:
-        link_text = m.group(1)
-        href = m.group(2).strip()
-        # Only convert to a clickable link if href has an explicit HTTP/HTTPS scheme
-        if href.startswith("http://") or href.startswith("https://"):
-            return f'<a href="{href}" color="blue">{link_text}</a>'
-        # Otherwise, render just the link text (no <a> tag) to avoid unresolved targets
-        return link_text
-
-    text = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', _markdown_link_to_pdf, text)
+    text = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', r'<a href="\2" color="blue">\1</a>', text)
     # Convert Unicode superscript digits to <sup>N</sup> so PDF renders them correctly
     # (ReportLab may render ¹²³ as replacement glyphs/bullets; <sup> tag gives proper superscript)
     _SUPERSCRIPT_MAP = {
@@ -1494,6 +1483,84 @@ def _format_content_for_pdf(text: str) -> str:
         text
     )
     
+    return text
+
+
+def _format_content_for_pdf_edit(text: str) -> str:
+    """
+    Edit-content specific formatter for PDF.
+    
+    - Keeps behavior of numeric citations and superscripts.
+    - Only converts markdown links to clickable anchors when the URL has
+      an explicit HTTP/HTTPS scheme to avoid undefined internal targets
+      like \"references\".
+    """
+    if not text:
+        return text
+
+    text = normalize_numeric_citation_brackets(text)
+    # Handle numeric citations (both <sup>[[1]](url)</sup> and [[1]](url))
+    text = re.sub(
+        r'(?:<sup>\s*)?\[\[(\d+)\]\]\((https?://[^)]+)\)(?:\s*</sup>)?',
+        r'<a href="\2" color="blue"><sup>[\1]</sup></a>',
+        text
+    )
+
+    # Handle special quotation marks and other problematic characters BEFORE processing HTML
+    text = text.replace('\u201C', '"')  # Left double quotation mark
+    text = text.replace('\u201D', '"')  # Right double quotation mark
+    text = text.replace('\u2018', "'")  # Left single quotation mark
+    text = text.replace('\u2019', "'")  # Right single quotation mark
+    text = text.replace('\u2026', '...')  # Ellipsis
+
+    # Convert markdown links [text](url) BEFORE superscript conversion so citation links
+    # like [³](https://...) keep the URL (link text ³ is then converted to <sup>3</sup> below)
+    # IMPORTANT: only treat links with an explicit URL scheme as clickable links.
+    # This avoids creating invalid internal PDF destinations such as \"references\".
+    def _markdown_link_to_pdf_edit(m: re.Match) -> str:
+        link_text = m.group(1)
+        href = m.group(2).strip()
+        if href.startswith("http://") or href.startswith("https://"):
+            return f'<a href="{href}" color="blue">{link_text}</a>'
+        # For non-URL targets, render just the visible text.
+        return link_text
+
+    text = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', _markdown_link_to_pdf_edit, text)
+
+    # Convert Unicode superscript digits to <sup>N</sup> so PDF renders them correctly
+    _SUPERSCRIPT_MAP = {
+        '\u00B9': '1', '\u00B2': '2', '\u00B3': '3', '\u2074': '4', '\u2075': '5',
+        '\u2076': '6', '\u2077': '7', '\u2078': '8', '\u2079': '9', '\u2070': '0',
+    }
+    for sup_char, digit in _SUPERSCRIPT_MAP.items():
+        text = text.replace(sup_char, f'<sup>{digit}</sup>')
+
+    # Normalize all Unicode dash/hyphen variants to standard ASCII hyphen-minus (-)
+    dash_variants = [
+        '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2015',
+        '\u2212', '\u058A', '\u05BE', '\u1400', '\u1806',
+        '\u2E17', '\u30A0', '\uFE58', '\uFE63', '\uFF0D',
+    ]
+    for dash in dash_variants:
+        text = text.replace(dash, '-')
+
+    # Convert *italic* to <i>italic</i> (but not if it's part of **bold** or at line start for bullets)
+    text = re.sub(r'(?<!\*)\*([^\*]+?)\*(?!\*)', r'<i>\1</i>', text)
+
+    # Convert plain URLs to clickable links (but not those already inside href= attributes or already converted)
+    text = re.sub(
+        r'(?<![="])(?<![a-zA-Z])(?<!href)(https?://[^\s)>\]]+)',
+        r'<a href="\1" color="blue">\1</a>',
+        text,
+    )
+
+    # Convert **bold** to <b>bold</b>
+    text = re.sub(
+        r'(?<!\*)\*\*([^\*]+?)\*\*(?!\*)',
+        r'<b>\1</b>',
+        text,
+    )
+
     return text
 
 
@@ -3833,23 +3900,23 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
             
             if block.startswith('####'):
                 text = block.replace('####', '').strip()
-                text = _format_content_for_pdf(text)
+                text = _format_content_for_pdf_edit(text)
                 story.append(Paragraph(text, heading_style))
             elif block.startswith('###'):
                 text = block.replace('###', '').strip()
-                text = _format_content_for_pdf(text)
+                text = _format_content_for_pdf_edit(text)
                 story.append(Paragraph(text, heading_style))
             elif block.startswith('##'):
                 text = block.replace('##', '').strip()
-                text = _format_content_for_pdf(text)
+                text = _format_content_for_pdf_edit(text)
                 story.append(Paragraph(text, heading_style))
             elif block.startswith('#'):
                 text = block.replace('#', '').strip()
-                text = _format_content_for_pdf(text)
+                text = _format_content_for_pdf_edit(text)
                 story.append(Paragraph(text, heading_style))
             elif _is_bullet_list_block(block):
                 bullet_items = _parse_bullet_items(block)
-                list_items = [ListItem(Paragraph(_format_content_for_pdf(text), body_style)) for indent, text in bullet_items]
+                list_items = [ListItem(Paragraph(_format_content_for_pdf_edit(text), body_style)) for indent, text in bullet_items]
                 story.append(
                     ListFlowable(
                         list_items,
@@ -3861,7 +3928,7 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                     )
                 )
             else:
-                para = Paragraph(_format_content_for_pdf(block), body_style)
+                para = Paragraph(_format_content_for_pdf_edit(block), body_style)
                 story.append(para)
         return
     
@@ -4017,7 +4084,7 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                 clean_content = re.sub(r'^#+\s*', '', clean_content).strip()
                 
                 # Heading: Based on level, bold, black color, font-weight 600 equivalent
-                text = _format_content_for_pdf(clean_content)
+                text = _format_content_for_pdf_edit(clean_content)
                 # Adjust font size based on level (14pt base, decrease slightly for higher levels)
                 heading_font_size = max(12, 14 - (level - 1))
                 level_heading_style = ParagraphStyle(
@@ -4046,7 +4113,7 @@ def _format_content_with_block_types_pdf(story: list, content: str, block_types:
                 if prev_block_type == 'heading':
                     para_style.spaceBefore = 0
                 
-                para = Paragraph(_format_content_for_pdf(content), para_style)
+                para = Paragraph(_format_content_for_pdf_edit(content), para_style)
                 story.append(para)
             
             prev_block_type = block_type
