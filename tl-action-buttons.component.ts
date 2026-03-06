@@ -1,2287 +1,5862 @@
-from app.features.thought_leadership.prompts.prompt_common import BRAND_EDITOR_PROMPT_RULE
-
-BASE_OUTPUT_FORMAT = """
-### BASE OUTPUT FORMAT (MANDATORY)
-
-You MUST return EXACTLY one JSON object for EVERY block in the input `document_json`.
-
-This rule is absolute.  
-You must NOT skip, omit, exclude, or collapse any block — even if no edits are required.
-
-------------------------------------------------------------
-REQUIRED STRUCTURE FOR EACH BLOCK
-------------------------------------------------------------
-
-Each output item MUST have this structure:
-
-{
-  "id": "b3",
-  "suggested_text": "FULL rewritten text for this block, or the original if unchanged",
-  "feedback_edit": {
-      "<editor_key>": [
-          {
-              "issue": "\"exact substring from original\"",
-              "fix": "\"exact replacement used\"",
-              "impact": "Short explanation of importance",
-              "rule_used": "[Editor Name] - <Rule Name>",
-              "priority": "Critical | Important | Enhancement"
-          }
-      ]
-  }
-}
-
-------------------------------------------------------------
-RULES FOR UNCHANGED BLOCKS
-------------------------------------------------------------
-If the block requires NO edits:
-- suggested_text MUST equal the original text exactly.
-- feedback_edit MUST be an empty object: {}
-
-------------------------------------------------------------
-GLOBAL RULES
-------------------------------------------------------------
-1. The number of output objects MUST equal the number of input blocks.
-2. NEVER output an empty list ([]).
-3. NEVER output only edited blocks — ALWAYS output ALL blocks.
-4. NEVER omit an ID.
-5. NEVER add, remove, merge, split, or invent blocks.
-6. Output MUST be valid JSON containing ONLY the list of edited blocks.
-7. Do NOT wrap JSON in quotes, markdown fences, prose, or commentary.
-
-------------------------------------------------------------
-EDITOR KEY
-------------------------------------------------------------
-Use ONLY one of the following keys depending on the active editor:
-- development
-- content
-- line
-- copy
-- brand
-
-"""
-
-# ------------------------------------------------------------
-# 2. DEVELOPMENT EDITOR PROMPT
-# ------------------------------------------------------------
-
-DEVELOPMENT_EDITOR_PROMPT = """
-ROLE:
-You are the Development Editor for PwC thought leadership content.
-
-OBJECTIVE:
-Apply development-level editing to strengthen structure, narrative arc, logic, theme, tone, and point of view, while strictly preserving the original meaning, intent, and factual content.
-
-You are responsible for ensuring the content reflects PwC’s Development Editor standards and PwC’s verbal brand voice: Collaborative, Bold, and Optimistic.
-
-============================================================
-DEVELOPMENT EDITOR — KEY IMPROVEMENTS REQUIRED
-============================================================
-
-You MUST actively enforce the following outcomes across the ENTIRE ARTICLE,
-not only within individual paragraphs:
-
-1. STRONGER POV AND CONFIDENCE
-- Eliminate unnecessary qualifiers, hedging, and passive constructions
-- Assert a clear, decisive point of view appropriate for PwC thought leadership
-- Frame insights as informed judgments, not tentative observations
-- Where ambiguity exists, YOU MUST resolve it in favor of clarity and authority
-
-2. MORE ENERGY AND DIRECTION
-- Favor active voice and forward-looking language
-- Emphasize momentum, progress, and opportunity
-- Ensure ideas point toward outcomes, implications, or decisions—not explanation alone
-- If content explains without directing, YOU MUST revise it to introduce consequence or action
-
-3. BETTER AUDIENCE ENGAGEMENT
-- Address the reader directly where appropriate (“you,” “your organization”)
-- Use inclusive, partnership-oriented language (“we,” “together”)
-- Position PwC as a trusted guide helping the reader navigate decisions
-- Avoid detached, academic, or observational tone
-
-============================================================
-ROLE ENFORCEMENT — ABSOLUTE
-============================================================
-
-You MUST operate ONLY as a Development Editor.
-You are NOT a Content Editor, Copy Editor, or Line Editor.
-
-If a change cannot be clearly justified as a DEVELOPMENT-LEVEL
-responsibility (structure, narrative arc, logical progression,
-thematic framing, tone, or point of view), YOU MUST NOT make it.
-
-============================================================
-RESPONSIBILITIES — STRICT (MANDATORY)
-============================================================
-
-STRUCTURE & NARRATIVE
-- Strengthen the overall structure and narrative arc of the FULL ARTICLE
-- Establish a single, clear central argument early
-- Improve logical flow and progression ACROSS sections and paragraphs
-- Reorder, restructure, consolidate, or remove sections where required
-- Eliminate tangents, thematic drift, redundancy, and overlap (mandatory)
-
-THEME & FRAMING
-- Ensure thematic coherence from introduction to conclusion
-- Ensure each section clearly contributes to the same central narrative
-- Resolve ambiguity, contradiction, or weak positioning at the IDEA level
-- If a theme is introduced, it MUST be meaningfully developed or removed
-
-============================================================
-ARTICLE-LEVEL ENFORCEMENT — MANDATORY
-============================================================
-
-CRITICAL: The Development Editor MUST operate at the FULL ARTICLE LEVEL.
-Working only within individual paragraphs or isolated sections is NON-COMPLIANT.
-You MUST work ACROSS the entire document, not paragraph-by-paragraph.
-
-{article_analysis_context}
-
-The Development Editor MUST articulate the article's central argument in one sentence before editing and ensure that every section advances, substantiates, or logically supports that argument. Sections that do not advance the argument must be reframed or reduced.
-
-Once a core idea has been fully introduced and explained, it MUST NOT be restated in later sections. Subsequent sections may only build on that idea by adding new implications, evidence, or consequences; otherwise, the repeated material must be removed or consolidated.
-
-If a core idea appears in more than two sections, the Development Editor MUST review it for consolidation, elevation, or removal. Repetition is permitted only if each occurrence serves a distinct narrative function (e.g., framing, substantiation, synthesis).
-
-The Development Editor MUST reduce total article length where redundancy or over-explanation exists, even if all content is individually 'good.'
-
-The Development Editor MUST explicitly select and maintain one primary point of view (e.g., market analyst, advisor, collaborator). Sections that drift must be rewritten to align.
-
-If the article were summarized in one sentence, could every section be defended as serving that sentence? If not, revise or cut.
-
-============================================================
-ARTICLE-LEVEL COMPLIANCE GATE — NON-NEGOTIABLE
-============================================================
-- Articulate the article’s central argument in ONE clear, assertive sentence.
-- This sentence MUST appear explicitly in the introduction.
-- This sentence MUST visibly govern the structure and sequencing of the article.
-- Every section MUST clearly and directly advance, substantiate, or operationalize
-  this argument.
-- Any section that does not clearly serve the argument MUST be reframed,
-  substantially reduced, consolidated, or removed.
-
-2. PROHIBITION OF CORE IDEA RESTATEMENT
-Once a core idea has been fully introduced and explained, it MUST NOT be restated in later sections. Subsequent sections may only build on that idea by adding new implications, evidence, or consequences; otherwise, the repeated material must be removed or consolidated.
-
-- Rephrasing the same idea using different wording still constitutes restatement and is NOT permitted.
-- Later sections may ONLY add implications, decisions, trade-offs, consequences, or synthesis.
-- Any explanatory repetition MUST be deleted or consolidated.
-
-3. MANDATORY CONSOLIDATION ACROSS SECTIONS
-If a core idea appears in more than two sections, the Development Editor MUST review it for consolidation, elevation, or removal. Repetition is permitted only if each occurrence serves a distinct narrative function (e.g., framing, substantiation, synthesis).
-
-- If a core idea appears in more than TWO sections, the Development Editor MUST:
-  - Consolidate overlapping sections, OR
-  - Remove duplicated framing language, OR
-  - Eliminate one or more occurrences entirely.
-- Merely “reviewing” repetition is insufficient.
-- Visible consolidation or removal is REQUIRED.
-- Each remaining appearance MUST serve a DISTINCT narrative function:
-  framing (early), substantiation (middle), or synthesis (end).
-
-4. REQUIRED ARTICLE-LEVEL LENGTH REDUCTION
-The Development Editor MUST reduce total article length where redundancy or over-explanation exists, even if all content is individually 'good.'
-
-- The Development Editor MUST visibly reduce total article length wherever redundancy or over-explanation exists.
-- Sentence-level tightening alone is INSUFFICIENT.
-- Reduction MUST occur through paragraph deletion, section consolidation, or removal of duplicated framing concepts.
-- The edited article MUST be demonstrably shorter as a result.
-
-5. SINGLE POINT-OF-VIEW LOCK
-The Development Editor MUST explicitly select and maintain one primary point of view (e.g., market analyst, advisor, collaborator). Sections that drift must be rewritten to align.
-
-- The Development Editor MUST explicitly select ONE primary POV:
-  advisor/collaborator addressing “you” and “your organization”.
-- Observer or analyst-style language referring generically to
-  “organizations”, “companies”, or “the market” MUST be rewritten.
-- Mixed POV is NOT permitted and constitutes non-compliance.
-
-6. ONE-SENTENCE NECESSITY TEST — CUT GATE
-If the article were summarized in one sentence, could every section be defended as serving that sentence? If not, revise or cut.
-
-- If the article were summarized in ONE sentence, EVERY remaining section MUST be clearly essential to that sentence.
-- This is a CUT GATE, not a reflection exercise.
-- Sections that feel additive, loosely attached, expected, or thin (including culture or sustainability mentions) MUST be deeply integrated into the central argument or removed entirely.
-
-============================================================
-ARTICLE-LEVEL COMPLIANCE GATE — NON-NEGOTIABLE
-============================================================
-
-You MUST NOT finalize the edit unless ALL of the following are true
-in the edited article itself:
-
-- A single, explicit central argument is visible in the introduction
-- No core idea is restated in explanatory form across sections
-- Repeated concepts have been visibly consolidated or removed
-- The article is demonstrably shorter due to elimination of redundancy
-- A single advisory POV is maintained consistently throughout
-- No section remains unless it is clearly essential to the central argument
-
-Failure to meet ANY condition constitutes NON-COMPLIANCE.
-
-============================================================
-PwC TONE OF VOICE — REQUIRED
-============================================================
-
-COLLABORATIVE
-- Use “we,” “you,” and “your organization” deliberately
-- Favor partnership-oriented language
-- Position PwC as a collaborator, not a distant authority
-
-BOLD
-- Remove hedging and unnecessary qualifiers (“might,” “may,” “could”)
-- Use confident, assertive, direct language
-- Prefer active voice and clear judgment
-
-OPTIMISTIC
-- Reframe challenges as navigable opportunities
-- Use future-forward, progress-oriented language
-- Emphasize agency and momentum without adding new facts
-
-============================================================
-NOT ALLOWED — ABSOLUTE
-============================================================
-
-You MUST NOT:
-- Add new facts, data, examples, or claims
-- Remove or materially alter existing meaning
-- Introduce promotional or marketing language
-- Perform copy editing or proofreading as the primary task
-- Preserve sections solely because they are expected or familiar
-
-============================================================
-ALLOWED BLOCK TYPES
-============================================================
-
-- title
-- heading
-- paragraph
-- bullet_item
-
-============================================================
-DOCUMENT COVERAGE — MANDATORY
-============================================================
-
-You MUST evaluate EVERY block in {document_json}, in order.
-You MUST inspect every sentence.
-You MUST NOT skip content that appears acceptable.
-
-============================================================
-DETERMINISTIC SENTENCE EVALUATION — ABSOLUTE
-============================================================
-
-For EVERY sentence in EVERY paragraph and bullet_item:
-- Evaluate against ALL rules
-- Decide FIX REQUIRED or NO FIX REQUIRED for EACH rule
-
-============================================================
-DETERMINISM & EVALUATION ORDER — ABSOLUTE
-============================================================
-
-Evaluation MUST be:
-- Sequential
-- Deterministic
-- Sentence-by-sentence
-- Rule-by-rule in FIXED ORDER
-
-============================================================
-SENTENCE BOUNDARY — STRICT
-============================================================
-
-- Edits must stay within ONE original sentence
-- You MAY split a sentence
-- You MUST NOT merge sentences
-- You MUST NOT move text across blocks
-
-============================================================
-ISSUE–FIX EMISSION RULES — ABSOLUTE
-============================================================
-
-An Issue/Fix is emitted ONLY when text changes.
-
-- `issue` = exact original substring
-- `fix` = exact replacement
-- Identical text (ignoring whitespace) → NO issue
-
-============================================================
-ISSUE–FIX ATOMIZATION — NON-NEGOTIABLE
-============================================================
-
-- ONE semantic change = ONE issue
-- ONE sentence split = ONE issue
-- ONE hedging removal = ONE issue
-- ONE voice change = ONE issue
-
-Do NOT combine changes.
-
-============================================================
-NON-OVERLAPPING FIX ENFORCEMENT — DELTA DOMINANCE
-============================================================
-
-Each character may belong to AT MOST ONE issue.
-Prefer the LARGEST necessary phrase.
-
-============================================================
-OUTPUT FORMAT — ABSOLUTE
-============================================================
-
-1. Return EXACTLY ONE output object per input block.
-2. Do NOT omit or merge blocks.
-3. Do NOT return keys: "text", "type", "level".
-4. Each block MUST contain ONLY:
-   - id
-   - type
-   - level
-   - original_text
-   - suggested_text
-   - feedback_edit
-5. Output count MUST equal input block count.
-6. If unchanged:
-   - suggested_text = original_text
-   - feedback_edit = {}
-7. If changed:
-   - Rewrite the FULL block
-   - Emit at least one feedback item
-
-============================================================
-FEEDBACK STRUCTURE — REQUIRED
-============================================================
-
-"development": [
-  {
-    "issue": "exact substring text from original_text",
-    "fix": "exact replacement text used in suggested_text",
-    "impact": "Why this improves tone, clarity, or flow",
-    "rule_used": "Development Editor - <Rule Name>",
-    "priority": "Critical | Important | Enhancement"
-  }
+import copy
+from csv import writer
+# from turtle import title
+from numpy import block
+from pathlib import Path
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.pdfgen import canvas
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table,Preformatted,TableStyle, PageBreak, Flowable, ListFlowable, ListItem, KeepTogether, HRFlowable
+from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT, TA_CENTER
+from reportlab.lib import colors
+from docx.enum.section import WD_SECTION
+from docx.enum.style import WD_STYLE_TYPE
+import docx
+from docx import Document
+from docx.shared import Pt as DocxPt, Inches as DocxInches, RGBColor as DocxRGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK,WD_LINE_SPACING
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+from pypdf import PdfReader, PdfWriter
+from html import unescape
+import io
+import logging
+import os
+import re
+import zipfile
+import itertools
+import tempfile
+from typing import List, Dict, Optional
+from xml.etree import ElementTree as ET
+from io import BytesIO
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+import pypandoc
+from sympy import content
+
+
+logger = logging.getLogger(__name__)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FONT_DIR = os.path.join(BASE_DIR, "..", "assets", "fonts")
+
+pdfmetrics.registerFont(TTFont("DejaVu",os.path.join(FONT_DIR,  "DejaVuSans.ttf")))
+pdfmetrics.registerFont(TTFont("DejaVu-Bold",  os.path.join(FONT_DIR,"DejaVuSans-Bold.ttf")))
+
+# Path to PwC templates
+PWC_TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),"app","features","thought_leadership","template", "pwc_doc_template_2025.docx")
+PWC_PDF_TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),"app","features","thought_leadership","template", "pwc_pdf_template_2025.pdf")
+
+
+def _get_existing_pwc_pdf_template_path() -> str:
+    """
+    Resolve the PwC PDF template path across common runtime layouts.
+
+    In some deployments the repo is installed as a package (site-packages/app/..),
+    while in others it runs from the checked-out source tree. This helper checks a
+    small set of likely locations and returns the first hit. If none are present,
+    it raises so callers can surface a clear error instead of silently falling
+    back to the unbranded PDF.
+    """
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    candidates = [
+        # Standard relative path from this module (source tree or editable install)
+        os.path.join(base_dir, "app", "features", "thought_leadership", "template", "pwc_pdf_template_2025.pdf"),
+        # If the module is under site-packages/app/, the templates may sit alongside the package
+        os.path.join(base_dir, "features", "thought_leadership", "template", "pwc_pdf_template_2025.pdf"),
+        # Fallback to current working directory (useful in packaged container layouts)
+        os.path.join(os.getcwd(), "app", "features", "thought_leadership", "template", "pwc_pdf_template_2025.pdf"),
+    ]
+
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+
+    logger.error("PwC PDF template not found. Checked: %s", " | ".join(candidates))
+    raise FileNotFoundError("PwC PDF template (pwc_pdf_template_2025.pdf) is missing")
+
+_bookmark_counter = itertools.count(1)
+
+def sanitize_text_for_word(text: str) -> str:
+    """
+    Sanitize text for Word export by ensuring all Unicode characters are properly encoded.
+    This fixes encoding issues with special characters like em dashes, smart quotes, etc.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    
+    # Ensure the text is valid Unicode
+    try:
+        # Normalize unicode (NFKC normalization handles most compatibility issues)
+        text = text.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+    except Exception as e:
+        logger.warning(f"Error sanitizing text: {e}, using as-is")
+    
+    return text
+
+
+def _fix_docx_encoding(buffer_bytes: bytes) -> bytes:
+    """
+    Fix DOCX encoding issues by re-serializing XML with proper UTF-8 encoding.
+    This ensures all Unicode characters are properly handled in the Word document.
+    """
+    try:
+        # Work with the bytes directly without temp file to avoid locking issues
+        import io as io_module
+        
+        # Read the DOCX (which is a ZIP) directly from bytes
+        try:
+            input_zip = io_module.BytesIO(buffer_bytes)
+            file_contents = {}
+            
+            with zipfile.ZipFile(input_zip, 'r') as zip_read:
+                # Extract all files
+                for name in zip_read.namelist():
+                    try:
+                        file_contents[name] = zip_read.read(name)
+                    except Exception as e:
+                        logger.warning(f"Could not read {name} from ZIP: {e}")
+                        continue
+            
+            # Re-create the DOCX with proper UTF-8 encoding
+            output_buffer = io_module.BytesIO()
+            with zipfile.ZipFile(output_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_write:
+                for name, content in file_contents.items():
+                    # For XML files, ensure proper encoding
+                    if name.endswith('.xml'):
+                        try:
+                            # Try to parse and re-serialize to ensure UTF-8
+                            tree = ET.fromstring(content)
+                            # Convert back to string with UTF-8 encoding
+                            xml_str = ET.tostring(tree, encoding='unicode')
+                            # Prepend XML declaration with UTF-8 encoding if not present
+                            if not xml_str.startswith('<?xml'):
+                                xml_str = '<?xml version="1.0" encoding="UTF-8"?>' + xml_str
+                            content = xml_str.encode('utf-8')
+                        except ET.ParseError as e:
+                            logger.warning(f"Could not parse XML {name}: {e}, keeping original bytes")
+                        except Exception as e:
+                            logger.warning(f"Could not re-encode {name}: {e}, keeping original")
+                    
+                    try:
+                        zip_write.writestr(name, content)
+                    except Exception as e:
+                        logger.warning(f"Could not write {name} to ZIP: {e}")
+                        continue
+            
+            result = output_buffer.getvalue()
+            logger.info(f"[_fix_docx_encoding] Successfully re-encoded DOCX with UTF-8, size: {len(result)} bytes")
+            return result
+        
+        except Exception as e:
+            logger.warning(f"[_fix_docx_encoding] Error during ZIP processing: {e}, returning original")
+            return buffer_bytes
+    
+    except Exception as e:
+        logger.warning(f"[_fix_docx_encoding] Failed to fix DOCX encoding: {e}, returning original")
+        return buffer_bytes
+
+def extract_subtitle_from_content(content: str) -> tuple[str, str]:
+    """
+    Extract subtitle from the first line of content.
+    Returns (subtitle, remaining_content)
+    
+    The first non-empty line (after any markdown heading markers) becomes the subtitle,
+    and the rest becomes the content.
+    """
+    lines = content.strip().split('\n')
+    
+    if not lines:
+        return "", content
+    
+    # Get first non-empty line
+    first_line = ""
+    remaining_lines = []
+    found_first = False
+    
+    for line in lines:
+        stripped = line.strip()
+        if not found_first and stripped:
+            # Remove markdown heading markers from first line if present
+            first_line = re.sub(r'^#+\s*', '', stripped)
+            # Remove bold markers (both paired and stray **)
+            first_line = re.sub(r'\*\*(.+?)\*\*', r'\1', first_line)
+            # Remove any remaining stray ** characters
+            first_line = first_line.replace('**', '')
+            found_first = True
+        elif found_first:
+            remaining_lines.append(line)
+    
+    # Reconstruct remaining content
+    remaining_content = '\n'.join(remaining_lines).strip()
+    
+    return first_line, remaining_content
+
+def _apply_body_text_style_word(para):
+    """
+    Apply PwC Body Text style to a Word paragraph.
+    Font size: 11pt, Line spacing: 1.5 lines, Space After 6pt, Space Before 2pt, justified alignment.
+    """
+    para.paragraph_format.space_after = DocxPt(6)
+    para.paragraph_format.space_before = DocxPt(2)
+    if para.runs:
+        para.runs[0].font.size = DocxPt(11)
+    para.paragraph_format.line_spacing = 1.5
+    para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+def _detect_list_type(line: str, level: int = 0) -> tuple[str, int]:
+    """
+    Detect list type from a line of content.
+    Returns: (list_type, detected_level)
+    list_type: 'bullet', 'number', 'alpha_upper', 'alpha_lower', 'none'
+    detected_level: 0 for first level, 1+ for nested (based on indentation)
+    """
+    line_stripped = line.strip()
+    if not line_stripped:
+        return 'none', 0
+    
+    # Check for numbered list (1., 2., 3., etc.)
+    number_match = re.match(r'^(\d+)\.\s+(.*)', line_stripped)
+    if number_match:
+        # Check indentation for nesting level
+        indent_level = (len(line) - len(line.lstrip())) // 4  # Approximate: 4 spaces = 1 level
+        return 'number', max(0, indent_level)
+    
+    # Check for uppercase alphabetical list (A., B., C., etc.)
+    alpha_upper_match = re.match(r'^([A-Z])\.\s+(.*)', line_stripped)
+    if alpha_upper_match:
+        indent_level = (len(line) - len(line.lstrip())) // 4
+        return 'alpha_upper', max(0, indent_level)
+    
+    # Check for lowercase alphabetical list (a., b., c., etc.)
+    alpha_lower_match = re.match(r'^([a-z])\.\s+(.*)', line_stripped)
+    if alpha_lower_match:
+        indent_level = (len(line) - len(line.lstrip())) // 4
+        return 'alpha_lower', max(0, indent_level)
+    
+    # Check for bullet list (•, -, *, etc.)
+    bullet_match = re.match(r'^[•\-\*]\s+(.*)', line_stripped)
+    if bullet_match:
+        indent_level = (len(line) - len(line.lstrip())) // 4
+        return 'bullet', max(0, indent_level)
+    
+    return 'none', 0
+
+def _numbering_root(numbering_part):
+    """Get the numbering XML root; use public .element (cloud/compat) or fallback to ._numbering."""
+    return getattr(numbering_part, 'element', None) or getattr(numbering_part, '_numbering', None)
+
+def _get_next_abstract_num_id(numbering_part):
+    """Get the next available abstract numbering ID by finding the maximum existing ID."""
+    root = _numbering_root(numbering_part)
+    if root is None:
+        return 1
+    max_id = 0
+    for abstract_num in root.findall(qn('w:abstractNum')):
+        abstract_num_id_attr = abstract_num.get(qn('w:abstractNumId'))
+        if abstract_num_id_attr:
+            try:
+                max_id = max(max_id, int(abstract_num_id_attr))
+            except (ValueError, TypeError):
+                pass
+    return max_id + 1
+
+def _get_next_num_id(numbering_part):
+    """Get the next available numbering ID by finding the maximum existing ID."""
+    root = _numbering_root(numbering_part)
+    if root is None:
+        return 1
+    max_id = 0
+    for num in root.findall(qn('w:num')):
+        num_id_attr = num.get(qn('w:numId'))
+        if num_id_attr:
+            try:
+                max_id = max(max_id, int(num_id_attr))
+            except (ValueError, TypeError):
+                pass
+    return max_id + 1
+
+def _create_new_numbering_instance(doc: Document, list_type: str, level: int = 0):
+    """
+    Create a new numbering instance for Word lists to reset numbering.
+    Returns the num_id to use for the list.
+    """
+    numbering_part = doc.part.numbering_part
+    
+    # Create a new abstract numbering definition
+    abstract_num_id = _get_next_abstract_num_id(numbering_part)
+    
+    abstract_num = OxmlElement("w:abstractNum")
+    abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
+    
+    lvl = OxmlElement("w:lvl")
+    lvl.set(qn("w:ilvl"), str(level))
+    
+    start = OxmlElement("w:start")
+    start.set(qn("w:val"), "1")  # Always start from 1
+    
+    lvl_restart = OxmlElement("w:lvlRestart")
+    lvl_restart.set(qn("w:val"), "1")
+    
+    num_fmt = OxmlElement("w:numFmt")
+    if list_type == 'number':
+        num_fmt.set(qn("w:val"), "decimal")
+        lvl_text = OxmlElement("w:lvlText")
+        lvl_text.set(qn("w:val"), "%1.")
+    elif list_type == 'alpha_upper':
+        num_fmt.set(qn("w:val"), "upperLetter")
+        lvl_text = OxmlElement("w:lvlText")
+        lvl_text.set(qn("w:val"), "%1.")
+    elif list_type == 'alpha_lower':
+        num_fmt.set(qn("w:val"), "lowerLetter")
+        lvl_text = OxmlElement("w:lvlText")
+        lvl_text.set(qn("w:val"), "%1.")
+    else:
+        # Bullet list
+        num_fmt.set(qn("w:val"), "bullet")
+        lvl_text = OxmlElement("w:lvlText")
+        lvl_text.set(qn("w:val"), "•")
+    
+    lvl.extend([start, lvl_restart, num_fmt, lvl_text])
+    abstract_num.append(lvl)
+    root = _numbering_root(numbering_part)
+    if root is not None:
+        root.append(abstract_num)
+    
+    # Create a new numbering instance
+    num_id = _get_next_num_id(numbering_part)
+    
+    num = OxmlElement("w:num")
+    num.set(qn("w:numId"), str(num_id))
+    
+    abstract_ref = OxmlElement("w:abstractNumId")
+    abstract_ref.set(qn("w:val"), str(abstract_num_id))
+    
+    num.append(abstract_ref)
+    if root is not None:
+        root.append(num)
+    
+    return num_id
+def _normalize_citation_url_for_word(url: str) -> str:
+    """
+    Normalize a citation URL for Word export so the full URL is preserved as one string.
+    Prevents breaks after dots (e.g. after www.pwc.) by stripping newlines and ensuring
+    the URL is a single contiguous string. Use this for edit content Word citation links.
+    """
+    if not url:
+        return ""
+    s = str(url).strip()
+    # Remove any newlines, carriage returns, or spaces that could cause Word to break the link
+    s = re.sub(r'[\r\n\t\s]+', '', s)
+    return s
+ 
+ 
+ 
+def _add_list_to_document(doc: Document, list_items: list[dict], list_type: str, reset_numbering: bool = False, force_bullet_style: bool = False):
+    """
+    Add a list of items to Word document with appropriate style based on type and level.
+    If reset_numbering is True, creates a new numbering instance to reset numbering to 1.
+    If force_bullet_style is True, all lists use bullet icons regardless of list_type (for edit content export).
+    """
+    if not list_items:
+        return
+    
+    # If forcing bullet style, treat all lists as bullets (for edit content export)
+    if force_bullet_style:
+        list_type = 'bullet'
+    
+    # Create new numbering instance if reset is needed (for numbered/alphabetical lists only, not bullets)
+    num_id = None
+    if reset_numbering and list_type in ['number', 'alpha_upper', 'alpha_lower']:
+        num_id = _create_new_numbering_instance(doc, list_type, 0)
+    
+    # Match URL with or without brackets: stop at ] or whitespace so [https://...] works as clickable link
+    url_pattern = re.compile(r'(https?://[^\s\]]+)')
+    for item in list_items:
+        content = item.get('content', '')
+        level = item.get('level', 0)
+        parsed = item.get('parsed', parse_bullet(content))
+        # Determine style based on list type and level
+        if list_type == 'bullet':
+            style_name = "List Bullet 2" if level >= 1 else "List Bullet"
+        elif list_type == 'number':
+            style_name = "List Number 2" if level >= 1 else "List Number"
+        elif list_type == 'alpha_upper':
+            style_name = "List Alpha 2" if level >= 1 else "List Alpha"
+        elif list_type == 'alpha_lower':
+            style_name = "List Alpha 2" if level >= 1 else "List Alpha"
+        else:
+            style_name = "List Bullet" if level == 0 else "List Bullet 2"
+        try:
+            para = doc.add_paragraph(style=style_name)
+        except:
+            para = doc.add_paragraph(style="List Bullet")
+        if num_id is not None:
+            pPr = para._p.get_or_add_pPr()
+            numPr = OxmlElement("w:numPr")
+            ilvl = OxmlElement("w:ilvl")
+            ilvl.set(qn("w:val"), str(level))
+            numId_elem = OxmlElement("w:numId")
+            numId_elem.set(qn("w:val"), str(num_id))
+            numPr.extend([ilvl, numId_elem])
+            pPr.append(numPr)
+        _apply_body_text_style_word(para)
+        clean_content = content
+        if force_bullet_style:
+            clean_content = re.sub(r'^\d+\.\s+', '', content.strip())
+            clean_content = re.sub(r'^[A-Za-z]\.\s+', '', clean_content.strip())
+            clean_content = re.sub(r'^[•\-\*]\s+', '', clean_content.strip())
+        elif list_type == 'number':
+            clean_content = re.sub(r'^\d+\.\s+', '', content.strip())
+        elif list_type in ['alpha_upper', 'alpha_lower']:
+            clean_content = re.sub(r'^[A-Za-z]\.\s+', '', content.strip())
+        elif list_type == 'bullet':
+            clean_content = re.sub(r'^[•\-\*]\s+', '', content.strip())
+        # If the content contains a URL, add as hyperlink (use add_hyperlink for clickable links)
+        match = url_pattern.search(clean_content)
+        if match:
+            url = match.group(1)
+            before_url = clean_content.split(url)[0].strip()
+            after_url = clean_content.split(url)[1].strip() if len(clean_content.split(url)) > 1 else ""
+            if before_url:
+                para.add_run(sanitize_text_for_word(before_url) + " ")
+            url_norm = _normalize_citation_url_for_word(url)
+            add_hyperlink(para, url_norm, sanitize_text_for_word(url) or url, no_break=True, doc=doc)
+            # Ensure there is a run after the hyperlink (Word/Word Online often need this for link to be clickable)
+            if after_url:
+                para.add_run(" " + sanitize_text_for_word(after_url))
+            else:
+                para.add_run(" ")
+        elif parsed.get('label') and parsed.get('body'):
+            run = para.add_run(sanitize_text_for_word(parsed['label']))
+            run.bold = True
+            para.add_run(f": {sanitize_text_for_word(parsed['body'])}")
+        else:
+            _add_markdown_text_runs(para, clean_content)
+
+def _add_list_as_paragraphs_word(doc: Document, list_items: list[dict], prev_block_type: str = None, next_block: dict = None):
+    """
+    Add numbered/alpha list items as body paragraphs with full content (number/letter included).
+    Used for edit content export so export matches final article response exactly - no reorder, no re-number.
+    """
+    if not list_items:
+        return
+    url_pattern = re.compile(r'(https?://[^\s\]]+)')
+    for item in list_items:
+        content = item.get('content', '').strip()
+        if not content:
+            continue
+        para = doc.add_paragraph(style="Body Text")
+        _apply_body_text_style_word(para)
+        para.paragraph_format.space_before = DocxPt(2)
+        para.paragraph_format.space_after = DocxPt(3)
+        if next_block and (next_block.get('type') == 'list_item' or next_block.get('type') == 'bullet_item'):
+            para.paragraph_format.space_after = DocxPt(3)
+        match = url_pattern.search(content)
+        if match:
+            url = match.group(1)
+            before_url = content.split(url)[0].strip()
+            after_url = content.split(url)[1].strip() if len(content.split(url)) > 1 else ""
+            if before_url:
+                para.add_run(sanitize_text_for_word(before_url) + " ")
+            url_norm = _normalize_citation_url_for_word(url)
+            add_hyperlink(para, url_norm, sanitize_text_for_word(url) or url, no_break=True, doc=doc)
+            if after_url:
+                para.add_run(" " + sanitize_text_for_word(after_url))
+            else:
+                para.add_run(" ")
+        else:
+            _add_markdown_text_runs(para, content)
+
+def _add_list_as_paragraphs_pdf(story: list, list_items: list[dict], body_style: ParagraphStyle,
+                                 prev_block_type: str = None, next_block: dict = None):
+    """
+    Add numbered/alpha list items as PDF paragraphs with full content (number/letter included).
+    Used for edit content PDF export so export matches final article response exactly - no reorder, no re-number.
+    """
+    if not list_items:
+        return
+    url_pattern = re.compile(r'(https?://\S+)')
+    space_before = 3 if prev_block_type == 'paragraph' else 6
+    space_after = 3 if next_block and next_block.get('type') == 'paragraph' else 6
+    for j, item in enumerate(list_items):
+        content = item.get('content', '').strip()
+        if not content:
+            continue
+        para_style = ParagraphStyle(
+            'PWCListPara',
+            parent=body_style,
+            spaceBefore=space_before if j == 0 else 3,
+            spaceAfter=space_after if j == len(list_items) - 1 else 3,
+        )
+        match = url_pattern.search(content)
+        if match:
+            url = match.group(1)
+            before_url = content.split(url)[0].strip()
+            after_url = content.split(url)[1].strip() if len(content.split(url)) > 1 else ""
+            if before_url:
+                formatted_text = _format_content_for_pdf(before_url) + " "
+            else:
+                formatted_text = ""
+            formatted_text += f'<a href="{url}">{_format_content_for_pdf(url) or url}</a>'
+            if after_url:
+                formatted_text += " " + _format_content_for_pdf(after_url)
+            else:
+                formatted_text += " "
+        else:
+            formatted_text = _format_content_for_pdf(content)
+        story.append(Paragraph(formatted_text, para_style))
+
+def _add_list_to_pdf(story: list, list_items: list[dict], list_type: str, body_style: ParagraphStyle, 
+                     prev_block_type: str = None, next_block: dict = None, start_from: int = 1, use_bullet_icons_only: bool = True):
+    """
+    Add a list of items to PDF story.
+    If use_bullet_icons_only is True (default), all lists use bullet icons (legacy behavior).
+    If use_bullet_icons_only is False, numbered/alpha lists use numbers/letters; bullet lists use bullet icons (edit content export).
+    """
+    if not list_items:
+        return
+    
+    from reportlab.platypus import ListFlowable, ListItem
+    
+    # Create list items; remove number/letter/bullet prefix (list styling adds numbers/bullets)
+    pdf_list_items = []
+    
+    url_pattern = re.compile(r'(https?://\S+)')
+    for item in list_items:
+        content = item.get('content', '')
+        level = item.get('level', 0)
+        parsed = item.get('parsed', parse_bullet(content))
+        # Remove any existing number/letter/bullet prefix
+        clean_content = content
+        if list_type == 'number':
+            clean_content = re.sub(r'^\d+\.\s+', '', content.strip())
+        elif list_type in ['alpha_upper', 'alpha_lower']:
+            clean_content = re.sub(r'^[A-Za-z]\.\s+', '', content.strip())
+        elif list_type == 'bullet':
+            clean_content = re.sub(r'^[•\-\*]\s+', '', content.strip())
+
+        # If the content is a citation with a URL, make it clickable
+        # Detect if the content is just a URL or ends with a URL
+        match = url_pattern.search(clean_content)
+        if match:
+            url = match.group(1)
+            # If the whole content is just the URL, use it as the link text
+            if clean_content.strip() == url:
+                formatted_text = f'<a href="{url}">{url}</a>'
+            else:
+                # Replace the URL in the text with a clickable link
+                formatted_text = _format_content_for_pdf(clean_content).replace(url, f'<a href="{url}">{url}</a>')
+        elif parsed.get('label') and parsed.get('body'):
+            # Format: "Label: Body" with label bold
+            formatted_text = f"<b>{_format_content_for_pdf(parsed['label'])}</b>: {_format_content_for_pdf(parsed['body'])}"
+        else:
+            # No colon, add as-is
+            formatted_text = _format_content_for_pdf(clean_content)
+        pdf_list_items.append(ListItem(Paragraph(formatted_text, body_style)))
+    
+    # Determine spacing (same as PDF current logic)
+    space_before = 3 if prev_block_type == 'paragraph' else 6
+    space_after = 3 if next_block and next_block.get('type') == 'paragraph' else 6
+    
+    # Use numbers/letters when use_bullet_icons_only is False (edit content); otherwise bullets for all
+    if use_bullet_icons_only:
+        pdf_bullet_type = 'bullet'
+    else:
+        if list_type == 'number':
+            pdf_bullet_type = '1'
+        elif list_type == 'alpha_upper':
+            pdf_bullet_type = 'A'
+        elif list_type == 'alpha_lower':
+            pdf_bullet_type = 'a'
+        else:
+            pdf_bullet_type = 'bullet'
+    left_indent = 24  # 2em equivalent
+    
+    story.append(
+        ListFlowable(
+            pdf_list_items,
+            bulletType=pdf_bullet_type,
+            bulletFontName='Helvetica',
+            bulletFontSize=11,
+            leftIndent=left_indent,
+            bulletIndent=0,
+            spaceBefore=space_before,
+            spaceAfter=space_after,
+        )
+    )
+
+def _order_list_items(items: list[dict], start_from: int = 1) -> list[dict]:
+    """
+    Order list items correctly if they are numbered or alphabetical.
+    For numbered lists: ensure 1, 2, 3... sequence starting from start_from
+    For alphabetical lists: ensure A, B, C... or a, b, c... sequence starting from start_from
+    For bullets: preserve original order (no sorting)
+    Returns ordered list of items.
+    """
+    if not items:
+        return items
+    
+    # Determine list type from first item
+    first_item = items[0]
+    list_type = first_item.get('list_type', 'bullet')  # Default to bullet if not set
+    
+    if list_type == 'number':
+        # Extract numbers and check if ordering is needed
+        numbers = []
+        for item in items:
+            content = item.get('content', '')
+            number_match = re.match(r'^(\d+)\.\s+', content.strip())
+            if number_match:
+                numbers.append(int(number_match.group(1)))
+            else:
+                numbers.append(0)
+        
+        # Check if already in order and starting from correct number
+        is_ordered = all(numbers[i] <= numbers[i+1] for i in range(len(numbers)-1))
+        starts_correctly = numbers[0] == start_from if numbers else True
+        
+        if not is_ordered or not starts_correctly:
+            # Re-order by number if needed
+            if not is_ordered:
+                sorted_items = sorted(zip(numbers, items), key=lambda x: x[0])
+            else:
+                sorted_items = list(zip(numbers, items))
+            
+            # Re-number sequentially starting from start_from
+            ordered_items = []
+            for idx, (_, item) in enumerate(sorted_items, start=start_from):
+                content = item.get('content', '')
+                # Replace number with sequential number
+                new_content = re.sub(r'^\d+\.\s+', f'{idx}. ', content.strip())
+                new_item = item.copy()
+                new_item['content'] = new_content
+                ordered_items.append(new_item)
+            return ordered_items
+    
+    elif list_type in ['alpha_upper', 'alpha_lower']:
+        # Extract letters and check if ordering is needed
+        letters = []
+        for item in items:
+            content = item.get('content', '')
+            alpha_match = re.match(r'^([A-Za-z])\.\s+', content.strip())
+            if alpha_match:
+                letter = alpha_match.group(1)
+                # Convert letter to number for comparison
+                if list_type == 'alpha_upper':
+                    letter_num = ord(letter.upper()) - ord('A') + 1
+                else:
+                    letter_num = ord(letter.lower()) - ord('a') + 1
+                letters.append(letter_num)
+            else:
+                letters.append(0)
+        
+        # Check if already in order and starting from correct letter
+        is_ordered = all(letters[i] <= letters[i+1] for i in range(len(letters)-1))
+        expected_start_letter_num = start_from
+        starts_correctly = letters[0] == expected_start_letter_num if letters else True
+        
+        if not is_ordered or not starts_correctly:
+            # Re-order by letter if needed
+            if not is_ordered:
+                sorted_items = sorted(zip(letters, items), key=lambda x: x[0])
+            else:
+                sorted_items = list(zip(letters, items))
+            
+            # Re-letter sequentially starting from start_from
+            ordered_items = []
+            for idx, (_, item) in enumerate(sorted_items, start=start_from):
+                content = item.get('content', '')
+                # Calculate letter based on index
+                if list_type == 'alpha_upper':
+                    letter = chr(ord('A') + (idx - 1) % 26)
+                else:
+                    letter = chr(ord('a') + (idx - 1) % 26)
+                # Replace letter with sequential letter
+                new_content = re.sub(r'^[A-Za-z]\.\s+', f'{letter}. ', content.strip())
+                new_item = item.copy()
+                new_item['content'] = new_content
+                ordered_items.append(new_item)
+            return ordered_items
+    
+    # For bullets or already ordered lists, return as-is
+    return items
+
+def export_to_pdf(content: str, title: str = "Document") -> bytes:
+    """Export content to PDF format"""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    
+    story = []
+    
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor='#D04A02',
+        spaceAfter=30,
+        alignment=TA_LEFT
+    )
+    
+    body_style = ParagraphStyle(
+        'CustomBody',
+        parent=styles['BodyText'],
+        fontSize=11,
+        leading=14,
+        alignment=TA_JUSTIFY,
+        spaceAfter=12
+    )
+    heading1_style = ParagraphStyle(
+    'Heading1Bold',
+    parent=styles['Heading1'],
+    fontSize=16,
+    leading=18,
+    spaceAfter=12,
+    alignment=TA_LEFT,
+    textColor='black',
+    fontName='Helvetica-Bold'
+    )
+
+    heading2_style = ParagraphStyle(
+        'Heading2Bold',
+        parent=styles['Heading2'],
+        fontSize=14,
+        leading=16,
+        spaceAfter=10,
+        alignment=TA_LEFT,
+        textColor='black',
+        fontName='Helvetica-Bold'
+    )
+
+    story.append(Paragraph(title, title_style))
+    story.append(Spacer(1, 0.2 * inch))
+    
+    paragraphs = content.split('\n\n')
+    for para in paragraphs:
+        p = para.strip()
+        if not p:
+            continue
+        bold_heading_match = re.match(r'^\*\*(.+?)\*\*$', p)
+        if bold_heading_match:
+            text = bold_heading_match.group(1).strip()
+            # Format and normalize text before rendering
+            text = _format_content_for_pdf(text)
+            story.append(Paragraph(f"<b>{text}</b>", heading1_style))
+            continue
+
+        # Check for bullet lists and render real bullets
+        if _is_bullet_list_block(p):
+            bullet_items = _parse_bullet_items(p)
+            list_items = [ListItem(Paragraph(_format_content_for_pdf(text), body_style)) for indent, text in bullet_items]
+            story.append(
+                ListFlowable(
+                    list_items,
+                    bulletType='bullet',
+                    bulletFontName='Helvetica',
+                    bulletFontSize=11,
+                    leftIndent=12,
+                    bulletIndent=0,
+                )
+            )
+            continue
+        
+        if p.startswith("## "):
+            text = p.replace("##", "").strip()
+            # Remove ** markers if present
+            text = text.replace("**", "")
+            # Format and normalize text for PDF rendering
+            text = _format_content_for_pdf(text)
+            story.append(Paragraph(text, heading2_style))
+        elif p.startswith("# "):
+            text = p.replace("#", "").strip()
+            # Remove ** markers if present
+            text = text.replace("**", "")
+            # Format and normalize text for PDF rendering
+            text = _format_content_for_pdf(text)
+            story.append(Paragraph(text, heading1_style))
+        else:
+            # Intelligently split long paragraphs into smaller chunks
+            sentence_count = len(re.findall(r'[.!?]', p))
+            if sentence_count > 3:
+                # This is a long paragraph, split it into smaller chunks (2-3 sentences each)
+                split_paragraphs = _split_paragraph_into_sentences(p, target_sentences=3)
+                for split_para in split_paragraphs:
+                    if split_para:
+                        # Use _format_content_for_pdf for consistent formatting and normalization
+                        p_html = _format_content_for_pdf(split_para)
+                        story.append(Paragraph(p_html, body_style))
+            else:
+               # Keep short paragraphs as is, but format for PDF rendering
+                p_html = _format_content_for_pdf(p)
+                story.append(Paragraph(p_html, body_style))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def normalize_numeric_citation_brackets(text: str) -> str:
+    """
+    Normalize numeric citation brackets in plain text:
+    [ 1], [1 ], [  1  ] → [1]
+    
+    Does NOT touch:
+    - [1, 2]
+    - [1-3]
+    - [abc]
+    - markdown links
+    """
+    if not text:
+        return text
+
+    # Match only single numeric citations with spaces inside brackets
+    # Example matches:
+    # [ 1 ]
+    # [1 ]
+    # [  12  ]
+    pattern = r'\[\s*(\d+)\s*\]'
+
+    return re.sub(pattern, r'[\1]', text)
+
+def export_to_pdf_with_pwc_template(content: str, title: str = "Document", subtitle: str = "", content_type: Optional[str] = None) -> bytes:
+    """
+    Export content to PDF format with PWC branded cover page.
+    
+    VALIDATED with test_branded_pdf.py - This function properly creates:
+    1. A branded cover page by overlaying title/subtitle on PWC template
+    2. Formatted content pages
+    3. Final PDF: Cover (with logo) + Content Pages (with conditional TOC)
+    
+    Args:
+        content: The main content to export (starts from page 2)
+        title: Document title (displays on cover page with logo)
+        subtitle: Optional subtitle (displays on cover page)
+        content_type: Type of content (article, whitepaper, executive-brief, blog)
+                     If 'blog' or 'executive_brief', Table of Contents is skipped
+    
+    Returns:
+        Bytes of the final PDF document with cover + TOC (if applicable) + content
+    """
+    try:
+        from reportlab.pdfgen import canvas
+        
+        logger.info("Creating PWC branded PDF with title, subtitle, and content")
+        
+        template_path = _get_existing_pwc_pdf_template_path()
+        
+        # ===== STEP 1: Create branded cover page =====
+        logger.info("Step 1: Creating branded cover page")
+        
+        template_reader = PdfReader(template_path)
+        template_page = template_reader.pages[0]
+        
+        page_width = float(template_page.mediabox.width)
+        page_height = float(template_page.mediabox.height)
+        
+        logger.info(f"Template page size: {page_width:.1f} x {page_height:.1f} points")
+        
+        # Create overlay with text
+        overlay_buffer = io.BytesIO()
+        c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
+        
+        # Add title
+        title_font_size = 32
+        if len(title) > 80:
+            title_font_size = 20
+        elif len(title) > 60:
+            title_font_size = 22
+        elif len(title) > 40:
+            title_font_size = 26
+        
+        c.setFont("Helvetica-Bold", title_font_size)
+        # c.setFont("DejaVu-Bold", title_font_size)
+        c.setFillColor('#000000')  # Black color
+        title_y = page_height * 0.72
+        # title_y = page_height * 0.68
+        
+        # Handle multi-line titles with better word wrapping
+        # Maximum width for title (leaving margins on left and right)
+        max_title_width = page_width * 0.70  # 70% of page width with margins
+        
+        # Better character width estimation - more conservative to avoid cutoff
+        # Estimate pixels needed per character based on font size
+        # At 20pt Helvetica: ~10 pixels per character average
+        char_width_at_font = (title_font_size / 20.0) * 10
+        max_chars_per_line = int(max_title_width / char_width_at_font)
+        
+        # Ensure reasonable minimum and maximum
+        max_chars_per_line = max(20, min(max_chars_per_line, 50))
+        
+        words = title.split()
+        lines = []
+        current_line = []
+        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            # Use calculated character limit
+            if len(test_line) > max_chars_per_line:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+            else:
+                current_line.append(word)
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        # Draw multi-line title
+        if len(lines) > 1:
+            line_height = title_font_size + 6
+
+            # Center vertically: start higher if multiple lines
+            start_y = title_y + (len(lines) - 1) * line_height / 2
+            for i, line in enumerate(lines):
+                c.drawCentredString(page_width / 2, start_y - (i * line_height), line)
+            last_title_y = start_y - (len(lines) * line_height)
+        else:
+            c.drawCentredString(page_width / 2, title_y, title)
+            last_title_y = title_y
+        
+        logger.info(f"Title added to overlay: {title} ({len(lines)} lines)")
+        
+        # Add subtitle if provided
+        if subtitle:
+            # Clean up markdown asterisks from subtitle
+            subtitle_clean = subtitle.replace('**', '')
+            
+            c.setFont("Helvetica-Bold", 14)  # Bold font
+            # c.setFont("DejaVu-Bold", 14)
+            c.setFillColor('#000000')  # Black color
+            subtitle_y = last_title_y - 70
+            
+            # Wrap subtitle text to fit within page width
+            # Use a more conservative character limit for subtitle
+            # Page width is typically 612 points (8.5 inches) for letter size
+            # Helvetica 14pt: approximately 7-8 pixels per character
+            max_subtitle_width = page_width * 0.75  # 75% of page width with margins
+            subtitle_char_width = 8  # pixels per character at 14pt
+            max_chars_per_line = int(max_subtitle_width / subtitle_char_width)
+            
+            words = subtitle_clean.split()
+            lines = []
+            current_line = []
+            
+            for word in words:
+                test_line = ' '.join(current_line + [word])
+                # Use more conservative line breaking - shorter lines for better visibility
+                if len(test_line) > min(50, max_chars_per_line):
+                    if current_line:
+                        lines.append(' '.join(current_line))
+                    current_line = [word]
+                else:
+                    current_line.append(word)
+            
+            if current_line:
+                lines.append(' '.join(current_line))
+            
+            # Draw multi-line subtitle with proper centering
+            line_height = 22
+            # If multiple lines, center vertically
+            if len(lines) > 1:
+                start_y = subtitle_y + (len(lines) - 1) * line_height / 2
+            else:
+                start_y = subtitle_y
+            
+            for i, line in enumerate(lines):
+                c.drawCentredString(page_width / 2, start_y - (i * line_height), line)
+            
+            logger.info(f"Subtitle added to overlay: {subtitle} ({len(lines)} lines)")
+        
+        c.save()
+        overlay_buffer.seek(0)
+        
+        # Merge overlay with template
+        overlay_reader = PdfReader(overlay_buffer)
+        overlay_page = overlay_reader.pages[0]
+        
+        template_page.merge_page(overlay_page)
+        logger.info("Overlay merged onto template cover page")
+        # Remove title from body content
+        clean_title = re.sub(r'\*+', '', title).strip()
+        content = re.sub(rf'^\s*#*\s*{re.escape(clean_title)}\s*$', '', content, flags=re.MULTILINE)
+
+        # ===== STEP 2: Create content pages =====
+        logger.info("Step 2: Creating formatted content pages")
+        
+        # First, extract all headings for Table of Contents
+        headings = []
+        blocks = content.split('\n')
+        for block in blocks:
+            if not block.strip():
+                continue
+            block = block.strip()
+            # Check for various heading formats
+            standalone_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block)
+            if standalone_bold_match:
+                text = standalone_bold_match.group(1).strip()
+                # Remove leading numbers like "1. ", "5.1. ", etc.
+                text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+                headings.append(text)
+                continue
+            
+            first_line_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*\n', block)
+            if first_line_bold_match:
+                text = first_line_bold_match.group(1).strip()
+                # Remove leading numbers like "1. ", "5.1. ", etc.
+                text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+                headings.append(text)
+                continue
+            
+            # Markdown headings
+            if block.startswith('#'):
+                text = re.sub(r'^#+\s*', '', block.split('\n')[0]).strip()
+                # Remove ** markers if present
+                text = text.replace('**', '').strip()
+                # Remove leading numbers like "1. ", "5.1. ", etc.
+                text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+                headings.append(text)
+        
+        logger.info(f"Extracted {len(headings)} headings for Table of Contents")
+        
+        content_buffer = io.BytesIO()
+        doc = SimpleDocTemplate(content_buffer, pagesize=letter, topMargin=1*inch, bottomMargin=1*inch)
+        styles = getSampleStyleSheet()
+        
+        # Define custom styles
+        body_style = ParagraphStyle(
+            'PWCBody',
+            parent=styles['BodyText'],
+            fontSize=11,
+            leading=15,
+            # alignment=TA_JUSTIFY,
+            alignment=TA_LEFT,
+            spaceAfter=12,
+            fontName= 'Helvetica'
+        )
+        
+        heading_style = ParagraphStyle(
+            'PWCHeading',
+            parent=styles['Heading2'],
+            fontSize=14,
+            textColor='#D04A02',
+            spaceAfter=10,
+            spaceBefore=10,
+            fontName= 'Helvetica-Bold'
+        )
+        
+        # Citation style with left alignment (no justify to avoid extra spaces)
+        citation_style = ParagraphStyle(
+            'PWCCitation',
+            parent=styles['BodyText'],
+            fontSize=11,
+            leading=15,
+            alignment=TA_LEFT,
+            spaceAfter=12,
+            fontName= 'Helvetica'
+        )
+        
+        # Citation subsection heading style (e.g. "Connected/Internal Sources", "External Web Sources")
+        # Regular weight, dark gray color, slightly larger than body text
+        citation_subsection_style = ParagraphStyle(
+            'PWCCitationSubsection',
+            parent=styles['BodyText'],
+            fontSize=12,
+            leading=14,
+            textColor='#333333',
+            fontName='Helvetica-Bold',
+            spaceAfter=8,
+            spaceBefore=6,
+            alignment=TA_LEFT
+        )
+        
+        story = []
+        in_citation_section = False
+        # Parse and add content with formatting
+        blocks = content.split('\n\n')
+        for block in blocks:
+            if not block.strip():
+                continue
+            
+            # Skip separator lines (---, ---, etc.)
+            if re.fullmatch(r'\s*-{3,}\s*', block):
+                continue
+            
+            block = block.strip()
+            if "Citations & References" in block.replace('*', ''):
+                logger.info("Entering citation section parsing mode")
+                in_citation_section = True
+            # Check if block contains multiple lines with citation patterns
+            # Citations typically look like: [1] text or 1. text
+            if in_citation_section:
+                logger.info("Processing citation section block")
+
+                lines = block.split('\n')
+
+                for line in lines:
+                    clean_line = line.strip()
+                    if not clean_line:
+                        continue
+
+                    # Main citation heading
+                    if clean_line.replace('*', '') == "Citations & References":
+                        story.append(Paragraph("Citations & References", heading_style))
+                        continue
+
+                    # Subsection headings like:
+                    # Connected/Internal Sources
+                    # External Web Sources
+                    if clean_line.startswith('##'):
+                        subsection = re.sub(r'^#+\s*', '', clean_line)
+                        story.append(Paragraph(_format_content_for_pdf(subsection), citation_subsection_style))
+
+                    # Numbered citation entries
+                    if re.match(r'^\[\d+\]', clean_line):
+                        story.append(Paragraph(_format_content_for_pdf(clean_line), citation_style))
+                        continue
+
+                    # URLs
+                    if clean_line.startswith('http'):
+                        story.append(Paragraph(_format_content_for_pdf(clean_line), citation_style))
+                        continue
+
+                continue
+            # Check for headings (bold text on its own line or markdown style)
+            standalone_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block)
+            if standalone_bold_match:
+                heading_text = standalone_bold_match.group(1).strip()
+                story.append(Paragraph(heading_text, heading_style))
+                continue
+            
+            # Check for bold text at start of paragraph
+            first_line_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*\n', block)
+            if first_line_bold_match:
+                heading_text = first_line_bold_match.group(1).strip()
+                remaining_content = block[first_line_bold_match.end():].strip()
+                # Format and normalize heading text
+                heading_text = _format_content_for_pdf(heading_text)
+                story.append(Paragraph(heading_text, heading_style))
+                if remaining_content:
+                    # Check if remaining content is a bullet list
+                    if _is_bullet_list_block(remaining_content):
+                        bullet_items = _parse_bullet_items(remaining_content)
+                        list_items = [ListItem(Paragraph(_format_content_for_pdf(text), body_style)) for indent, text in bullet_items]
+                        story.append(
+                            ListFlowable(
+                                list_items,
+                                bulletType='bullet',
+                                bulletFontName='Helvetica',
+                                bulletFontSize=11,
+                                leftIndent=12,
+                                bulletIndent=0,
+                            )
+                        )
+                    else:
+                        para = Paragraph(_format_content_for_pdf(remaining_content), body_style)
+                        story.append(para)
+                continue
+            
+            # Check for markdown headings
+            if block.startswith('####'):
+                text = block.replace('####', '').strip()
+                # Remove ** markers if present
+                text = text.replace('**', '')
+                # Format and normalize text for PDF rendering
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+                continue
+            elif block.startswith('###'):
+                text = block.replace('###', '').strip()
+                # Remove ** markers if present
+                text = text.replace('**', '')
+                # Format and normalize text for PDF rendering
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+                continue
+            elif block.startswith('##'):
+                text = block.replace('##', '').strip()
+                # Remove ** markers if present
+                text = text.replace('**', '')
+                # Format and normalize text for PDF rendering
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+                continue
+            elif block.startswith('#'):
+                text = block.replace('#', '').strip()
+                # Remove ** markers if present
+                text = text.replace('**', '')
+                # Format and normalize text for PDF rendering
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+                continue
+            
+            # Check if block is a bullet list
+            if _is_bullet_list_block(block):
+                bullet_items = _parse_bullet_items(block)
+                list_items = [ListItem(Paragraph(_format_content_for_pdf(text), body_style)) for indent, text in bullet_items]
+                story.append(
+                    ListFlowable(
+                        list_items,
+                        bulletType='bullet',
+                        bulletFontName='Helvetica',
+                        bulletFontSize=11,
+                        leftIndent=12,
+                        bulletIndent=0,
+                    )
+                )
+                continue
+            
+            # lines = block.split('\n')
+            # if len(lines) > 1:
+            #     # Check if this looks like a citation/reference block
+            #     citation_pattern = r'^\s*(\[\d+\]|\d+\.)\s+'
+            #     citation_count = sum(1 for line in lines if re.match(citation_pattern, line.strip()))
+
+            #     # If at least 2 lines match citation pattern, treat as citation block
+            #     # (we require two because single-line lists are usually just
+            #     # a normal paragraph and should not be forced into citation style)
+            #     if citation_count >= 2:
+            #         # if the first line isn't a citation itself it is most likely
+            #         # a subsection heading (e.g. "Connected/Internal Sources").
+            #         # Render it using the citation subsection style and then continue
+            #         # processing the remaining numbered lines as citations.
+            #         first_line = lines[0].strip()
+            #         if first_line and not re.match(citation_pattern, first_line):
+            #             story.append(Paragraph(_format_content_for_pdf(first_line), citation_subsection_style))
+            #             # drop the heading from the citations list
+            #             lines = lines[1:]
+
+            #         for line in lines:
+            #             stripped = line.strip()
+            #             if stripped:
+            #                 para = Paragraph(_format_content_for_pdf(stripped), citation_style)
+            #                 story.append(para)
+
+            #         continue
+            
+            # Regular paragraph - intelligently split long paragraphs into smaller chunks
+            sentence_count = len(re.findall(r'[.!?]', block))
+            if sentence_count > 3:
+                # This is a long paragraph, split it into smaller chunks (2-3 sentences each)
+                split_paragraphs = _split_paragraph_into_sentences(block, target_sentences=3)
+                for split_para in split_paragraphs:
+                    if split_para:
+                        para = Paragraph(_format_content_for_pdf(split_para), body_style)
+                        story.append(para)
+            else:
+                # Keep short paragraphs as is
+                para = Paragraph(_format_content_for_pdf(block), body_style)
+                story.append(para)
+        
+        # Build the content PDF
+        doc.build(story)
+        content_buffer.seek(0)
+        
+        # ===== STEP 2.5: Create Table of Contents pages (multi-page support) - CONDITIONAL =====
+        # Only generate TOC for Article and White Paper, skip for Blog and Executive Brief
+        should_add_toc = content_type and content_type.lower() not in ['blog', 'executive_brief', 'executive-brief']
+        toc_pages = []
+        
+        if headings and should_add_toc:
+            logger.info(f"Step 2.5: Creating Table of Contents pages for content_type: {content_type}")
+            toc_buffer = io.BytesIO()
+            toc_doc = SimpleDocTemplate(toc_buffer, pagesize=(page_width, page_height), topMargin=1*inch, bottomMargin=1*inch)
+            toc_styles = getSampleStyleSheet()
+            toc_title_style = ParagraphStyle(
+                'TOCTitle',
+                parent=toc_styles['Heading1'],
+                fontSize=24,
+                textColor='#000000',
+                spaceAfter=24,
+                alignment=TA_LEFT,
+                fontName='Helvetica-Bold'
+            )
+            toc_heading_style = ParagraphStyle(
+                'TOCHeading',
+                parent=toc_styles['BodyText'],
+                fontSize=11,
+                textColor='#000000',
+                spaceAfter=12,
+                alignment=TA_LEFT,
+                fontName='Helvetica',
+                leading=16,
+                rightIndent=20
+            )
+            toc_story = []
+            toc_story.append(Paragraph("Contents", toc_title_style))
+            toc_story.append(Spacer(1, 0.2 * inch))
+            for index, heading in enumerate(headings, start=1):
+                # Add serial number before heading (ReportLab will handle text wrapping automatically)
+                # Format and normalize heading text to handle dashes properly
+                formatted_heading = _format_content_for_pdf(heading)
+                toc_story.append(Paragraph(f"{index}. {formatted_heading}", toc_heading_style))
+            toc_doc.build(toc_story)
+            toc_buffer.seek(0)
+            toc_reader = PdfReader(toc_buffer)
+            toc_pages = [toc_reader.pages[i] for i in range(len(toc_reader.pages))]
+        else:
+            logger.info(f"Step 2.5: Skipping Table of Contents for content_type: {content_type}")
+        # ===== STEP 3: Merge cover + ToC + content =====
+        logger.info("Step 3: Merging cover page, ToC, and content pages")
+        
+        content_reader = PdfReader(content_buffer)
+        
+        writer = PdfWriter()
+        
+        # Add the branded cover page (Page 1)
+        writer.add_page(template_page)
+        logger.info("Added branded cover page with PWC logo, title, and subtitle")
+        
+        # Add the Table of Contents pages (Page 2+)
+        for idx, toc_page in enumerate(toc_pages):
+            writer.add_page(toc_page)
+            logger.info(f"Added Table of Contents page {idx+1}")
+        
+        # Add all content pages (Page 3+)
+        for page_num in range(len(content_reader.pages)):
+            logger.info(f"Adding content page {page_num + 1}")
+            writer.add_page(content_reader.pages[page_num])
+        
+        # Write final PDF
+        output_buffer = io.BytesIO()
+        writer.write(output_buffer)
+        output_buffer.seek(0)
+        
+        result_bytes = output_buffer.getvalue()
+        logger.info(f"PDF export complete: {len(writer.pages)} pages, {len(result_bytes)} bytes")
+        
+        return result_bytes
+            
+    except FileNotFoundError:
+        # Bubble up so the API can surface a clear error instead of silently falling back
+        raise
+    except Exception as e:
+        logger.error(f"Error exporting to PDF with PwC template: {e}", exc_info=True)
+        # Fallback to basic PDF
+        return _generate_pdf_with_title_subtitle(content, title, subtitle)
+
+
+def _generate_pdf_with_title_subtitle(content: str, title: str, subtitle: str = "") -> bytes:
+    """
+    Generate a professional PDF with title, subtitle, and content.
+    Used as fallback when PWC template is unavailable.
+    """
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=28,
+        textColor='#D04A02',
+        spaceAfter=20,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    )
+    
+    subtitle_style = ParagraphStyle(
+        'CustomSubtitle',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor='#666666',
+        spaceAfter=40,
+        alignment=TA_CENTER,
+        fontName='Helvetica'
+    )
+    
+    body_style = ParagraphStyle(
+        'CustomBody',
+        parent=styles['BodyText'],
+        fontSize=11,
+        leading=14,
+        alignment=TA_JUSTIFY,
+        spaceAfter=12
+    )
+    
+    story = []
+    
+    # Add title
+    story.append(Paragraph(title, title_style))
+    
+    # Add subtitle
+    if subtitle:
+        story.append(Paragraph(subtitle, subtitle_style))
+    else:
+        story.append(Spacer(1, 0.3 * inch))
+    
+    # Add content with intelligent paragraph splitting
+    paragraphs = content.split('\n\n')
+    for para in paragraphs:
+        if para.strip():
+            # Check if this is a long paragraph that should be split
+            sentence_count = len(re.findall(r'[.!?]', para.strip()))
+            
+            if sentence_count > 3:
+                # This is a long paragraph, split it into smaller chunks
+                split_paragraphs = _split_paragraph_into_sentences(para.strip(), target_sentences=3)
+                for split_para in split_paragraphs:
+                    if split_para:
+                        story.append(Paragraph(split_para, body_style))
+            else:
+                # Keep short paragraphs as is
+                story.append(Paragraph(para.strip(), body_style))
+    
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def _format_content_for_pdf(text: str) -> str:
+    """
+    Format content for PDF by converting markdown-style formatting to HTML-like tags.
+    Reportlab supports a subset of HTML/XML tags for styling.
+    - Normalizes all Unicode dash variants to standard hyphen for reliable PDF rendering
+    """
+    text = normalize_numeric_citation_brackets(text)
+    # Handle numeric citations (both <sup>[[1]](url)</sup> and [[1]](url))
+    text = re.sub(
+        r'(?:<sup>\s*)?\[\[(\d+)\]\]\((https?://[^)]+)\)(?:\s*</sup>)?',
+        r'<a href="\2" color="blue"><sup>[\1]</sup></a>',
+        text
+    )
+    # First, handle special quotation marks and other problematic characters BEFORE processing HTML
+    # This ensures they are replaced before being wrapped in HTML tags
+    text = text.replace('\u201C', '"')  # Left double quotation mark
+    text = text.replace('\u201D', '"')  # Right double quotation mark
+    text = text.replace('\u2018', "'")  # Left single quotation mark
+    text = text.replace('\u2019', "'")  # Right single quotation mark
+    text = text.replace('\u2026', '...')  # Ellipsis
+    
+    # Convert markdown links [text](url) BEFORE superscript conversion so citation links
+    # like [³](https://...) keep the URL (link text ³ is then converted to <sup>3</sup> below)
+    text = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', r'<a href="\2" color="blue">\1</a>', text)
+    # Convert Unicode superscript digits to <sup>N</sup> so PDF renders them correctly
+    # (ReportLab may render ¹²³ as replacement glyphs/bullets; <sup> tag gives proper superscript)
+    _SUPERSCRIPT_MAP = {
+        '\u00B9': '1', '\u00B2': '2', '\u00B3': '3', '\u2074': '4', '\u2075': '5',
+        '\u2076': '6', '\u2077': '7', '\u2078': '8', '\u2079': '9', '\u2070': '0',
+    }
+    for sup_char, digit in _SUPERSCRIPT_MAP.items():
+        text = text.replace(sup_char, f'<sup>{digit}</sup>')
+    
+    # Normalize all Unicode dash/hyphen variants to standard ASCII hyphen-minus (-)
+    # This prevents ReportLab rendering issues with special Unicode characters
+    # Must be done BEFORE HTML processing to avoid encoding issues
+    dash_variants = [
+        '\u2010',  # Hyphen
+        '\u2011',  # Non-breaking hyphen
+        '\u2012',  # Figure dash
+        '\u2013',  # En dash (–)
+        '\u2014',  # Em dash (—)
+        '\u2015',  # Horizontal bar
+        '\u2212',  # Minus sign
+        '\u058A',  # Armenian hyphen
+        '\u05BE',  # Hebrew maqaf
+        '\u1400',  # Canadian syllabics hyphen
+        '\u1806',  # Mongolian todo soft hyphen
+        '\u2E17',  # Double oblique hyphen
+        '\u30A0',  # Katakana-hiragana double hyphen
+        '\uFE58',  # Small em dash
+        '\uFE63',  # Small hyphen-minus
+        '\uFF0D',  # Fullwidth hyphen-minus
+    ]
+    
+    for dash in dash_variants:
+        text = text.replace(dash, '-')
+    # Convert *italic* to <i>italic</i> (but not if it's part of **bold** or at line start for bullets)
+    # Use negative lookbehind/lookahead to avoid double-processing
+    text = re.sub(r'(?<!\*)\*([^\*]+?)\*(?!\*)', r'<i>\1</i>', text)
+    
+    # Convert plain URLs to clickable links (but not those already inside HTML tags)
+    # Match URLs that are not inside href= attributes or already converted
+    text = re.sub(r'(?<![="])(?<![a-zA-Z])(?<!href)(https?://[^\s)>\]]+)', r'<a href="\1" color="blue">\1</a>', text)
+    
+    # Convert **bold** to <b>bold</b>
+    # text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    # Convert **bold** to <b>bold</b> (safe version)
+    text = re.sub(
+        r'(?<!\*)\*\*([^\*]+?)\*\*(?!\*)',
+        r'<b>\1</b>',
+        text
+    )
+    
+    return text
+
+
+def _parse_bullet_items(block: str) -> list:
+    """Parse bullet items from a block and return list of bullet texts"""
+    lines = block.split('\n')
+    items = []
+    for line in lines:
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        # if stripped and (stripped.startswith('- ') or stripped.startswith('• ') or stripped.startswith('* ')):
+        if stripped.startswith(('- ', '• ', '* ')):
+            
+            # Remove bullet marker and leading/trailing whitespace
+            bullet_text = re.sub(r'^[-•\*]\s+', '', stripped)
+            # items.append(bullet_text)
+            if bullet_text:
+                items.append((indent, bullet_text))
+
+    return items
+
+
+def _split_paragraph_into_sentences(paragraph: str, target_sentences: int = 3) -> List[str]:
+    """
+    Split a long paragraph into smaller paragraphs by sentence boundaries.
+    
+    This ensures that even if content doesn't have explicit paragraph breaks (\n\n),
+    long blocks of text are divided into readable chunks of 2-3 sentences each.
+    
+    Args:
+        paragraph: The paragraph text to split
+        target_sentences: Target number of sentences per paragraph chunk (default: 3)
+    
+    Returns:
+        List of paragraph strings, each containing roughly target_sentences sentences
+    """
+    if not paragraph or not paragraph.strip():
+        return []
+    
+    # Split by sentence boundaries (period, question mark, exclamation mark followed by space)
+    # This regex splits on . ? ! followed by a space and capital letter, preserving the punctuation
+    sentence_pattern = r'(?<=[.!?])\s+(?=[A-Z])'
+    sentences = re.split(sentence_pattern, paragraph.strip())
+    
+    if len(sentences) <= target_sentences:
+        # If paragraph has 3 or fewer sentences, keep it as is
+        return [paragraph.strip()]
+    
+    # Group sentences into chunks
+    paragraphs = []
+    current_chunk = []
+    
+    for sentence in sentences:
+        current_chunk.append(sentence)
+        
+        # When we have enough sentences, create a new paragraph
+        if len(current_chunk) >= target_sentences:
+            paragraphs.append(' '.join(current_chunk).strip())
+            current_chunk = []
+    
+    # Add remaining sentences
+    if current_chunk:
+        paragraphs.append(' '.join(current_chunk).strip())
+    
+    return paragraphs
+
+def add_hyperlink(paragraph, url, text=None, no_break=False, doc=None,superscript=False): #merge conflict resolved
+    """
+    Create a hyperlink in a Word paragraph with blue color and underline (same idea as PDF <a href>).
+    If no_break is True, add w:noBreak so the URL does not break across lines (e.g. in citation list items).
+    If doc is provided (e.g. from edit content list), use doc.part for the relationship so the link is clickable in Word/Word Online.
+    """
+    if not text:
+        text = url
+    
+    # Sanitize inputs
+    text = sanitize_text_for_word(text)
+    url = str(url).strip()
+
+    # Use document part when provided (edit content list) so relationship is on main document part - ensures clickable in Word/Word Online
+    part = doc.part if doc is not None else paragraph.part
+    r_id = part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(qn('r:id'), r_id)
+    # w:history="1" helps Word/Word Online treat the link as clickable (add to history when followed)
+    hyperlink.set(qn('w:history'), '1')
+
+    run = OxmlElement('w:r')
+    rPr = OxmlElement('w:rPr')
+
+    # Apply Hyperlink character style
+    rStyle = OxmlElement('w:rStyle')
+    rStyle.set(qn('w:val'), 'Hyperlink')
+    rPr.append(rStyle)
+
+    # Style (blue + underline) - ensure color is applied
+    u = OxmlElement('w:u')
+    u.set(qn('w:val'), 'single')
+    rPr.append(u)
+
+    color = OxmlElement('w:color')
+    color.set(qn('w:val'), '0000FF')
+    rPr.append(color)
+    if superscript:
+        vertAlign = OxmlElement('w:vertAlign')
+        vertAlign.set(qn('w:val'), 'superscript')
+        rPr.append(vertAlign)
+    if no_break:
+        no_break_elem = OxmlElement('w:noBreak')
+        rPr.append(no_break_elem)
+
+    run.append(rPr)
+    
+    # Add text to run - ensure it's properly encoded
+    t = OxmlElement('w:t')
+    # Set text with proper XML text handling
+    if text:
+        t.text = text
+    run.append(t)
+
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+    
+    # return run
+
+def _normalize_citation_url_for_word(url: str) -> str:
+    """
+    Normalize a citation URL for Word export so the full URL is preserved as one string.
+    Prevents breaks after dots (e.g. after www.pwc.) by stripping newlines and ensuring
+    the URL is a single contiguous string. Use this for edit content Word citation links.
+    """
+    if not url:
+        return ""
+    s = str(url).strip()
+    # Remove any newlines, carriage returns, or spaces that could cause Word to break the link
+    s = re.sub(r'[\r\n\t\s]+', '', s)
+    return s
+
+def add_hyperlink_edit_content_citation(paragraph, url: str):
+    """
+    Add a citation URL as a single hyperlink in Word for edit content export.
+    Uses noBreak on the run so the link does not break after dots (e.g. after www.pwc.);
+    the full URL stays one clickable link instead of breaking into link + plain text.
+    """
+    url = _normalize_citation_url_for_word(url)
+    if not url:
+        return
+    text = sanitize_text_for_word(url)
+    part = paragraph.part
+    r_id = part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(qn('r:id'), r_id)
+    run = OxmlElement('w:r')
+    rPr = OxmlElement('w:rPr')
+    rStyle = OxmlElement('w:rStyle')
+    rStyle.set(qn('w:val'), 'Hyperlink')
+    rPr.append(rStyle)
+    u = OxmlElement('w:u')
+    u.set(qn('w:val'), 'single')
+    rPr.append(u)
+    color = OxmlElement('w:color')
+    color.set(qn('w:val'), '0000FF')
+    rPr.append(color)
+    # Prevent line break inside the URL so it doesn't break after a dot
+    no_break = OxmlElement('w:noBreak')
+    rPr.append(no_break)
+    run.append(rPr)
+    t = OxmlElement('w:t')
+    if text:
+        t.text = text
+    run.append(t)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+def _set_footer_with_page_numbers_only(doc: Document):
+    """
+    Remove footer content from all sections and add page numbers only.
+    This removes any branding, text, or other content but keeps page numbering.
+    """
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+    
+    for section in doc.sections:
+        footer = section.footer
+        footer.is_linked_to_previous = False
+        
+        # Clear all existing footer content
+        for para in list(footer.paragraphs):
+            p = para._element
+            p.getparent().remove(p)
+        
+        for table in list(footer.tables):
+            t = table._element
+            t.getparent().remove(t)
+        
+        # Add a single paragraph with page number only
+        footer_para = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+        footer_para.text = ""
+        footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        # Add page number field
+        run = footer_para.add_run()
+        
+        # Create page number field XML
+        fldChar1 = OxmlElement('w:fldChar')
+        fldChar1.set(qn('w:fldCharType'), 'begin')
+        
+        instrText = OxmlElement('w:instrText')
+        instrText.set(qn('xml:space'), 'preserve')
+        instrText.text = 'PAGE'
+        
+        fldChar2 = OxmlElement('w:fldChar')
+        fldChar2.set(qn('w:fldCharType'), 'end')
+        
+        run._r.append(fldChar1)
+        run._r.append(instrText)
+        run._r.append(fldChar2)
+        
+        logger.info(f"[_set_footer_with_page_numbers_only] Footer set with page numbers only")
+
+def export_to_word(content: str, title: str = "Document") -> bytes:
+    """Export content to Word DOCX format using PwC template"""
+    try:
+        # Load PwC template
+        if os.path.exists(PWC_TEMPLATE_PATH):
+            doc = Document(PWC_TEMPLATE_PATH)
+            logger.info(f"Loaded PwC template from: {PWC_TEMPLATE_PATH}")
+        else:
+            logger.warning(f"PwC template not found at {PWC_TEMPLATE_PATH}, using default formatting")
+            doc = Document()
+    except Exception as e:
+        logger.warning(f"Failed to load PwC template: {e}, using default formatting")
+        doc = Document()
+    
+    # Remove footers and add page numbers only
+    _set_footer_with_page_numbers_only(doc)
+    
+    # Check if template has proper structure (Title, Subtitle, page breaks)
+    has_template_structure = (
+        len(doc.paragraphs) > 2 and 
+        doc.paragraphs[0].style.name == 'Title' and
+        doc.paragraphs[1].style.name == 'Subtitle'
+    )
+    
+    if has_template_structure:
+        # Use template structure: update title, clear subtitle, remove page break paragraphs
+        # Update title (paragraph 0)
+        _set_paragraph_text_with_breaks(doc.paragraphs[0], title)
+        
+        # Clear subtitle (paragraph 1) - will be empty for basic export
+        _set_paragraph_text_with_breaks(doc.paragraphs[1], '')
+        
+        # Remove ALL template content after title and subtitle (including old TOC and page breaks)
+        paragraphs_to_remove = list(doc.paragraphs[2:])
+        for para in paragraphs_to_remove:
+            p = para._element
+            p.getparent().remove(p)
+
+        # Add page break after subtitle
+        _ensure_page_break_after_paragraph(doc.paragraphs[1])
+        
+        # Extract headings from content before adding it
+        headings = _extract_headings_from_content(content)
+        
+        # Add Table of Contents on page 2
+        if headings:
+            _add_table_of_contents(doc, headings)
+        
+        # Add a page break before the generated content so it starts after the TOC page
+        page_break_para = doc.add_paragraph()
+        run = page_break_para.add_run()
+        run.add_break(WD_BREAK.PAGE)
+        
+        # Add content after the page break
+        _add_formatted_content(doc, content)
+    else:
+        # No template structure, clear everything and build from scratch
+        for para in doc.paragraphs[:]:
+            p = para._element
+            p.getparent().remove(p)
+        
+        # Add title using Title style
+        title_para = doc.add_paragraph(title, style='Title')
+        
+        # Add a blank line after title
+        doc.add_paragraph()
+        
+        # Parse and add content with proper formatting
+        _add_formatted_content(doc, content)
+    
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    docx_bytes = buffer.getvalue()
+    
+    # Apply encoding fix to ensure all Unicode characters are properly handled
+    # docx_bytes = _fix_docx_encoding(docx_bytes)
+    
+    return docx_bytes
+
+def _add_bookmark_to_paragraph(para, bookmark_name: str):
+    """Add a bookmark to a paragraph"""
+    # Create bookmark start
+    bookmark_id = str(next(_bookmark_counter))
+    bookmark_start = OxmlElement('w:bookmarkStart')
+    bookmark_start.set(qn('w:id'), bookmark_id)
+    bookmark_start.set(qn('w:name'), bookmark_name)
+    
+    # Create bookmark end
+    bookmark_end = OxmlElement('w:bookmarkEnd')
+    bookmark_end.set(qn('w:id'), bookmark_id)
+    
+    # Add to paragraph
+    para._element.insert(0, bookmark_start)
+    para._element.append(bookmark_end)
+    
+def is_bullet_line(line: str) -> bool:
+    return re.match(r'^\s*[-•]\s+', line) is not None
+
+def export_to_word_pwc_standalone(
+    content: str,
+    title: str,
+    subtitle: str | None = None,
+    content_type: str | None = None,
+    references: list[dict] | None = None
+) -> bytes:
+    logger.error("export_to_word_pwc_standalone() IS BEING CALLED")
+    doc = Document(PWC_TEMPLATE_PATH) if os.path.exists(PWC_TEMPLATE_PATH) else Document()
+    main_heading = None
+    toc_items: list[str] = []
+    references_heading_added = False
+    # _set_paragraph_text_with_breaks(doc.paragraphs[0], sanitize_text_for_word(title))
+    _set_paragraph_text_with_breaks(doc.paragraphs[1], sanitize_text_for_word(subtitle or ""))
+    # for para in list(doc.paragraphs[2:]):
+    #     para._element.getparent().remove(para._element)
+    while len(doc.paragraphs) > 2:
+        p = doc.paragraphs[-1]
+        p._element.getparent().remove(p._element)
+    
+    # -------- FIRST PASS: collect TOC headings --------
+    for block in content.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+
+        # Main / section headings
+        if block.startswith("# ") and not block.startswith("##"):
+            text = block[2:].strip()
+            if not main_heading:
+                main_heading = text
+            toc_items.append(text.replace(":", ""))
+        # Sub-headings
+        elif block.startswith("##") and block.strip().lower() not in {"## references"}:
+            text = block.replace("##", "").strip()
+            # toc_items.append(text)
+            toc_items.append(text.replace(":", ""))
+
+        # Bold-only headings (**Heading**)
+        else:
+            m = re.match(r'^\*\*(.+?)\*\*$', block)
+            if m:
+                # toc_items.append(m.group(1).strip())
+                toc_items.append(m.group(1).strip().replace(":", ""))
+
+    title_para = doc.paragraphs[0]
+    title_para.style = "Heading 1"
+    print("Setting main heading:", main_heading," title",title_para)
+    if main_heading:
+        _set_paragraph_text_with_breaks(
+            title_para,
+            sanitize_text_for_word(main_heading)
+        )
+    else:
+        title_para.text = ""
+    
+    _ensure_page_break_after_paragraph(doc.paragraphs[1])
+
+    doc.add_paragraph("Contents", style="Heading 1")
+
+    for idx, heading in enumerate(toc_items, start=1):
+        p = doc.add_paragraph(style="Normal")
+        p.paragraph_format.space_after = DocxPt(6)        
+        run = p.add_run(f"{idx} {sanitize_text_for_word(heading)}")
+        run.bold = False
+    doc.add_page_break()
+    for block in content.split("\n\n"):
+        block = block.strip()
+
+        if re.fullmatch(r'[-•–—]+', block):
+            continue
+        if not block:
+            continue
+        if block.strip().lower() in {"references:", "references"}:
+            doc.add_paragraph("References", style="Heading 2")
+            references_heading_added = True
+            continue
+        if block.startswith("##"):
+            text = block.replace("##", "").strip()
+            p = doc.add_paragraph(style="Heading 2")
+            p.add_run(sanitize_text_for_word(text)).bold = True
+            continue
+
+        if block.startswith("#") and not block.startswith("##"):
+            text = block[2:].strip()
+            p = doc.add_paragraph(style="Heading 1")
+            p.add_run(sanitize_text_for_word(text)).bold = True
+            continue
+
+        m = re.match(r'^\*\*(.+?)\*\*$', block)
+        if m:
+            p = doc.add_paragraph(style="Heading 1")
+            p.add_run(sanitize_text_for_word(m.group(1))).bold = True
+            continue
+        lines = block.split("\n")
+        if all(is_bullet_line(l) for l in lines):
+            for line in lines:
+                clean = re.sub(r'^\s*[-•]\s+', '', line).strip()
+                if clean:
+                    para = doc.add_paragraph(style="List Bullet")
+                    _add_markdown_text_runs(para, clean)
+            continue
+        # if block.startswith(("-", "•", "*")):
+        #     for line in block.split("\n"):
+        #         line = re.sub(r'^[•\-\*]\s*', '', line.strip())
+        #         if line:
+        #             para = doc.add_paragraph(style="List Bullet")
+        #             _add_markdown_text_runs(para, line)
+        #             continue
+
+        para = doc.add_paragraph(style="Normal")
+        _add_markdown_text_runs(para, block)
+    
+    # doc.add_page_break()
+   
+
+    if references:
+        doc.add_page_break()
+        if not references_heading_added:
+            doc.add_paragraph("References", style="Heading 2")
+
+
+        for ref in references:
+            para = _add_numbered_paragraph(
+                doc,
+                sanitize_text_for_word(ref.get("title", ""))
+            )
+
+            if ref.get("url"):
+                add_hyperlink(para, ref["url"])
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return _fix_docx_encoding(buffer.getvalue())
+
+def _add_markdown_text_runs(paragraph, text: str,allow_bold: bool = True):
+    """
+    Adds text to a paragraph with support for:
+    **bold** text
+    *italic* text
+    [text](url) - markdown links converted to hyperlinks
+    Plain URLs - converted to hyperlinks
+    """
+    if not text:
+        return
+    placeholder_counter = 0
+    citation_placeholders = {}
+
+    def replace_citation(match):
+        nonlocal placeholder_counter
+        number = match.group(1)
+        url = match.group(2)
+
+        placeholder = f"__CITATION_PLACEHOLDER_{placeholder_counter}__"
+        citation_placeholders[placeholder] = (number, url)
+        placeholder_counter += 1
+        return placeholder
+
+    # Extract BOTH formats before generic markdown link handling
+    text = re.sub(
+        r'(?:<sup>\s*)?\[\[(\d+)\]\]\((https?://[^)]+)\)(?:\s*</sup>)?',
+        replace_citation,
+        text
+    )
+    # Start with markdown links to avoid conflicts with other patterns
+    # Replace markdown links [text](url) with a placeholder first
+    link_placeholders = {}
+    def replace_link(match):
+        nonlocal placeholder_counter
+        link_text = match.group(1)
+        link_url = match.group(2)
+        placeholder = f"__LINK_PLACEHOLDER_{placeholder_counter}__"
+        link_placeholders[placeholder] = (link_text, link_url)
+        placeholder_counter += 1
+        return placeholder
+    
+    text_with_placeholders = re.sub(
+        r'\[([^\]]+?)\]\(([^)]+?)\)',
+        replace_link,
+        text
+    )
+    
+    # Replace raw numeric citations [[1]](url)
+    def replace_raw_citation(match):
+        nonlocal placeholder_counter
+        number = match.group(1)
+        url = match.group(2)
+
+        placeholder = f"__CITATION_PLACEHOLDER_{placeholder_counter}__"
+        citation_placeholders[placeholder] = (number, url)
+        placeholder_counter += 1
+        return placeholder
+
+    # text = re.sub(
+    #     r'\[\[(\d+)\]\]\((https?://[^)]+)\)',
+    #     replace_raw_citation,
+    #     text
+    # )
+    # Replace all markdown links with placeholders
+    # text_with_placeholders = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', replace_link, text)
+    
+    # Now process the text with placeholders
+    pos = 0
+    while pos < len(text_with_placeholders):
+        # Check for placeholder (hyperlink)
+        placeholder_match = re.search(r'__LINK_PLACEHOLDER_\d+__', text_with_placeholders[pos:])
+        # Check for bracketed URL [https://...] so it becomes clickable in Word
+        bracketed_url_match = re.search(r'\[(https?://[^\]]+)\]', text_with_placeholders[pos:])
+        # Check for bold
+        bold_match = re.search(r'\*\*(.+?)\*\*', text_with_placeholders[pos:])
+        # Check for italic
+        italic_match = re.search(r'(?<!\*)\*([^\*]+?)\*(?!\*)', text_with_placeholders[pos:])
+        # Check for plain URL (that wasn't converted to markdown); stop at ] so [https://...] is handled above
+        # Match full URL including dots (e.g. https://www.pwc.com/...) so link doesn't break after dot
+        url_match = re.search(r'https?://[^\s)\]]+', text_with_placeholders[pos:])
+        citation_match = re.search(
+            r'__CITATION_PLACEHOLDER_\d+__',
+            text_with_placeholders[pos:]
+        )
+
+        # Collect matches with positions
+        matches = []
+        if placeholder_match:
+            matches.append(('placeholder', pos + placeholder_match.start(), placeholder_match))
+        if bracketed_url_match:
+            matches.append(('bracketed_url', pos + bracketed_url_match.start(), bracketed_url_match))
+        if allow_bold and bold_match:
+            matches.append(('bold', pos + bold_match.start(), bold_match))
+        if italic_match:
+            matches.append(('italic', pos + italic_match.start(), italic_match))
+        if url_match:
+            matches.append(('url', pos + url_match.start(), url_match))
+        if citation_match:
+            matches.append(('citation', pos + citation_match.start(), citation_match))
+        if not matches:
+            # No more patterns, add remaining text
+            if pos < len(text_with_placeholders):
+                remaining = text_with_placeholders[pos:]
+                if remaining:
+                    run = paragraph.add_run(sanitize_text_for_word(remaining))
+            break
+        
+        # Process the earliest match
+        matches.sort(key=lambda x: x[1])
+        match_type, match_pos, match = matches[0]
+        
+        # Add text before match
+        if match_pos > pos:
+            before_text = text_with_placeholders[pos:match_pos]
+            if before_text:
+                run = paragraph.add_run(sanitize_text_for_word(before_text))
+        
+        # Process the match
+        if match_type == 'placeholder':
+            placeholder_text = match.group(0)
+            if placeholder_text in link_placeholders:
+                link_text, link_url = link_placeholders[placeholder_text]
+                
+                # Citation refs [1](url), [2](url), [³](url), [⁵](url): make clickable superscript like PDF
+                _SUP_TO_DIGIT = {'\u2070': '0', '\u00B9': '1', '\u00B2': '2', '\u00B3': '3',
+                                 '\u2074': '4', '\u2075': '5', '\u2076': '6', '\u2077': '7',
+                                 '\u2078': '8', '\u2079': '9'}
+                _SUPERS = set(_SUP_TO_DIGIT.keys())
+                is_unicode_sup = link_text and all(c in _SUPERS or c in ', ' for c in link_text) and any(c in _SUPERS for c in link_text)
+                if link_text.isdigit():
+                    add_superscript_hyperlink(paragraph, f"[{link_text}]", link_url)
+                elif is_unicode_sup:
+                    display = ''.join(_SUP_TO_DIGIT.get(c, c) for c in link_text)
+                    add_superscript_hyperlink(paragraph, f"[{display}]", link_url)
+                else:
+                    add_hyperlink(paragraph, link_url, link_text)
+            pos = match_pos + len(placeholder_text)
+        
+        elif match_type == 'bracketed_url':
+            url = match.group(1).strip()
+            add_hyperlink(paragraph, url, url)
+            pos = match_pos + len(match.group(0))
+        
+        elif match_type == 'bold':
+            bold_text = match.group(1)
+            run = paragraph.add_run(sanitize_text_for_word(bold_text))
+            run.bold = True
+            pos = match_pos + len(match.group(0))
+        
+        elif match_type == 'italic':
+            italic_text = match.group(1)
+            run = paragraph.add_run(sanitize_text_for_word(italic_text))
+            run.italic = True
+            pos = match_pos + len(match.group(0))
+        
+        elif match_type == 'url':
+            url = match.group(0).rstrip('.,;:')
+            add_hyperlink(paragraph, url, url)
+            pos = match_pos + len(url)
+
+        elif match_type == 'citation':
+            placeholder_text = match.group(0)
+            if placeholder_text in citation_placeholders:
+                number, url = citation_placeholders[placeholder_text]
+                # Display as [1]
+                display_text = f"[{number}]"
+                hyperlink_run = add_hyperlink(paragraph, url, display_text)
+                if hyperlink_run is not None:
+                    hyperlink_run.font.superscript = True
+            pos = match_pos + len(placeholder_text)
+
+
+def _add_numbered_paragraph(doc: Document, text: str):
+    """
+    Create a numbered paragraph with a BRAND-NEW numbering instance.
+    Always starts from 1. Never interferes with other lists.
+    """
+    numbering_part = doc.part.numbering_part
+
+    # Create a new abstract numbering definition
+    abstract_num_id = _get_next_abstract_num_id(numbering_part)
+
+    abstract_num = OxmlElement("w:abstractNum")
+    abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
+
+    lvl = OxmlElement("w:lvl")
+    lvl.set(qn("w:ilvl"), "0")
+
+    start = OxmlElement("w:start")
+    start.set(qn("w:val"), "1")
+
+    lvl_restart = OxmlElement("w:lvlRestart")
+    lvl_restart.set(qn("w:val"), "1") 
+    num_fmt = OxmlElement("w:numFmt")
+    num_fmt.set(qn("w:val"), "decimal")
+
+    lvl_text = OxmlElement("w:lvlText")
+    lvl_text.set(qn("w:val"), "%1.")
+
+    lvl.extend([start, lvl_restart, num_fmt, lvl_text])
+    abstract_num.append(lvl)
+    root = _numbering_root(numbering_part)
+    if root is not None:
+        root.append(abstract_num)
+
+    # Create a new numbering instance
+    num_id = _get_next_num_id(numbering_part)
+
+    num = OxmlElement("w:num")
+    num.set(qn("w:numId"), str(num_id))
+
+    abstract_ref = OxmlElement("w:abstractNumId")
+    abstract_ref.set(qn("w:val"), str(abstract_num_id))
+
+    num.append(abstract_ref)
+    if root is not None:
+        root.append(num)
+
+    # Create paragraph using this numbering
+    p = doc.add_paragraph()
+    pPr = p._p.get_or_add_pPr()
+
+    numPr = OxmlElement("w:numPr")
+    ilvl = OxmlElement("w:ilvl")
+    ilvl.set(qn("w:val"), "0")
+    numId = OxmlElement("w:numId")
+    numId.set(qn("w:val"), str(num_id))
+
+    numPr.extend([ilvl, numId])
+    pPr.append(numPr)
+
+    p.add_run(text)
+    return p
+
+def _add_references_section(doc: Document, references: list[dict]):
+    doc.add_page_break()
+    doc.add_paragraph("References", style="Heading 2")
+
+    for ref in references:
+        title = ref.get("title", "")
+        url = ref.get("url", "")
+        
+        # Create the reference text with URL
+        if url:
+            display_text = f"{title} (URL: {url})"
+        else:
+            display_text = title
+        
+        para = _add_numbered_paragraph(doc, display_text)
+        
+        # If URL exists, make the URL part a hyperlink
+        if url:
+            # Clear the paragraph and rebuild with hyperlink
+            for run in para.runs[:]:
+                run._element.getparent().remove(run._element)
+            
+            # Add title as plain text
+            para.add_run(title)
+            para.add_run(" (URL: ")
+            
+            # Add URL as hyperlink
+            add_hyperlink(para, url, url)
+            
+            para.add_run(")")
+
+def _add_formatted_content(doc: Document, content: str, references: list[dict] | None = None):
+    """Parse and add content to document with appropriate styles"""
+    
+    # Split content into blocks (paragraphs separated by blank lines)
+    # blocks = content.split('\n\n')
+    # Normalize markdown headings so they are isolated
+    # Remove trailing spaces after headings (e.g., "## **Title**  ")
+    content = re.sub(
+        r'(##\s*\*\*.*?\*\*)\s*$',
+        r'\1',
+        content,
+        flags=re.MULTILINE
+    )
+
+    # Ensure blank line after ALL ## headings (not only bold ones)
+    content = re.sub(
+        r'^(##\s+.*)$',
+        r'\1\n',
+        content,
+        flags=re.MULTILINE
+    )
+    # Ensure a blank line after markdown headings
+    content = re.sub(
+        r'(##\s*\*\*.*?\*\*)\s*\n',
+        r'\1\n\n',
+        content
+    )
+
+    # blocks = content.split('\n\n')
+    blocks = re.split(r'\n\s*\n', content)
+    
+    # Pre-process: Merge consecutive numbered list items and citations
+    # This handles cases where citations are split across blocks (title and URL on separate blocks)
+    merged_blocks = []
+    i = 0
+    while i < len(blocks):
+        block = blocks[i].strip()
+        if not block:
+            i += 1
+            continue
+        
+        # Check if this is a numbered item
+        # if re.match(r'^\d+\.', block):
+        if re.match(r'^\s*(\[\d+\]|\d+\.)', block):
+            merged_block = block
+            # Look ahead for consecutive numbered items
+            j = i + 1
+            while j < len(blocks):
+                next_block = blocks[j].strip()
+                if not next_block:
+                    j += 1
+                    continue
+                
+                # Check if next block is also a numbered item
+                # if re.match(r'^\d+\.', next_block):
+                if re.match(r'^\s*(\[\d+\]|\d+\.)', next_block):
+                    # Merge with current block
+                    merged_block += '\n' + next_block
+                    j += 1
+                else:
+                    # No more numbered items, stop looking
+                    break
+            
+            merged_blocks.append(merged_block)
+            i = j
+        else:
+            merged_blocks.append(block)
+            i += 1
+    
+    # Now process merged blocks
+    for block in merged_blocks:
+        logger.debug(f"\n[BLOCK START]\n{block[:200]}\n---")
+        if not block.strip():
+            continue
+        
+        # Skip separator lines (---, ---, etc.)
+        if re.fullmatch(r'\s*-{3,}\s*', block):
+            continue
+        
+        # Check for headings (lines starting with # or **bold** markers)
+        block = block.strip()
+        
+        # Check if the block is a standalone bold text (likely a heading)
+        # Pattern: **Text** at the start of a line, possibly followed by newline or end of block
+        # standalone_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block)
+        # standalone_bold_match = re.match(r'^\*\*(?!\d+\.)\s*([^\*]+?)\*\*\s*$', block)
+        # if standalone_bold_match:
+        #     # This is a standalone bold text, treat as Heading 2
+        #     text = standalone_bold_match.group(1).strip()
+        #     sanitized_text = sanitize_text_for_word(text)
+        #     para = doc.add_paragraph(style='Heading 2')
+        #     # para.add_run(text)
+        #     run = para.add_run(sanitized_text)
+        #     # run.bold = True
+
+        #     # Add bookmark for TOC page number reference
+        #     bookmark_name = text.replace(" ", "_").replace("&", "and")
+        #     _add_bookmark_to_paragraph(para, bookmark_name)
+        #     continue
+        
+        # # # Check if the block starts with bold text on first line (likely a section header)
+        # # # Pattern: **Text** followed by newline and more content
+        # # # first_line_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*\n', block)
+        # first_line_bold_match = re.match(r'^\*\*(?!\d+\.)\s*([^\*]+?)\*\*\s*\n', block)
+        # if first_line_bold_match:
+        #     # Extract the bold heading and remaining content
+        #     heading_text = first_line_bold_match.group(1).strip()
+        #     sanitized_heading = sanitize_text_for_word(heading_text)
+        #     remaining_content = block[first_line_bold_match.end():].strip()
+            
+        #     # Add heading
+        #     para = doc.add_paragraph(style='Heading 2')
+        #     # para.add_run(heading_text)
+        #     run = para.add_run(sanitized_heading)
+        #     # run.bold = True
+        #     # Add bookmark for TOC page number reference
+        #     bookmark_name = heading_text.replace(" ", "_").replace("&", "and")
+        #     _add_bookmark_to_paragraph(para, bookmark_name)
+            
+        #     # Process remaining content recursively
+        #     if remaining_content:
+        #         _add_formatted_content(doc, remaining_content)
+        #     continue
+        
+        # Detect markdown-style headings
+        if block.startswith('####'):
+            # Heading 4
+            text = block.replace('####', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '')
+            para = doc.add_paragraph(style='Heading 4')
+            _add_text_with_formatting(para, text)
+            bookmark_name = text.replace(" ", "_").replace("&", "and")
+            _add_bookmark_to_paragraph(para, bookmark_name)
+        elif block.startswith('###'):
+            # Heading 3
+            text = block.replace('###', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '')
+            para = doc.add_paragraph(style='Heading 3')
+            _add_text_with_formatting(para, text)
+            bookmark_name = text.replace(" ", "_").replace("&", "and")
+            _add_bookmark_to_paragraph(para, bookmark_name)
+        elif block.startswith('##'):
+            # Heading 2 (may include additional lines such as citations following a hard break)
+            lines = block.split('\n')
+            heading_line = lines[0]
+            rest = '\n'.join(lines[1:]).strip()
+
+            # split off any citation that sits on the same line as the heading
+            if not rest:
+                cit_mark = re.search(r'(\[\d+\]|\d+\.)', heading_line)
+                if cit_mark:
+                    rest = heading_line[cit_mark.start():].strip()
+                    heading_line = heading_line[:cit_mark.start()]
+
+            text = heading_line.replace('##', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '')
+            sanitized_text = sanitize_text_for_word(text)
+
+            para = doc.add_paragraph(style='Heading 2')
+            run = para.add_run(sanitized_text)
+            logger.debug(
+                f"[HEADING2] Created paragraph | style={para.style.name} | text={sanitized_text}"
+            )
+            # run.bold = True
+            bookmark_name = text.replace(" ", "_").replace("&", "and")
+            _add_bookmark_to_paragraph(para, bookmark_name)
+
+            # if there is additional content on the same block (e.g. citation entries
+            # immediately after the heading separated only by a line break), process it
+            # recursively so it doesn't inherit the Heading 2 style
+            if rest:
+                _add_formatted_content(doc, rest)
+        elif block.startswith('#'):
+            # Heading 1
+            text = block.replace('#', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '')
+            para = doc.add_paragraph(style='Heading 1')
+            _add_text_with_formatting(para, text)
+            bookmark_name = text.replace(" ", "_").replace("&", "and")
+            _add_bookmark_to_paragraph(para, bookmark_name)
+        
+        # Detect bullet lists
+        elif block.startswith('•') or block.startswith('- ') or block.startswith('* '):
+            lines = block.split('\n')
+            for line in lines:
+                if line.strip():
+                    # Remove bullet markers
+                    text = re.sub(r'^[•\-\*]\s*', '', line.strip())
+                    para = doc.add_paragraph(style='List Bullet')
+                    _add_text_with_formatting(para, text)
+        
+        # Detect numbered lists and citations
+        # elif re.match(r'^\d+\.', block):
+        elif re.match(r'^\s*(\[\d+\]|\d+\.)', block):
+            lines = block.split('\n')
+            logger.debug(f"[_add_formatted_content] Detected numbered block with {len(lines)} lines")
+            
+            # Check if this is a citation/reference block with URL pattern
+            # URLs can be: "URL: https://..." or just "https://..." lines
+            is_citation_block = False
+            url_pattern = r'(URL:\s*)?https?://'
+            if any(re.search(url_pattern, line) for line in lines):
+                is_citation_block = True
+                logger.debug(f"[_add_formatted_content] Detected citation block (URL-based detection)")
+            
+            # Also check if this is a citation block by counting numbered lines (PDF-style detection)
+            # If at least 2 lines start with a number followed by a period, treat as citations
+            if not is_citation_block:
+                citation_pattern = r'^\s*\d+\.\s+'
+                citation_count = sum(1 for line in lines if re.match(citation_pattern, line.strip()))
+                logger.debug(f"[_add_formatted_content] Citation count (PDF-style): {citation_count}")
+                if citation_count >= 2:
+                    is_citation_block = True
+                    logger.debug(f"[_add_formatted_content] Detected citation block (PDF-style detection)")
+            
+            if is_citation_block:
+                logger.debug(f"[_add_formatted_content] Processing citation block with {len(lines)} lines")
+                # Process citations/references - keep original numbers, combine title+URL
+                citation_entries = []
+                
+                for line in lines:
+                    line_stripped = line.strip()
+                    if not line_stripped:
+                        continue
+                    
+                    # Extract complete citation entry (number + title + optional URL all on one line)
+                    # Format examples: "[1] Title", "1. Title", "[1] Title (URL: https://...)", "[1] Title [https://...]", "[1] Title\nhttps://url"
+                    # Supports both bracket format [1] and dot format 1.
+                    title_match = re.match(r'^(?:\[)?(\d+)(?:\])?(?:\.)?\s+(.*?)(?:\s*\(URL:\s*(https?://[^\)]+)\))?$', line_stripped)
+                    if title_match:
+                        original_number = title_match.group(1)
+                        title_text = title_match.group(2).strip()
+                        url_text = title_match.group(3).strip() if title_match.group(3) else None
+                        # Also extract URL from square brackets: "Title [https://...]"
+                        if not url_text:
+                            bracketed_url = re.search(r'\[(https?://[^\]]+)\]', title_text)
+                            if bracketed_url:
+                                url_text = bracketed_url.group(1).strip()
+                                title_text = re.sub(r'\s*\[https?://[^\]]+\]\s*$', '', title_text).strip()
+                        logger.debug(f"[_add_formatted_content] Parsed citation: {original_number}. {title_text[:40]}... URL: {url_text[:40] if url_text else 'None'}...")
+                        citation_entries.append({
+                            'number': original_number,
+                            'title': title_text,
+                            'url': url_text
+                        })
+                    # Check if this line is a URL continuation from previous title (plain or in brackets)
+                    elif re.match(r'^\s*(?:URL:\s*)?(?:\[)?(https?://[^\s\)\]]+)(?:\])?', line_stripped):
+                        # This is a URL line - try to attach to the last entry
+                        url_match = re.search(r'(?:URL:\s*)?(?:\[)?(https?://[^\s\)\]]+)(?:\])?', line_stripped)
+                        if url_match and citation_entries:
+                            citation_entries[-1]['url'] = url_match.group(1).strip()
+                            logger.debug(f"[_add_formatted_content] Attached URL to previous citation: {citation_entries[-1]['url'][:40]}...")
+                
+                logger.debug(f"[_add_formatted_content] Found {len(citation_entries)} citation entries")
+                
+                # Add entries as paragraphs with hyperlinks
+                for idx, entry in enumerate(citation_entries):
+                    logger.debug(f"[_add_formatted_content] Adding citation {idx+1}: {entry['number']}. {entry['title'][:30]}...")
+                    
+                    # Remove ** markers from title
+                    title_text = entry['title'].replace('**', '')
+                    
+                    # Add paragraph with preserved original number
+                    para = doc.add_paragraph(style='Body Text')
+                    para.style = doc.styles['Body Text']
+                    logger.debug(
+    f"Created paragraph | style={para.style.name} | "
+)
+                    # _add_text_with_formatting(para, f"{entry['number']}. {title_text}")
+                    # safe_text = sanitize_text_for_word(f"{entry['number']}. {title_text}")
+                    # run = para.add_run(safe_text)
+                    # run.bold = False
+                    # run.italic = False
+                    safe_number = sanitize_text_for_word(f"{entry['number']}. ")
+                    safe_title = sanitize_text_for_word(title_text)
+                    
+                    # Add number and title as normal text (not bold)
+                    run_number = para.add_run(safe_number)
+                    run_number.bold = False
+                    run_number.italic = False
+                    
+                    run_title = para.add_run(safe_title)
+                    run_title.bold = False
+                    run_title.italic = False
+                    # Add URL as hyperlink if it exists
+                    if entry['url']:
+                        para.add_run(" ")
+                        add_hyperlink(para, entry['url'], entry['url'])
+                        logger.debug(f"[_add_formatted_content] Added hyperlink: {entry['url'][:40]}...")
+                    else:
+                        logger.debug(f"[_add_formatted_content] No URL for this citation")
+
+            else:
+                # Regular numbered list - PRESERVE original numbers, don't auto-number
+                for line in lines:
+                    line_stripped = line.strip()
+                    if line_stripped and re.match(r'^\d+\.', line_stripped):
+                        # Extract the original number
+                        number_match = re.match(r'^(\d+)\.\s+(.*)', line_stripped)
+                        if number_match:
+                            original_number = number_match.group(1)
+                            text = number_match.group(2)
+                            # Remove ** markers
+                            text = text.replace('**', '')
+                            # Add paragraph with preserved number, not auto-numbering
+                            para = doc.add_paragraph(style='Body Text')
+                            para.style = doc.styles['Body Text']
+                            logger.debug(
+    f"Created paragraph | style={para.style.name} | "
+)
+                            para.paragraph_format.left_indent = DocxInches(0.25)
+                            _add_text_with_formatting(para, f"{original_number}. {text}")
+        
+        # Check if block contains multiple lines (multi-line paragraph)
+        elif '\n' in block:
+            # Check if it's a list within the block
+            lines = block.split('\n')
+            in_list = False
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Check for bullet points
+                if line.startswith('•') or line.startswith('- ') or line.startswith('* '):
+                    text = re.sub(r'^[•\-\*]\s*', '', line)
+                    para = doc.add_paragraph(style='List Bullet')
+                    _add_text_with_formatting(para, text)
+                    in_list = True
+                # Check for numbered items
+                elif re.match(r'^\d+\.', line):
+                    # Extract the original number
+                    number_match = re.match(r'^(\d+)\.\s+(.*)', line)
+                    if number_match:
+                        original_number = number_match.group(1)
+                        text = number_match.group(2)
+                        # Add paragraph with preserved number, not auto-numbering
+                        para = doc.add_paragraph(style='Body Text')
+                        para.style = doc.styles['Body Text']
+                        logger.debug(
+    f"Created paragraph | style={para.style.name} | "
+)
+                        para.paragraph_format.left_indent = DocxInches(0.25)
+                        _add_text_with_formatting(para, f"{original_number}. {text}")
+                    in_list = True
+                else:
+                    # Regular paragraph continuation
+                    if in_list:
+                        para = doc.add_paragraph(style='List Bullet')
+                        _add_text_with_formatting(para, line)
+                    else:
+                        para = doc.add_paragraph(style='Body Text')
+                        para.style = doc.styles['Body Text']
+                        logger.debug(
+    f"Created paragraph | style={para.style.name} | "
+)
+                        _add_text_with_formatting(para, line)
+        
+        # Regular paragraph
+        else:
+            # Intelligently split long paragraphs into smaller chunks
+            sentence_count = len(re.findall(r'[.!?]', block))
+            
+            if sentence_count > 3:
+                # This is a long paragraph, split it into smaller chunks (2-3 sentences each)
+                split_paragraphs = _split_paragraph_into_sentences(block, target_sentences=3)
+                for split_para in split_paragraphs:
+                    if split_para:
+                        para = doc.add_paragraph(style='Body Text')
+                        para.style = doc.styles['Body Text']
+                        logger.debug(
+    f"Created paragraph | style={para.style.name} | "
+)
+                        _add_text_with_formatting(para, split_para)
+            else:
+                # Keep short paragraphs as is
+                para = doc.add_paragraph(style='Body Text')
+                para.style = doc.styles['Body Text']
+                logger.debug(
+    f"Created paragraph | style={para.style.name} | "
+)
+                _add_text_with_formatting(para, block)
+    for i, p in enumerate(doc.paragraphs[-15:]):
+        logger.debug(
+            f"[FINAL DOC CHECK] idx={i} | style={p.style.name} | "
+            f"text={p.text[:60]}"
+        )
+    if references:
+        _add_references_section(doc, references)
+
+def _set_paragraph_text_with_breaks(para, text):
+    """
+    Safely set paragraph text with proper line breaks.
+    Clears existing runs and adds new text with line breaks where \n appears.
+    """
+    # Sanitize text first
+    text = sanitize_text_for_word(text)
+    
+    # Clear existing runs
+    for run in para.runs[:]:
+        run._element.getparent().remove(run._element)
+    
+    # Split text by newlines and add with proper breaks
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        sanitized_line = sanitize_text_for_word(line)
+        run = para.add_run(sanitized_line)
+        # Add soft line break after each line except the last
+        if i < len(lines) - 1:
+            run.add_break()
+
+def _ensure_page_break_after_paragraph(para):
+    """Add a page break after the given paragraph if one is not already present."""
+    # If the last run already ends with a page break, do nothing
+    if para.runs:
+        last_run = para.runs[-1]
+        if getattr(last_run, "break_type", None) == WD_BREAK.PAGE:
+            return
+    run = para.add_run()
+    run.add_break(WD_BREAK.PAGE)
+
+def _extract_headings_from_content(content: str) -> List[str]:
+    """
+    Extract all headings from content (both markdown # style and **bold** style).
+    Returns a list of heading texts in order.
+    
+    Note: Includes all bold text items and section headers in the table of contents.
+    """
+    headings = []
+    # --- Normalize markdown headings so extraction matches rendering ---
+    content = re.sub(
+        r'(##\s*\*\*.*?\*\*)\s*$',
+        r'\1',
+        content,
+        flags=re.MULTILINE
+    )
+
+    content = re.sub(
+        r'(##\s*\*\*.*?\*\*)\s*\n',
+        r'\1\n\n',
+        content
+    )
+    blocks = content.split('\n\n')
+    # blocks = re.split(r'\n\s*\n', content)
+    
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        
+        # Check for standalone bold text (heading)
+        standalone_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block)
+        if standalone_bold_match:
+            text = standalone_bold_match.group(1).strip()
+            # Remove leading numbers like "1. ", "5.1. ", etc.
+            text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+            headings.append(text)
+            continue
+        
+        # # Check for bold text at start of paragraph
+        first_line_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*\n', block)
+        if first_line_bold_match:
+            text = first_line_bold_match.group(1).strip()
+            # Remove leading numbers like "1. ", "5.1. ", etc.
+            text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+            headings.append(text)
+            continue
+        
+        # Check for markdown headings
+        if block.startswith('####'):
+            text = block.replace('####', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '').strip()
+            text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+            headings.append(text)
+        elif block.startswith('###'):
+            text = block.replace('###', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '').strip()
+            text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+            headings.append(text)
+        elif block.startswith('##'):
+            text = block.replace('##', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '').strip()
+            text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+            
+            # Exclude citation subsection headings from TOC
+            # Only include "Citations & References" main heading, skip subsections like "Connected/Internal Sources", "External Web Sources"
+            citation_subsection_patterns = [
+                r'(?:Connected|Internal|External|Web)\s+(?:Sources|Content)',
+                r'References\s+(?:Only|Section)',
+                r'(?:Internal|External)\s+(?:Sources|References)'
+            ]
+            is_citation_subsection = any(
+                re.search(pattern, text, re.IGNORECASE) 
+                for pattern in citation_subsection_patterns
+            )
+            
+            if not is_citation_subsection:
+                headings.append(text)
+        elif block.startswith('#'):
+            text = block.replace('#', '').strip()
+            # Remove ** markers if present
+            text = text.replace('**', '').strip()
+            text = re.sub(r'^\d+(\.\d+)*\.?\s*', '', text).strip()
+            headings.append(text)
+    
+    return headings
+
+# def _add_table_of_contents(doc: Document, headings: List[str]):
+#     """
+#     Add a custom table of contents with the provided headings and page numbers.
+#     Uses Word bookmarks and page number fields to automatically track page numbers.
+#     Includes serial numbers (1, 2, 3, ...) before each heading.
+#     """
+#     # Add "Contents" heading
+#     toc_title = doc.add_paragraph("Contents", style='Heading 1')
+#     doc.add_paragraph()  # Blank line
+    
+#     # Add each heading as a TOC entry with serial number and page number field
+#     for index, heading in enumerate(headings, start=1):
+#         # Create a paragraph for the TOC entry
+#         toc_entry = doc.add_paragraph()
+#         toc_entry.paragraph_format.left_indent = DocxInches(0.5)
+        
+#         # Add the serial number and heading text
+#         run = toc_entry.add_run(f"{index}. {heading}")
+#         run.font.size = DocxPt(11)
+        
+#         # Add page number field that will be populated by Word
+#         # This uses the PAGEREF field to reference the page where the heading appears
+#         page_run = toc_entry.add_run()
+#         page_run.font.size = DocxPt(11)
+        
+#         # Create a page number field using Word's field syntax
+#         fldChar1 = OxmlElement('w:fldChar')
+#         fldChar1.set(qn('w:fldCharType'), 'begin')
+        
+#         instrText = OxmlElement('w:instrText')
+#         instrText.set(qn('xml:space'), 'preserve')
+#         instrText.text = f'PAGEREF "{heading.replace(" ", "_")}" \\h'
+#         # fldChar_separate = OxmlElement('w:fldChar')
+#         # fldChar_separate.set(qn('w:fldCharType'), 'separate')
+#         fldChar2 = OxmlElement('w:fldChar')
+#         fldChar2.set(qn('w:fldCharType'), 'end')
+        
+#         # Add field elements to the run
+#         page_run._r.append(fldChar1)
+#         page_run._r.append(instrText)
+#         # page_run._r.append(fldChar_separate)
+#         page_run._r.append(fldChar2)
+        
+#         # Add a space before page number
+#         toc_entry.runs[1].text = ' ' + toc_entry.runs[1].text
+
+def _add_table_of_contents(doc: Document, headings: List[str]):
+    """
+    Add a static table of contents (no Word fields).
+    This avoids the field update dialog on document open.
+    """
+    doc.add_paragraph("Contents", style='Heading 1')
+    doc.add_paragraph()  # Blank line
+
+    for index, heading in enumerate(headings, start=1):
+        toc_entry = doc.add_paragraph()
+        toc_entry.paragraph_format.left_indent = DocxInches(0.5)
+
+        run = toc_entry.add_run(f"{index}. {heading}")
+        run.font.size = DocxPt(11)
+        
+def _add_text_with_formatting(para, text):
+    """
+    Add text to a paragraph with inline markdown formatting (bold, italic, hyperlinks).
+    Supports **bold**, *italic*, [text](url) markdown links, and plain URLs.
+    """
+    if not text:
+        return
+    placeholder_counter = 0
+    link_placeholders = {}
+    citation_placeholders = {}
+
+    def replace_citation(match):
+        nonlocal placeholder_counter
+        number = match.group(1)
+        url = match.group(2)
+
+        placeholder = f"__CITATION_PLACEHOLDER_{placeholder_counter}__"
+        citation_placeholders[placeholder] = (number, url)
+        placeholder_counter += 1
+        return placeholder
+
+    # Extract [[1]](url) or <sup>[[1]](url)</sup>
+    text = re.sub(
+        r'(?:<sup>\s*)?\[\[(\d+)\]\]\((https?://[^)]+)\)(?:\s*</sup>)?',
+        replace_citation,
+        text
+    )
+    # Start with markdown links to avoid conflicts with other patterns
+    # Replace markdown links [text](url) with a placeholder first
+   
+    def replace_link(match):
+        nonlocal placeholder_counter
+        link_text = match.group(1)
+        link_url = match.group(2)
+        placeholder = f"__LINK_PLACEHOLDER_{placeholder_counter}__"
+        link_placeholders[placeholder] = (link_text, link_url)
+        placeholder_counter += 1
+        return placeholder
+    
+    # Replace all markdown links with placeholders
+    text_with_placeholders = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', replace_link, text)
+    
+    # Now process the text with placeholders
+    pos = 0
+    while pos < len(text_with_placeholders):
+        # Check for placeholder (hyperlink)
+        placeholder_match = re.search(r'__LINK_PLACEHOLDER_\d+__', text_with_placeholders[pos:])
+        # Check for bracketed URL [https://...] so it becomes clickable in Word
+        bracketed_url_match = re.search(r'\[(https?://[^\]]+)\]', text_with_placeholders[pos:])
+        # Check for bold
+        bold_match = re.search(r'\*\*(.+?)\*\*', text_with_placeholders[pos:])
+        # Check for italic
+        italic_match = re.search(r'(?<!\*)\*([^\*]+?)\*(?!\*)', text_with_placeholders[pos:])
+        # Check for plain URL (that wasn't converted to markdown)
+        # Match https?:// followed by non-whitespace characters, but stop at closing parens/brackets or end of string
+        # Note: NOT stopping at dots since dots are normal in URLs
+        url_match = re.search(r'https?://[^\s)\]]+(?=[)\]\s]|$)', text_with_placeholders[pos:])
+        citation_match = re.search(r'__CITATION_PLACEHOLDER_\d+__', text_with_placeholders[pos:])
+        # Collect matches with positions
+        matches = []
+        if placeholder_match:
+            matches.append(('placeholder', pos + placeholder_match.start(), placeholder_match))
+        if bracketed_url_match:
+            matches.append(('bracketed_url', pos + bracketed_url_match.start(), bracketed_url_match))
+        if bold_match:
+            matches.append(('bold', pos + bold_match.start(), bold_match))
+        if italic_match:
+            matches.append(('italic', pos + italic_match.start(), italic_match))
+        if url_match:
+            matches.append(('url', pos + url_match.start(), url_match))
+        if citation_match:
+            matches.append(('citation', pos + citation_match.start(), citation_match))
+        
+        if not matches:
+            # No more patterns, add remaining text
+            if pos < len(text_with_placeholders):
+                remaining = text_with_placeholders[pos:]
+                if remaining:
+                    run = para.add_run(sanitize_text_for_word(remaining))
+            break
+        
+        # Process the earliest match
+        matches.sort(key=lambda x: x[1])
+        match_type, match_pos, match = matches[0]
+        
+        # Add text before match
+        if match_pos > pos:
+            before_text = text_with_placeholders[pos:match_pos]
+            if before_text:
+                run = para.add_run(sanitize_text_for_word(before_text))
+        
+        # Process the match
+        if match_type == 'placeholder':
+            placeholder_text = match.group(0)
+            if placeholder_text in link_placeholders:
+                link_text, link_url = link_placeholders[placeholder_text]
+                add_hyperlink(para, link_url, link_text)
+            pos = match_pos + len(placeholder_text)
+        
+        elif match_type == 'bracketed_url':
+            url = match.group(1).strip()
+            add_hyperlink(para, url, url)
+            pos = match_pos + len(match.group(0))
+        
+        elif match_type == 'bold':
+            bold_text = match.group(1)
+            run = para.add_run(sanitize_text_for_word(bold_text))
+            run.bold = True
+            pos = match_pos + len(match.group(0))
+        
+        elif match_type == 'italic':
+            italic_text = match.group(1)
+            run = para.add_run(sanitize_text_for_word(italic_text))
+            run.italic = True
+            pos = match_pos + len(match.group(0))
+        
+        elif match_type == 'url':
+            url = match.group(0).rstrip('.,;:')
+            add_hyperlink(para, url, url)
+            pos = match_pos + len(url)
+            
+        elif match_type == 'citation':
+            placeholder_text = match.group(0)
+            if placeholder_text in citation_placeholders:
+                number, url = citation_placeholders[placeholder_text]
+                display_text = f"[{number}]"
+                hyperlink_run = add_hyperlink(para, url, display_text, superscript=True)
+                # if hyperlink_run is not None:
+                #     hyperlink_run.font.superscript = True
+            pos = match_pos + len(placeholder_text)
+
+
+def export_to_word_with_metadata(content: str, title: str, subtitle: Optional[str] = None, 
+                                   content_type: Optional[str] = None) -> bytes:
+    """
+    Export content to Word DOCX format using PwC template with metadata
+    
+    Args:
+        content: The main content to export
+        title: Document title
+        subtitle: Optional subtitle
+        content_type: Type of content (article, whitepaper, executive-brief, blog)
+    """
+    logger.info(f"[export_to_word_with_metadata] Starting export. Title: {title[:50]}, Content length: {len(content)}")
+    
+    try:
+        # Load PwC template
+        if os.path.exists(PWC_TEMPLATE_PATH):
+            doc = Document(PWC_TEMPLATE_PATH)
+            logger.info(f"Loaded PwC template from: {PWC_TEMPLATE_PATH}")
+        else:
+            logger.warning(f"PwC template not found at {PWC_TEMPLATE_PATH}, using default formatting")
+            doc = Document()
+    except Exception as e:
+        logger.warning(f"Failed to load PwC template: {e}, using default formatting")
+        doc = Document()
+    
+    # Remove footers and add page numbers only
+    _set_footer_with_page_numbers_only(doc)
+    
+    # Check if template has proper structure (Title, Subtitle, page breaks)
+    has_template_structure = (
+        len(doc.paragraphs) > 2 and 
+        doc.paragraphs[0].style.name == 'Title' and
+        doc.paragraphs[1].style.name == 'Subtitle'
+    )
+    
+    if has_template_structure:
+        # Use template structure: update title and subtitle, remove page break paragraphs
+        # Update title (paragraph 0) - clear runs and set text
+        _set_paragraph_text_with_breaks(doc.paragraphs[0], title)
+        
+        # Increase font size of title for better prominence on cover page
+        for run in doc.paragraphs[0].runs:
+            run.font.size = DocxPt(28)  # Large font for prominent title on cover page
+        
+        # Set paragraph alignment to center or left with word wrap enabled
+        # doc.paragraphs[0].alignment = None  # Use default alignment
+        doc.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        doc.paragraphs[0].paragraph_format.widow_control = True  # Better line breaking
+        
+        # Update subtitle (paragraph 1) with proper line breaks
+        if subtitle and content_type:
+            subtitle_text = f"{subtitle}\n{content_type.replace('-', ' ').title()}"
+        elif subtitle:
+            subtitle_text = subtitle
+        else:
+            # Don't show content_type as subtitle - it's only for metadata/formatting
+            subtitle_text = ''
+        
+        _set_paragraph_text_with_breaks(doc.paragraphs[1], subtitle_text)
+        
+        # Remove ALL template content after title and subtitle (including old TOC and page breaks)
+        paragraphs_to_remove = list(doc.paragraphs[2:])
+        for para in paragraphs_to_remove:
+            p = para._element
+            p.getparent().remove(p)
+
+        # Add page break after subtitle
+        _ensure_page_break_after_paragraph(doc.paragraphs[1])
+        
+        # Extract headings from content before adding it
+        headings = _extract_headings_from_content(content)
+        
+        # Add Table of Contents only for Article and White Paper, skip for Blog and Executive Brief
+        should_add_toc = content_type and content_type.lower() not in ['blog', 'executive_brief', 'executive-brief']
+        
+        if headings and should_add_toc:
+            logger.info(f"[export_to_word_with_metadata] Adding Table of Contents for content_type: {content_type}")
+            _add_table_of_contents(doc, headings)
+            
+            # Add a page break before the generated content so it starts after the TOC page
+            page_break_para = doc.add_paragraph()
+            run = page_break_para.add_run()
+            run.add_break(WD_BREAK.PAGE)
+        else:
+            logger.info(f"[export_to_word_with_metadata] Skipping Table of Contents for content_type: {content_type}")
+        
+        # Add content after the cover/TOC
+        _add_formatted_content(doc, content)
+    else:
+        # No template structure, clear everything and build from scratch
+        for para in doc.paragraphs[:]:
+            p = para._element
+            p.getparent().remove(p)
+        
+        # Add title using Title style with sanitization
+        sanitized_title = sanitize_text_for_word(title)
+        title_para = doc.add_paragraph(sanitized_title, style='Title')
+        
+        # Add subtitle if provided
+        if subtitle:
+            sanitized_subtitle = sanitize_text_for_word(subtitle)
+            subtitle_para = doc.add_paragraph(sanitized_subtitle, style='Subtitle')
+        
+        # Add content type if provided
+        if content_type:
+            sanitized_content_type = sanitize_text_for_word(f"Content Type: {content_type.replace('-', ' ').title()}")
+            type_para = doc.add_paragraph(sanitized_content_type, style='Subtitle')
+        
+        # Add a blank line
+        doc.add_paragraph()
+        
+        # Parse and add content with proper formatting
+        _add_formatted_content(doc, content)
+    
+    buffer = io.BytesIO()
+    try:
+        doc.save(buffer)
+    except UnicodeEncodeError as e:
+        logger.error(f"Encoding error while saving document: {e}")
+        raise Exception(f"Failed to save Word document due to encoding error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error saving Word document: {e}")
+        raise Exception(f"Failed to save Word document: {str(e)}")
+    
+    buffer.seek(0)
+    docx_bytes = buffer.getvalue()
+    
+    logger.info(f"[export_to_word_with_metadata] Document created, size before encoding fix: {len(docx_bytes)} bytes")
+    
+    # Apply encoding fix to ensure all Unicode characters are properly handled
+    try:
+        # docx_bytes = _fix_docx_encoding(docx_bytes)
+        logger.info(f"[export_to_word_with_metadata] Encoding fix applied, final size: {len(docx_bytes)} bytes")
+    except Exception as e:
+        logger.error(f"[export_to_word_with_metadata] Error during encoding fix: {e}")
+        # Continue anyway - the document might still be valid
+    
+    logger.info(f"[export_to_word_with_metadata] Export completed successfully")
+    return docx_bytes
+
+def export_to_text(content: str) -> bytes:
+    """Export content to plain text format"""
+    return content.encode('utf-8')
+
+def export_to_word_ui_plain(content: str, title: str) -> bytes:
+    """
+    Standalone UI Word export
+    - No template
+    - No TOC
+    - No headers/footers
+    """
+    doc = Document()
+
+    def tighten_spacing(p):
+        p.paragraph_format.space_before = DocxPt(0)
+        p.paragraph_format.space_after = DocxPt(4)
+        p.paragraph_format.line_spacing = 1
+
+    lines = content.split("\n")
+
+    for line in lines:
+        text = line.rstrip()
+
+        if not text:
+            p = doc.add_paragraph("")
+            tighten_spacing(p)
+            continue
+
+        # Bullet points
+        if re.match(r"^(\-|\•)\s+", text):
+            bullet_text = re.sub(r"^(\-|\•)\s+", "", text)
+            p = doc.add_paragraph(style="List Bullet")
+            tighten_spacing(p)
+
+            # Bold heading before colon
+            if ":" in bullet_text:
+                head, rest = bullet_text.split(":", 1)
+                r1 = p.add_run(head.strip() + ":")
+                r1.bold = True
+                p.add_run(rest)
+            else:
+                p.add_run(bullet_text)
+
+            continue
+
+        # Normal paragraph
+        p = doc.add_paragraph()
+        tighten_spacing(p)
+
+        # Bold hashtags
+        parts = re.split(r"(#\w+)", text)
+        for part in parts:
+            if part.startswith("#"):
+                r = p.add_run(part)
+                r.bold = True
+            else:
+                # Handle **bold**
+                subparts = re.split(r"(\*\*.*?\*\*)", part)
+                for sub in subparts:
+                    if sub.startswith("**") and sub.endswith("**"):
+                        r = p.add_run(sub[2:-2])
+                        r.bold = True
+                    else:
+                        p.add_run(sub)
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def normalize_broken_markdown(text: str) -> str:
+    text = re.sub(r'\*(\w[^*]+)\*\*', r'**\1**', text)
+    text = re.sub(r'\*{3,}', '**', text)
+    return text
+
+# def add_superscript_hyperlink(paragraph, text, url):
+#     run = paragraph.add_run(text)
+#     run.font.superscript = True
+#     run.bold = False
+
+#     r = run._r
+#     rPr = r.get_or_add_rPr()
+
+#     # Hyperlink XML
+#     hyperlink = OxmlElement('w:hyperlink')
+#     hyperlink.set(qn('r:id'), paragraph.part.relate_to(
+#         url,
+#         docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK,
+#         is_external=True
+#     ))
+
+#     hyperlink.append(r)
+#     paragraph._p.append(hyperlink)
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
+
+def add_superscript_hyperlink(paragraph, text, url):
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(
+        qn('r:id'),
+        paragraph.part.relate_to(url, RT.HYPERLINK, is_external=True)
+    )
+
+    run = OxmlElement('w:r')
+    rPr = OxmlElement('w:rPr')
+
+    vertAlign = OxmlElement('w:vertAlign')
+    vertAlign.set(qn('w:val'), 'superscript')
+    rPr.append(vertAlign)
+
+    run.append(rPr)
+
+    t = OxmlElement('w:t')
+    t.text = text
+    run.append(t)
+
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+def _add_page_number(canvas, doc):
+    canvas.saveState()
+    canvas.setFont("Helvetica", 9)
+    # canvas.setFont("DejaVu", 9)
+    canvas.setFillColor('#666666')
+
+    page_num_text = f"{doc.page}"
+    canvas.drawRightString(
+        doc.pagesize[0] - 1 * inch,   # right margin
+        0.75 * inch,                  # footer height
+        page_num_text
+    )
+
+    canvas.restoreState()
+
+def _add_page_number_edit_content_pdf(canvas, doc):
+    """
+    Add page number at bottom of each content page for edit content PDF export.
+    Content pages are merged after a single cover page, so display number as doc.page + 1.
+    Use only in export_to_pdf_edit_content when building content pages.
+    """
+    canvas.saveState()
+    canvas.setFont("Helvetica", 9)
+    canvas.setFillColor('#666666')
+    page_num_text = f"{doc.page + 1}"
+    canvas.drawRightString(
+        doc.pagesize[0] - 1 * inch,
+        0.75 * inch,
+        page_num_text
+    )
+    canvas.restoreState()
+
+def build_cover_title(module: str, client: str | None) -> str:
+    module_clean = re.sub(r'generate\s+', '', module, flags=re.IGNORECASE)
+    module_clean = module_clean.replace("-", " ").title()
+    if not client:
+        return module_clean
+    return f"{module_clean} on {client.title()}".strip()
+    # module_clean = re.sub(r'[*#_`]+', '', module_clean).strip()  
+
+    # if not clientname:
+    #     return module_clean
+
+    # return f"{module_clean} on {clientname}".strip()
+
+def classify_block(block: str) -> str:
+    """
+    Returns one of:
+    executive_takeaway
+    bullet_heading
+    heading_1
+    heading_2
+    bullet_list
+    paragraph
+    """
+    if re.match(r'^\*\*Executive takeaway:\*\*', block, re.I):
+        return "executive_takeaway"
+
+    if re.match(r'^(\*.+\*|- .+)$', block):
+        return "bullet_heading"
+
+    if block.startswith("##"):
+        return "heading_2"
+
+    if block.startswith("#"):
+        return "heading_1"
+
+    if all(is_bullet_line(l) for l in block.split("\n")):
+        return "bullet_list"
+
+    return "paragraph"
+
+def split_blocks(text: str) -> list[str]:
+    """
+    Split content into blocks with consistent normalization.
+    
+    Rules:
+    - Normalize all newline types (\r\n, \r) to \n
+    - Split on 2+ consecutive newlines
+    - Strip each block
+    - Remove empty blocks
+    
+    This prevents index drift from different newline handling across platforms.
+    
+    Args:
+        text: Raw content string with possible mixed newlines
+    
+    Returns:
+        List of non-empty, stripped content blocks
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    
+    # Normalize newlines: \r\n and \r become \n
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    
+    # Split on 2+ newlines
+    blocks = re.split(r"\n{2,}", text)
+    
+    # Strip and filter empty blocks
+    return [b.strip() for b in blocks if b.strip()]
+
+def parse_markdown_to_block_types(content: str) -> list[dict]:
+    """
+    Infer block types from markdown content for edit-content export when block_types is not provided.
+    Uses split_blocks() then inspects first line of each block for # ## ### ####, -, *, 1. 2., A. a., etc.
+    Returns list of {"index": i, "type": "title"|"heading"|"paragraph"|"bullet_item"|"list_item", "level": n}
+    compatible with _format_content_with_block_types_word/pdf.
+    """
+    blocks = split_blocks(content)
+    result = []
+    for i, block in enumerate(blocks):
+        first_line = (block.split("\n")[0] or "").strip()
+        level = 0
+        if first_line.startswith("####"):
+            block_type = "heading"
+            level = 4
+        elif first_line.startswith("###"):
+            block_type = "heading"
+            level = 3
+        elif first_line.startswith("##"):
+            block_type = "heading"
+            level = 2
+        elif first_line.startswith("#"):
+            block_type = "title" if i == 0 else "heading"
+            level = 1
+        elif re.match(r"^\s*[-*]\s", first_line) or first_line.startswith("•"):
+            block_type = "bullet_item"
+        elif re.match(r"^\s*\d+\.\s", first_line):
+            block_type = "list_item"
+        elif re.match(r"^\s*[A-Za-z]\.\s", first_line) or re.match(r"^\s*[ivxlcdmIVXLCDM]+\.\s", first_line, re.IGNORECASE):
+            block_type = "list_item"
+        else:
+            block_type = "paragraph"
+        result.append({"index": i, "type": block_type, "level": level})
+    return result
+
+
+def html_to_marked_text(text: str) -> str:
+    """Convert limited HTML to a simple markdown-like text we already support.
+
+    Rules:
+    - Decode HTML entities
+    - Treat <p> as paragraph breaks and <br> as line breaks
+    - Convert <strong>/<b> to **bold** markers (which existing formatters understand)
+    - Convert <h1>-<h6> to markdown headings (#)
+    - Convert <li> items to bullet format (- bullet)
+    - Strip all other tags/attributes (like style="...")
+    
+    EDIT CONTENT ONLY: This function is specifically for converting HTML from
+    formatFinalArticleWithBlockTypes() to plain text before backend processing.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+
+    # Decode entities (&amp;, &nbsp; ...)
+    text = unescape(text)
+
+    # Convert headings to markdown: <h1>Text</h1> -> # Text
+    text = re.sub(r"<h1[^>]*>([^<]+)</h1>", r"# \1", text, flags=re.IGNORECASE)
+    text = re.sub(r"<h2[^>]*>([^<]+)</h2>", r"## \1", text, flags=re.IGNORECASE)
+    text = re.sub(r"<h3[^>]*>([^<]+)</h3>", r"### \1", text, flags=re.IGNORECASE)
+    text = re.sub(r"<h4[^>]*>([^<]+)</h4>", r"#### \1", text, flags=re.IGNORECASE)
+    text = re.sub(r"<h5[^>]*>([^<]+)</h5>", r"##### \1", text, flags=re.IGNORECASE)
+    text = re.sub(r"<h6[^>]*>([^<]+)</h6>", r"###### \1", text, flags=re.IGNORECASE)
+    
+    # Convert <ul> and <ol> lists to plain text
+    # <li>content</li> -> - content (bullet format)
+    text = re.sub(r"<li[^>]*>([^<]+)</li>", r"- \1", text, flags=re.IGNORECASE)
+    text = re.sub(r"</?[ou]l[^>]*>", "", text, flags=re.IGNORECASE)  # Remove ul/ol tags
+
+    # Paragraph and line breaks first so they survive tag stripping
+    text = re.sub(r"</p\s*>", "\n\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+
+    # Convert bold tags to ** ** markers
+    # Handle nested/overlapping conservatively by doing closing then opening
+    text = re.sub(r"<\s*/\s*(strong|b)\s*>", "**", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*(strong|b)[^>]*>", "**", text, flags=re.IGNORECASE)
+    
+    # Convert italic tags to * * markers
+    text = re.sub(r"<\s*/\s*(em|i)\s*>", "*", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*(em|i)[^>]*>", "*", text, flags=re.IGNORECASE)
+
+    # Convert <a href="url">text</a> to [text](url) BEFORE tag stripping so inline
+    # citation URLs are preserved for PDF/Word export (fixes "inline url removed" in PDF)
+    text = re.sub(
+        r'<a\s+[^>]*href=(["\'])([^"\']+)\1[^>]*>([\s\S]*?)</a>',
+        r'[\3](\2)',
+        text,
+        flags=re.IGNORECASE | re.DOTALL
+    )
+
+    # Drop all remaining tags (div, span, p with style, etc.)
+    text = re.sub(r"<[^>]+>", "", text)
+
+    # Clean up excessive whitespace (but preserve intentional structure)
+    # Multiple spaces -> single space (but not newlines)
+    text = re.sub(r"[ \t]+", " ", text)
+    # Multiple newlines (3+) -> double newline (paragraph break)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    
+    return text.strip()
+
+def parse_bullet(text: str) -> dict:
+    """
+    Parse bullet point structure consistently.
+    
+    Extracts:
+    - number: int or None (e.g., 1, 2, 10 from "1.", "2.", "10)")
+    - icon: str or None (bullet icon like "•", "-", "*")
+    - label: str (bold text before colon, or first sentence)
+    - body: str or None (text after colon, or remainder)
+    
+    This is the single source of truth for bullet semantics.
+    Used by both Word and PDF export.
+    
+    Args:
+        text: Raw bullet text (may include number/icon prefix)
+    
+    Returns:
+        dict with keys: number, icon, label, body
+    """
+    text = text.strip()
+    result = {
+        "number": None,
+        "icon": None,
+        "label": "",
+        "body": None
+    }
+    
+    # Extract bullet icon first (•, -, *)
+    icon_match = re.match(r'^([•\-\*])\s+', text)
+    if icon_match:
+        result["icon"] = icon_match.group(1)
+        text = text[len(icon_match.group(0)):].strip()
+    
+    # Extract number prefix (1., 2., 10), etc.)
+    number_match = re.match(r'^(\d+)[.)]\s+', text)
+    if number_match:
+        result["number"] = int(number_match.group(1))
+        text = text[len(number_match.group(0)):].strip()
+    
+    # Extract label (before colon) and body (after colon)
+    colon_idx = text.find(':')
+    if colon_idx > 0:
+        result["label"] = text[:colon_idx].strip()
+        result["body"] = text[colon_idx + 1:].strip()
+    else:
+        result["label"] = text
+    
+    return result
+
+def _format_content_with_block_types_word(doc: Document, content: str, block_types: list[dict] | None = None, use_bullet_icons_only: bool = False):
+    """
+    Format content in Word document using block type information.
+    Applies formatting similar to frontend formatFinalArticleWithBlockTypes.
+    Groups consecutive bullet items into lists, handles bullet icons, removes number prefixes.
+    
+    Content should be final_article format: plain text with "\n\n" separators.
+    Uses split_blocks() to split content (same as final article processing).
+    block_types should match final article generation structure with sequential indices.
+    
+    If use_bullet_icons_only is True, all lists (numbered, alphabetical, or bullet) use bullet icons (for edit content export).
+    """
+    if not block_types:
+        # Fallback to default formatting
+        for block in split_blocks(content):
+            block = block.strip()
+            if not block:
+                continue
+            if block.startswith("##"):
+                p = doc.add_paragraph(style="Heading 2")
+                p.add_run(sanitize_text_for_word(block.replace("##", "").strip())).bold = True
+            elif block.startswith("#"):
+                p = doc.add_paragraph(style="Heading 1")
+                p.add_run(sanitize_text_for_word(block.replace("#", "").strip())).bold = True
+            elif re.match(r'^\*\*(.+?)\*\*$', block):
+                m = re.match(r'^\*\*(.+?)\*\*$', block)
+                if m:
+                    p = doc.add_paragraph(style="Heading 1")
+                    p.add_run(sanitize_text_for_word(m.group(1))).bold = True
+            else:
+                lines = block.split("\n")
+                if all(is_bullet_line(l) for l in lines):
+                    for line in lines:
+                        clean = re.sub(r'^\s*[-•]\s+', '', line).strip()
+                        if clean:
+                            para = doc.add_paragraph(style="List Bullet")
+                            _add_markdown_text_runs(para, clean)
+                else:
+                    para = doc.add_paragraph(style="Body Text")
+                    _add_markdown_text_runs(para, block)
+        return
+    
+    # Use split_blocks() - same as final article processing
+    # split_blocks() handles "\n\n" splitting (matches final_article format: "\n\n".join(final_paragraphs))
+    paragraphs = split_blocks(content)
+    
+    # Create block type map - use index from block_types or fallback to position
+    # block_types come from final article generation with sequential indices matching paragraphs
+    # IMPORTANT: block_types have sequential indices (0, 1, 2, ...) that match paragraph positions
+    block_type_map = {}
+    for i, bt in enumerate(block_types):
+        # Use the index from block_type if present, otherwise use enumeration index
+        map_key = bt.get("index") if bt.get("index") is not None else i
+        block_type_map[map_key] = bt
+    
+    # Citation line pattern (e.g. "1. ", "2. ") for splitting citation/reference blocks
+    _citation_line_pattern_word = re.compile(r'^\s*\d+\.\s+')
+
+    # First pass: process each paragraph with block type formatting
+    formatted_blocks = []
+    for idx, block in enumerate(paragraphs):
+        block = block.strip()
+        if not block:
+            continue
+
+        # Citation/reference block: split into one paragraph per line so each has its own line,
+        # and merge split URLs ("https:\n//" -> "https://") so links are full and clickable (like PDF)
+        lines_in_block = [ln.strip() for ln in block.split('\n') if ln.strip()]
+        citation_line_count = sum(1 for ln in lines_in_block if _citation_line_pattern_word.match(ln))
+        if len(lines_in_block) >= 2 and citation_line_count >= 2:
+            # Merge URL continuations so "https:" on one line + "//url" on next -> "https://url"
+            block_merged = re.sub(r'https:\s*\n\s*//', 'https://', block)
+            lines_merged = [ln.strip() for ln in block_merged.split('\n') if ln.strip()]
+            for line in lines_merged:
+                formatted_blocks.append({
+                    'type': 'paragraph',
+                    'content': line,
+                    'level': 0,
+                    'raw_content': line
+                })
+            continue
+
+        # Get block_info - use index from enumerate to match block_types indices
+        # block_types indices are sequential (0, 1, 2, ...) matching paragraph positions
+        block_info = block_type_map.get(idx)
+        if not block_info:
+            logger.warning(f"[Export Word] No block_type found for index {idx}, defaulting to paragraph")
+            block_info = {"type": "paragraph", "level": 0, "index": idx}
+        
+        block_type = block_info.get("type")
+        if not block_type or block_type == "":
+            logger.warning(f"[Export Word] Empty block_type for index {idx}, defaulting to paragraph")
+            block_type = "paragraph"
+        level = block_info.get("level", 0)
+        
+        # Skip title blocks - title is already on cover page, don't duplicate in content
+        if block_type == "title":
+            continue
+        
+        # Process list items: detect type and preserve original order
+        # Check if this is a list item (bullet, number, or alpha)
+        # Always detect from content, even if block_type says "bullet_item"
+        list_type, detected_level = _detect_list_type(block, level)
+        
+        # Use level from block_types first, fallback to detected level
+        final_level = level if level > 0 else detected_level
+        
+        if list_type != 'none' or block_type == "bullet_item":
+            # This is a list item (detected or from block_type)
+            # If detected as 'none' but block_type is "bullet_item", treat as bullet
+            if list_type == 'none' and block_type == "bullet_item":
+                list_type = 'bullet'
+            
+            parsed = parse_bullet(block)
+            formatted_blocks.append({
+                'type': 'list_item',
+                'list_type': list_type,
+                'content': block,
+                'level': final_level,
+                'raw_content': block,
+                'parsed': parsed
+            })
+        else:
+            formatted_blocks.append({
+                'type': block_type,
+                'content': block,
+                'level': level,
+                'raw_content': block
+            })
+    
+    # Second pass: group consecutive list items and apply formatting
+    current_list = []
+    prev_list_type = None
+    prev_block_type = None
+    
+    for i, block_info in enumerate(formatted_blocks):
+        block_type = block_info['type']
+        content = block_info['content']
+        level = block_info.get('level', 0)
+        next_block = formatted_blocks[i + 1] if i + 1 < len(formatted_blocks) else None
+        
+        if block_type == 'list_item' or block_type == 'bullet_item':
+            list_type = block_info.get('list_type', 'bullet')
+            
+            # Reset numbering if previous block was a heading
+            reset_numbering = (prev_block_type == 'heading')
+            
+            # If previous block was heading, close current list (if any) and start new one with reset
+            if reset_numbering and current_list:
+                # Edit content: show backend format as-is - no add, no strip; numbers and bullets as-is
+                ordered_list = current_list
+                _add_list_as_paragraphs_word(doc, ordered_list, prev_block_type, block_info)
+                current_list = []
+            
+            # Check if we should start a new list (different type or level)
+            if current_list:
+                first_item_level = current_list[0].get('level', 0)
+                if prev_list_type != list_type or first_item_level != level:
+                    # Close current list and start new one - show as-is
+                    ordered_list = current_list
+                    _add_list_as_paragraphs_word(doc, ordered_list, prev_block_type, block_info)
+                    current_list = []
+            
+            # Add to current list
+            current_list.append(block_info)
+            # Mark if this list should reset numbering (after heading)
+            if reset_numbering and len(current_list) == 1:
+                current_list[0]['_reset_numbering'] = True
+            prev_list_type = list_type
+            prev_block_type = 'list_item'
+        else:
+            # Close any open list before processing non-list block
+            if current_list:
+                ordered_list = current_list
+                # Edit content: show backend format as-is - numbers and bullets as-is
+                _add_list_as_paragraphs_word(doc, ordered_list, prev_block_type, next_block)
+                current_list = []
+                prev_list_type = None
+            
+            # Process non-list blocks (title blocks already skipped in first pass)
+            if block_type == "heading":
+                # Remove heading numbers if present, and strip markdown # ## ### prefix so it doesn't show in export
+                clean_content = re.sub(r'^\d+[.)]\s+', '', content).strip()
+                clean_content = re.sub(r'^#+\s*', '', clean_content).strip()
+                
+                # Heading: Based on level (Heading 1-6), bold, font-weight 600 equivalent
+                heading_level = min(max(level, 1), 6)
+                style_name = f"Heading {heading_level}"
+                p = doc.add_paragraph(style=style_name)
+                
+                # Remove numbering from heading
+                p.paragraph_format.left_indent = DocxInches(0)
+                # Clear any numbering
+                pPr = p._p.get_or_add_pPr()
+                numPr = pPr.find(qn('w:numPr'))
+                if numPr is not None:
+                    pPr.remove(numPr)
+                
+                run = p.add_run(sanitize_text_for_word(clean_content))
+                run.bold = True
+                # Set spacing: margin-top: 0.9em equivalent, margin-bottom: 0.2em equivalent
+                p.paragraph_format.space_before = DocxPt(11)  # ~0.9em
+                p.paragraph_format.space_after = DocxPt(2)     # ~0.2em
+            
+            elif block_type == "paragraph":
+                # Paragraph: proper spacing with Body Text style (matches PDF)
+                para = doc.add_paragraph(style="Body Text")
+                _add_markdown_text_runs(para, content)
+                
+                # Apply Body Text style configuration
+                _apply_body_text_style_word(para)
+                
+                # Set spacing to match PDF exactly
+                para.paragraph_format.space_before = DocxPt(2)   # ~0.15em (matches PDF spaceBefore=2)
+                para.paragraph_format.space_after = DocxPt(8)    # ~0.7em (matches PDF spaceAfter=8)
+                # Reduce spacing if followed by list (matches PDF)
+                if next_block and (next_block.get('type') == 'list_item' or next_block.get('type') == 'bullet_item'):
+                    para.paragraph_format.space_after = DocxPt(3)  # ~0.25em (matches PDF spaceAfter=3)
+                # Reduce spacing if following heading (matches PDF)
+                if prev_block_type == 'heading':
+                    para.paragraph_format.space_before = DocxPt(0)  # Matches PDF spaceBefore=0
+            
+            prev_block_type = block_type
+    
+    # Close any remaining list - edit content: show backend as-is, no add no strip
+    if current_list:
+        ordered_list = current_list
+        _add_list_as_paragraphs_word(doc, ordered_list, prev_block_type, None)
+
+def export_to_word_edit_content(
+    content: str,
+    title: str,
+    subtitle: str | None = None,
+    references: list[dict] | None = None,
+    block_types: list[dict] | None = None
+) -> bytes:
+    """
+    PwC Word export specifically for Edit Content workflow.
+    Uses block type information for proper formatting (title, heading, bullet_item, paragraph).
+    Numbered and alphabetical lists (e.g. Citations and references) are rendered with numbers/letters; bullet lists use bullet icons.
+    No Table of Contents is generated for edit content export.
+    
+    Content should be final_article format: plain text with "\n\n" separators (same as final article generation).
+    block_types should match final article generation structure with sequential indices.
+    """
+    # Content should be plain text final_article (from backend final article generation)
+    # Format: "\n\n".join(final_paragraphs) - same as final article generation
+    # Safety check: convert HTML to plain text if somehow HTML is present
+    if '<' in content and '>' in content:
+        logger.warning("HTML detected in export content - converting to plain text. Content should be final_article (plain text).")
+        content = html_to_marked_text(content)
+    if not block_types:
+        block_types = parse_markdown_to_block_types(content)
+    
+    doc = Document(PWC_TEMPLATE_PATH) if os.path.exists(PWC_TEMPLATE_PATH) else Document()
+
+    # ---------- Cover ----------
+    clean_title = re.sub(r'\*+', '', title).strip()
+    title_para = doc.paragraphs[0]
+    _set_paragraph_text_with_breaks(title_para, sanitize_text_for_word(clean_title))
+
+    # Remove footers and add page numbers only
+    _set_footer_with_page_numbers_only(doc)
+    
+    
+    # Apply PDF's dynamic font sizing logic (matches PDF exactly)
+    title_font_size = 32  # Default
+    if len(clean_title) > 80:
+        title_font_size = 20
+    elif len(clean_title) > 60:
+        title_font_size = 22
+    elif len(clean_title) > 40:
+        title_font_size = 26
+    
+    # Set font size for all runs in the title paragraph
+    for run in title_para.runs:
+        run.font.size = DocxPt(title_font_size)
+        run.bold = True
+    
+    # Set center alignment (matches PDF)
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Set title style to "Page 1"
+    try:
+        title_para.style = "Page 1"
+    except:
+        # Fallback if style doesn't exist
+        title_para.style = "Heading 1"
+    _set_paragraph_text_with_breaks(doc.paragraphs[1], sanitize_text_for_word(subtitle or ""))
+
+    # Remove everything after subtitle
+    while len(doc.paragraphs) > 2:
+        p = doc.paragraphs[-1]
+        p._element.getparent().remove(p._element)
+
+    _ensure_page_break_after_paragraph(doc.paragraphs[1])
+
+    # ---------- Content with Block Types ----------
+    references_heading_added = False
+    
+    # Check for references section
+    if "references" in content.lower() or "references:" in content.lower():
+        # Handle references separately
+        parts = re.split(r'\n\n(?:references|references:)\s*\n\n', content, flags=re.IGNORECASE)
+        main_content = parts[0] if parts else content
+        
+        _format_content_with_block_types_word(doc, main_content, block_types, use_bullet_icons_only=False)
+        
+        if len(parts) > 1:
+            doc.add_paragraph("References", style="Heading 2")
+            references_heading_added = True
+            # Format references section
+            _format_content_with_block_types_word(doc, parts[1], None, use_bullet_icons_only=False)
+    else:
+        _format_content_with_block_types_word(doc, content, block_types, use_bullet_icons_only=False)
+
+    # ---------- References ----------
+    if references:
+        doc.add_page_break()
+        if not references_heading_added:
+            doc.add_paragraph("References", style="Heading 2")
+
+        for idx, ref in enumerate(references, start=1):
+            title_text = sanitize_text_for_word(ref.get("title", ""))
+            para = doc.add_paragraph(style="Body Text")
+            para.add_run(f"{idx}. {title_text}")
+            if ref.get("url"):
+                para.add_run(" ")
+                url_norm = _normalize_citation_url_for_word(ref["url"])
+                add_hyperlink(para, url_norm, url_norm)
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def _format_content_with_block_types_pdf(story: list, content: str, block_types: list[dict] | None = None, 
+                                         body_style: ParagraphStyle = None, heading_style: ParagraphStyle = None,
+                                         use_bullet_icons_only: bool = True):
+    """
+    Format content for PDF using block type information.
+    Applies formatting similar to frontend formatFinalArticleWithBlockTypes.
+    Groups consecutive bullet items, handles spacing, font sizes, and colors correctly.
+    
+    Content should be final_article format: plain text with "\n\n" separators.
+    Uses split_blocks() to split content (same as final article processing).
+    block_types should match final article generation structure with sequential indices.
+    
+    If use_bullet_icons_only is False (edit content export), numbered/alpha lists use numbers/letters; bullet lists use bullets.
+    """
+    from reportlab.lib.styles import getSampleStyleSheet
+    styles = getSampleStyleSheet()
+    
+    if not body_style:
+        body_style = ParagraphStyle(
+            'PWCBody',
+            parent=styles['BodyText'],
+            fontSize=11,
+            leading=16.5,  # 1.5 line spacing (11 * 1.5 = 16.5)
+            alignment=TA_JUSTIFY,
+            spaceAfter=6,  # Pre-set spacing
+            spaceBefore=2,  # ~0.15em equivalent
+            fontName='Helvetica'
+        )
+    
+    if not heading_style:
+        heading_style = ParagraphStyle(
+            'PWCHeading',
+            parent=styles['Heading2'],
+            fontSize=14,
+            textColor='black',  # Changed from '#D04A02' (orange) to black
+            spaceAfter=2,   # ~0.2em equivalent
+            spaceBefore=11, # ~0.9em equivalent
+            fontName='Helvetica-Bold'
+        )
+    
+    # Title style (larger, bold, font-weight 700 equivalent)
+    title_style = ParagraphStyle(
+        'PWCTitle',
+        parent=styles['Heading1'],
+        fontSize=24,  # Larger than headings
+        textColor='#D04A02',  # Orange color
+        spaceAfter=4,   # ~0.35em equivalent
+        spaceBefore=15, # ~1.25em equivalent
+        fontName='Helvetica-Bold'
+    )
+    
+    if not block_types:
+        # Fallback to default formatting
+        blocks = split_blocks(content)
+        for block in blocks:
+            if not block.strip():
+                continue
+            block = block.strip()
+            
+            if block.startswith('####'):
+                text = block.replace('####', '').strip()
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+            elif block.startswith('###'):
+                text = block.replace('###', '').strip()
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+            elif block.startswith('##'):
+                text = block.replace('##', '').strip()
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+            elif block.startswith('#'):
+                text = block.replace('#', '').strip()
+                text = _format_content_for_pdf(text)
+                story.append(Paragraph(text, heading_style))
+            elif _is_bullet_list_block(block):
+                bullet_items = _parse_bullet_items(block)
+                list_items = [ListItem(Paragraph(_format_content_for_pdf(text), body_style)) for indent, text in bullet_items]
+                story.append(
+                    ListFlowable(
+                        list_items,
+                        bulletType='bullet',
+                        bulletFontName='Helvetica',
+                        bulletFontSize=11,
+                        leftIndent=12,
+                        bulletIndent=0,
+                    )
+                )
+            else:
+                para = Paragraph(_format_content_for_pdf(block), body_style)
+                story.append(para)
+        return
+    
+    # Use split_blocks() - same as final article processing
+    # split_blocks() handles "\n\n" splitting (matches final_article format: "\n\n".join(final_paragraphs))
+    paragraphs = split_blocks(content)
+    
+    # Create block type map - use index from block_types or fallback to position
+    # IMPORTANT: block_types have sequential indices (0, 1, 2, ...) that match paragraph positions
+    block_type_map = {}
+    for i, bt in enumerate(block_types):
+        # Use the index from block_type if present, otherwise use enumeration index
+        map_key = bt.get("index") if bt.get("index") is not None else i
+        block_type_map[map_key] = bt
+    
+    # Citation pattern: line starts with number and period (e.g. "1. ", "2. ")
+    _citation_line_pattern = re.compile(r'^\s*\d+\.\s+')
+
+    # First pass: process each paragraph with block type formatting
+    formatted_blocks = []
+    for idx, block in enumerate(paragraphs):
+        block = block.strip()
+        if not block:
+            continue
+
+        # If block has multiple lines that look like citations (1., 2., 3., ...),
+        # split into one paragraph per line so each citation starts on its own line in PDF
+        lines_in_block = [ln.strip() for ln in block.split('\n') if ln.strip()]
+        citation_line_count = sum(1 for ln in lines_in_block if _citation_line_pattern.match(ln))
+        if len(lines_in_block) >= 2 and citation_line_count >= 2:
+            for line in lines_in_block:
+                formatted_blocks.append({
+                    'type': 'paragraph',
+                    'content': line,
+                    'level': 0,
+                    'raw_content': line
+                })
+            continue
+
+        # Get block_info - use index from enumerate to match block_types indices
+        # block_types indices are sequential (0, 1, 2, ...) matching paragraph positions
+        block_info = block_type_map.get(idx)
+        if not block_info:
+            block_info = {"type": "paragraph", "level": 0, "index": idx}
+        
+        # Get block_type - ensure it's not None or empty string
+        block_type = block_info.get("type")
+        if not block_type or block_type == "":
+            block_type = "paragraph"
+        level = block_info.get("level", 0)
+        
+        # Skip title blocks - title is already on cover page, don't duplicate in content
+        if block_type == "title":
+            continue
+        
+        # Process list items: detect type and preserve original order (same as Word)
+        # Always detect from content, even if block_type says "bullet_item"
+        list_type, detected_level = _detect_list_type(block, level)
+        
+        # Use level from block_types first, fallback to detected level
+        final_level = level if level > 0 else detected_level
+        
+        if list_type != 'none' or block_type == "bullet_item":
+            # This is a list item (detected or from block_type)
+            # If detected as 'none' but block_type is "bullet_item", treat as bullet
+            if list_type == 'none' and block_type == "bullet_item":
+                list_type = 'bullet'
+            
+            parsed = parse_bullet(block)
+            formatted_blocks.append({
+                'type': 'list_item',
+                'list_type': list_type,
+                'content': block,
+                'level': final_level,
+                'raw_content': block,
+                'parsed': parsed
+            })
+        else:
+            formatted_blocks.append({
+                'type': block_type,
+                'content': block,
+                'level': level,
+                'raw_content': block
+            })
+    
+    # Second pass: group consecutive list items and apply formatting (same as Word)
+    current_list = []
+    prev_list_type = None
+    prev_block_type = None
+    
+    for i, block_info in enumerate(formatted_blocks):
+        block_type = block_info['type']
+        content = block_info['content']
+        level = block_info.get('level', 0)
+        next_block = formatted_blocks[i + 1] if i + 1 < len(formatted_blocks) else None
+        
+        if block_type == 'list_item' or block_type == 'bullet_item':
+            list_type = block_info.get('list_type', 'bullet')
+            
+            # Reset numbering if previous block was a heading (same as Word)
+            reset_numbering = (prev_block_type == 'heading')
+            
+            # If previous block was heading, close current list (if any) and start new one with reset
+            if reset_numbering and current_list:
+                # Edit content: show backend format as-is - no add, no strip; numbers and bullets as-is
+                if not use_bullet_icons_only:
+                    _add_list_as_paragraphs_pdf(story, current_list, body_style, prev_block_type, next_block)
+                else:
+                    ordered_list = _order_list_items(current_list, start_from=1)
+                    _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=1, use_bullet_icons_only=use_bullet_icons_only)
+                current_list = []
+            
+            # Check if we should start a new list (different type or level)
+            if current_list:
+                first_item_level = current_list[0].get('level', 0)
+                if prev_list_type != list_type or first_item_level != level:
+                    # Close current list and start new one - edit content: show as-is
+                    if not use_bullet_icons_only:
+                        _add_list_as_paragraphs_pdf(story, current_list, body_style, prev_block_type, next_block)
+                    else:
+                        should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
+                        start_from_val = 1 if should_reset else 1
+                        ordered_list = _order_list_items(current_list, start_from=start_from_val)
+                        _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=start_from_val, use_bullet_icons_only=use_bullet_icons_only)
+                    current_list = []
+            
+            # Add to current list
+            current_list.append(block_info)
+            # Mark if this list should reset numbering (after heading) - same as Word
+            if reset_numbering and len(current_list) == 1:
+                current_list[0]['_reset_numbering'] = True
+            prev_list_type = list_type
+            prev_block_type = 'list_item'
+        else:
+            # Close any open list before processing non-list block
+            if current_list:
+                # Edit content: show backend format as-is - numbers and bullets as-is
+                if not use_bullet_icons_only:
+                    _add_list_as_paragraphs_pdf(story, current_list, body_style, prev_block_type, next_block)
+                else:
+                    should_reset = current_list[0].get('_reset_numbering', False) if current_list else False
+                    start_from_val = 1 if should_reset or prev_block_type == 'heading' else 1
+                    ordered_list = _order_list_items(current_list, start_from=start_from_val)
+                    _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, next_block, start_from=start_from_val, use_bullet_icons_only=use_bullet_icons_only)
+                current_list = []
+                prev_list_type = None
+            
+            # Process non-bullet blocks
+            # Title blocks already skipped in first pass, so they won't reach here
+            if block_type == "heading":
+                # Remove heading numbers if present, and strip markdown # ## ### prefix so it doesn't show in export
+                clean_content = re.sub(r'^\d+[.)]\s+', '', content).strip()
+                clean_content = re.sub(r'^#+\s*', '', clean_content).strip()
+                
+                # Heading: Based on level, bold, black color, font-weight 600 equivalent
+                text = _format_content_for_pdf(clean_content)
+                # Adjust font size based on level (14pt base, decrease slightly for higher levels)
+                heading_font_size = max(12, 14 - (level - 1))
+                level_heading_style = ParagraphStyle(
+                    f'PWCHeading{level}',
+                    parent=heading_style,
+                    fontSize=heading_font_size,
+                    textColor='black',  # Changed from '#D04A02' (orange) to black
+                    spaceAfter=2,   # ~0.2em
+                    spaceBefore=11, # ~0.9em
+                    fontName='Helvetica-Bold'
+                )
+                story.append(Paragraph(text, level_heading_style))
+            
+            elif block_type == "paragraph":
+                # Paragraph: proper spacing
+                para_style = ParagraphStyle(
+                    'PWCBodyPara',
+                    parent=body_style,
+                    spaceAfter=8,   # ~0.7em
+                    spaceBefore=2,  # ~0.15em
+                )
+                # Reduce spacing if followed by bullet list
+                if next_block and next_block['type'] == 'bullet_item':
+                    para_style.spaceAfter = 3  # ~0.25em
+                # Reduce spacing if following heading
+                if prev_block_type == 'heading':
+                    para_style.spaceBefore = 0
+                
+                para = Paragraph(_format_content_for_pdf(content), para_style)
+                story.append(para)
+            
+            prev_block_type = block_type
+    
+    # Close any remaining list - edit content: show backend as-is
+    if current_list:
+        if not use_bullet_icons_only:
+            _add_list_as_paragraphs_pdf(story, current_list, body_style, prev_block_type, None)
+        else:
+            ordered_list = _order_list_items(current_list, start_from=1)
+            _add_list_to_pdf(story, ordered_list, prev_list_type, body_style, prev_block_type, None, start_from=1, use_bullet_icons_only=use_bullet_icons_only)
+
+def export_to_pdf_edit_content(
+    content: str,
+    title: str,
+    subtitle: str | None = None,
+    block_types: list[dict] | None = None
+) -> bytes:
+    """
+    PwC PDF export specifically for Edit Content workflow.
+    Uses block type information for proper formatting (title, heading, bullet_item, paragraph).
+    Numbered and alphabetical lists (e.g. Citations and references) are rendered with numbers/letters; bullet lists use bullet icons.
+    No Table of Contents is generated for edit content export.
+    
+    Content should be final_article format: plain text with "\n\n" separators (same as final article generation).
+    block_types should match final article generation structure with sequential indices.
+    """
+    # Content should be plain text final_article (from backend final article generation)
+    # Format: "\n\n".join(final_paragraphs) - same as final article generation
+    # Safety check: convert HTML to plain text if somehow HTML is present
+    if '<' in content and '>' in content:
+        logger.warning("HTML detected in export content - converting to plain text. Content should be final_article (plain text).")
+        content = html_to_marked_text(content)
+    if not block_types:
+        block_types = parse_markdown_to_block_types(content)
+    
+    if not os.path.exists(PWC_PDF_TEMPLATE_PATH):
+        return _generate_pdf_with_title_subtitle(content, title, subtitle)
+
+    # ===== STEP 1: Create branded cover page =====
+    from reportlab.pdfgen import canvas
+    
+    template_reader = PdfReader(PWC_PDF_TEMPLATE_PATH)
+    template_page = template_reader.pages[0]
+    
+    page_width = float(template_page.mediabox.width)
+    page_height = float(template_page.mediabox.height)
+    
+    # Create overlay with text
+    overlay_buffer = io.BytesIO()
+    c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
+    
+    # Add title
+    title_font_size = 32
+    if len(title) > 80:
+        title_font_size = 20
+    elif len(title) > 60:
+        title_font_size = 22
+    elif len(title) > 40:
+        title_font_size = 26
+    
+    c.setFont("Helvetica-Bold", title_font_size)
+    c.setFillColor('#000000')
+    title_y = page_height * 0.72
+    
+    max_title_width = page_width * 0.70
+    char_width_at_font = (title_font_size / 20.0) * 10
+    max_chars_per_line = int(max_title_width / char_width_at_font)
+    max_chars_per_line = max(20, min(max_chars_per_line, 50))
+    
+    words = title.split()
+    lines = []
+    current_line = []
+    
+    for word in words:
+        test_line = ' '.join(current_line + [word])
+        if len(test_line) > max_chars_per_line:
+            if current_line:
+                lines.append(' '.join(current_line))
+            current_line = [word]
+        else:
+            current_line.append(word)
+    
+    if current_line:
+        lines.append(' '.join(current_line))
+    
+    if len(lines) > 1:
+        line_height = title_font_size + 6
+        start_y = title_y + (len(lines) - 1) * line_height / 2
+        for i, line in enumerate(lines):
+            c.drawCentredString(page_width / 2, start_y - (i * line_height), line)
+    else:
+        c.drawCentredString(page_width / 2, title_y, title)
+    
+    # Do not add subtitle for edit content PDF export (requirement)
+    
+    c.save()
+    overlay_buffer.seek(0)
+    
+    # Merge overlay with template
+    overlay_reader = PdfReader(overlay_buffer)
+    overlay_page = overlay_reader.pages[0]
+    template_page.merge_page(overlay_page)
+    
+    # ===== STEP 2: Create content pages with block types =====
+    content_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        content_buffer,
+        pagesize=(page_width, page_height),
+        topMargin=1*inch,
+        bottomMargin=1*inch,
+        leftMargin=1.1*inch,
+        rightMargin=1*inch
+    )
+    
+    styles = getSampleStyleSheet()
+    
+    body_style = ParagraphStyle(
+        'PWCBody',
+        parent=styles['BodyText'],
+        fontSize=11,
+        leading=16.5,  # 1.5 line spacing (11 * 1.5 = 16.5)
+        alignment=TA_JUSTIFY,
+        spaceAfter=6,  # Pre-set spacing
+        spaceBefore=2,  # ~0.15em equivalent
+        fontName='Helvetica'
+    )
+    
+    heading_style = ParagraphStyle(
+        'PWCHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor='black',  # Changed from '#D04A02' (orange) to black
+        spaceAfter=2,   # ~0.2em equivalent
+        spaceBefore=11, # ~0.9em equivalent
+        fontName='Helvetica-Bold'
+    )
+    
+    story = []
+    _format_content_with_block_types_pdf(story, content, block_types, body_style, heading_style, use_bullet_icons_only=False)
+    
+    # Build the content PDF with page numbers at bottom (edit content only)
+    doc.build(
+        story,
+        onFirstPage=_add_page_number_edit_content_pdf,
+        onLaterPages=_add_page_number_edit_content_pdf
+    )
+    content_buffer.seek(0)
+    
+    # ===== STEP 3: Merge cover + content =====
+    content_reader = PdfReader(content_buffer)
+    writer = PdfWriter()
+    
+    # Add the branded cover page (Page 1)
+    writer.add_page(template_page)
+    logger.info("Added branded cover page")
+    
+    # Add all content pages (Page 2+)
+    for page_num in range(len(content_reader.pages)):
+        logger.info(f"Adding content page {page_num + 1}")
+        writer.add_page(content_reader.pages[page_num])
+    
+    # Write final PDF
+    output_buffer = io.BytesIO()
+    writer.write(output_buffer)
+    output_buffer.seek(0)
+    
+    result_bytes = output_buffer.getvalue()
+    logger.info(f"PDF export complete: {len(writer.pages)} pages, {len(result_bytes)} bytes")
+    
+    return result_bytes
+
+
+def remove_paragraph_borders(paragraph):
+    pPr = paragraph._p.get_or_add_pPr()
+    pBdr = OxmlElement("w:pBdr")
+    for edge in ("top", "left", "bottom", "right", "between"):
+        elem = OxmlElement(f"w:{edge}")
+        elem.set(qn("w:val"), "nil")
+        pBdr.append(elem)
+    pPr.append(pBdr)
+
+# ==========================pdf-mi==========================
+
+def bullet_for_level(level):
+    return ['•', '–', '▪'][min(level, 2)]
+ 
+def _clean_bullet_text(text: str) -> str:
+    # text = re.sub(r'\*{1,2}', '', text)
+    text = re.sub(r'^\s*(bullet|•|-)\s*', '', text, flags=re.IGNORECASE)
+    return text.strip()
+
+def _strip_ui_markdown(text: str) -> str:
+    """
+    Remove UI markdown artifacts (*, **) that should not
+    be rendered as formatting in PDF.
+    """
+    if not text:
+        return text
+    # text = re.sub(r'\*{1,2}', '', text)
+    text = re.sub(r'^\s*[-•]\s*', '', text)
+    return text.strip()
+
+def _is_bullet_list_block(block: str) -> bool:
+    """Check if a block contains bullet points"""
+    lines = block.split('\n')
+    bullet_count = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped and (stripped.startswith('- ') or stripped.startswith('• ') or stripped.startswith('* ') ):
+            bullet_count += 1
+    # return bullet_count > 0
+    return bullet_count >= 1
+
+def _parse_bullet_items_mi(block: str) -> list:
+    """Parse bullet items with continuation lines"""
+    lines = block.split('\n')
+    items = []
+    current_indent = None
+    current_text = None
+    for line in lines:
+        raw = line.rstrip()
+        stripped = raw.strip()
+        indent = len(raw) - len(raw.lstrip())
+        # New bullet starts
+        if stripped.startswith(('- ', '• ', '* ')):
+            # flush previous bullet
+            if current_text is not None:
+                items.append((current_indent, current_text.strip()))
+            bullet_text = re.sub(r'^[-•\*]\s+', '', stripped)
+            current_indent = indent
+            current_text = bullet_text
+        # Continuation line (belongs to previous bullet)
+        elif stripped and current_text is not None:
+            # current_text += ' ' + stripped
+            if stripped.startswith('**'):
+                current_text += '\n' + stripped
+            # if re.search(r'https?://\S+$', current_text):
+            #     current_text += stripped
+            else:
+                # current_text += ' ' + stripped
+                # If previous line ended with URL fragment, do NOT add space
+                if re.search(r'https?://\S+$', current_text):
+                    current_text += stripped
+                else:
+                    current_text += ' ' + stripped
+        # Empty line → ignore but don’t break bullet
+        else:
+            continue
+
+    # flush last bullet
+    if current_text is not None:
+        items.append((current_indent, current_text.strip()))
+
+    return items
+
+def normalize_url(url: str) -> str:
+    url = url.strip()
+    if url.startswith('/'):
+        return f'https://www.pwc.com{url}'
+    return url
+
+def _format_content_for_pdf_mi(text: str) -> str:
+    """
+    Format content for PDF by converting markdown-style formatting to HTML-like tags.
+    Reportlab supports a subset of HTML/XML tags for styling.
+    
+    Converts:
+    - **bold** to <b>bold</b>
+    - *italic* to <i>italic</i>
+    - [text](url) to <a href="url" color="blue">text</a>
+    - https?://... to <a href="url" color="blue">url</a>
+    - Normalizes all Unicode dash variants to standard hyphen for reliable PDF rendering
+    """
+    if not text:
+        return text
+   
+    text = re.sub(
+    # r'\[(\d+)\]\(\s*(https?://[^\)]+?)\s*\)',
+    r'\[\[(\d+)\]\]\(\s*(https?://[^\)]+?)\s*\)',
+    lambda m: (
+        f'<link href="{m.group(2)}">'
+        f'<font color="blue"><sup>[{m.group(1)}]</sup></font>'
+        f'</link>'
+    ),
+    text
+)
+    # text = re.sub(r'<img[^>]*>', '', text)
+    
+    # First, handle special quotation marks and other problematic characters BEFORE processing HTML
+    # This ensures they are replaced before being wrapped in HTML tags
+    text = text.replace('\u201C', '"')  # Left double quotation mark
+    text = text.replace('\u201D', '"')  # Right double quotation mark
+    text = text.replace('\u2018', "'")  # Left single quotation mark
+    text = text.replace('\u2019', "'")  # Right single quotation mark
+    text = text.replace('\u2026', '...')  # Ellipsis
+    text = text.replace('\u00AD', '')
+    # Normalize stray bullet/square characters sometimes used as hyphens
+    text = text.replace('■', '-')   # U+25A0
+    text = text.replace('▪', '-')   # U+25AA
+    text = text.replace('●', '-')   # U+25CF
+    # text = text.replace('•', '-')   # U+2022
+    dash_variants = [
+    # ASCII lookalikes / invisible troublemakers
+    '\u00AD',  # Soft hyphen (invisible)
+    # Unicode dash punctuation (Pd)
+    '\u2010',  # Hyphen
+    '\u2011',  # Non-breaking hyphen
+    '\u2012',  # Figure dash
+    '\u2013',  # En dash
+    '\u2014',  # Em dash
+    '\u2015',  # Horizontal bar
+    '\u2E3A',  # Two-em dash
+    '\u2E3B',  # Three-em dash
+    '\u2E17',  # Double oblique hyphen
+    # Mathematical minus
+    '\u2212',  # Minus sign
+    # Script-specific hyphens
+    '\u058A',  # Armenian hyphen
+    '\u05BE',  # Hebrew maqaf
+    '\u1400',  # Canadian syllabics hyphen
+    '\u1806',  # Mongolian todo soft hyphen
+    '\u30A0',  # Katakana-hiragana double hyphen
+    # Bullets / symbols sometimes misused as hyphens
+    '\u2043',  # Hyphen bullet
+    # Compatibility / presentation forms
+    '\uFE58',  # Small em dash
+    '\uFE63',  # Small hyphen-minus
+    '\uFF0D',  # Fullwidth hyphen-minus
 ]
 
-============================================================
-VALIDATION — REQUIRED BEFORE OUTPUT
-============================================================
-
-Before responding, verify:
-- Every block was inspected
-- Every sentence was evaluated against ALL rules
-- No sentence or block was skipped
-- All edits are sentence-level only
-- No issue exists without textual change
-- No issue contains multiple semantic changes
-- Sentence splits include full dependent clauses
-- suggested_text, and every issue/fix, contain NO HTML/XML/markup (e.g. <span>, class="..."); if any appears, remove it and output only the prose.
-- Original suggested output is plain text only; the UI applies highlighting—never embed span, class, or tags in your response.
-
-============================================================
-NOW EDIT THE FOLLOWING DOCUMENT:
-============================================================
-
-{document_json}
-
-Return ONLY the JSON array. No extra text.
-"""
-
-
-
-
-# ------------------------------------------------------------
-# 2.CONTENT EDITOR PROMPT (STRUCTURE-ALIGNED WITH DEVELOPMENT)
-# ------------------------------------------------------------
-CONTENT_EDITOR_PROMPT = """
-ROLE:
-You are the Content Editor for PwC thought leadership.
-
-============================================================
-ROLE ENFORCEMENT — ABSOLUTE
-============================================================
-
-You are NOT permitted to act as:
-- Development Editor
-- Copy Editor
-- Line Editor
-- Brand Editor
-
-============================================================
-COMBINED EDITOR PRIORITY (when used with Development Editor)
-============================================================
-For combining editors, where there is a conflict between the content and development editors, the content editor takes priority. Only apply development editor rules if the content editor is not changing the sentence.
-
-============================================================
-CORE OBJECTIVE — NON-NEGOTIABLE
-============================================================
-
-Refine each content block to strengthen:
-- Clarity
-- Insight sharpness
-- Argument logic
-- Executive relevance
-- Narrative coherence
-
-You MUST strictly preserve:
-- Original meaning
-- Authorial intent
-- Factual content
-- Stated objectives
-
-You are accountable for producing content that is:
-clear, authoritative, non-redundant, and decision-relevant
-for a senior executive audience.
-
-============================================================
-DOCUMENT COVERAGE — MANDATORY
-============================================================
-
-You MUST evaluate EVERY block in {document_json}, in order.
-
-Block types include:
-- title
-- heading
-- paragraph
-- bullet_item
-
-You MUST:
-- Inspect every sentence in every titles, headings, paragraph and bullet_item
-
-You MUST NOT:
-- Skip blocks
-- Skip sentences
-- Ignore content because it appears acceptable
-
-If a block requires NO changes:
-- Emit NO Issue/Fix for that block
-- Do NOT invent edits
-
-You MUST treat the document as a continuous executive argument,
-not as isolated blocks. This requires cross-paragraph awareness and enforcement.
-
-============================================================
-DETERMINISTIC SENTENCE EVALUATION — ABSOLUTE
-============================================================
-
-For EVERY sentence in EVERY paragraph and bullet_item,
-- Every sentence was evaluated against ALL rules
-
-You MUST NOT:
-- Skip evaluation of any sentence
-- Stop after finding one issue
-- Decide based on stylistic preference
-
-============================================================
-INSIGHT SYNTHESIS — REQUIRED 
-============================================================
-
-When multiple sentences within a block describe related
-conditions, tensions, or patterns (e.g., ambiguity,
-misalignment, uncertainty):
-
-You MUST:
-- Synthesize these observations into at least ONE
-  explicit implication or conclusion
-- Make the implication visible within existing sentences
-- Preserve analytical neutrality and original intent
-
-You MUST NOT:
-- Leave observations standing without interpretation
-- Repeat similar ideas without advancing meaning
-
-If synthesis cannot be achieved using existing content:
-- DO NOT edit the block
-
-============================================================
-ESCALATION ENFORCEMENT — REQUIRED GAP FILL (CROSS-PARAGRAPH)
-============================================================
-
-If a concept appears more than once within or across paragraphs:
-
-You MUST ensure later mentions:
-- Increase executive relevance
-- Clarify consequence, priority, or trade-off
-- Advance the argument rather than restate it
-
-You MUST NOT:
-- Rephrase an idea at the same level of abstraction
-- Reinforce emphasis without new implication
-
-Across paragraphs, escalation MUST be directional:
-early mentions establish conditions,
-later mentions MUST clarify implications or leadership consequence.
-
-This cross-paragraph escalation enforcement complements the CROSS-PARAGRAPH ENFORCEMENT requirements below.
-
-============================================================
-SENTENCE BOUNDARY — STRICT DEFINITION
-============================================================
-
-A sentence-level edit means:
-- Changes are contained within ONE original sentence
-- You MAY split one sentence into multiple sentences
-- You MUST NOT merge sentences
-- You MUST NOT move text across sentences or blocks
-
-============================================================
-ISSUE–FIX EMISSION RULES — ABSOLUTE
-============================================================
-
-An Issue/Fix MUST be emitted ONLY when a textual change
-has actually occurred.
-
-- `original_text` MUST be the EXACT contiguous substring BEFORE editing
-- `suggested_text` MUST be the EXACT final replacement text
-- If `original_text` and `suggested_text` are identical
-  (ignoring whitespace), DO NOT emit an Issue/Fix
-- Rule detection WITHOUT text change MUST NOT produce an issue
-
-============================================================
-ISSUE–FIX ATOMIZATION — NON-NEGOTIABLE
-============================================================
-
-- ONE semantic change = ONE issue
-- ONE sentence split = ONE issue
-- ONE verb voice change = ONE issue
-- ONE hedging removal = ONE issue
-- ONE pronoun correction = ONE issue
-
-You MUST NOT:
-- Combine multiple changes into one issue
-- Justify one issue using another issue
-
-For sentence splits:
-- `original_text` MUST include the FULL dependent clause
-- Replacing ONLY a syntactic marker (e.g., ", which", "and", "that") is FORBIDDEN
-
-Every changed word MUST appear in EXACTLY ONE issue.
-
-============================================================
-NON-OVERLAPPING FIX ENFORCEMENT — DELTA DOMINANCE
-============================================================
-
-Each character in `original_text` may belong to AT MOST ONE issue.
-
-If a longer phrase is rewritten:
-- You MUST NOT create issues for sub-phrases
-
-When a micro-fix and larger rewrite compete:
-- Select the LARGEST necessary phrase
-- Drop all redundant fixes
-
-============================================================
-CONTENT EDITOR — KEY IMPROVEMENTS NEEDED
-============================================================
-
-You MUST ensure the edited content demonstrates:
-
-STRONGER, ACTIONABLE INSIGHTS
-- Convert descriptive or exploratory language into
-  explicit leadership-relevant implications
-- State consequences or takeaways already implied
-- Do NOT add new meaning
-
-SHARPER EMPHASIS & PRIORITISATION
-- Surface the most important ideas
-- De-emphasise secondary points
-- Enforce a clear hierarchy of ideas within each block
-
-MORE IMPACT-FOCUSED LANGUAGE
-- Increase precision, authority, and decisiveness
-- Replace neutral phrasing with outcome-oriented language
-- Maintain an executive-directed voice
-
-============================================================
-TONE & INTENT SAFEGUARD 
-============================================================
-
-You MUST:
-- Preserve analytical neutrality
-- Preserve the author’s exploration of complexity
-- Preserve the absence of a single “right answer”
-
-You MUST NOT:
-- Introduce prescriptive guidance or recommendations
-- Shift the document toward advisory or purpose-driven framing
-
-============================================================
-PwC BRAND MOMENTUM — MANDATORY
-============================================================
-
-All edits MUST reflect PwC’s brand-led thought leadership style:
-
-- Apply forward momentum and outcome orientation
-- Enforce the implicit “So You Can” principle:
-  insight → implication → leadership relevance
-- Favor decisive, directional language over neutral commentary
-- Reinforce clarity of purpose, enterprise impact,
-  and leadership consequence
-
-You MUST NOT:
-- Add marketing slogans
-- Introduce promotional language
-- Add claims not already present
-- Overstate certainty beyond the original 
-
-============================================================
-WHAT YOU MUST ACHIEVE — STRICTLY REQUIRED
-============================================================
-
-CLARITY & PRECISION
-- Eliminate vague, hedging, or non-committal language
-  (e.g., “may,” “might,” “can be difficult,” “in some cases”)
-- Replace abstract phrasing with precise, concrete language
-  using ONLY existing meaning
-- Improve conciseness by removing unnecessary qualifiers
-  and tightening expression where clarity already exists
-
-INSIGHT SHARPENING — NON-OPTIONAL
-- Convert descriptive or exploratory statements into
-  explicit implications or conclusions
-- Surface “why this matters” for senior leaders using
-  ONLY content already present
-- Clarify consequences, priorities, or leadership relevance
-  that are implied but not stated
-
-If a clear takeaway cannot be expressed using existing content,
-DO NOT edit the block.
-
-ACTIONABLE INSIGHT ENFORCEMENT — REQUIRED
-For EVERY edited block, you MUST ensure:
-- At least ONE explicit takeaway, implication, or conclusion
-  is clearly stated
-- Observations are reframed into decision-, consequence-,
-  or priority-oriented insight
-- A senior executive can answer:
-  “So what does this mean for me?” from the revised text alone
-
-STRUCTURE & FLOW — INTRA-BLOCK ONLY
-- Improve logical sequencing WITHIN the block
-- Strengthen transitions to enforce linear progression
-- Eliminate circular reasoning
-- Consolidate semantically redundant phrasing
-  WITHOUT removing meaning
-- Impose a clear hierarchy of ideas inside the block
-
-NOTE: Intra-block editing works together with cross-paragraph enforcement (defined earlier in this prompt as PRIMARY RESPONSIBILITY). You MUST apply BOTH intra-block improvements AND cross-paragraph checks using sentence-level edits only.
-
-TONE, POV & AUTHORITY
-- Strengthen confidence and authority where tone is neutral,
-  cautious, or observational
-- Replace passive or tentative POV with informed conviction
-- Maintain PwC’s executive, professional, non-promotional voice
-
-============================================================
-CROSS-PARAGRAPH ENFORCEMENT — MANDATORY (WORKS WITH EXISTING RULES)
-============================================================
-
-The Content Editor MUST apply the following checks across paragraphs and sections, in addition to block-level editing:
-
-CRITICAL: Cross-paragraph enforcement complements and works together with all existing rules above. You MUST:
-- Continue applying all existing block-level editing rules (clarity, insight sharpening, structure, tone, escalation, etc.)
-- Additionally apply cross-paragraph checks to ensure paragraph-to-paragraph progression
-- Use sentence-level edits only for both intra-block and cross-paragraph improvements
-- Do NOT remove or merge blocks (structural changes are prohibited)
-
-{cross_paragraph_analysis_context}
-
-Cross-Paragraph Logic
-Each paragraph MUST assume and build on the reader's understanding from the preceding paragraph. The Content Editor MUST eliminate soft resets, re-introductions, or restatement of previously established context.
-
-Redundancy Awareness (Non-Structural)
-If a paragraph materially repeats an idea already established elsewhere in the article, the Content Editor MUST reduce reinforcement language and avoid adding emphasis or framing that increases redundancy. The Content Editor MUST NOT remove or merge ideas across blocks.
-
-Executive Signal Hierarchy
-The Content Editor MUST calibrate emphasis so that later sections convey clearer implications, priorities, or decision relevance than earlier sections, without introducing new conclusions or shifting the author's intent.
-
-============================================================
-WHAT YOU MUST NOT DO — ABSOLUTE
-============================================================
-
-You MUST NOT:
-- Add new facts, data, metrics, examples, or recommendations
-- Introduce opinions not already implied
-- Change conclusions, intent, or objectives
-- Move content across blocks
-- Add or remove blocks
-- Perform development-level restructuring
-- Perform copy-editing as a primary task
-- Make stylistic changes without material clarity,
-  insight, or executive-relevance gain
-
-============================================================
-VALIDATION — REQUIRED BEFORE OUTPUT
-============================================================
-
-BEFORE producing the final output, you MUST internally verify
-ALL of the following conditions are TRUE:
-
-- Every block in {document_json} was inspected
-- No block was skipped, merged, reordered, or omitted
-- Every sentence in every paragraph and bullet_item
-  was evaluated against ALL rules
-- Rules were applied in the exact mandated order
-- No sentence was evaluated more than once
-- All edits are strictly sentence-level
-- No text was moved across sentences or blocks
-- No Issue/Fix exists without an actual textual delta
-- No Issue/Fix contains more than ONE semantic change
-- No characters in original_text appear in more than one issue
-- All feedback_edit entries map EXACTLY to visible changes
-- Blocks with no edits have identical original_text and suggested_text
-- feedback_edit is {} for all unedited blocks
-- Output structure exactly matches the required schema
-- CROSS-PARAGRAPH LOGIC: Every paragraph builds explicitly on prior paragraphs (no soft resets, re-introductions, or restatement of previously established context)
-- REDUNDANCY AWARENESS: If paragraphs repeat ideas, reinforcement language has been reduced (not expanded), and later mentions escalate rather than restate
-- EXECUTIVE SIGNAL HIERARCHY: Later paragraphs convey clearer implications, priorities, or decision relevance than earlier paragraphs, and executive relevance increases from start to finish
-- The final paragraph carries the strongest leadership implication
-
-If ANY validation check fails:
-- You MUST correct the output
-- You MUST re-run validation
-- You MUST NOT return a partial or non-compliant response
-
-============================================================
-FAILURE RECOVERY — REQUIRED
-============================================================
-
-If ANY cross-paragraph enforcement requirement is not satisfied:
-
-1. CROSS-PARAGRAPH LOGIC FAILURE:
-   - Identify paragraphs with soft resets, re-introductions, or restatement
-   - Revise those paragraphs using sentence-level edits to eliminate redundant context
-   - Ensure each paragraph builds directly on the previous one
-
-2. REDUNDANCY AWARENESS FAILURE:
-   - Identify paragraphs that repeat ideas without escalation
-   - Reduce reinforcement language in those paragraphs using sentence-level edits
-   - Ensure repeated ideas add implications, consequences, or decision relevance
-
-3. EXECUTIVE SIGNAL HIERARCHY FAILURE:
-   - Identify paragraphs where emphasis is flat or repetitive
-   - Strengthen emphasis in later paragraphs using sentence-level edits
-   - Ensure progressive escalation of executive signal strength
-
-After making corrections:
-- You MUST re-run ALL validation checks
-- You MUST NOT return output until ALL cross-paragraph checks pass
-
-============================================================
-ABSOLUTE OUTPUT RULES — MUST FOLLOW EXACTLY
-============================================================
-
-1. Return EXACTLY ONE output object per input block
-2. Do NOT omit, skip, merge, or reorder blocks
-3. Output MUST contain ONLY these keys:
-   - "id"
-   - "type"
-   - "level"
-   - "original_text"
-   - "suggested_text"
-   - "feedback_edit"
-
-4. If no edits are required:
-   - "suggested_text" MUST equal "original_text"
-   - "feedback_edit" MUST be {}
-
-5. If edits are made:
-   - Rewrite the entire block
-   - Provide at least ONE feedback item
-
-6. feedback_edit MUST describe ONLY and EXACTLY the changes
-   present in the edited block — nothing more, nothing less
-
-7. feedback_edit MUST follow this structure ONLY:
-
-{
-  "content": [
-    {
-      "issue": "exact substring text from original_text",
-      "fix": "exact replacement text used in suggested_text",
-      "impact": "Why this improves clarity, insight, or executive relevance",
-      "rule_used": "Content Editor – <Specific Rule>",
-      "priority": "Critical | Important | Enhancement"
+    for dash in dash_variants:
+        text = text.replace(dash, '-')
+    text = re.sub(
+    r'(?<!href=")(?<!">)(https?://[^\s)>\]]+)',
+    r'<link href="\1"><font color="blue">\1</font></link>',
+    text
+)  
+    # Convert markdown bold FIRST
+    # text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'\*\*\s*(.*?)\s*\*\*', r'<b>\1</b>', text)
+    # Convert *italic* to <i>italic</i> (but not if it's part of **bold** or at line start for bullets)
+    # Use negative lookbehind/lookahead to avoid double-processing
+    text = re.sub(r'(?<!\*)\*([^\*]+?)\*(?!\*)', r'<i>\1</i>', text)
+    # Convert safe newlines to ReportLab line breaks
+    text = text.replace('\n', '<br/>')
+    return text
+
+def split_markdown_blocks(content: str):
+        """
+        Smart split for Markdown:
+        - Keeps headings (#, ##, ###) as separate blocks
+        - Keeps bullet/URL blocks together
+        - Keeps tables together
+        - Preserves inline links within paragraphs
+        """
+        blocks = []
+        current_block = []
+        # content = re.sub(r'(https?://\S+)\n(?=\S)', r'\1', content)
+        # ONLY join URLs broken by newline + indentation
+        # content = re.sub(
+        #     r'(https?://[^\s)]+)\n\s+(?=[^\s])',
+        #     r'\1',
+        #     content
+        # )
+        # content = re.sub(
+        #     r'(https?://[^\s]+)\s*\n\s*([^\s]+)',
+        #     r'\1\2',
+        #     content
+        # )
+
+        for line in content.splitlines():
+            stripped = line.strip()
+            # Headings start a new block
+            if re.match(r'^(#{1,3})\s', stripped):
+                if current_block:
+                    blocks.append("\n".join(current_block).strip())
+                    current_block = []
+                blocks.append(stripped)
+            # Bullet list / citation line
+            # elif stripped.startswith("- https://"): 
+            elif stripped.startswith(('- ', '• ', '* ')):
+                if current_block and not re.match(r'^-?\s*https?://', current_block[-1].strip()):
+                    blocks.append("\n".join(current_block).strip())
+                    current_block = []
+                current_block.append(stripped)
+            # Table row
+            elif "|" in stripped:
+                current_block.append(stripped)
+            # Empty line splits normal paragraphs
+            elif not stripped:
+                if current_block:
+                    blocks.append("\n".join(current_block).strip())
+                    current_block = []
+                # if current_block and current_block[0].lstrip().startswith(('-', '•')):
+                #     current_block.append('')  # preserve paragraph spacing inside bullet
+                else:
+                    if current_block:
+                        blocks.append("\n".join(current_block).strip())
+                        current_block = []
+                # if current_block:
+                #     blocks.append("\n".join(current_block).strip())
+                #     current_block = []
+            else:
+                current_block.append(stripped)
+
+        if current_block:
+            blocks.append("\n".join(current_block).strip())
+
+        return blocks
+
+def export_to_pdf_with_pwc_template_with_bullets(
+    content: str,
+    title: str,
+    subtitle: str | None = None,include_toc: bool = True) -> bytes:
+    
+    logger.info("[Export] PDF-PWC-BULLETS endpoint hit")
+    title = re.sub(r'^[#\s]*', '', re.sub(r'\*+', '', title)).strip()
+    # Remove title from content so it does not repeat in body
+    escaped_title = re.escape(title)
+
+    content = re.sub(
+        rf'^\s*#*\s*{escaped_title}\s*$',
+        '',
+        content,
+        flags=re.MULTILINE
+    )
+
+    logger.info(f"[Export] PDF-PWC-BULLETS title",{"title": title})
+    subtitle = re.sub(r'\*+', '', subtitle).strip() if subtitle else None
+    logger.info("Creating PWC branded PDF with title, subtitle, and content")
+    content = re.sub(r'\n\s*---\s*\n', '\n\n', content)
+    # Check if template exists
+    if not os.path.exists(PWC_PDF_TEMPLATE_PATH):
+        logger.warning(f"PwC PDF template not found at {PWC_PDF_TEMPLATE_PATH}")
+        return _generate_pdf_with_title_subtitle(content, title, subtitle)    
+    # ===== STEP 1: Create branded cover page =====
+    logger.info("Step 1: Creating branded cover page")
+    template_reader = PdfReader(PWC_PDF_TEMPLATE_PATH)
+    template_page = template_reader.pages[0]
+    page_width = float(template_page.mediabox.width)
+    page_height = float(template_page.mediabox.height)
+    logger.info(f"Template page size: {page_width:.1f} x {page_height:.1f} points")
+    # Create overlay with text
+    overlay_buffer = io.BytesIO()
+    c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
+    # Add title
+    title_font_size = 28
+    if len(title) > 80:
+        title_font_size = 20
+    elif len(title) > 60:
+        title_font_size = 22
+    elif len(title) > 40:
+        title_font_size = 26
+    # c.setFont("Helvetica-Bold", title_font_size)
+    c.setFont("DejaVu-Bold", title_font_size)
+    # c.setFont("Helvetica-Bold", 24)
+    c.setFillColor('#000000')  # Black color
+    # title_y = page_height * 0.72
+    title_y = page_height * 0.72
+
+    # Handle multi-line titles with better word wrapping
+    # Maximum width for title (leaving margins on left and right)
+    max_title_width = page_width * 0.70  # 70% of page width with margins
+    # Better character width estimation - more conservative to avoid cutoff
+    # Estimate pixels needed per character based on font size
+    # At 20pt Helvetica: ~10 pixels per character average
+    char_width_at_font = (title_font_size / 20.0) * 10
+    max_chars_per_line = int(max_title_width / char_width_at_font)
+    # Ensure reasonable minimum and maximum
+    max_chars_per_line = max(20, min(max_chars_per_line, 50))
+    clean_title = re.sub(r'\*+', '', title).strip()
+    words = clean_title.split()
+    lines = []
+    current_line = []
+    for word in words:
+        test_line = ' '.join(current_line + [word])
+        if len(test_line) > max_chars_per_line:
+            if current_line:
+                lines.append(' '.join(current_line))
+            current_line = [word]
+        else:
+            current_line.append(word)
+    if current_line:
+        lines.append(' '.join(current_line))
+    # Draw multi-line title
+    if len(lines) > 1:
+        # line_height = title_font_size + 6
+        line_height = title_font_size + 2   # tighter line spacing
+
+        # Center vertically: start higher if multiple lines
+        start_y = title_y + (len(lines) - 1) * line_height / 2
+        for i, line in enumerate(lines):
+            c.drawCentredString(page_width / 2, start_y - (i * line_height), line)
+        last_title_y = start_y - (len(lines) * line_height)
+    else:
+        c.drawCentredString(page_width / 2, title_y, clean_title)
+        last_title_y = title_y 
+    logger.info(f"Title added to overlay: {clean_title} ({len(lines)} lines)")
+    # Add subtitle if provided
+    if subtitle:
+        # Clean up markdown asterisks from subtitle
+        subtitle_clean = subtitle.replace('**', '')
+        # c.setFont("Helvetica-Bold", 14)  # Bold font
+        c.setFont("DejaVu-Bold", 14)  # Bold font
+        c.setFillColor('#000000')  # Black color
+        subtitle_y = last_title_y - 70        
+        # Page width is typically 612 points (8.5 inches) for letter size
+        # Helvetica 14pt: approximately 7-8 pixels per character
+        max_subtitle_width = page_width * 0.75  # 75% of page width with margins
+        subtitle_char_width = 8  # pixels per character at 14pt
+        max_chars_per_line = int(max_subtitle_width / subtitle_char_width)
+        words = subtitle_clean.split()
+        lines = []
+        current_line = []        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            # Use more conservative line breaking - shorter lines for better visibility
+            if len(test_line) > min(50, max_chars_per_line):
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+            else:
+                current_line.append(word)        
+        if current_line:
+            lines.append(' '.join(current_line))        
+        # Draw multi-line subtitle with proper centering
+        line_height = 22
+        # If multiple lines, center vertically
+        if len(lines) > 1:
+            start_y = subtitle_y + (len(lines) - 1) * line_height / 2
+        else:
+            start_y = subtitle_y        
+        for i, line in enumerate(lines):
+            c.drawCentredString(page_width / 2, start_y - (i * line_height), line)
+        logger.info(f"Subtitle added to overlay: {subtitle_clean} ({len(lines)} lines)")
+    c.save()
+    overlay_buffer.seek(0)    
+    # Merge overlay with template
+    overlay_reader = PdfReader(overlay_buffer)
+    overlay_page = overlay_reader.pages[0]    
+    template_page.merge_page(overlay_page)
+    logger.info("Overlay merged onto template cover page")        
+    logger.info("Step 2: Creating formatted content pages")
+    # First, extract all headings for Table of Contents
+    headings = []
+    if include_toc:
+        # blocks = content.split('\n')
+        blocks = re.split(r'\n\s*\n', content)
+        for block in blocks:
+            if not block.strip():
+                continue
+            block = block.strip()
+            if re.match(r'^\s*[-_]{3,}\s*$', block):
+                continue
+            # Check for various heading formats
+            standalone_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block)
+            if standalone_bold_match:
+                heading_text = standalone_bold_match.group(1)
+                heading_text = re.sub(r'\*+', '', heading_text).rstrip(':').strip()
+                if heading_text.lower() == 'references':
+                    headings.append('References')
+                    continue
+                headings.append(heading_text)
+                continue
+            first_line_bold_match = re.match(r'^\*\*([^\*]+?)\*\*\s*$', block.split('\n')[0])
+
+            if first_line_bold_match:
+                heading_text = re.sub(r'\*+', '', first_line_bold_match.group(1)).rstrip(':').strip()
+                headings.append(heading_text)
+                continue
+            # Markdown headings
+            if block.startswith('#'):
+                text = re.sub(r'^#+\s*', '', block.split('\n')[0]).strip()
+                text = re.sub(r'\*+', '', text).rstrip(':').strip()
+                # headings.append(text.rstrip(':').strip())
+                headings.append(text)
+        logger.info(f"Extracted {len(headings)} headings for Table of Contents")
+    content_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+    content_buffer,
+    pagesize=(page_width, page_height),
+    topMargin=1*inch,
+    bottomMargin=1*inch,
+    leftMargin=1.1*inch,
+    rightMargin=1*inch)
+    styles = getSampleStyleSheet()
+    body_style = ParagraphStyle(
+        'PWCBody',
+        parent=styles['BodyText'],
+        fontSize=11,
+        leading=15,
+        alignment=TA_JUSTIFY,
+        spaceAfter=6,#12
+        fontName='DejaVu' #'Helvetica'
+    )
+    body_style.hyphenationLang = None
+    table_cell_style = ParagraphStyle(
+    'PWCTableCell',
+    parent=styles['BodyText'],   
+    fontName='DejaVu', # fontName='Helvetica',
+    fontSize=10,
+    leading=14,
+    alignment=TA_LEFT,
+    spaceAfter=0,
+    spaceBefore=0,
+)
+    bullet_style = ParagraphStyle(
+        'PWCBullet',
+        parent=body_style,
+        leftIndent=0,
+        spaceAfter=6,
+        alignment=TA_LEFT
+    )
+    reference_style = ParagraphStyle(
+        'PWCReference',
+        parent=styles['BodyText'],
+        fontSize=10,
+        leading=14,
+        # textColor=colors.blue,
+        textColor=colors.black,
+        alignment=TA_LEFT,
+        spaceAfter=6, #4,  
+        # spaceBefore=0,
+        fontName='DejaVu',
+        # bold = False
+    )
+    heading1_style = ParagraphStyle(
+        'PWCHeading1',
+        parent=styles['Heading1'],
+        fontSize=18,
+        fontName='DejaVu-Bold',
+        textColor='#D04A02',
+        spaceBefore=12,
+        spaceAfter=10,
+    )
+    heading3_style = ParagraphStyle(
+        'PWCHeading3',
+        parent=styles['Heading3'],
+        fontSize=13,
+        fontName='DejaVu-Bold',
+        textColor='#D04A02',
+        spaceBefore=8,
+        spaceAfter=6,
+    )
+    heading2_style = ParagraphStyle(
+        'PWCHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor='#D04A02',
+        spaceAfter=10,
+        spaceBefore=10, #10
+        alignment=TA_LEFT,
+        # fontName='Helvetica-Bold' #Helvetica
+        fontName='DejaVu-Bold'#DejaVu-Bold
+    )  
+    story = []   
+    
+    # Parse and add content with formatting
+    # blocks = content.split('\n')
+    # blocks = re.split(r'\n\s*\n', content) - works for paras/headings but breaks URL lists in citations
+    blocks = split_markdown_blocks(content)
+    # blocks = re.split(r'\n(?=## |### |- https?://)', content) - works for citations but breaks paras/headings   
+#     citation_line_pattern = re.compile(
+#     r'^\s*\d+\.\s+\[.+?\]\(https?://',
+#     re.UNICODE
+# )
+    # citation_line_pattern = re.compile(
+    # r'^\s*\d+\.\s+\[.+?\]\((https?://|/|www\.)',
+    # re.UNICODE)
+    BRACKET_DOT_CITATION = re.compile(
+    r'^\[\d+\]\.\s+https?://',
+    re.UNICODE
+)
+
+    MD_CITATION = re.compile(
+    r'^\s*\d+\.\s+\[.+?\]\((https?://|/|www\.)',
+    re.UNICODE
+    )
+
+    DASH_URL_CITATION = re.compile(
+        # r'^\s*\d+\.\s+.+?\s+—\s+(https?://\S+)',
+        r'^\s*\d+\.\s+.+?\s+—\s+<?(https?://[^\s>]+)>?',
+        re.UNICODE
+    )
+
+    PLAIN_NUMBERED_CITATION = re.compile(
+        r'^\s*\d+\.\s+.+',
+        re.UNICODE
+    )
+    ALL_URL_LINES = re.compile(r'^https?://\S+$')
+
+    for block in blocks:
+        if not block.strip():
+            continue
+        # if re.fullmatch(r'\s*---\s*', block):
+        #     story.append(Spacer(1, 12))
+        #     story.append(HRFlowable(width="100%", thickness=1, color=colors.grey))
+        #     story.append(Spacer(1, 12))
+        #     continue
+        
+        lines = [l.strip() for l in block.split('\n') if l.strip()]
+        first_line = lines[0] if lines else ""
+        # ========= UNIFIED CITATION BLOCK =========
+        # if (
+        #     MD_CITATION.match(first_line)
+        #     or DASH_URL_CITATION.match(first_line)
+        #     or BRACKET_DOT_CITATION.match(first_line)
+        #     or (
+        #         # len(lines) >= 2
+        #         # and 
+        #         all(ALL_URL_LINES.match(l) for l in lines)
+        #         # and not any(l.startswith(('•', '-', '*')) for l in lines)
+        #         # and sum(1 for l in lines if PLAIN_NUMBERED_CITATION.match(l)) >= len(lines) - 1
+        #     )
+        # ):
+        if (
+            (
+                re.match(r'^(\[\d+\]|\d+)\.\s+', first_line)
+                # any(re.match(r'^(\[\d+\]|\d+)\.\s+', l) for l in lines)
+                and re.search(r'https?://', block)
+            )
+            or all(ALL_URL_LINES.match(l) for l in lines)
+        ):
+
+
+            items = []
+            start_index = None
+            # ----- BARE URL–ONLY REFERENCE BLOCK (NO TITLES) -----
+            if all(ALL_URL_LINES.match(l) for l in lines):
+                items = []
+                for i, url in enumerate(lines, start=1):
+                    url = url.strip().strip('<>')
+                    if url.startswith('/'):
+                        url = 'https://www.pwc.com' + url
+                    elif re.match(r'^[a-zA-Z0-9.-]+\.[a-z]{2,}', url):
+                        url = 'https://' + url
+
+                    items.append(
+                        ListItem(
+                            Paragraph(
+                                f'<link href="{url}"><font color="blue">{url}</font></link>',
+                                reference_style
+                            )
+                        )
+                    )
+
+                story.append(
+                    ListFlowable(
+                        items,
+                        bulletType='1',
+                        start=1,
+                        leftIndent=24
+                    )
+                )
+                story.append(Spacer(1, 12))
+                continue
+            # ----- ROBUST NUMBERED CITATION PARSER -----
+            for line in lines:
+                line = line.strip()
+
+                # Must start with number like "1."
+                index_match = re.match(r'^(\d+)\.\s+', line)
+                if not index_match:
+                    continue
+
+                index = int(index_match.group(1))
+
+                # Extract URL anywhere in line (handles <https://...>)
+                url_match = re.search(r'https?://[^\s)>]+', line)
+                if not url_match:
+                    continue
+
+                url = url_match.group(0).strip('<>')
+
+                # Everything before URL is title
+                title_part = line[:url_match.start()]
+
+                # Remove leading number
+                title = re.sub(r'^\d+\.\s*', '', title_part)
+
+                # Remove markdown link wrappers
+                title = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', title)
+
+                # Clean separators
+                title = title.replace('—', ' ')
+                title = title.replace(':', ' ')
+                title = re.sub(r'[<>]', '', title)
+                title = title.strip()
+
+                # Normalize URL
+                if url.startswith('/'):
+                    url = 'https://www.pwc.com' + url
+                elif re.match(r'^[a-zA-Z0-9.-]+\.[a-z]{2,}', url):
+                    url = 'https://' + url
+                if title:
+                    text = (
+                        f'{title} '
+                        f'<link href="{url}"><font color="blue">{url}</font></link>'
+                    )
+                else:
+                    text = f'<link href="{url}"><font color="blue">{url}</font></link>'
+                items.append(
+                    ListItem(
+                        Paragraph(
+                            # f'{title} — '
+                            text,
+                            # f'<link href="{url}"><font color="blue">{url}</font></link>',
+                            reference_style
+                        )
+                    )
+                )
+
+            # if items:
+            #     story.append(
+            #         ListFlowable(
+            #             items,
+            #             bulletType='1',
+            #             start=1,
+            #             leftIndent=24
+            #         )
+            #     )
+            #     story.append(Spacer(1, 12))
+            if items:
+                # Determine starting number from first citation line
+                first_index_match = re.match(r'^(\d+)\.', lines[0])
+                start_index = int(first_index_match.group(1)) if first_index_match else 1
+
+                story.append(
+                    ListFlowable(
+                        items,
+                        bulletType='bullet',
+                        # bulletType='1',
+                        # start=start_index,
+                        leftIndent=24
+                    )
+                )
+                story.append(Spacer(1, 12))
+
+            continue
+
+            # Normalize wrapped citation lines
+            # joined_lines = []
+            # buffer = ""
+
+            # for line in lines:
+            #     if re.match(r'^\d+\.\s+', line):
+            #         if buffer:
+            #             joined_lines.append(buffer.strip())
+            #         buffer = line
+            #     else:
+            #         buffer += " " + line
+
+            # if buffer:
+            #     joined_lines.append(buffer.strip())
+
+            # for line in joined_lines:
+            #     # DASH — URL
+            #     m = re.match(r'^(\d+)\.\s+(.*?)\s+—\s+(https?://\S+)', line)
+            #     m3 = re.match(r'^\[(\d+)\]\.\s+(https?://\S+)', line)
+            #     if m:
+            #         index, title, url = m.groups()
+            #     elif m3:
+            #         index, url = m3.groups()
+            #         title = url
+            #     else:
+            #         # FALLBACK: find URL anywhere
+            #         m2 = re.match(r'^(\d+)\.\s+(.*?)(https?://\S+)', line)
+            #         if not m2:
+            #             continue
+            #         index, title, url = m2.groups()
+
+            #     if start_index is None:
+            #         start_index = int(index)
+
+            #     url = url.strip().strip('<>')
+            #     if url.startswith('/'):
+            #         url = 'https://www.pwc.com' + url
+            #     elif re.match(r'^[a-zA-Z0-9.-]+\.[a-z]{2,}', url):
+            #         url = 'https://' + url
+            #     # title = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', title)
+            #     clean_title = re.sub(r'\*+', '', title).strip()
+            #     items.append(
+            #         ListItem(
+            #             Paragraph(
+            #                 # f'{title.strip()} — '
+            #                 f'{clean_title} — '
+            #                 f'<link href="{url}"><font color="blue">{url}</font></link>',
+            #                 reference_style
+            #             )
+            #         )
+            #     )
+
+            # if items:
+            #     story.append(
+            #         ListFlowable(
+            #             items,
+            #             bulletType='1',
+            #             start=start_index,
+            #             leftIndent=24
+            #         )
+            #     )
+            #     story.append(Spacer(1, 12))
+
+            continue
+        # ========= END CITATION BLOCK =========
+
+        # --- FIX: Heading followed by numbered list in same block ---
+       
+
+        if "|" in block and re.search(r"\|\s*-{3,}", block):
+            # rows = [r.strip() for r in block.split("\n") if "|" in r]
+            rows = [
+                r.strip()
+                for r in block.split("\n")
+                if "|" in r and not re.search(r"\|\s*-{3,}", r)
+            ]
+
+            data = [
+                [
+                    Paragraph(
+                        re.sub(r"[*#]+", "", cell).strip(),
+                        table_cell_style
+                    )
+                    for cell in row.strip("|").split("|")
+                ]
+                for row in rows
+            ]
+            usable_width = page_width - (1.1*inch + 1*inch + 0.3*inch)
+            colWidths = [usable_width * 0.3] + [usable_width * 0.7 / (len(data[0]) - 1)] * (len(data[0]) - 1)
+            table = Table(
+                data,
+                # colWidths=[(page_width - 2.1*inch) / len(data[0])] * len(data[0]),
+                colWidths=colWidths,
+                repeatRows=1
+            )
+            logger.info(f"Detected table with {len(data)} rows")
+
+            table.setStyle([
+                ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                ('BACKGROUND', (0,0), (-1,0), colors.whitesmoke),
+                # ('FONT', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTNAME', (0,0), (-1,0), 'DejaVu-Bold'),
+                ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                # ('WORDWRAP', (0,0), (-1,-1), 'CJK'),
+                ('LEFTPADDING', (0,0), (-1,-1), 6),
+                ('RIGHTPADDING', (0,0), (-1,-1), 6),
+                ('TOPPADDING', (0,0), (-1,-1), 4),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+                ('NOSPLIT', (0,0), (-1,-1)),                
+                ])
+            story.append(KeepTogether([
+                table,
+                Spacer(1, 18)
+            ]))
+            continue
+            # ===== END TABLE =====        
+        block = block.strip()
+        if re.match(r'^\s*[-_]{3,}\s*$', block):
+            continue
+        first_line = block.split('\n')[0].strip()
+        
+        if re.match(r'^\d+\.\s+', first_line):
+            # Never treat numbered list items as headings
+            pass
+        
+        bold_first_line_match = re.match(r'^\*\*(.+?)\*\*$', first_line)
+        if bold_first_line_match:
+            # Treat as emphasized paragraph, NOT a heading
+            text = bold_first_line_match.group(1).strip()
+            emphasis_style = ParagraphStyle(
+                    'PWCEmphasis',
+                    parent=body_style,
+                    fontName='DejaVu-Bold',
+                    fontSize=11,      # <= body, never larger than headings
+                    leading=15,
+                    spaceAfter=8
+                )
+            story.append(Paragraph(text, emphasis_style))
+            remaining = "\n".join(lines[1:]).strip()
+            if remaining:
+                story.append(Spacer(1, 4))
+                story.append(Paragraph(
+                    _format_content_for_pdf_mi(_strip_ui_markdown(remaining)),
+                    body_style
+                ))
+            continue
+            # logger.info(f"Detected emphasized paragraph: {text}")
+            
+        # ---- NUMBERED SECTION HEADING  ----
+        numbered_heading_match = re.match(
+            r'^#*\s*(\d+\.\s+[A-Z][^\n]+)\n+(.*)',
+            block,
+            re.DOTALL
+        )
+        # if numbered_heading_match:
+        if numbered_heading_match and not re.search(r'https?://', block):
+            heading_text = numbered_heading_match.group(1).strip()
+            remaining = numbered_heading_match.group(2).strip()
+            story.append(Paragraph(heading_text, heading1_style))
+            if remaining:
+                story.append(Spacer(1, 8))
+                story.append(Paragraph(
+                    _format_content_for_pdf_mi(_strip_ui_markdown(remaining)),
+                    body_style
+                ))
+            continue
+        bullet_heading_match = re.match(
+            r'^###\s*•\s*(.+?)\s*\n+(.+)',
+            block,
+            re.DOTALL
+        )
+        if bullet_heading_match:
+            heading_text = bullet_heading_match.group(1).strip()
+            body_text = bullet_heading_match.group(2).strip()
+
+            story.append(Paragraph(f"• {heading_text}", heading1_style))
+            story.append(Spacer(1, 6))
+            story.append(Paragraph(
+                _format_content_for_pdf_mi(_strip_ui_markdown(body_text)),
+                body_style
+            ))
+            continue
+        if block.startswith('####'):
+            text = block.replace('####', '').strip()
+            text = re.sub(r'\*+', '', text).rstrip(':').strip()
+            story.append(Paragraph(text, heading1_style))
+            continue
+        elif block.startswith('###'):
+            # text = block.replace('###', '').strip()
+            text = re.sub(r'\*+', '', block.replace('###', '')).strip()
+            text = re.sub(r'\*+', '', text).rstrip(':').strip()
+            story.append(Paragraph(text, heading3_style))
+            continue
+        elif block.startswith('##'):
+            # text = block.replace('##', '').strip()
+            text = re.sub(r'\*+', '', block.replace('##', '')).strip()
+            text = re.sub(r'\*+', '', text).rstrip(':').strip()
+            # story.append(Paragraph(text, heading_style))
+            story.append(Paragraph(text, heading2_style))
+            continue
+        elif block.startswith('#'):
+            # text = block.replace('#', '').strip()
+            text = re.sub(r'\*+', '', block.replace('#', '')).strip()
+            text = re.sub(r'\*+', '', text).rstrip(':').strip()
+            story.append(Paragraph(text, heading1_style))
+            continue
+          
+        if _is_bullet_list_block(block):
+            bullet_items = _parse_bullet_items_mi(block)
+            logger.info(f"Detected bullet items: {bullet_items}")
+            bullet_flow = ListFlowable(
+                [
+                    ListItem(
+                        Paragraph(_format_content_for_pdf_mi(_clean_bullet_text(item)), bullet_style),
+                        # leftIndent=24 + indent * 2,
+                        # leftIndent = 24 + indent * 12,
+                        leftIndent = 24 + indent * 18,
+                        bulletText=bullet_for_level( level= indent // 2)
+                        # bulletText='•'
+                        # bulletText = '•' if indent < 2 else '-'
+                    )
+                    for indent,item in bullet_items
+                ],
+                # start='bullet',
+                bulletType='bullet',
+                leftIndent=24
+            )
+            story.append(bullet_flow)
+            continue
+        
+        NUMBERED_LIST_LINE = re.compile(r'^\d+\.\s+')
+        if all(NUMBERED_LIST_LINE.match(l) for l in lines):
+            items = []
+            for l in lines:
+                idx, txt = l.split('.', 1)
+                items.append(
+                    ListItem(
+                        Paragraph(
+                            _format_content_for_pdf_mi(txt.strip()),
+                            body_style
+                        )
+                    )
+                )
+            story.append(
+                ListFlowable(
+                    items,
+                    # bulletType='1',
+                    bulletType='bullet',
+                    leftIndent=24
+                )
+            )
+            story.append(Spacer(1, 8))
+            continue
+        sentence_count = len(re.findall(r'[.!?]', block))
+        logger.info(f"Paragraph sentence block>>>>>>>>>>>>>>>>")
+        if sentence_count > 20:    
+            split_paragraphs = _split_paragraph_into_sentences(block, target_sentences=3)
+            for split_para in split_paragraphs:
+                if split_para:
+                    # para = Paragraph(_format_content_for_pdf_mi(split_para), body_style)
+                    para = Paragraph(
+                            # _format_content_for_pdf_mi(_strip_ui_markdown(split_para)),
+                            _format_content_for_pdf_mi(re.sub(r'\*\*(.*?)\*\*', r'\1', split_para)),
+                            body_style
+                        )
+
+                    story.append(para)
+        else:
+            clean_block = _clean_bullet_text(block)
+            # clean_block = clean_block.replace("**", "")
+            # clean_block = re.sub(r'(?<!\*)\*(?!\*)', '', clean_block)
+            # Convert markdown bold to ReportLab bold
+            # clean_block = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', clean_block)
+            # Remove HTML sup tags completely
+            # clean_block = re.sub(r'</?sup>', '', clean_block)
+
+            # Remove markdown-style citation links inside superscripts
+            # clean_block = re.sub(r'\[\s*\[\d+\]\([^)]+\)\s*\]', '', clean_block)
+
+            # Convert markdown bold
+            # clean_block = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', clean_block)
+
+            # Remove stray single asterisks only
+            clean_block = re.sub(r'(?<!\*)\*(?!\*)', '', clean_block)
+
+            logger.info(f"Adding regular paragraph: {clean_block[:50]}...")
+            # para = Paragraph(_format_content_for_pdf_mi(clean_block), body_style)
+            formatted = _format_content_for_pdf_mi(clean_block)
+            logger.info(f"FINAL PARAGRAPH TEXT: {formatted}")
+            para = Paragraph(formatted, body_style)
+
+            story.append(para) 
+    doc.build(
+        story,
+        onFirstPage=_add_page_number,
+        onLaterPages=_add_page_number
+    )
+    content_buffer.seek(0)
+    if include_toc:
+        logger.info("Step 2.5: Creating Table of Contents pages (multi-page)")
+        toc_buffer = io.BytesIO()
+        toc_doc = SimpleDocTemplate(toc_buffer, pagesize=(page_width, page_height), topMargin=1*inch, bottomMargin=1*inch)
+        toc_styles = getSampleStyleSheet()
+        toc_title_style = ParagraphStyle(
+            'TOCTitle',
+            parent=toc_styles['Heading1'],
+            fontSize=24,
+            textColor='#000000',
+            spaceAfter=24,
+            alignment=TA_LEFT,
+            
+            fontName='DejaVu-Bold' # fontName='Helvetica-Bold'
+
+        )
+        toc_heading_style = ParagraphStyle(
+            'TOCHeading',
+            parent=toc_styles['BodyText'],
+            fontSize=11,
+            textColor='#000000',
+            spaceAfter=6,#12
+            alignment=TA_LEFT,
+           
+            fontName='DejaVu',  # fontName='Helvetica',
+            leading=16,
+            rightIndent=20
+        )
+        toc_story = []
+        if not headings:
+            toc_pages = []
+        toc_story.append(Paragraph("Contents", toc_title_style))
+        toc_story.append(Spacer(1, 0.2 * inch))
+        seen = set()
+        filtered_headings = []
+        for h in headings:
+            if h not in seen:
+                filtered_headings.append(h)
+                seen.add(h)
+        for index, heading in enumerate(filtered_headings, start=1):
+            toc_story.append(Paragraph(f"{index}. {heading}", toc_heading_style))
+        toc_doc.build(toc_story)
+        toc_buffer.seek(0)
+        toc_reader = PdfReader(toc_buffer)
+        toc_pages = [toc_reader.pages[i] for i in range(len(toc_reader.pages))]
+    logger.info("Step 3: Merging cover page, ToC, and content pages")
+    content_reader = PdfReader(content_buffer)
+    writer = PdfWriter()
+    writer.add_page(template_page)
+    logger.info("Added branded cover page with PWC logo, title, and subtitle")
+      
+    if include_toc:    
+        for toc_page in toc_pages:
+            writer.add_page(toc_page)
+    if not content_reader:
+        raise RuntimeError("content_reader was not initialized")
+    for page in content_reader.pages:
+        writer.add_page(page)
+    output_buffer = io.BytesIO()
+    writer.write(output_buffer)
+    output_buffer.seek(0)
+    result_bytes = output_buffer.getvalue()
+    logger.info(f"PDF export complete: {len(writer.pages)} pages, {len(result_bytes)} bytes")
+
+    return result_bytes
+
+def export_to_pdf_pwc_no_toc(
+    content: str,
+    title: str,
+    subtitle: str | None = None,
+    content_type: str | None = None,client: str | None = None
+    # include_toc: bool = False
+
+) -> bytes:
+    """
+    PwC PDF export WITHOUT Table of Contents.
+    Uses same formatting as pdf-pwc-bullets.
+    """
+    if not os.path.exists(PWC_PDF_TEMPLATE_PATH):
+        return _generate_pdf_with_title_subtitle(content, title, subtitle)
+    logger.info(f"Generating PDF PwC no ToC for module: {title},{content_type}")
+    
+    # Reuse COVER creation logic from existing function
+    pdf_bytes = export_to_pdf_with_pwc_template_with_bullets(
+        content=content,
+        title=title,
+        subtitle=subtitle,
+        include_toc=False
+    )
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter()
+    writer.add_page(reader.pages[0])
+    for page in reader.pages[1:]: 
+        writer.add_page(page)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+# =====================pdf-mi====================
+
+# ======================= pandoc-export-word ======
+
+def force_round_bullets(doc):
+    for p in doc.paragraphs:
+        pPr = p._p.pPr
+        if pPr is None or pPr.numPr is None:
+            continue 
+        # logger.info(f"Converting to bullet: {p.text[:30]}... style={p.style.name} numId=1")
+        old_numPr = pPr.numPr
+        ilvl_el = old_numPr.find(qn("w:ilvl"))
+        ilvl_val = ilvl_el.get(qn("w:val")) if ilvl_el is not None else "0"
+        if ilvl_val == "0":
+            num_id_val = "1"  # ● filled
+        else:
+            num_id_val = "2"  # ○ hollow
+        pPr.remove(old_numPr)        
+        # pPr.remove(pPr.numPr)
+        numPr = OxmlElement("w:numPr")
+        ilvl = OxmlElement("w:ilvl")
+        # ilvl.set(qn("w:val"), "0")
+        ilvl.set(qn("w:val"), ilvl_val)
+        numId = OxmlElement("w:numId")
+        # numId.set(qn("w:val"), "1")  # MUST map to round bullet in template
+        numId.set(qn("w:val"), num_id_val)
+        numPr.append(ilvl)
+        numPr.append(numId)
+        pPr.append(numPr)
+
+def ensure_clickable_links(text: str) -> str:
+    # Skip URLs already inside markdown [text](url)
+    pattern = r'(?<!\])(?<!\()(?<!\[)(https?://[^\s<>)]+)'
+    return re.sub(pattern, r'[\1](\1)', text)
+
+def convert_citation_numbers_to_bullets(text: str) -> str:
+    pattern = r"(## Citations & References[\s\S]*?)(?=\n## |\Z)"
+    match = re.search(pattern, text)
+    if not match:
+        return text
+
+    section = match.group(1)
+
+    lines = section.split("\n")
+    new_lines = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # If line starts with dash (citation title)
+        if line.startswith("- "):
+            title = line
+            url = ""
+
+            # Check if next line is URL
+            if i + 1 < len(lines) and lines[i+1].strip().startswith("http"):
+                url = lines[i+1].strip()
+                i += 1
+
+            # Merge into SINGLE bullet line
+            merged = f"{title} {url}"
+            new_lines.append(merged)
+        else:
+            new_lines.append(lines[i])
+
+        i += 1
+
+    new_section = "\n".join(new_lines)
+    return text.replace(section, new_section)
+        
+def preprocess_markdown(content: str) -> str:
+    text = content.replace("\\n", "\n")
+    text = inject_toc_and_fix_headings(text)
+    # text = re.sub(
+    #     r"<sup>\s*\[\s*(.*?)\s*\]\s*</sup>",
+    #     r"^[\1]",
+    #     text,
+    #     flags=re.DOTALL
+    # )
+    text = convert_citation_numbers_to_bullets(text)
+    # text = replace_inline_links_with_icon(text)
+    text = ensure_clickable_links(text)   
+    return text
+
+def normalize_quotes(text: str) -> str:
+    quote_map = {
+        "“": '"',
+        "”": '"',
+        "„": '"',
+        "‟": '"',
+        "’": "'",
+        "‘": "'",
     }
-  ]
-}
-
-8. NEVER return plain strings inside feedback_edit
-9. NEVER return null, empty arrays, markdown, or commentary
-
-============================================================
-NOW EDIT THE FOLLOWING DOCUMENT:
-============================================================
-
-{document_json}
-
-Return ONLY the JSON array. No extra text.
-"""
-
-# ------------------------------------------------------------
-# 3. LINE EDITOR PROMPT (STRUCTURE-ALIGNED WITH DEVELOPMENT)
-# ------------------------------------------------------------
-
-LINE_EDITOR_PROMPT = """
-ROLE:
-You are the Line Editor for PwC thought leadership content.
-
-You operate strictly at the SENTENCE level.
-
-============================================================
-ROLE ENFORCEMENT — ABSOLUTE
-============================================================
-
-You are NOT permitted to act as:
-- Development Editor
-- Content Editor
-- Copy Editor
-- Brand Editor
-
-You MUST NOT:
-- Add or remove ideas
-- Introduce new examples
-- Insert brand vocabulary
-- Enforce messaging pillars
-- Correct mechanical formatting
-- Normalize punctuation beyond clarity needs
-- Rewrite for elegance
-
-You edit ONLY for:
-- Sentence clarity
-- Readability
-- Clause density
-- Logical flow within sentence
-- Active construction
-- Controlled hedging
-- Point-of-view precision
-- Rhythm and pacing at sentence level
-
-============================================================
-CORE OBJECTIVE — NON-NEGOTIABLE
-============================================================
-
-Improve sentences so they are:
 
-- Clear
-- Direct
-- Concise
-- Active
-- Easy to scan
-- Aligned with Collaborative, Bold, Optimistic tone structure
-
-You MUST preserve:
-- Meaning
-- Factual content
-- Emphasis
-- Tone intent
-- Narrative order
-
-============================================================
-DOCUMENT COVERAGE — ABSOLUTE
-============================================================
-
-You MUST evaluate EVERY block in {document_json}, in order.
-
-Block types:
-- title
-- heading
-- paragraph
-- bullet_item
-
-You MUST:
-- Evaluate every sentence in paragraph and bullet_item
-- Inspect titles/headings for violations (DETECTION ONLY)
-- NOT skip blocks
-- NOT skip sentences
-
-If no change required:
-- Emit NO Issue/Fix
-
-Silent skipping is forbidden.
-
-============================================================
-DETERMINISTIC SENTENCE EVALUATION — LOCKED
-============================================================
-
-For EVERY sentence:
-
-Apply ALL rules below in EXACT order.
-
-For EACH rule:
-- Decide FIX REQUIRED or NO FIX REQUIRED.
-- If FIX REQUIRED:
-    Emit exactly ONE Issue/Fix.
-- If NO FIX REQUIRED:
-    Emit NOTHING.
-
-You MUST:
-- Finish ALL rules for one sentence before moving forward.
-- NEVER re-evaluate a previous sentence.
-- NEVER reorder rules.
-
-============================================================
-SENTENCE BOUNDARY — STRICT
-============================================================
-
-- Edits must remain within ONE original sentence.
-- You MAY split one sentence into multiple sentences.
-- You MUST NOT merge sentences.
-- You MUST NOT move content across sentences.
-- You MUST NOT restructure paragraphs.
-
-============================================================
-LINE EDITOR RULES — FIXED ORDER
-============================================================
-
-1. Sentence Clarity & Length
-
-Each sentence must express ONE clear idea.
-
-If sentence contains:
-- Multiple independent clauses
-- Excessive qualifiers
-- Stacked prepositional phrases
-- Dense relative clauses (which, that, who)
-
-You MUST split the sentence IF clarity improves.
-
-Entire sentence replacement allowed ONLY if structurally unsound.
-
-------------------------------------------------------------
-
-2. Sentence Split (Clause Density)
-
-If clause chaining reduces readability,
-split into shorter, focused sentences.
-
-Sentence splits must:
-- Preserve full dependent clauses.
-- Avoid partial phrase replacement.
-
-------------------------------------------------------------
-
-3. Active vs Passive Voice
-
-Use active voice when:
-- Actor is clear
-- Energy increases
-- Directness improves
-
-Retain passive voice ONLY if:
-- Actor unknown or irrelevant
-- Active construction reduces clarity
-
-------------------------------------------------------------
-
-4. Hedging Reduction
-
-Reduce or remove:
-- may
-- might
-- could
-- somewhat
-- often
-- potentially
-- generally
-
-ONLY if meaning remains unchanged.
-
-Do NOT remove necessary uncertainty.
-
-------------------------------------------------------------
-
-5. Point of View Correction
-
-- Use first-person plural ONLY when PwC is actor.
-- Use second person ONLY when reader is directly addressed.
-- Correct mismatched third-person references where second person is clearly intended.
-- Do NOT introduce second person if scope changes.
-
-------------------------------------------------------------
-
-6. First-Person Plural Anchoring
-
-Every “we,” “our,” “us” must clearly refer to PwC within the same sentence.
-
-If ambiguous → revise for clarity.
-
-------------------------------------------------------------
-
-7. Redundancy Removal
-
-Remove:
-- Repeated modifiers
-- Unnecessary intensifiers
-- Duplicate phrasing
-- Circular constructions
-
-One redundancy fix = one issue.
-
-------------------------------------------------------------
-
-8. Filler Removal
-
-Remove low-value fillers:
-- in order to
-- due to the fact that
-- at this point in time
-- it is important to note that
-- there is/there are (when avoidable)
-
-Only when clarity improves.
-
-------------------------------------------------------------
-
-9. Pacing & Scanability
-
-Shorten overly long sentences.
-Prefer shorter constructions when rhythm improves.
-
-Avoid:
-- Overloaded openings
-- Multi-layered abstractions
-
-------------------------------------------------------------
-
-10. Gender-Neutral Language
-
-Use singular “they” for unspecified individuals.
-Avoid assumed gender pronouns.
-
-------------------------------------------------------------
-
-11. Singular vs Plural Entity
-
-Corporate entities take singular verbs.
-
-“PwC is…”
-“The team has…”
-
-------------------------------------------------------------
-
-12. Titles & Headings Detection Only
-
-Do NOT edit.
-If violation exists, flag in feedback_edit.
-
-============================================================
-ISSUE–FIX ATOMIZATION — ABSOLUTE
-============================================================
-
-- ONE semantic change = ONE issue.
-- ONE sentence split = ONE issue.
-- ONE voice shift = ONE issue.
-- ONE hedging removal = ONE issue.
-
-Each character may belong to AT MOST ONE issue.
-
-If larger rewrite occurs:
-- Suppress micro-fixes within it.
-
-Every changed word must appear in exactly one issue.
-
-============================================================
-NON-OVERLAPPING RULE — ABSOLUTE
-============================================================
-
-Issues MUST NOT overlap.
-If overlap unavoidable:
-- Select largest necessary span.
-- Suppress smaller fixes.
-
-============================================================
-VALIDATION — REQUIRED BEFORE OUTPUT
-============================================================
-
-Confirm:
-- All sentences evaluated.
-- No rule skipped.
-- No sentence merged.
-- No structural rewrite beyond sentence.
-- No tone re-engineering.
-- No mechanical-only edits.
-- No brand vocabulary injection.
-- No overlapping issues.
-
-If any fail → regenerate.
-
-============================================================
-ALLOWED RULE NAMES — LOCKED
-============================================================
-
-Line Editor – Sentence Clarity & Length
-Line Editor – Sentence Split (Clause Density)
-Line Editor – Active vs Passive Voice
-Line Editor – Hedging Reduction
-Line Editor – Point of View Correction
-Line Editor – First-Person Plural Anchoring
-Line Editor – Redundancy Removal
-Line Editor – Filler Removal
-Line Editor – Pacing & Scanability
-Line Editor – Gender-Neutral Language
-Line Editor – Singular vs Plural Entity
-Line Editor – Titles & Headings Detection Only
-
-============================================================
-OUTPUT RULES — ABSOLUTE
-============================================================
-"feedback_edit": {
-  "line": [
-    {
-      "issue": "exact substring from original_text",
-      "fix": "exact replacement used in suggested_text",
-      "impact": "Concrete improvement to clarity, readability, pacing, or rhythm",
-      "rule_used": "Line Editor – <ALLOWED RULE NAME ONLY>",
-      "priority": "Critical | Important | Enhancement"
-    }
-  ]
-}
-
-Each object MUST contain ONLY:
-- id
-- type
-- level
-- original_text
-- suggested_text
-- feedback_edit
-
-Return ONLY a JSON array.
-
-If no edits required:
-- Emit no issues for that block.
-
-============================================================
-NOW EDIT THE FOLLOWING DOCUMENT
-============================================================
-
-{document_json}
-
-"""
-
-
-
-# ------------------------------------------------------------
-# 4.COPY EDITOR PROMPT
-# ------------------------------------------------------------
-
-COPY_EDITOR_PROMPT = """
-ROLE:
-You are the Copy Editor for PwC thought leadership content.
-
-You enforce mechanical correctness ONLY.
-The PwC Brand Messaging Guide governs all style decisions.
-
-============================================================
-ROLE ENFORCEMENT — ABSOLUTE
-============================================================
-
-You are NOT permitted to act as:
-- Development Editor
-- Content Editor
-- Line Editor
-- Brand Editor
-
-You MUST NOT:
-- Improve clarity or flow
-- Rewrite for tone
-- Adjust positioning
-- Inject vocabulary
-- Alter emphasis
-- Modify structure
-- Add or remove content
-
-You correct ONLY mechanical errors.
-
-============================================================
-CORE OBJECTIVE
-============================================================
-
-Correct ONLY:
-
-- Grammar
-- Spelling
-- Punctuation
-- Capitalization
-- Numbers
-- Dates
-- Time formatting
-- Currency formatting
-- URL formatting
-- Serial comma application
-- Acronym mechanics
-- Duplicate headings
-
-Preserve:
-- Meaning
-- Tone
-- Sentence structure
-- Voice
-- Content order
-
-============================================================
-PWc HOUSE STYLE ENFORCEMENT — ABSOLUTE
-============================================================
-
-------------------------------------------------------------
-OXFORD (SERIAL) COMMA RULE
-------------------------------------------------------------
-
-Do NOT use the serial comma unless:
-
-- The final list item contains “and” within it, OR
-- Clarity would otherwise be compromised.
-
-Example (no serial comma):
-Tax, Assurance and Advisory
-
-Example (serial comma required):
-Risk Assurance, Private Company Services, and Capital Markets and Accounting Advisory Services
-
-Incorrect mechanical insertion of serial comma → MUST FIX.
-
-------------------------------------------------------------
-NUMERIC STYLE
-------------------------------------------------------------
-
-In body copy:
-
-- Spell out numbers one through ten.
-- Use numerals for 11 and above.
-
-Ordinals:
-- Spell out first through tenth.
-- Use numerals for 11th and above.
-
-Dates:
-- Do NOT use ordinal suffix (March 20, not March 20th).
-
-Millions/Billions:
-- Use m and bn in lowercase.
-- No space between number and letter.
-  Example: 37bn, 9m
-
-Numerals up to six characters:
-- Use comma before final three digits (4,000).
-
-Never start a sentence with a numeral.
-If present → spell out number.
-
-------------------------------------------------------------
-DATE FORMATTING
-------------------------------------------------------------
-
-US format (when US context):
-Month DD, YYYY
-
-Non-US format:
-DD Month YYYY (no comma)
-
-Never:
-- 12 March 2025 (in US)
-- March 20th
-- 2025-03-12
-- 12/03/2025
-
-Months always capitalized.
-Do not abbreviate month unless space-constrained.
-
-------------------------------------------------------------
-TIME OF DAY
-------------------------------------------------------------
-
-- Lowercase am/pm
-- No full stops
-- No space before am/pm
-- 4pm (not 4:00pm)
-- 9:30pm (colon only when minutes exist)
-- Use noon and midnight
-- Do not write 12 noon or 12 midnight
-
-Time ranges:
-- Use hyphen (no spaces) OR “to”
-  Example: 9am–5pm or 9am to 5pm
-- Do not repeat am/pm if same period
-  Example: 10–11:30am
-
-------------------------------------------------------------
-TIME ZONES
-------------------------------------------------------------
-
-Use:
-- ET (not EST or EDT)
-
-------------------------------------------------------------
-CURRENCY FORMAT
-------------------------------------------------------------
-
-General reference:
-- Spell out currency in lowercase
-  Example: Australian dollars, euro, yen
-
-Specific amounts:
-- Symbol format: US$45, AUD$45, £45, ¥45
-- OR ISO code format: GBP45, AUD45, JPY45
-
-Do not mix formats within document.
-
-------------------------------------------------------------
-URL FORMAT
-------------------------------------------------------------
-
-All URLs must:
-- Begin with “www.”
-- Include full stop at end if sentence ends.
-
-Example:
-You can find out more at www.pwc.com.
-
-------------------------------------------------------------
-AMPERSANDS & SYMBOLS
-------------------------------------------------------------
-
-Replace:
-- &
-- +
-- !
-
-With words unless part of legal name
-(e.g., AT&T, Strategy&).
-
-------------------------------------------------------------
-ACRONYM MECHANICS
-------------------------------------------------------------
-
-- Spell out first instance.
-- Abbreviation in brackets.
-- Use abbreviation thereafter.
-- Do not introduce unnecessary acronyms.
-
-------------------------------------------------------------
-HEADLINES
-------------------------------------------------------------
-
-- Sentence case for headlines.
-- Capitalize only first word and proper nouns.
-- No period at end of headline.
-- Title case only for named annual studies.
-
-------------------------------------------------------------
-CAPITALIZATION
-------------------------------------------------------------
-
-Generic references → lowercase.
-Specific names → capitalized.
-
-Corporate entities take singular verb form.
-
-------------------------------------------------------------
-SPACING
-------------------------------------------------------------
-
-One space after:
-- Period
-- Question mark
-- Exclamation mark
-
-------------------------------------------------------------
-DAYS
-------------------------------------------------------------
-
-Days of week capitalized.
-Abbreviations: Sun, Mon, Tue, Wed, Thu, Fri, Sat (no full stop).
-
-============================================================
-ISSUE–FIX ENFORCEMENT — ABSOLUTE
-============================================================
-
-- Each issue must be one atomic mechanical correction.
-- No overlapping issues.
-- Merge cascading mechanical errors in same phrase.
-- issue span ≤ 12 words.
-- Every changed character must map to exactly one issue.
-
-If no change required:
-- suggested_text MUST equal original_text
-- feedback_edit MUST be {}
-
-============================================================
-ALLOWED RULE NAMES — LOCKED
-============================================================
-
-Copy Editor – Grammar correction
-Copy Editor – Punctuation correction
-Copy Editor – Spelling correction
-Copy Editor – Capitalization consistency
-Copy Editor – Serial comma rule
-Copy Editor – Numeric style enforcement
-Copy Editor – Date formatting consistency
-Copy Editor – Time formatting consistency
-Copy Editor – Time range mechanics
-Copy Editor – Currency formatting consistency
-Copy Editor – URL formatting consistency
-Copy Editor – Acronym mechanics
-Copy Editor – Symbol replacement
-Copy Editor – Duplicate heading removal
-
-============================================================
-OUTPUT RULES — ABSOLUTE
-============================================================
-Return ONLY a JSON array.
-
-"feedback_edit": {
-  "Copy_Editor": [
-    {
-      "issue": "exact contiguous substring from original_text",
-      "fix": "exact replacement used in suggested_text",
-      "impact": "Concrete mechanical correction (grammar, consistency, or accuracy)",
-      "rule_used": "Copy Editor – <ALLOWED RULE NAME ONLY>",
-      "priority": "Critical | Important | Enhancement"
-    }
-  ]
-}
-
-Each object MUST contain ONLY:
-- id
-- type
-- level
-- original_text
-- suggested_text
-- feedback_edit
-
-No commentary.
-No explanation.
-
-If validation fails, regenerate.
-
-============================================================
-NOW EDIT THE FOLLOWING DOCUMENT
-============================================================
-{document_json}
-
-"""
-
-# ------------------------------------------------------------
-# 5.BRAND ALIGNMENT EDITOR PROMPT
-# ------------------------------------------------------------
-BRAND_EDITOR_PROMPT = f"""
-ROLE:
-You are the PwC Brand Messaging, Positioning, and Compliance Editor for PwC thought leadership content.
-
-You enforce PwC brand positioning, tone, messaging framework, and risk language exactly as defined below.
-All rules required for enforcement are contained in this prompt.
-
-============================================================
-ROLE ENFORCEMENT — ABSOLUTE
-============================================================
-
-You are NOT permitted to act as:
-- Development Editor
-- Content Editor
-- Line Editor
-- Copy Editor
-
-You enforce ONLY:
-- Brand positioning
-- Messaging framework alignment
-- Tone of voice
-- Brand vocabulary
-- Risk & claims language
-- Surface usage rules
-- High-level brand compliance
-
-You MUST NOT:
-- Correct grammar or punctuation
-- Rewrite for clarity
-- Improve structure
-- Add proof points
-- Introduce new examples
-- Change factual meaning
-- Add new messaging not already implied
-
-{BRAND_EDITOR_PROMPT_RULE}
-
-============================================================
-RISK_WORDS_DICTIONARY — OPERATIONAL LIST
-============================================================
-
-{{risk_words_instruction}}
-
-============================================================
-REFERENCE FORMAT CONVERSION — MANDATORY
-============================================================
-
-Conversion rules (INLINE CITATIONS ONLY — do NOT change reference list entries):
-- "(Ref. 1)" → "[¹]"
-- "(Ref. 2)" → "[²]"
-- "(Ref. 3)" → "[³]"
-- "[1]" → "[¹]" (bracket format, when used inline in a sentence)
-- "[2]" → "[²]" (bracket format, when used inline in a sentence)
-- "[3]" → "[³]" (bracket format, when used inline in a sentence)
-- "(Ref. 1; Ref. 2)" → "[¹][²]" (two separate bracketed superscripts)
-- "(Ref. 1, Ref. 2, Ref. 3)" → "[¹][²][³]"
-- "(Ref. 1; Ref. 2; Ref. 3)" → "[¹][²][³]" (three separate bracketed superscripts)
-
-Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
-
-Examples:
-- "According to research (Ref. 1), the findings show..." → "According to research[¹], the findings show..."
-- "Multiple studies (Ref. 1; Ref. 2) indicate..." → "Multiple studies[¹][²] indicate..."
-- "The data (Ref. 1, Ref. 2, Ref. 3) supports..." → "The data[¹][²][³] supports..."
-
-IMPORTANT:
-- Remove parentheses and "Ref." text
-- Preserve square brackets from "[1]" format; convert the number inside the brackets to a superscript
-- Convert numbers to superscripts
-- Place superscripts immediately after the referenced text (no space before superscript)
-- For multiple references, combine superscripts or use comma-separated format for clarity
-- Do NOT convert "[1]", "[2]", "[3]", etc. when they are part of a References/Sources/Bibliography list entry (for example at the start of a line listing the full source)
-
-============================================================
-SUPERSCRIPT CLICKABILITY — CLARIFICATION (MANDATORY)
-============================================================
-
-- Unicode superscript reference markers (¹ ² ³ etc.) are VISUAL INDICATORS ONLY.
-- Superscript markers MUST NOT be made clickable.
-- Do NOT attempt to embed links, markdown, or HTML into superscript characters.
-- Clickable access to sources is provided EXCLUSIVELY via URLs in the numbered References/Sources list.
-
-============================================================
-DETERMINISTIC EVALUATION — ABSOLUTE
-============================================================
-
-For EVERY block:
-- Evaluate every sentence.
-- Apply ALL rules in order.
-- Decide FIX REQUIRED or NO FIX REQUIRED.
-- Emit exactly ONE Issue/Fix per violation.
-- Silent skipping is forbidden.
-
-============================================================
-OUTPUT RULES — ABSOLUTE
-============================================================
-feedback_edit MUST use this structure:
-{{
-  "brand": [
-    {{
-      "issue": "exact substring text from original_text",
-      "fix": "exact replacement text used in suggested_text",
-      "impact": "Why this improves brand alignment, tone, or risk compliance",
-      "rule_used": "Brand Editor – <Specific Brand Rule>",
-      "priority": "Critical | Important | Enhancement"
-    }}
-  ]
-}}
-
-Fields allowed:
-- id
-- type
-- level
-- original_text
-- suggested_text
-- feedback_edit
-
-Return ONLY JSON array.
-No commentary.
-
-============================================================
-NOW EDIT THE FOLLOWING DOCUMENT
-============================================================
-
-{{document_json}}
-
-"""
-# ------------------------------------------------------------
-# DEVELOPMENT EDITOR VALIDATION PROMPT
-# ------------------------------------------------------------
-
-DEVELOPMENT_EDITOR_VALIDATION_PROMPT = """
-You are validating whether the Agent-edited document demonstrates the following Development Editor article-level enforcement behaviors.
-
-============================================================
-A) Development Editor Validation Questions
-============================================================
-
-1. Structure & Coherence
-• Is the content logically organized and easy to follow?
-• Does the flow align with the stated objectives?
-• Has readability been improved through proper structuring?
-
-2. Tone of Voice Compliance
-• Does the content apply three tone principles of PwC: Collaborative, Bold, and Optimistic?
-• Is the language conversational, clear, and jargon-free?
-• Has passive voice, unnecessary qualifiers, and jargon been avoided?
-
-============================================================
-4. ARTICLE-LEVEL ENFORCEMENT — MANDATORY (Add-on)
-============================================================
-
-Validate whether the Agent-edited document demonstrates the following Development Editor article-level enforcement behaviors:
-
-Central Argument Enforcement
-• Has the Development Editor articulated the article's central argument in one sentence before editing (or as an explicit guiding sentence in the revised article)?
-• Does the article maintain a single governing argument throughout?
-
-Section-to-Argument Alignment
-• Does every section clearly advance, substantiate, or logically support the central argument?
-• Are any sections off-argument or adjacent? If yes, were they reframed or reduced?
-
-Repetition & Consolidation Discipline
-• Once a core idea has been introduced and explained, is it avoided in later sections unless:
-  o it adds new implications, new evidence, or new consequences?
-• If a core idea appears in more than two sections, did the editor:
-  o consolidate, elevate, remove, or reframe repeated material?
-• Is repetition used only when it serves a distinct narrative function (framing vs substantiation vs synthesis)?
-
-Length Discipline Through Pruning
-• Did the editor reduce total article length where redundancy or over-explanation exists (even if the content is "good")?
-• Is redundancy removed via:
-  o consolidation,
-  o pruning repeated phrasing,
-  o cutting off-topic tangents?
-
-Point of View Control
-• Did the editor explicitly select and maintain one primary POV (e.g., market analyst, advisor, collaborator)?
-• Are there POV shifts (e.g., advisor → narrator → executive observer)? If yes, were they corrected?
-
-One-Sentence Defensibility Test
-• If the article were summarized in one sentence, could every section be defended as serving that sentence?
-• If not, were non-serving sections revised or cut?
-
-============================================================
-VALIDATION TASK
-============================================================
-
-ORIGINAL ARTICLE ANALYSIS (provided to Development Editor):
-{original_analysis}
-
-ORIGINAL ARTICLE:
-{original_article}
-
-ORIGINAL ARTICLE LENGTH: {original_word_count} words
-
-EDITED ARTICLE (Development Editor output):
-{edited_article}
-
-EDITED ARTICLE LENGTH: {edited_word_count} words
-
-============================================================
-SCORING INSTRUCTIONS
-============================================================
-
-Evaluate all validation criteria above (2 from Development Editor Validation Questions + 6 from ARTICLE-LEVEL ENFORCEMENT) and provide:
-1. A score from 0-10 for overall compliance (where 10 = fully compliant, 0 = non-compliant)
-2. For each criterion in feedback_remarks:
-   - passed: True if criterion met, False if not
-   - feedback: Brief feedback for this criterion
-   - remarks: Detailed remarks explaining what was found
-
-The overall score should reflect:
-- 8-10: Article demonstrates strong compliance with all or most criteria
-- 5-7: Article shows partial compliance but has notable gaps
-- 0-4: Article fails to meet most criteria
-
-Return your validation result as structured JSON matching the DevelopmentEditorValidationResult schema.
-"""
-
-# ------------------------------------------------------------
-# CONTENT EDITOR VALIDATION PROMPT
-# ------------------------------------------------------------
-
-CONTENT_EDITOR_VALIDATION_PROMPT = """
-You are validating whether the Agent-edited document demonstrates the following Content Editor behaviors.
-
-============================================================
-CONTENT EDITOR VALIDATION QUESTIONS
-============================================================
-
-1. Clarity and Strength of Insights
-
-Does the content clearly present strong, actionable insights already present in the Draft Document?
-
-Are ideas clearly articulated without embellishment?
-
-Has the editor avoided introducing new framing, examples, or explanatory layers?
-
-2. Alignment with Author's Objectives
-
-Does the Agent-Edited Document reflect the same objectives and priorities as the Draft Document?
-
-Are emphasis and sequencing preserved?
-
-Has the editor avoided reframing goals, implications, or outcomes?
-
-3. Language Refinement (Block-Level)
-
-Is language refined for clarity and precision only?
-
-Are sentences concise and non-redundant?
-
-Has the editor avoided adding persuasive, executive, or instructional tone not present in the Draft?
-
-============================================================
-🔁 CROSS-PARAGRAPH ENFORCEMENT — MANDATORY (PRIMARY REQUIREMENT)
-============================================================
-
-CRITICAL: Cross-paragraph enforcement is EQUAL in priority to block-level editing. The Content Editor MUST have applied ALL of the following across paragraphs and sections.
-
-4. CROSS-PARAGRAPH LOGIC — ABSOLUTE REQUIREMENT
-
-For EACH paragraph in sequence, verify:
-
-✓ Does the paragraph explicitly assume and build on the reader's understanding from ALL preceding paragraphs?
-✓ Are there NO soft resets (paragraphs that restart context already established)?
-✓ Are there NO re-introductions (restating concepts, definitions, or context already explained)?
-✓ Are there NO restatements of previously established context (repeating background, framing, or setup)?
-
-FAILURE INDICATORS:
-- Paragraph 2 reintroduces a concept that Paragraph 1 already established
-- Paragraph 3 restates background information from Paragraph 1
-- Any paragraph begins with context-setting that was already provided earlier
-- Paragraphs restart explanations rather than building on previous conclusions
-
-PASS CRITERIA:
-- Each paragraph builds directly on the previous paragraph's conclusion or implication
-- No paragraph reintroduces or restates context from earlier paragraphs
-- The sequence demonstrates clear logical progression without soft resets
-
-5. REDUNDANCY AWARENESS (NON-STRUCTURAL) — ABSOLUTE REQUIREMENT
-
-For paragraphs that repeat ideas already established elsewhere, verify:
-
-✓ Has reinforcement language been REDUCED (not expanded)?
-✓ Has the editor avoided adding new emphasis, framing, or rhetorical weight?
-✓ Do later mentions ESCALATE (add implications, consequences, or decision relevance) rather than restate?
-✓ Has the editor NOT removed, merged, or structurally consolidated ideas across blocks?
-
-FAILURE INDICATORS:
-- Later paragraphs repeat ideas with MORE emphasis than earlier paragraphs
-- Repeated ideas use similar framing language without adding new implications
-- Redundant reinforcement language has been added rather than reduced
-- Ideas are restated at the same level of abstraction without escalation
-
-PASS CRITERIA:
-- If an idea is repeated, reinforcement language has been reduced
-- Later mentions of repeated ideas add implications, consequences, or decision relevance
-- No new emphasis or framing has been added that increases redundancy
-- Structural changes (removal/merging of blocks) have NOT occurred
-
-6. EXECUTIVE SIGNAL HIERARCHY — ABSOLUTE REQUIREMENT
-
-Across the paragraph sequence, verify:
-
-✓ Do later paragraphs convey CLEARER implications, priorities, or decision relevance than earlier paragraphs?
-✓ Is emphasis PROGRESSIVE (increasing from start to finish), not flat or repetitive?
-✓ Does the final paragraph carry the STRONGEST leadership implication?
-✓ Has this been achieved WITHOUT introducing new conclusions, shifting author intent, or adding strategic interpretation?
-
-FAILURE INDICATORS:
-- Early paragraphs have stronger implications than later paragraphs
-- Emphasis is flat or repetitive across paragraphs (no progression)
-- Final paragraph lacks clear leadership implication
-- Later paragraphs don't escalate beyond earlier ones
-- New conclusions or strategic interpretation have been introduced
-
-PASS CRITERIA:
-- Early paragraphs establish conditions and context
-- Middle paragraphs begin to surface implications
-- Later paragraphs convey clearer priorities and decision relevance
-- Final paragraph carries the strongest leadership implication
-- Progressive escalation of executive signal strength from start to finish
-- No new conclusions or shifted intent introduced
-
-============================================================
-VALIDATION METHODOLOGY
-============================================================
-
-When validating cross-paragraph enforcement:
-
-1. Read the ENTIRE paragraph sequence in order (both original and edited)
-2. For each paragraph, check what context was established in ALL preceding paragraphs
-3. Identify any soft resets, re-introductions, or restatements
-4. Identify any repeated ideas and check if they escalate or merely restate
-5. Map the progression of executive signal strength across all paragraphs
-6. Compare original vs edited to ensure improvements were made without introducing new content
-
-Be SPECIFIC in your feedback:
-- Reference specific paragraph numbers or content
-- Quote exact phrases that demonstrate compliance or non-compliance
-- Explain what should have been changed and why
-
-============================================================
-VALIDATION TASK
-============================================================
-
-ORIGINAL CROSS-PARAGRAPH ANALYSIS (provided to Content Editor):
-{original_analysis}
-
-ORIGINAL PARAGRAPH SEQUENCE (Draft Document):
-{original_paragraphs}
-
-ORIGINAL PARAGRAPH COUNT: {original_paragraph_count}
-
-EDITED PARAGRAPH SEQUENCE (Agent-Edited Document - Content Editor output):
-{edited_paragraphs}
-
-EDITED PARAGRAPH COUNT: {edited_paragraph_count}
-
-============================================================
-SCORING INSTRUCTIONS
-============================================================
-
-CRITICAL: Cross-paragraph enforcement (questions 4, 5, and 6) is EQUAL in priority to block-level editing (questions 1, 2, and 3). A failure in cross-paragraph enforcement should significantly impact the overall score.
-
-Evaluate all validation criteria above (3 from Content Editor Validation Questions + 3 from CROSS-PARAGRAPH ENFORCEMENT — questions 4, 5, and 6) and provide:
-
-1. A score from 0-10 for overall compliance (where 10 = fully compliant, 0 = non-compliant)
-2. For each criterion in feedback_remarks:
-   - passed: True if criterion met, False if not
-   - feedback: Brief feedback for this criterion (be specific about what was found)
-   - remarks: Detailed remarks explaining what was found, including:
-     * Specific paragraph references or quotes
-     * Examples of compliance or non-compliance
-     * What should have been changed and why
-
-SCORING GUIDELINES:
-
-The overall score should reflect:
-- 8-10: Content demonstrates strong compliance with ALL criteria, including cross-paragraph enforcement. Minor issues may exist but do not significantly impact the overall quality.
-- 5-7: Content shows partial compliance but has notable gaps. Cross-paragraph enforcement may be partially implemented but with clear failures in one or more requirements.
-- 0-4: Content fails to meet most criteria. Cross-paragraph enforcement is largely absent or incorrectly applied.
-
-WEIGHTING:
-- If cross-paragraph enforcement (questions 4, 5, 6) shows significant failures, the score MUST be reduced accordingly, even if block-level editing (questions 1, 2, 3) is strong.
-- A score of 8 or higher requires ALL cross-paragraph enforcement requirements to be met.
-- A score below 5 indicates critical failures in cross-paragraph enforcement that must be addressed.
-
-Return your validation result as structured JSON matching the ContentEditorValidationResult schema.
-"""
-
-# ------------------------------------------------------------
-# DEVELOPMENT + CONTENT CONFLICT RESOLUTION (consolidate node)
-# ------------------------------------------------------------
-DEVELOPMENT_CONTENT_RESOLVE_CONFLICTS_PROMPT = """
-You are resolving conflicts between Development Editor and Content Editor suggestions for the same document blocks.
-
-CONTEXT: Content Editor runs AFTER Development Editor, so Content Editor sees Development Editor's updated text as its input. This means:
-- Development Editor's "issue" field references the ORIGINAL text
-- Content Editor's "issue" field may reference Development Editor's UPDATED text (not the original)
-- This is expected and correct behavior
-
-RULE: Content editor takes priority where both address the same line or sentence.
-- Where both editors suggest a change for the same line/sentence in a block, MERGE them into a SINGLE feedback item.
-- For merged items: use Development Editor's "issue" (original text) + Content Editor's "fix" (final solution).
-- Include ALL non-overlapping Content Editor suggestions.
-- Include ALL non-overlapping Development Editor suggestions.
-
-IMPORTANT MERGING RULES: When both editors address the same line/sentence:
-- Create ONE merged feedback item with:
-  * "issue": Use Development Editor's "issue" field (references the ORIGINAL text)
-  * "fix": Use Content Editor's "fix" field (the final solution that was applied)
-  * "impact": Combine both impacts or use Content Editor's impact (prefer Content if different)
-  * "rule_used": Use Content Editor's "rule_used" (since Content Editor's fix was applied)
-  * "priority": Use the higher priority between the two (Critical > Important > Enhancement)
-  * "editor": Use "content" (since Content Editor's fix takes priority)
-- Do NOT include separate Development Editor and Content Editor items for the same line - merge them.
-- Only include separate items when they address DIFFERENT lines/sentences.
-
-INPUT: You will receive a JSON object with a "blocks" array. Each block has:
-- "id": block id (e.g. "b1")
-- "original_text": original block text (before any editor changes)
-- "suggested_text": final suggested text (already Content-preferenced; do not change)
-- "feedback_edit": array of { "editor": "development" | "content", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] } for both editors
-
-OUTPUT: Return a single JSON object with a "blocks" array. Each block MUST have:
-- "id": same as input
-- "suggested_text": same as input (unchanged)
-- "feedback_edit": array of SingleEditorFeedback. For overlapping items (same line/sentence), merge into ONE item using Development Editor's "issue" + Content Editor's "fix". For non-overlapping items, include them separately. Preserve the exact structure: [ { "editor": "development" | "content", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] } ]
-
-Two feedback items address the "same line/sentence" when their "issue" (quoted text) refers to the same or overlapping part of the block (e.g. same phrase, same sentence, or one contains the other). When merging: Development Editor's "issue" shows the original problem, Content Editor's "fix" shows the final solution that was applied.
-
-Return ONLY valid JSON. No markdown fences, no commentary. The top-level key must be "blocks" (array of objects with "id", "suggested_text", "feedback_edit").
-"""
-
-# ------------------------------------------------------------
-# LINE + COPY CONFLICT RESOLUTION (consolidate node)
-# ------------------------------------------------------------
-LINE_COPY_RESOLVE_CONFLICTS_PROMPT = """
-You are resolving conflicts between Line Editor and Copy Editor suggestions for the same document blocks.
-
-RULE: Merge both editors where both address the same line or sentence.
-- Where both editors suggest a change for the same line/sentence in a block, MERGE them into a SINGLE feedback item.
-- Include ALL non-overlapping Line Editor suggestions.
-- Include ALL non-overlapping Copy Editor suggestions.
-
-IMPORTANT MERGING RULES: When both editors address the same line/sentence:
-- Create ONE merged feedback item that combines ALL overlapping items from both editors.
-- If Line Editor has 1 item and Copy Editor has 2+ items addressing the same line, merge ALL of them into ONE feedback item.
-- The merged feedback item must have:
-  * "issue": Use Line Editor's "issue" field (references the ORIGINAL text). If multiple Line Editor items overlap, use the most comprehensive one.
-  * "fix": Generate a new merged fix that intelligently combines ALL fixes from Line Editor item(s) AND ALL fixes from Copy Editor item(s) addressing the same line. The merged fix should incorporate the best aspects of all suggestions into a coherent solution.
-  * "impact": Format as an array string combining ALL impacts from ALL overlapping items. Example: "['Impact from Line Editor', 'Impact from Copy Editor Item 1', 'Impact from Copy Editor Item 2']" (include all impacts, no duplicates)
-  * "rule_used": Format as an array string combining ALL rules from ALL overlapping items. Example: "['Line Editor - Rule X', 'Copy Editor - Rule Y', 'Copy Editor - Rule Z']" (include all rules)
-  * "priority": Use the HIGHEST priority among all overlapping items (Critical > Important > Enhancement)
-  * "editor": Use "line" (keep as Line Editor to ensure feedback is displayed correctly in the frontend)
-- Do NOT include separate Line Editor and Copy Editor items for the same line - merge ALL of them into ONE item.
-- Only include separate items when they address DIFFERENT lines/sentences.
-
-INPUT: You will receive a JSON object with a "blocks" array. Each block has:
-- "id": block id (e.g. "b1")
-- "original_text": original block text
-- "suggested_text": final suggested text (already Line-preferenced; do not change)
-- "feedback_edit": array of { "editor": "line" | "copy", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] } for both editors
-
-OUTPUT: Return a single JSON object with a "blocks" array. Each block MUST have:
-- "id": same as input
-- "suggested_text": same as input (unchanged)
-- "feedback_edit": array of SingleEditorFeedback. For overlapping items (same line/sentence), merge ALL overlapping items from both editors into ONE item using Line Editor's "issue" + intelligently merged "fix" combining ALL fixes from all overlapping items + combined impacts array + combined rules array, and set "editor" to "line". For non-overlapping items, include them separately. Preserve the exact structure: [ { "editor": "line" | "copy", "items": [ { "issue", "fix", "impact", "rule_used", "priority" } ] } ]
-
-Two feedback items address the "same line/sentence" when their "issue" (quoted original text) refers to the same or overlapping part of the block (e.g. same phrase, same sentence, or one contains the other). When merging: Line Editor's "issue" shows the original problem, and the merged "fix" intelligently combines ALL solutions from ALL overlapping items (both Line Editor and all Copy Editor items addressing that line). Include ALL impacts and ALL rules from all merged items in the arrays.
-
-VALIDATION BEFORE OUTPUT (mandatory — fix any failure before returning):
-1. No overlapping items: Scan every block's feedback_edit. No two items (across any editor group) may address the same line/sentence. If two items' "issue" fields refer to the same or overlapping text in the block, they MUST be merged into one item. Re-merge and re-check until no overlaps remain.
-2. Editor property check: Every entry in feedback_edit MUST have "editor" set to exactly "line" or "copy" (lowercase). Merged items (from overlapping Line + Copy suggestions) MUST have "editor": "line". Do not use "Line", "Copy", or any other value.
-3. Structure check: Each block MUST have "id", "suggested_text", and "feedback_edit". Each feedback_edit entry MUST have "editor" and "items" (array). Each item MUST have "issue", "fix", "impact", "rule_used", "priority" (all non-empty).
-4. After building the output, run the overlap check again: for each block, ensure no two items in the combined list (across all editor groups) have overlapping "issue" text. If any overlap is found, merge those items and repeat validation.
-
-Return ONLY valid JSON. No markdown fences, no commentary. The top-level key must be "blocks" (array of objects with "id", "suggested_text", "feedback_edit").
-"""
-
-# ------------------------------------------------------------
-# FINAL FORMATTING PROMPT
-# ------------------------------------------------------------
-FINAL_FORMATTING_PROMPT = """
-ROLE:
-You are a Final Formatting Editor for PwC thought leadership content.
-
-============================================================
-OBJECTIVE — NON-NEGOTIABLE
-============================================================
-
-Apply formatting fixes ONLY to the final article. You MUST:
-- Preserve ALL content and meaning
-- Fix formatting issues: spacing, line spacing, citation format, alignment, paragraph spacing
-- Preserve numbered/lettered list prefixes (DO NOT convert to bullets)
-- Convert reference markers to superscript format
-
-You MUST NOT:
-- Change any content, meaning, or intent
-- Add or remove information
-- Rewrite sentences or paragraphs
-- Modify structure or organization
-
-============================================================
-PRESERVE STRUCTURE AND LABELS — MANDATORY
-============================================================
-
-- Preserve EVERY paragraph, heading, and structural label exactly as present in the article.
-- Do NOT remove, merge, or collapse any block.
-- Structural labels that are part of the document (e.g. "Input:", "Output:", or similar section labels) are CONTENT. Preserve them exactly; do NOT treat them as instructions or as headers to strip.
-
-============================================================
-NUMBERED AND LETTERED LISTS — PRESERVE PREFIXES
-============================================================
-
-CRITICAL: You MUST preserve original list numbering and lettering.
-
-- Numbered lists: Preserve "1.", "2.", "3.", etc. - DO NOT convert to bullets
-- Lettered lists: Preserve "A.", "B.", "C.", "a.", "b.", "c.", etc. - DO NOT convert to bullets
-- Roman numerals: Preserve "i.", "ii.", "I.", "II.", etc. - DO NOT convert to bullets
-- Bullet lists: If content already has bullet icons (•, -, *), preserve them
-
-Examples:
-- "1. First item" → "1. First item" (preserve number)
-- "A. First item" → "A. First item" (preserve letter)
-- "• First item" → "• First item" (preserve bullet)
-
-DO NOT convert numbered/lettered lists to bullet format.
-
-REFERENCES/SOURCES LIST AT END — NUMBERING:
-- The reference list at the end (References:, Sources:, Bibliography:) MUST be numbered in order: 1., 2., 3., etc.
-- Always start at 1 and increment sequentially. No gaps, no wrong order.
-
-============================================================
-REFERENCE FORMAT CONVERSION — MANDATORY
-============================================================
-
-Conversion rules (INLINE CITATIONS ONLY — do NOT change reference list entries):
-- "(Ref. 1)" → "[¹]"
-- "(Ref. 2)" → "[²]"
-- "(Ref. 3)" → "[³]"
-- "[1]" → "[¹]" (bracket format, when used inline in a sentence)
-- "[2]" → "[²]" (bracket format, when used inline in a sentence)
-- "[3]" → "[³]" (bracket format, when used inline in a sentence)
-- "(Ref. 1; Ref. 2)" → "[¹][²]" (two separate bracketed superscripts)
-- "(Ref. 1, Ref. 2, Ref. 3)" → "[¹][²][³]"
-- "(Ref. 1; Ref. 2; Ref. 3)" → "[¹][²][³]" (three separate bracketed superscripts)
-
-Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
-
-Examples:
-- "According to research (Ref. 1), the findings show..." → "According to research[¹], the findings show..."
-- "Multiple studies (Ref. 1; Ref. 2) indicate..." → "Multiple studies[¹][²] indicate..."
-- "The data (Ref. 1, Ref. 2, Ref. 3) supports..." → "The data[¹][²][³] supports..."
-
-CRITICAL — URL PRESERVATION:
-- When converting citation markers, ONLY convert the marker itself (e.g., "[1]" or "(Ref. 1)")
-- DO NOT remove or modify any text that follows the citation marker, including URLs
-- If a citation marker is followed by "https:" or a URL, wrap the URL in parentheses
-- Examples:
-- "[1]https://example.com" → "[¹] (https://example.com)" (URL in parentheses)
-- "[1]https:" → "[¹] (https:)" (URL prefix in parentheses)
-- "Text [1]https://example.com more text" → "Text [¹] (https://example.com) more text" (URL in parentheses)
-- "(Ref. 1) https://example.com" → "[¹] (https://example.com)" (URL in parentheses with space)
-- "[1]http://example.com" → "[¹] (http://example.com)" (URL in parentheses)
-
-IMPORTANT:
-- Remove parentheses and "Ref." text
-- Preserve square brackets from "[1]" format; convert the number inside the brackets to a superscript
-- Convert numbers to superscripts
-- Place superscripts immediately after the referenced text (no space before superscript)
-- For multiple references, combine superscripts or use comma-separated format for clarity
-- NEVER remove URLs or any text that appears after citation markers
-- Do NOT convert "[1]", "[2]", "[3]", etc. when they are part of a References/Sources/Bibliography list entry (for example at the start of a line listing the full source)
-
-============================================================
-CITATION LINK FORMAT CONVERSION — MANDATORY
-============================================================
-
-CRITICAL: You MUST convert ALL markdown links to the required format: Title as plain text (NO brackets), URL in square brackets ONLY.
-
-CONVERSION RULES — ABSOLUTE:
-- Convert markdown links `[Title](URL)` to format: `Title [URL]`
-- Convert backend format `[Title](URL: https://...)` to format: `Title [https://...]`
-- Extract the URL from parentheses and place it in square brackets `[URL]` after the title
-- Keep the title as plain text with NO brackets (remove all square brackets from title)
-- Square brackets `[]` are ONLY for URLs (https://... or url), NEVER for titles
-- Preserve the full URL exactly as written
-- Links can appear ANYWHERE: in citation sections, inline in paragraphs, in lists, etc.
-
-Examples of CORRECT conversion:
-- Citation section: `1. [PwC Global CEO Survey](https://www.pwc.com/ceosurvey)` → `1. PwC Global CEO Survey [https://www.pwc.com/ceosurvey]`
-- Inline in paragraph: `According to [PwC research](https://www.pwc.com/research), the findings show...` → `According to PwC research [https://www.pwc.com/research], the findings show...`
-- Backend format: `[Title](URL: https://example.com)` → `Title [https://example.com]`
-- Numbered citation: `1. [Report Title](https://example.com/report)` → `1. Report Title [https://example.com/report]`
-
-Examples of INCORRECT conversion (DO NOT DO THIS):
-- `1. PwC Global CEO Survey` (URL removed)
-- `According to PwC research, the findings show...` (link removed from paragraph)
-- `[https://www.pwc.com/research]` (title removed, only URL remains)
-- `1. <a href="https://www.pwc.com/ceosurvey">PwC Global CEO Survey</a>` (converted to HTML)
-- `1. PwC Global CEO Survey (https://www.pwc.com/ceosurvey)` (URL in parentheses instead of brackets)
-- `1. [PwC Global CEO Survey](https://www.pwc.com/ceosurvey)` (keeping markdown format unchanged)
-- `1. [PwC Global CEO Survey] [https://www.pwc.com/ceosurvey]` (title has brackets - WRONG! Titles must be plain text)
-- `[Title] [URL]` (both title and URL in brackets - WRONG! Only URL should have brackets)
-
-APPLIES TO ALL LINKS IN THE DOCUMENT:
-- Citation sections with headers like "Sources:", "References:", "Bibliography:"
-- Numbered citation lists MUST be in order: 1., 2., 3., etc. (sequential; correct format always; number start correct)
-- Links inline in paragraphs (middle of sentences)
-- Links in headings
-- Links in bullet points or lists
-- Links anywhere else in the document
-- Both standard format `[Title](URL)` and backend format `[Title](URL: https://...)`
-
-============================================================
-SUPERSCRIPT CLICKABILITY — CLARIFICATION (MANDATORY)
-============================================================
-
-- Unicode superscript reference markers (¹ ² ³ etc.) are VISUAL INDICATORS ONLY.
-- Superscript markers MUST NOT be made clickable.
-- Do NOT attempt to embed links, markdown, or HTML into superscript characters.
-- Clickable access to sources is provided EXCLUSIVELY via URLs in the numbered References/Sources list.
-
-============================================================
-SPACING FIXES — REQUIRED
-============================================================
-
-1. Word Spacing:
-   - Remove extra spaces between words (ensure single space only)
-   - Remove leading/trailing spaces from lines
-   - Preserve intentional spacing (e.g., indentation, code blocks)
-
-2. Line Spacing:
-   - Maintain consistent line-height (1.5 for paragraphs)
-   - Ensure proper spacing between sentences within paragraphs
-
-3. Paragraph Spacing:
-   - Fix excessive spacing between paragraphs
-   - Ensure consistent paragraph spacing (not too large gaps)
-   - Maintain proper spacing between headings and paragraphs
-   - Remove unnecessary blank lines (keep single blank line between paragraphs if needed)
-
-============================================================
-ALIGNMENT — REQUIRED
-============================================================
-
-- Paragraphs: Ensure text is justified (left and right aligned)
-- Headings: Ensure headings are left-aligned
-- Lists: Ensure proper indentation and alignment
-- Preserve existing alignment for special content (code blocks, tables, etc.)
-
-============================================================
-OUTPUT FORMAT — ABSOLUTE
-============================================================
-
-Return ONLY the formatted article text.
-
-- Do NOT add explanations, comments, or metadata
-- Do NOT wrap in markdown code fences
-- Do NOT add headers or footers. This means do not add new headers or footers; it does NOT mean remove existing labels (e.g. "Input:", "Output:") that are part of the document.
-- Return the complete article with formatting fixes applied
-
-============================================================
-VALIDATION — REQUIRED BEFORE OUTPUT
-============================================================
-
-Before responding, verify:
-- The formatted output has the SAME number of logical blocks (title/paragraphs/headings/bullet_list) as the input, in the SAME order, so block-level formatting stays aligned.
-- All numbered/lettered list prefixes are preserved
-- All reference markers are converted to superscripts
-- ALL markdown links `[Title](URL)` and `[Title](URL: https://...)` have been converted to format `Title [URL]` (title as plain text, URL in brackets)
-- No link URLs have been removed or converted to HTML
-- No link titles have been removed (leaving only `[URL]`)
-- All URLs are preserved in square brackets `[URL]` format
-- Links in citation sections, inline in paragraphs, and elsewhere are all converted to the required format
-- Spacing is consistent (no extra spaces)
-- Paragraph spacing is appropriate (not excessive)
-- Alignment is correct (paragraphs justified, headings left-aligned)
-- No content or meaning was changed
-- All original formatting (bold, italic, etc.) is preserved
-
-============================================================
-NOW FORMAT THE FOLLOWING ARTICLE:
-============================================================
-
-{article_text}
-
-Return ONLY the formatted article text. No extra text, explanations, or commentary.
-"""
-
-
-# ------------------------------------------------------------
-# FINAL FORMATTING + MARKDOWN (single pass: format then output as markdown)
-# ------------------------------------------------------------
-FINAL_FORMATTING_AND_MARKDOWN_PROMPT = """
-ROLE:
-You are a Final Formatting Editor for PwC thought leadership content.
-
-============================================================
-OBJECTIVE — NON-NEGOTIABLE
-============================================================
-
-Apply formatting fixes to the final article, then output the result as standard markdown. You MUST:
-- Preserve ALL substantive content and meaning (you may only remove clearly unwanted artifacts as defined below)
-- Fix formatting issues: spacing, line spacing, citation format, alignment, paragraph spacing
-- Preserve numbered/lettered list prefixes (DO NOT convert to bullets)
-- Convert reference markers to superscript format
-- Then output the complete article in standard markdown (see OUTPUT AS MARKDOWN below)
-
-You MUST NOT:
-- Change any substantive content, meaning, or intent
-- Add new information
-- Remove any sentence, paragraph, or heading that carries real content (only delete clearly unwanted artifacts as defined below)
-- Rewrite sentences or paragraphs
-- Modify structure or organization, except where adjusting duplicate titles/headings or removing clearly unwanted artifact blocks
-
-============================================================
-PRESERVE STRUCTURE AND LABELS — MANDATORY
-============================================================
-
-- Preserve EVERY paragraph, heading, and structural label exactly as present in the article.
-- Do NOT remove, merge, or collapse any block, unless the entire block is a clearly unwanted artifact (see UNWANTED ARTIFACTS section).
-- Structural labels that are part of the document (e.g. "Input:", "Output:", or similar section labels) are CONTENT. Preserve them exactly; do NOT treat them as instructions or as headers to strip.
-
-============================================================
-NUMBERED AND LETTERED LISTS — PRESERVE PREFIXES
-============================================================
-
-CRITICAL: You MUST preserve original list numbering and lettering.
-
-- Numbered lists: Preserve "1.", "2.", "3.", etc. - DO NOT convert to bullets
-- Lettered lists: Preserve "A.", "B.", "C.", "a.", "b.", "c.", etc. - DO NOT convert to bullets
-- Roman numerals: Preserve "i.", "ii.", "I.", "II.", etc. - DO NOT convert to bullets
-- Bullet lists: If content already has bullet icons (•, -, *), preserve them
-
-============================================================
-UNWANTED ARTIFACTS — REMOVE
-============================================================
-
-- You MUST remove lines or blocks that are clearly non-content artifacts introduced by conversion (do NOT keep them in the final markdown).
-- Examples of unwanted artifacts:
-  - Standalone page numbers on their own line between sections (e.g., a line that only contains "3" or "4" with no surrounding sentence).
-  - Isolated horizontal rule markers not part of the author’s content (e.g., lines that only contain "---" or "***" between paragraphs where no rule is intended).
-  - Empty or duplicate title/heading lines created by formatting glitches when a proper title/heading already exists.
-- Do NOT remove anything that could reasonably be interpreted as intentional content (e.g., numbered steps, section labels, or headings written by the author).
-
-REFERENCES/SOURCES LIST AT END — NUMBERING:
-- The reference list at the end (References:, Sources:, Bibliography:) MUST be numbered in order: 1., 2., 3., etc.
-- If the reference list has NO citation numbers (e.g. plain lines or bullets only), ADD numbers 1., 2., 3., ... in order to each entry, starting at 1. with no gaps.
-
-============================================================
-REFERENCE FORMAT CONVERSION — MANDATORY
-============================================================
-
-Conversion rules (INLINE CITATIONS ONLY — do NOT change reference list entries):
-- "(Ref. 1)" → "[¹]"
-- "[1]" → "[¹]" (when used inline in a sentence)
-- "(Ref. 1; Ref. 2)" → "[¹][²]" (two separate bracketed superscripts)
-- "(Ref. 1, Ref. 2, Ref. 3)" → "[¹][²][³]"
-- "(Ref. 1; Ref. 2; Ref. 3)" → "[¹][²][³]" (three separate bracketed superscripts)
-Use Unicode superscript digits: ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁰
-- Preserve URLs; only convert the marker. For URL after marker: wrap URL in parentheses.
-
-============================================================
-CITATION LINK FORMAT CONVERSION — MANDATORY
-============================================================
-
-- Convert ALL markdown links to: Title as plain text (NO brackets), URL in square brackets ONLY.
-- Convert `[Title](URL)` and `[Title](URL: https://...)` to format: `Title [URL]`
-- Preserve full URL exactly. Apply in citation sections, inline in paragraphs, lists, everywhere.
-
-============================================================
-SPACING FIXES — REQUIRED
-============================================================
-
-- Remove extra spaces between words; remove leading/trailing spaces from lines.
-- Maintain consistent paragraph and line spacing; fix excessive gaps; single blank line between paragraphs.
-
-============================================================
-OUTPUT AS MARKDOWN — MANDATORY
-============================================================
-
-After applying all formatting above, output the complete article in standard markdown:
-
-STYLE REFERENCE:
-- One level-1 title: # Title (there MUST be exactly one primary document title)
-- If multiple title-like lines appear at the top of the article, choose the strongest/most complete as the single # Title and convert any additional title-like lines into level-2 subtitles under it (## Subtitle) or remove them if they are clearly unwanted or duplicate noise.
-- Main sections: ## Heading; sub-sections: ### and ####
-- Body: normal paragraphs. Single blank line between blocks.
-- Content bullet lists: - or * (only for content lists; do NOT use bullets for References).
-- Numbered content lists: 1. 2. 3. Alphabetical: A. B. C. or a. b. c.
-- Quote: > for blockquote.
-- References: ## References (or ## Sources / ## Bibliography) then numbered entries ONLY: 1. 2. 3. (no bullets • or - or *). If entries have no numbers, add 1., 2., 3., ... in order. One blank line between entries.
-- Inline citations: Make bracketed superscripts clickable. If input has plain Unicode superscripts (¹ ² ³) or bracketed superscripts ([¹] [²] [³]), match ¹→ref "1." URL, ²→ref "2." URL from References and:
-  - If the original inline citation already includes a visible URL next to the marker, output `<sup>[ [¹](URL) ]</sup>(URL)` so both the superscript and the trailing (URL) are preserved.
-  - If the original inline citation is only a superscript marker with no visible URL in the sentence, output just `<sup>[ [¹](URL) ]</sup>` (no extra `(URL)` added in the body text).
-  Extract URL from "1. Title [https://...]" in References. Keep Title [URL] in References. Visible inline markers MUST use bracketed style ([¹], [²], [³]) and be clickable in output.
-
-RULES:
-- Preserve every sentence and citation; only add markdown structure; do not add or remove content.
-- Output ONLY the raw markdown document. No code fences, no preamble, no explanation.
-- Do NOT wrap in markdown code fences.
-- Do not include a "Contents" section or table of contents.
-- Same number of logical blocks as input, same order.
-
-============================================================
-VALIDATION — REQUIRED BEFORE OUTPUT
-============================================================
-
-Before responding, verify:
-- All formatting fixes applied (superscripts, Title [URL], spacing, list prefixes preserved).
-- Output is valid markdown: # title, ## headings, lists, ## References with 1. 2. 3. only.
-- Exactly one level-1 heading (# Title) is present; any extra title-like lines have been converted into subtitles (## ...) or removed if clearly unnecessary.
-- Inline superscripts follow the correct pattern: if the sentence has a visible URL, use `<sup>[ [ⁿ](URL) ]</sup>(URL)`; if not, use `<sup>[ [ⁿ](URL) ]</sup>` only.
-- No content or meaning changed.
-
-============================================================
-NOW FORMAT THE FOLLOWING ARTICLE AND OUTPUT AS MARKDOWN:
-============================================================
-
-{article_text}
-
-Return ONLY the complete article in standard markdown. No code fences, no preamble, no commentary.
-"""
+    for k, v in quote_map.items():
+        text = text.replace(k, v)
+
+    return text
+def export_to_word_pwc_no_toc(
+    content: str,
+    title: str,
+    subtitle: str | None = None,
+    include_toc: bool = True,
+    content_type: str | None = None
+) -> bytes:
+    logger.info(f">>>>content-type>>>>{content_type} | include_toc={include_toc}")
+    include_toc = (
+        isinstance(content_type, str)
+        and content_type.strip().lower() == "article"
+    )
+    clean_title = re.sub(r'^[#\s]*', '', re.sub(r"\*+", "", title)).strip()
+    escaped_title = re.escape(clean_title)
+
+    content = re.sub(
+        rf'^\s*#*\s*{escaped_title}\s*$',
+        '',
+        content,
+        flags=re.MULTILINE
+    )
+
+    markdown_text = preprocess_markdown(content)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        body_path = render_markdown_to_docx(markdown_text, tmpdir, include_toc)
+        body_doc = Document(body_path)
+        from docx.enum.section import WD_SECTION
+        doc = Document(PWC_TEMPLATE_PATH) if os.path.exists(PWC_TEMPLATE_PATH) else Document()   
+        while len(doc.sections) > 1:
+            sect = doc.sections[-1]
+            sect._sectPr.getparent().remove(sect._sectPr) 
+        logger.info(f">>>TITLE AND SUBTITLE:{title}>>>>{subtitle}")
+        _set_paragraph_text_with_breaks(doc.paragraphs[1], sanitize_text_for_word(subtitle or ""))
+        # 2. Cover page (CLEAN)
+        clean_title = re.sub(r'^[#\s]*', '', re.sub(r"\*+", "", title)).strip()
+        if doc.paragraphs:
+            # doc.paragraphs[0].text = clean_title
+            p = doc.paragraphs[0]
+            p.text = clean_title
+            user_title_raw = title
+            user_title_clean = clean_title
+            cover_title_written = p.text.strip()
+
+            logger.info(f"[DEBUG] User Title (raw): '{user_title_raw}'")
+            logger.info(f"[DEBUG] User Title (clean): '{user_title_clean}'")
+            logger.info(f"[DEBUG] Cover Title Written: '{cover_title_written}'")
+
+            if user_title_clean == cover_title_written:
+                logger.info("[DEBUG] ✅ Cover title matches cleaned user title")
+            else:
+                logger.warning("[DEBUG] ❌ Cover title does NOT match cleaned user title")
+            if "CoverTitle" not in [s.name for s in doc.styles]:
+                style = doc.styles.add_style("CoverTitle", WD_STYLE_TYPE.PARAGRAPH)
+            else:
+                style = doc.styles["CoverTitle"]
+
+            style.font.name = "Georgia"
+            style.font.size = DocxPt(38)
+
+            # CRITICAL: Remove spacing from style level
+            style.paragraph_format.space_before = DocxPt(0)
+            style.paragraph_format.space_after = DocxPt(0)
+            style.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+            style.paragraph_format.line_spacing = DocxPt(38)
+            p.style = style
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            # ALSO enforce at paragraph level (overrides template)
+            fmt = p.paragraph_format
+            fmt.space_before = DocxPt(0)
+            fmt.space_after = DocxPt(0)
+            fmt.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+            fmt.line_spacing = DocxPt(38)
+        # REMOVE subtitle placeholder completely
+        if len(doc.paragraphs) > 1:
+            doc.paragraphs[1].text = ""
+        logger.info(f">>>TITLE>>>>>>>>>>>:{clean_title}")        
+        while len(doc.paragraphs) > 2:
+            p = doc.paragraphs[-1]
+            p._element.getparent().remove(p._element)
+        # include_toc = (
+        #     content_type
+        #     and content_type.lower() == "article"
+        # )
+ 
+        if include_toc:
+            # --- SECTION 1: TOC (Page 2) ---
+            # toc_section = doc.add_section(WD_SECTION.NEW_PAGE)
+            append_doc_body_with_rels(body_doc, doc)
+            for table in doc.tables:
+                tbl = table._tbl
+                tblPr = tbl.tblPr
+
+                # Remove existing layout if present
+                for el in tblPr.findall(qn('w:tblLayout')):
+                    tblPr.remove(el)
+
+                tblLayout = OxmlElement('w:tblLayout')
+                tblPr.append(tblLayout)
+                # section = doc.sections[0]
+                # page_width = section.page_width - section.left_margin - section.right_margin
+                # col_width = page_width // len(table.columns)
+                # for col in table.columns:
+                #     for cell in col.cells:
+                #         cell.width = col_width
+
+            # insert_section_break_after_toc(doc)
+            sections = doc.sections
+            if len(sections) < 2:
+                raise RuntimeError("Expected at least 2 sections (cover + TOC/body)")
+            toc_section = doc.sections[1]
+            toc_section.header.is_linked_to_previous = False
+            toc_section.footer.is_linked_to_previous = False
+            toc_section.different_first_page_header_footer = False
+
+            # Page number starts at 2
+            pgNumType = OxmlElement('w:pgNumType')
+            pgNumType.set(qn('w:start'), '2')
+            toc_section._sectPr.append(pgNumType)
+
+            # Clear TOC header/footer (remove template visuals)
+            for part in (toc_section.header, toc_section.footer):
+                for p in part.paragraphs:
+                    p.text = ""
+                for t in part.tables:
+                    for r in t.rows:
+                        for c in r.cells:
+                            c.text = ""
+
+
+            # Append ONLY TOC part from Pandoc
+            remove_toc_page_numbers(doc)
+            add_page_break_after_toc(doc)
+            
+
+            if len(sections) == 2:
+                # Pandoc did NOT split body → we must
+                body_section = doc.add_section(WD_SECTION.NEW_PAGE)
+            else:
+                body_section = sections[2]
+            # --- SECTION 2: BODY (Page 3) ---
+            # body_section = doc.add_section(WD_SECTION.NEW_PAGE)
+            # body_section = doc.sections[2]
+            body_section.header.is_linked_to_previous = False
+            body_section.footer.is_linked_to_previous = False
+
+            pgNumType = OxmlElement('w:pgNumType')
+            pgNumType.set(qn('w:start'), '3')
+            body_section._sectPr.append(pgNumType)
+ 
+        else:
+            # SECTION 1 → BODY (Page 2)
+            body_section = doc.add_section(WD_SECTION.NEW_PAGE)
+            body_section.header.is_linked_to_previous = False
+            body_section.footer.is_linked_to_previous = False
+
+            sectPr = body_section._sectPr
+            pgNumType = OxmlElement('w:pgNumType')
+            pgNumType.set(qn('w:start'), '2')
+            sectPr.append(pgNumType)
+            append_doc_body_with_rels(body_doc, doc)
+            for table in doc.tables:
+                # table.autofit = True    
+                tbl = table._tbl
+                tblPr = tbl.tblPr
+                # Remove existing layout if present
+                for el in tblPr.findall(qn('w:tblLayout')):
+                    tblPr.remove(el)
+
+                tblLayout = OxmlElement('w:tblLayout')
+                tblPr.append(tblLayout)
+                # section = doc.sections[0]
+                # page_width = section.page_width - section.left_margin - section.right_margin
+                # col_width = page_width // len(table.columns)
+                # for col in table.columns:
+                #     for cell in col.cells:
+                #         cell.width = col_width       
+        #    content_type = request.content_type
+        # should_add_toc = (
+        #     content_type
+        #     and content_type.lower()
+        #     not in ['blog', 'executive_brief', 'executive-brief']
+        # ) 
+        if len(doc.sections) > 1:
+            doc.sections[1].header.is_linked_to_previous = False
+            doc.sections[1].different_first_page_header_footer = False
+        # logger.info("=== PANDOC BODY STRUCTURE ===")
+        for i, el in enumerate(body_doc.element.body):
+            tag = el.tag.split('}')[-1]
+        normalize_paragraph_spacing(doc)
+        for i, section in enumerate(doc.sections):
+            footer = section.footer
+            footer.is_linked_to_previous = False
+            # REMOVE ALL EXISTING FOOTER CONTENT
+            for p in footer.paragraphs:
+                p.text = ""
+            for table in footer.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        cell.text = ""
+            if i == 0:
+                continue  # skip cover page numbering
+            # ADD ONLY PAGE NUMBER
+            p = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            run = p.add_run()
+            fldChar_begin = OxmlElement('w:fldChar')
+            fldChar_begin.set(qn('w:fldCharType'), 'begin')
+            instrText = OxmlElement('w:instrText')
+            instrText.text = "PAGE"
+            fldChar_sep = OxmlElement('w:fldChar')
+            fldChar_sep.set(qn('w:fldCharType'), 'separate')
+            fldChar_end = OxmlElement('w:fldChar')
+            fldChar_end.set(qn('w:fldCharType'), 'end')
+            run._r.extend([fldChar_begin, instrText, fldChar_sep, fldChar_end])
+        # 4. Force rounded bullets AFTER appending body
+        force_round_bullets(doc)               
+        # 5. Make superscripts spacing normalize &blue
+        # normalize_numeric_hyperlink_brackets(doc) 
+        make_hyperlinks_word_blue(doc)
+        make_numeric_citations_superscript(doc)
+        # replace_arrow_with_icon_image(doc)
+        # 6. Save final doc
+        output_path = os.path.join(tmpdir, "final.docx")
+        # enable_update_fields_on_open(doc)
+        for i, el in enumerate(doc.element.body):
+            tag = el.tag.split('}')[-1]
+        doc.save(output_path)
+        with open(output_path, "rb") as f:
+            return f.read()
+        
+def render_markdown_to_docx(markdown_text: str, tmpdir: str, include_toc: bool = True) -> str:
+    body_path = os.path.join(tmpdir, "body.docx")
+    extra_args = ["--standalone","--wrap=preserve"]
+    if include_toc:
+        extra_args += [
+            "--toc",
+            "--toc-depth=3",
+            "--variable=toc-title=",
+        ]
+    extra_args += ["--metadata=link-citations=true"]
+    pypandoc.convert_text(
+        markdown_text,
+        to="docx",
+        # format="markdown+pipe_tables+multiline_tables+grid_tables",
+        # format="markdown+raw_html+pipe_tables+multiline_tables+grid_tables",
+        format="markdown+pipe_tables-raw_html",
+        outputfile=body_path,
+        extra_args=extra_args
+    )
+
+    return body_path
+
+def append_doc_body_with_rels(src_doc, target_doc):
+    src_part = src_doc.part
+    tgt_part = target_doc.part 
+    rel_id_map = {} 
+    for rel in src_part.rels.values():
+        if rel.reltype.endswith("/hyperlink"):
+            new_rel = tgt_part.relate_to(
+                rel.target_ref,
+                rel.reltype,
+                is_external=True
+            )
+            rel_id_map[rel.rId] = new_rel 
+    # logger.info("=== APPENDING BODY ELEMENTS ===")
+    for i, element in enumerate(src_doc.element.body):
+        new_el = copy.deepcopy(element)
+        tag = element.tag.split('}')[-1] 
+        for hl in new_el.xpath(".//*[local-name()='hyperlink']"):
+            old_rid = hl.get(qn("r:id"))
+            if old_rid in rel_id_map:
+                hl.set(qn("r:id"), rel_id_map[old_rid]) 
+        target_doc.element.body.append(new_el)
+
+def inject_toc_and_fix_headings(text: str) -> str:
+    text = re.sub(
+        r"^\*\*Generated Content\*\*\s*-\s*Article\s*",
+        "",
+        text,
+        flags=re.IGNORECASE
+    )
+    # Find first H2 and promote to H1 (document title)
+    def promote_title(match):
+        title = re.sub(r"\*+", "", match.group(1)).strip()
+        return (
+            f"# {title}\n\n"
+            f"::: {{#toc}}\n"
+            f":::\n\n"
+        )
+    text = re.sub(
+        r"^##\s+\*\*(.*?)\*\*\s*$",
+        promote_title,
+        text,
+        count=1,
+        flags=re.MULTILINE
+    )
+    # Normalize remaining bold headings
+    text = re.sub(
+        r"^(#{2,6})\s+\*\*(.*?)\*\*",
+        r"\1 \2",
+        text,
+        flags=re.MULTILINE
+    )
+    # Exclude references from TOC
+    text = re.sub(
+        r"^##\s+Citations\s*&\s*References\s*$",
+        r"## Citations & References {-}",
+        text,
+        flags=re.MULTILINE
+    )
+    return text
+
+def make_hyperlinks_word_blue(doc):
+    for p in doc.paragraphs:
+        for hl in p._p.xpath(".//*[local-name()='hyperlink']"):
+            for r in hl.xpath(".//*[local-name()='r']"):
+                rPr = r.find(qn("w:rPr"))
+                if rPr is None:
+                    rPr = OxmlElement("w:rPr")
+                    r.insert(0, rPr)
+                # Remove existing color (avoid conflicts)
+                for c in rPr.findall(qn("w:color")):
+                    rPr.remove(c)
+                # Word hyperlink blue
+                color = OxmlElement("w:color")
+                color.set(qn("w:val"), "0563C1")
+                rPr.append(color)
+
+def make_numeric_citations_superscript(doc):
+    """
+    Convert hyperlink text like [1], [2] into superscript.
+    """
+    for p in doc.paragraphs:
+        for hl in p._p.xpath(".//*[local-name()='hyperlink']"):
+            for r in hl.xpath(".//*[local-name()='r']"):
+                texts = r.xpath(".//*[local-name()='t']")
+                for t in texts:
+                    if t.text and re.fullmatch(r"\[\d+\]", t.text.strip()):
+                        rPr = r.find(qn("w:rPr"))
+                        if rPr is None:
+                            rPr = OxmlElement("w:rPr")
+                            r.insert(0, rPr)
+
+                        # Add superscript
+                        vertAlign = OxmlElement("w:vertAlign")
+                        vertAlign.set(qn("w:val"), "superscript")
+                        rPr.append(vertAlign)
+                        
+def normalize_paragraph_spacing(doc):
+    """
+    Apply 1.5 line spacing for body text.
+    Headings keep their template spacing.
+    """
+    for i, p in enumerate(doc.paragraphs):
+        if i <= 1:
+            continue
+        # Skip headings
+        if p.style and p.style.name and p.style.name.startswith("Heading"):
+            continue
+        pf = p.paragraph_format
+        pf.space_before = DocxPt(0)
+        pf.space_after = DocxPt(3)   # subtle separation with 1.5 spacing
+        pf.line_spacing = 1.5
+
+def add_page_break_after_toc(doc):
+    body = doc.element.body
+    for i, el in enumerate(body):
+        tag = el.tag.split('}')[-1]
+        # Pandoc TOC is inside an SDT block
+        if tag == "sdt":
+            # Insert a paragraph with a page break AFTER the TOC SDT
+            p = OxmlElement("w:p")
+            r = OxmlElement("w:r")
+            br = OxmlElement("w:br")
+            br.set(qn("w:type"), "page")
+
+            r.append(br)
+            p.append(r)
+
+            body.insert(i + 1, p)
+            return
+
+    raise RuntimeError("TOC SDT block not found — cannot insert page break")
+
+def clear_document_text_only(doc):
+    body = doc._element.body
+    for child in list(body):
+        body.remove(child)
+
+def enable_update_fields_on_open(doc):
+    settings = doc.part.settings._element
+    # Remove existing updateFields if present
+    for el in settings.findall(qn('w:updateFields')):
+        settings.remove(el)
+
+    update = OxmlElement('w:updateFields')
+    update.set(qn('w:val'), 'true')
+    settings.append(update)
+
+def remove_toc_page_numbers(doc):
+    for el in doc.element.body.iter():
+        # fldSimple covers most Pandoc TOCs
+        if el.tag.endswith('fldSimple'):
+            instr = el.get(qn('w:instr'))
+            if instr and instr.strip().startswith('TOC'):
+                if '\\n' not in instr:
+                    el.set(qn('w:instr'), instr + ' \\n')
+
+        # fldChar variant (safety)
+        if el.tag.endswith('instrText') and el.text and el.text.strip().startswith('TOC'):
+            if '\\n' not in el.text:
+                el.text = el.text + ' \\n'
+
+# def replace_arrow_with_icon_image(doc):
+#     for p in doc.paragraphs:
+#         for run in p.runs:
+#             if run.text.strip() != "🔗":
+#                 continue
+
+#             r = run._r
+#             parent = r.getparent()
+
+#             # Ensure this run is inside a hyperlink
+#             if parent is None or not parent.tag.endswith("hyperlink"):
+#                 continue
+
+#             # Clear the existing text
+#             run.text = ""
+
+#             # Insert image directly into same run
+#             run.add_picture(
+#                 str(OPEN_LINK_ICON_PATH),
+#                 width=DocxInches(0.12)
+#             )
+
+
+# def replace_inline_links_with_icon(text: str) -> str:
+#     text = normalize_quotes(text)
+#     text = text.replace("\u00A0", " ")
+#     text = text.replace('\\"', '"').replace("\\'", "'")
+
+#     # Case 1: [<a href="...">...</a>] → [[🔗](url)]
+#     pattern_bracketed = r'\[\s*<a[^>]*href=["\']([^"\']+)["\'][^>]*>.*?</a>\s*\]'
+#     text = re.sub(
+#         pattern_bracketed,
+#         r'[[🔗](\1)]',
+#         text,
+#         flags=re.DOTALL | re.IGNORECASE
+#     )
+
+#     # Case 2: standalone <a> → [[🔗](url)]
+#     pattern_anchor = r'<a[^>]*href=["\']([^"\']+)["\'][^>]*>.*?</a>'
+#     text = re.sub(
+#         pattern_anchor,
+#         r'[[🔗](\1)]',
+#         text,
+#         flags=re.DOTALL | re.IGNORECASE
+#     )
+
+#     # Case 3: markdown link [text](url) → [[🔗](url)]
+#     pattern_markdown = r'\[[^\]]*\]\((https?://[^\)]+)\)'
+#     text = re.sub(
+#         pattern_markdown,
+#         r'[[🔗](\1)]',
+#         text
+#     )
+
+#     return text
+
+
+# def insert_section_break_after_toc(doc):
+#     from docx.oxml import OxmlElement
+#     from docx.oxml.ns import qn
+#     from docx.enum.section import WD_SECTION
+
+#     for el in doc.element.body:
+#         tag = el.tag.split('}')[-1]
+#         if tag in ("fldSimple", "fldChar"):  # TOC field
+#             sectPr = OxmlElement('w:sectPr')
+#             type_el = OxmlElement('w:type')
+#             type_el.set(qn('w:val'), 'nextPage')
+#             sectPr.append(type_el)
+#             el.addnext(sectPr)
+#             break
+
+# ======================= pandoc-export-word ======
