@@ -1562,8 +1562,6 @@ Deduplication & Validation (Mandatory)
 
 ---
 
-{BRAND_EDITOR_PROMPT()}
-
 {COPY_EDITOR_RULES}
 
 {LINE_EDITOR_RULES}
@@ -1571,6 +1569,11 @@ Deduplication & Validation (Mandatory)
 {CONTENT_EDITOR_RULES}
 
 {DEVELOPMENT_EDITOR_RULES}
+
+{BRAND_EDITOR_PROMPT()}
+
+Strictly apply all Brand Editor rules to every draft and final output.
+Before returning your response, review and revise the content to ensure full alignment with PwC’s brand voice and brand standards.
 
 """
         return prompt
