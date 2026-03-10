@@ -1580,16 +1580,13 @@ MATCHING RULES
 5. Do NOT apply stemming, lemmatization, synonym expansion, semantic expansion, or root-word inference.
 6. Do NOT flag partial-word matches.
 
-Examples (normalize hyphens to spaces before comparing):
+Examples:
 - industry-leading = industry leading
 - best-in-class = best in class
 - state-of-the-art = state of the art
 
-High-frequency consulting verbs — DO NOT SKIP:
-- If the dictionary lists "implement", "implementing", "implemented", "implementation" as rows, EACH form that appears in the text MUST be flagged and replaced per that row. Same for "optimize", "optimizing", "optimization", etc.
-- Do not treat these as "acceptable because common"; the dictionary row controls.
 
-Non-examples (only when the variant is NOT its own dictionary row):
+Non-examples:
 - approve ≠ approval
 - establish ≠ established unless "established" is separately listed
 
@@ -1616,24 +1613,13 @@ Examples of equivalent matches:
 - best-in-class = best in class
 - state-of-the-art = state of the art
 
-Example multi-word phrases that MUST trigger detection when they appear in the document.
-Treat hyphenated and spaced forms as equivalent after normalization (e.g. best-in-class = best in class).
-Each occurrence must be flagged; do not require the phrase to appear only once in the document.
+Example phrases that must trigger detection only if they appear exactly once normalized:
 - industry leading
 - best in class
 - time is of the essence
 - lead the work
 - partner with
 - state of the art
-
-------------------------------------------------------------
-OUTPUT CONTRACT (MANDATORY)
-------------------------------------------------------------
-
-Before you return JSON:
-1. Re-read every block's suggested_text.
-2. If suggested_text still contains any term or phrase that appears in RISK_WORDS_DICTIONARY (after normalizing hyphens), you MUST either edit suggested_text again to remove it or emit Issue/Fix — never leave dictionary matches only in original_text.
-3. suggested_text is the deliverable; it must be compliant, not just annotated.
 
 ------------------------------------------------------------
 ENFORCEMENT
