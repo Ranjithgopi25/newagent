@@ -1840,24 +1840,11 @@ For EVERY block:
 - Silent skipping is forbidden.
 
 ============================================================
-SUGGESTED_TEXT vs ISSUE–FIX — ABSOLUTE (BRAND EDITOR ONLY)
+SUGGESTED_TEXT — STRICT (NO FIX = ORIGINAL ONLY)
 ============================================================
 
-- You MUST NOT change suggested_text unless you emit at least one Issue/Fix
-  in feedback_edit.brand for that block.
-- If a block has NO brand Issue/Fix (no violation, exception applies, or block
-  is already compliant):
-  - suggested_text MUST equal original_text exactly — same wording, no
-    paraphrase, no "brand polish," no added vocabulary.
-  - feedback_edit MUST be {} OR "brand": [] — never an empty-object brand
-    rewrite with altered suggested_text.
-- Every difference between original_text and suggested_text MUST be covered
-  by a corresponding "issue" / "fix" pair; do NOT apply brand alignment in
-  suggested_text without recording it as Issue/Fix.
-- Do NOT rewrite whole blocks for Minimum Brand Activation or NON-COMPLIANT
-  scoring in suggested_text alone; if you cannot issue atomic Issue/Fix items,
-  leave suggested_text unchanged and reflect compliance in level/feedback only
-  as required by the pipeline.
+Without at least one Issue/Fix in feedback_edit.brand for that block,
+suggested_text MUST equal original_text exactly — copy verbatim, zero rewrite.
 
 ============================================================
 OUTPUT RULES — ABSOLUTE
@@ -1882,10 +1869,6 @@ Fields allowed:
 - original_text
 - suggested_text
 - feedback_edit
-
-If no change required for a block:
-- suggested_text MUST equal original_text
-- feedback_edit MUST be {} or { "brand": [] }
 
 Return ONLY JSON array.
 No commentary.
