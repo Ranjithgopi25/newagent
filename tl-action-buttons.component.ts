@@ -1057,17 +1057,6 @@ Do NOT edit.
 If violation exists, flag in feedback_edit.
 
 ============================================================
-ISSUE–FIX EMISSION RULES — ABSOLUTE
-============================================================
-
-An Issue/Fix is emitted ONLY when text changes.
-
-- `issue` = exact original substring from original_text
-- `fix` = exact replacement used in suggested_text
-- Identical text (ignoring whitespace) → NO issue
-- Rule detection WITHOUT text change MUST NOT produce an issue
-
-============================================================
 ISSUE–FIX ATOMIZATION — ABSOLUTE
 ============================================================
 
@@ -1872,6 +1861,18 @@ An Issue/Fix is emitted ONLY when text changes.
 - Rule detection WITHOUT text change MUST NOT produce an issue
 
 ============================================================
+SUGGESTED_TEXT CHANGE CONTROL — FIX-ONLY (ABSOLUTE)
+============================================================
+
+When you edit a block:
+- suggested_text MUST remain identical to original_text EXCEPT for the exact spans you change to fix a detected violation.
+- Do NOT rephrase, reorder, or "polish" any text that is not required for compliance.
+- Every changed character in suggested_text MUST be covered by exactly ONE emitted issue/fix pair.
+- If any wording changed without an issue/fix covering it, revert that wording back to original_text.
+
+This Brand Editor is compliance-focused: keep changes minimal and targeted.
+
+============================================================
 ISSUE–FIX ATOMIZATION — NON-NEGOTIABLE
 ============================================================
 
@@ -1909,6 +1910,7 @@ Before responding, verify:
 - No issue contains multiple semantic changes
 - No overlapping issues (each character in at most one issue)
 - suggested_text and every issue/fix contain NO HTML/XML/markup (e.g. <span>, class="..."); if any appears, remove it and output only the prose.
+- Delta accounting: suggested_text MUST differ from original_text ONLY where covered by emitted issue/fix pairs. If any extra wording changes exist without an issue/fix, revert them.
 
 If any validation check fails → correct and re-run validation before returning.
 
