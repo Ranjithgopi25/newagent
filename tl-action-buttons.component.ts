@@ -1637,20 +1637,6 @@ If a risk word appears:
 - Do not remove the entire sentence unless required.
 - Do not soften without issuing Issue/Fix.
 
-NESTED / OVERLAPPING MATCHES — ABSOLUTE:
-- If two matches overlap in the same sentence (e.g. a long phrase contains
-  "earnings per share" and the dictionary also flags "earnings per share"),
-  emit ONE issue only: use the SINGLE replacement that removes all violations
-  in that span. Do NOT emit a second issue for a substring already changed
-  or removed by the first fix. Do NOT apply two replacements to the same
-  occurrence (that corrupts suggested_text).
-
-MODALITY / PRESCRIPTIVE FRAMING — DO NOT TOUCH UNRECORDED:
-- Do NOT change "must" ↔ "should", "shall", "require", "implement", or other
-  prescriptive framing for consistency. Only change such words if that exact
-  contiguous span is a dictionary match and you emit an issue for it.
-- BOLD/tone rules do NOT authorize silent rewrites outside recorded issues.
-
 Count "distinct risk words" by distinct dictionary entries matched exactly.
 Do NOT merge separate entries.
 Do NOT infer unlisted variants.
@@ -1703,8 +1689,7 @@ BOLD — REQUIRED
 - No exclamation marks.
 - No ALL CAPS emphasis.
 
-Reduce unnecessary modal verbs in positioning statements (ONLY where you
-emit a recorded issue for that span—do NOT globally replace modals elsewhere):
+Reduce unnecessary modal verbs in positioning statements:
 
 can
 may
@@ -1844,62 +1829,40 @@ HEADLINE REQUIREMENTS
 
 
 ============================================================
-BRAND EDITOR — SUBSTRING-ONLY EDITS (NO EXTRA WORDING CHANGES)
-============================================================
-
-- Verbatim by default: Every span that is NOT part of a recorded replacement
-  must stay exactly the same as the original (same words, order, punctuation).
-  No paraphrasing, no softening, no "consistency" rewrites.
-
-- One recorded change = one replacement: Any run of text that differs between
-  original and suggested must be covered by exactly one feedback entry
-  (exact original substring to exact replacement). If you cannot record that
-  pair, do not change that run.
-
-- No overlapping fixes: If two rules hit the same occurrence (e.g. a long
-  phrase already contains a shorter flagged phrase), emit one issue only—one
-  replacement that fixes the whole span. Do not apply a second replacement
-  on the same characters.
-
-- Do not change modality unless recorded: Do not change must/should/shall/
-  require/implement (or similar) unless that exact contiguous phrase is flagged
-  and you output a matching feedback entry. No global modal swaps for tone.
-
-- Build suggested text by replacement only: Start from the original block;
-  apply only the recorded substring-to-replacement steps; leave everything
-  else unchanged.
-
-Short rule: Only change text where there is a recorded original substring
-and its replacement. Copy the rest verbatim. No overlapping replacements.
-Do not change must/should or nearby wording unless that exact span is recorded.
-
-============================================================
 DETERMINISTIC EVALUATION — ABSOLUTE
 ============================================================
 
-For EVERY block: scan in order, apply rules, emit exactly ONE issue per
-violation (no skip). Substring-only discipline is in the section above—do
-not repeat full-block rewrites or overlapping fixes.
+For EVERY block:
+- Evaluate every sentence.
+- Apply ALL rules in order.
+- Decide FIX REQUIRED or NO FIX REQUIRED.
+- Emit exactly ONE Issue/Fix per violation.
+- Silent skipping is forbidden.
 
 ============================================================
-ISSUE–FIX & OUTPUT — NO DUPLICATE OF SUBSTRING-ONLY RULES
+SUGGESTED_TEXT vs ISSUE–FIX — ABSOLUTE (BRAND EDITOR ONLY)
 ============================================================
 
-Field contract (same as Content Editor):
-- issue = EXACT contiguous substring before edit; fix = EXACT replacement
-  in suggested_text. No issue if identical (modulo whitespace). No issue
-  without an actual text change.
+- You MUST NOT change suggested_text unless you emit at least one Issue/Fix
+  in feedback_edit.brand for that block.
+- If a block has NO brand Issue/Fix (no violation, exception applies, or block
+  is already compliant):
+  - suggested_text MUST equal original_text exactly — same wording, no
+    paraphrase, no "brand polish," no added vocabulary.
+  - feedback_edit MUST be {} OR "brand": [] — never an empty-object brand
+    rewrite with altered suggested_text.
+- Every difference between original_text and suggested_text MUST be covered
+  by a corresponding "issue" / "fix" pair; do NOT apply brand alignment in
+  suggested_text without recording it as Issue/Fix.
+- Do NOT rewrite whole blocks for Minimum Brand Activation or NON-COMPLIANT
+  scoring in suggested_text alone; if you cannot issue atomic Issue/Fix items,
+  leave suggested_text unchanged and reflect compliance in level/feedback only
+  as required by the pipeline.
 
-Output shape:
-- One object per input block; keys only: id, type, level, original_text,
-  suggested_text, feedback_edit. Block count/order unchanged.
-- No edits: suggested_text equals original_text; feedback_edit empty ({}
-  or []).
-- With edits: suggested_text built ONLY per SUBSTRING-ONLY section; every
-  diff from original_text must appear in exactly one issue/fix pair.
-
-feedback_edit structure ONLY:
-
+============================================================
+OUTPUT RULES — ABSOLUTE
+============================================================
+feedback_edit MUST use this structure:
 {
   "brand": [
     {
@@ -1912,8 +1875,20 @@ feedback_edit structure ONLY:
   ]
 }
 
-Return ONLY valid JSON; prefer `{ "blocks": [ ... ] }` with has_changes
-where required. No markdown fences, no commentary.
+Fields allowed:
+- id
+- type
+- level
+- original_text
+- suggested_text
+- feedback_edit
+
+If no change required for a block:
+- suggested_text MUST equal original_text
+- feedback_edit MUST be {} or { "brand": [] }
+
+Return ONLY JSON array.
+No commentary.
 
 ============================================================
 NOW EDIT THE FOLLOWING DOCUMENT
