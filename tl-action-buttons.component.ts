@@ -1636,11 +1636,6 @@ If a risk word appears:
 - Preserve original meaning.
 - Do not remove the entire sentence unless required.
 - Do not soften without issuing Issue/Fix.
-- Apply ONLY the dictionary-compliant substitution for that match;
-  leave the rest of the sentence (and block) unchanged verbatim unless
-  another match requires its own recorded substitution. Never rewrite
-  adjacent phrases “to match” the new wording unless they independently
-  violate a rule and are recorded.
 
 Count "distinct risk words" by distinct dictionary entries matched exactly.
 Do NOT merge separate entries.
@@ -1845,35 +1840,73 @@ For EVERY block:
 - Silent skipping is forbidden.
 
 ============================================================
-MINIMAL-DIFF OUTPUT — ABSOLUTE (NO INCIDENTAL REWRITES)
+ISSUE–FIX EMISSION RULES — ABSOLUTE
 ============================================================
 
-suggested_text is derived from the block’s original text by applying
-ONLY the replacements that are explicitly recorded in feedback_edit.
+Same contract as Content Editor — non-negotiable.
 
-Hard rules:
-1. Verbatim preservation: Any span that is NOT replaced by a recorded
-   feedback entry MUST appear in suggested_text exactly as in the
-   original (same words, same order, same punctuation).
-2. One-to-one mapping: Every character run that differs between
-   original and suggested_text MUST be covered by exactly one feedback
-   entry whose recorded original substring equals that run and whose
-   recorded replacement equals the new run. If you cannot emit such an
-   entry, you MUST NOT change that run—leave it unchanged.
-3. No blanket rewrites: Do NOT paraphrase, soften, tighten, or
-   “improve” neighboring clauses for consistency. Do NOT harmonize tone
-   across the sentence beyond the spans you actually record.
-4. Validation before output: Re-read suggested_text against the
-   original. If any changed phrase has no matching feedback entry,
-   revert that phrase to the original wording.
+An Issue/Fix MUST be emitted ONLY when a textual change has occurred.
 
-This prevents the UI from highlighting edits that have no explanation
-in the feedback list.
+- `issue` (field value) MUST be the EXACT contiguous substring BEFORE editing
+- `fix` (field value) MUST be the EXACT final replacement text used in suggested_text
+- If the substring and replacement are identical (ignoring whitespace), DO NOT emit an Issue/Fix
+- Rule detection WITHOUT text change MUST NOT produce an issue
 
 ============================================================
-OUTPUT RULES — ABSOLUTE
+ISSUE–FIX ATOMIZATION — NON-NEGOTIABLE
 ============================================================
-feedback_edit MUST use this structure:
+
+Same contract as Content Editor.
+
+- ONE dictionary match / ONE violation = ONE issue
+- Every changed character run MUST appear in EXACTLY ONE issue
+- You MUST NOT combine multiple changes into one issue
+- You MUST NOT rewrite a span without issuing an issue that covers that span
+
+============================================================
+NON-OVERLAPPING FIX ENFORCEMENT — DELTA DOMINANCE
+============================================================
+
+Same contract as Content Editor.
+
+- Each character in the block may belong to AT MOST ONE issue
+- If a longer phrase is rewritten, you MUST NOT create issues for sub-phrases
+- When a micro-fix and larger rewrite compete, select the LARGEST necessary phrase only
+
+============================================================
+ABSOLUTE OUTPUT RULES — MUST FOLLOW EXACTLY
+============================================================
+
+Aligned with Content Editor output discipline; Brand-specific build rule below.
+
+1. Return EXACTLY ONE output object per input block.
+2. Do NOT omit, skip, merge, or reorder blocks.
+3. Output MUST contain ONLY these keys:
+   - "id"
+   - "type"
+   - "level"
+   - "original_text"
+   - "suggested_text"
+   - "feedback_edit"
+
+4. If no edits are required:
+   - "suggested_text" MUST equal "original_text"
+   - "feedback_edit" MUST be {}
+
+5. If edits are made:
+   - Do NOT rewrite the full block for style or consistency.
+   - Build suggested_text by applying ONLY the recorded substring
+     replacements to the original block text (replace each `issue`
+     substring with its `fix`); all other text MUST remain verbatim.
+   - Provide at least ONE feedback item per violation.
+
+6. feedback_edit MUST describe ONLY and EXACTLY the changes present
+   in suggested_text relative to original_text — nothing more, nothing less.
+   Any word in suggested_text that differs from original_text MUST be
+   covered by exactly one issue/fix pair.
+
+7. feedback_edit MUST follow this structure ONLY:
+
 {
   "brand": [
     {
@@ -1886,16 +1919,10 @@ feedback_edit MUST use this structure:
   ]
 }
 
-Fields allowed:
-- id
-- type
-- level
-- original_text
-- suggested_text
-- feedback_edit
+8. NEVER return plain strings inside feedback_edit.
+9. NEVER return null, empty arrays, markdown, or commentary.
 
-Return ONLY JSON array.
-No commentary.
+Return ONLY JSON array. No commentary.
 
 ============================================================
 NOW EDIT THE FOLLOWING DOCUMENT
