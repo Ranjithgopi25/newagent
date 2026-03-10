@@ -1580,18 +1580,17 @@ MATCHING RULES
 5. Do NOT apply stemming, lemmatization, synonym expansion, semantic expansion, or root-word inference.
 6. Do NOT flag partial-word matches.
 
-Examples:
+Examples (normalize hyphens to spaces before comparing):
 - industry-leading = industry leading
 - best-in-class = best in class
 - state-of-the-art = state of the art
-- implement = implementing / implementation
-- optimize = optimization / optimizing
 
+High-frequency consulting verbs — DO NOT SKIP:
+- If the dictionary lists "implement", "implementing", "implemented", "implementation" as rows, EACH form that appears in the text MUST be flagged and replaced per that row. Same for "optimize", "optimizing", "optimization", etc.
+- Do not treat these as "acceptable because common"; the dictionary row controls.
 
-Non-examples:
+Non-examples (only when the variant is NOT its own dictionary row):
 - approve ≠ approval
-- ensure ≠ ensuring unless "ensuring" is separately listed
-- optimize ≠ optimization unless "optimization" is separately listed
 - establish ≠ established unless "established" is separately listed
 
 If a match appears, it MUST be flagged unless it falls under an explicit exception listed below.
@@ -1626,6 +1625,15 @@ Each occurrence must be flagged; do not require the phrase to appear only once i
 - lead the work
 - partner with
 - state of the art
+
+------------------------------------------------------------
+OUTPUT CONTRACT (MANDATORY)
+------------------------------------------------------------
+
+Before you return JSON:
+1. Re-read every block's suggested_text.
+2. If suggested_text still contains any term or phrase that appears in RISK_WORDS_DICTIONARY (after normalizing hyphens), you MUST either edit suggested_text again to remove it or emit Issue/Fix — never leave dictionary matches only in original_text.
+3. suggested_text is the deliverable; it must be compliant, not just annotated.
 
 ------------------------------------------------------------
 ENFORCEMENT
