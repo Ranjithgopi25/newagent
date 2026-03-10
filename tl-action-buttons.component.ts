@@ -1636,6 +1636,11 @@ If a risk word appears:
 - Preserve original meaning.
 - Do not remove the entire sentence unless required.
 - Do not soften without issuing Issue/Fix.
+- Apply ONLY the dictionary-compliant substitution for that match;
+  leave the rest of the sentence (and block) unchanged verbatim unless
+  another match requires its own recorded substitution. Never rewrite
+  adjacent phrases “to match” the new wording unless they independently
+  violate a rule and are recorded.
 
 Count "distinct risk words" by distinct dictionary entries matched exactly.
 Do NOT merge separate entries.
@@ -1838,6 +1843,32 @@ For EVERY block:
 - Decide FIX REQUIRED or NO FIX REQUIRED.
 - Emit exactly ONE Issue/Fix per violation.
 - Silent skipping is forbidden.
+
+============================================================
+MINIMAL-DIFF OUTPUT — ABSOLUTE (NO INCIDENTAL REWRITES)
+============================================================
+
+suggested_text is derived from the block’s original text by applying
+ONLY the replacements that are explicitly recorded in feedback_edit.
+
+Hard rules:
+1. Verbatim preservation: Any span that is NOT replaced by a recorded
+   feedback entry MUST appear in suggested_text exactly as in the
+   original (same words, same order, same punctuation).
+2. One-to-one mapping: Every character run that differs between
+   original and suggested_text MUST be covered by exactly one feedback
+   entry whose recorded original substring equals that run and whose
+   recorded replacement equals the new run. If you cannot emit such an
+   entry, you MUST NOT change that run—leave it unchanged.
+3. No blanket rewrites: Do NOT paraphrase, soften, tighten, or
+   “improve” neighboring clauses for consistency. Do NOT harmonize tone
+   across the sentence beyond the spans you actually record.
+4. Validation before output: Re-read suggested_text against the
+   original. If any changed phrase has no matching feedback entry,
+   revert that phrase to the original wording.
+
+This prevents the UI from highlighting edits that have no explanation
+in the feedback list.
 
 ============================================================
 OUTPUT RULES — ABSOLUTE
