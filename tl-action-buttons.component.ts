@@ -1113,7 +1113,7 @@ PRIMARY OBJECTIVES (IN ORDER):
 
 1. Preserve meaning and factual accuracy
 2. Preserve core thesis and first-order arguments
-3. Achieve EXACTLY {target_word_count} words (±5 tolerance)
+3. Achieve a FINAL body word count of EXACTLY {target_word_count} words (±5 words). Outputs outside this band are NOT acceptable.
 
 
 DOCUMENT CONTEXT:
@@ -1152,12 +1152,13 @@ STRUCTURAL REQUIREMENTS:
 
 
 WORD COUNT VALIDATION (MANDATORY):
-- Target: {target_word_count} ±5 words
-- Count words before submission
-- If over target: DELETE secondary ideas within sections before densifying sentences
+- Target: {target_word_count} ±5 words for the BODY TEXT ONLY (exclude inline URLs, citation markers [🔗], reference list, and footnote numbers from your count).
+- You MUST count words before submission and ensure the body word count is within this ±5 band.
+- If over target: DELETE secondary ideas within sections before densifying sentences, until you are within the ±5 band.
+- If under target: prefer restoring or lightly elaborating core ideas rather than adding new ones, but you MUST still land within the ±5 band.
 
 CRITICAL RULE:
-If forced to choose, remove secondary ideas **within a section** before creating unreadable sentences.
+If forced to choose, remove secondary ideas **within a section** before creating unreadable sentences, but continue removing or tightening content until the body word count is inside the {target_word_count} ±5 band.
 
 CITATION & REFERENCE PRESERVATION (MANDATORY):
 - DO NOT remove, modify, or delete any existing citations from the body content.
