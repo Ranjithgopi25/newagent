@@ -48,18 +48,22 @@ DocumentBlock:
 - text: string (exact original text including any bullet prefix character; do NOT strip • - * – from the start)
 
 -----------------------------------------
-Parsing Rules (MANDATORY)
+Parsing Rules (MANDATORY) — apply in this order
 -----------------------------------------
 
+PRIORITY 1 — Bullet prefix (overrides everything below):
+- If a logical line begins with a bullet prefix (•, -, *, –, — after optional leading whitespace),
+  it MUST be type "bullet_item" with level 0. NEVER classify such a line as "heading", "title",
+  or "paragraph", even if the text is short or looks like a title.
+- Preserve the prefix at the start of "text" exactly as in the source.
+  Example: "• Reduce costs" → { "type": "bullet_item", "level": 0, "text": "• Reduce costs" }
+  Example: "- Improve margins" → { "type": "bullet_item", "level": 0, "text": "- Improve margins" }
+
+PRIORITY 2 — Structure:
 - Process the document strictly top-to-bottom. Never reorder or move content.
-- Preserve all original text exactly, including leading bullet prefix characters (•, -, *, –).
-- If a line begins with a bullet prefix (•, -, *, –), classify it as type "bullet_item"
-  and preserve the prefix character at the start of the "text" field exactly as written.
-  Example: "• Reduce costs" → { "type": "bullet_item", "text": "• Reduce costs" }
-  Example: "- Improve margins" → { "type": "bullet_item", "text": "- Improve margins" }
-  Do NOT strip the bullet character from the text field.
+- Preserve all original text exactly, including leading bullet prefix characters (•, -, *, –, —).
 - Merge multi-line paragraphs.
-- A heading must appear alone on a line and look like a heading.
+- A heading must appear alone on a line and look like a heading (only when PRIORITY 1 does not apply).
 - Extract bullet items one-by-one.
 - Assign IDs sequentially based on appearance.
 
@@ -93,10 +97,17 @@ BULLET_STYLES = {
     "List Bullet 3",
     "List Bullet 4",
     "List Bullet 5",
+    "List Bullet 6",
     "List Paragraph",   # Word's default indented bullet when no explicit style is set
     "List Continue",
     "List Continue 2",
     "List Continue 3",
+    "List Continue 4",
+    "List Continue 5",
+    "Bullet List",
+    "Bullet List 2",
+    "Bullet List 3",
+    "List Library Bullet",
 }
 
 
@@ -119,6 +130,46 @@ def _paragraph_is_bullet(paragraph) -> bool:
         return True
 
     return False
+
+
+def _text_has_leading_bullet_prefix(text: str) -> bool:
+    """
+    True if stripped text starts with a list bullet character used in DOCUMENT parsing.
+    Matches SYSTEM_PROMPT bullet rules and read_docx_text normalization.
+    """
+    s = text.strip()
+    if not s:
+        return False
+    c0 = s[0]
+    if c0 in ("•", "*", "–", "—"):
+        return True
+    if c0 == "-":
+        return True
+    return False
+
+
+def _coerce_bullet_blocks(doc_struct: DocumentStructure) -> DocumentStructure:
+    """
+    After LLM segmentation, force blocks whose text clearly starts with a bullet prefix
+    to type bullet_item / level 0 (never heading/title/paragraph).
+    """
+    coerced: List[DocumentBlock] = []
+    for block in doc_struct.blocks:
+        if block.type == "title":
+            coerced.append(block)
+            continue
+        if _text_has_leading_bullet_prefix(block.text):
+            coerced.append(
+                DocumentBlock(
+                    id=block.id,
+                    type="bullet_item",
+                    level=0,
+                    text=block.text,
+                )
+            )
+        else:
+            coerced.append(block)
+    return DocumentStructure(blocks=coerced)
 
 
 def _detect_bullet_char(paragraph) -> str:
@@ -199,7 +250,8 @@ def segment_document_with_llm(document_text: str, thread_id: str = "doc-1") -> D
     )
 
     doc_struct: DocumentStructure = response["structured_response"]
-    
+    doc_struct = _coerce_bullet_blocks(doc_struct)
+
     # Check if there's a title block
     has_title = any(block.type == "title" for block in doc_struct.blocks)
     
@@ -262,14 +314,17 @@ def read_docx_text(path: str) -> str:
             continue
 
         if _paragraph_is_bullet(paragraph):
-            # Normalise all bullet variants to '•' so the pipeline is consistent.
-            # If the text already starts with a known bullet char (e.g. the docx
-            # uses a manual bullet typed by the author), avoid double-prefixing.
-            if text and text[0] in ("•", "-", "*", "–", "—"):
+            # Word applies numPr to numbered lists too; do not prepend • when the line is a decimal outline.
+            if re.match(r"^\s*\d+\.\s", text):
+                lines.append(text)
+            # Normalise bullet variants to '•' so the pipeline is consistent.
+            # If the text already starts with a known bullet char (e.g. manual bullet), avoid double-prefixing.
+            elif text and text[0] in ("•", "-", "*", "–", "—"):
                 lines.append(text)
             else:
                 lines.append(f"• {text}")
         else:
+            # Manual bullets (typed •, -, *, etc. without list XML) pass through unchanged.
             lines.append(text)
 
     return "\n\n".join(lines)
