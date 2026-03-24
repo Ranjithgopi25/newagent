@@ -3,6 +3,7 @@ from docx import Document
 import io
 import logging
 from typing import Optional
+from collections import defaultdict
 from pptx import Presentation
 import base64
 import pandas as pd
@@ -137,9 +138,48 @@ def extract_text_from_docx(docx_bytes: bytes, max_chars: Optional[int] = None) -
         if not docx_bytes:
             logger.warning("Empty DOCX file provided")
             return ""
-        
+
+        def _get_list_info(para) -> tuple[bool, bool, str]:
+            style_name = (para.style.name or "").lower() if para.style else ""
+            p_pr = para._p.pPr
+            num_pr = p_pr.numPr if p_pr is not None else None
+
+            if num_pr is not None and num_pr.numId is not None:
+                num_id = num_pr.numId.val
+                ilvl = num_pr.ilvl.val if num_pr.ilvl is not None else 0
+                is_numbered = "bullet" not in style_name
+                return True, is_numbered, f"numid:{num_id}:level:{ilvl}"
+
+            if "bullet" in style_name:
+                return True, False, f"style:{style_name}"
+            if "number" in style_name or "list" in style_name:
+                return True, True, f"style:{style_name}"
+
+            return False, False, ""
+
         doc = Document(io.BytesIO(docx_bytes))
-        paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
+        paragraphs: list[str] = []
+        list_counters: defaultdict[str, int] = defaultdict(int)
+
+        for para in doc.paragraphs:
+            para_text = para.text.strip()
+            if not para_text:
+                continue
+
+            is_list, is_numbered, list_key = _get_list_info(para)
+            first_char = para_text[0]
+            has_explicit_bullet = first_char in {"•", "-", "*"}
+            cleaned_text = para_text[2:].strip() if has_explicit_bullet and len(para_text) > 1 else para_text
+            if is_list:
+                if is_numbered:
+                    list_counters[list_key] += 1
+                    paragraphs.append(f"{list_counters[list_key]}. {cleaned_text}")
+                else:
+                    marker = first_char if has_explicit_bullet else "-"
+                    paragraphs.append(f"{marker} {cleaned_text}")
+            else:
+                paragraphs.append(para_text)
+
         text = "\n".join(paragraphs)
         
         if not text:
