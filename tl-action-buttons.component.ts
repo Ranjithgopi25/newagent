@@ -1,23 +1,18 @@
 from typing import List
-import os
 import re
 
-from dotenv import load_dotenv
 from docx import Document
 
 from langchain.agents import create_agent
-from langchain_openai import ChatOpenAI
 from langchain.agents.structured_output import ToolStrategy
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.messages import HumanMessage
 from app.core.deps import get_llm_client_agent
 
-from .schema import DocumentStructure, DocumentBlock, BlockType, EditorResult
-
+from .schema import DocumentStructure, DocumentBlock, EditorResult
 
 
 llm = get_llm_client_agent()
-
 
 SYSTEM_PROMPT = """
 You are a document structure analyzer.
@@ -47,14 +42,19 @@ DocumentBlock:
     * 0 for paragraphs and bullet items
 - text: string (exact original text including any bullet prefix character; do NOT strip • - * – from the start)
 
+How to choose type (mutually exclusive):
+- "title": The document's main title line only. Plain text with NO bullet prefix (•, -, *, –, —). One title block if present.
+- "heading": Section or subsection labels. NO bullet prefix. Use level 1–3 for outline depth only.
+- "paragraph": Normal body text. NO bullet prefix on the line.
+- "bullet_item": Any line that begins (after optional whitespace) with a bullet prefix. Always level 0.
+
 -----------------------------------------
 Parsing Rules (MANDATORY) — apply in this order
 -----------------------------------------
 
-PRIORITY 1 — Bullet prefix (overrides everything below):
+PRIORITY 1 — Bullet prefix (overrides title/heading/paragraph):
 - If a logical line begins with a bullet prefix (•, -, *, –, — after optional leading whitespace),
-  it MUST be type "bullet_item" with level 0. NEVER classify such a line as "heading", "title",
-  or "paragraph", even if the text is short or looks like a title.
+  it MUST be type "bullet_item" with level 0. NEVER use "title", "heading", or "paragraph" for that line.
 - Preserve the prefix at the start of "text" exactly as in the source.
   Example: "• Reduce costs" → { "type": "bullet_item", "level": 0, "text": "• Reduce costs" }
   Example: "- Improve margins" → { "type": "bullet_item", "level": 0, "text": "- Improve margins" }
@@ -62,6 +62,7 @@ PRIORITY 1 — Bullet prefix (overrides everything below):
 PRIORITY 2 — Structure:
 - Process the document strictly top-to-bottom. Never reorder or move content.
 - Preserve all original text exactly, including leading bullet prefix characters (•, -, *, –, —).
+- Do NOT remove or alter bullet prefixes from the DOCUMENT when copying into each block's "text" field.
 - Merge multi-line paragraphs.
 - A heading must appear alone on a line and look like a heading (only when PRIORITY 1 does not apply).
 - Extract bullet items one-by-one.
@@ -90,7 +91,7 @@ agent = create_agent(
 )
 
 
-# Word bullet style names — extend this set if your docx uses custom styles
+# Word bullet style names — extend if your docx uses custom styles; numPr also marks lists.
 BULLET_STYLES = {
     "List Bullet",
     "List Bullet 2",
@@ -98,7 +99,7 @@ BULLET_STYLES = {
     "List Bullet 4",
     "List Bullet 5",
     "List Bullet 6",
-    "List Paragraph",   # Word's default indented bullet when no explicit style is set
+    "List Paragraph",
     "List Continue",
     "List Continue 2",
     "List Continue 3",
@@ -113,100 +114,53 @@ BULLET_STYLES = {
 
 def _paragraph_is_bullet(paragraph) -> bool:
     """
-    Return True if a python-docx Paragraph is a bullet/list item.
-
-    Checks two independent signals:
-    1. The paragraph style name is in BULLET_STYLES.
-    2. The paragraph's XML contains a <w:numPr> element, which Word uses
-       for all automatic numbered/bulleted lists regardless of style name.
+    True if this python-docx paragraph is a list item: known bullet style, style name contains
+    'bullet', or paragraph XML has w:numPr (Word list numbering).
     """
     style_name = paragraph.style.name if paragraph.style else ""
     if style_name in BULLET_STYLES:
         return True
-
-    # Check for numPr in paragraph properties (covers custom bullet styles)
+    if style_name and "bullet" in style_name.lower():
+        return True
     pPr = paragraph._element.pPr
     if pPr is not None and pPr.numPr is not None:
         return True
-
     return False
 
 
 def _text_has_leading_bullet_prefix(text: str) -> bool:
-    """
-    True if stripped text starts with a list bullet character used in DOCUMENT parsing.
-    Matches SYSTEM_PROMPT bullet rules and read_docx_text normalization.
-    """
     s = text.strip()
     if not s:
         return False
-    c0 = s[0]
-    if c0 in ("•", "*", "–", "—"):
-        return True
-    if c0 == "-":
-        return True
-    return False
+    return s[0] in ("•", "-", "*", "–", "—")
 
 
-def _coerce_bullet_blocks(doc_struct: DocumentStructure) -> DocumentStructure:
+def _fix_bullet_items_after_llm(
+    doc_struct: DocumentStructure, document_text: str
+) -> DocumentStructure:
     """
-    After LLM segmentation, force blocks whose text clearly starts with a bullet prefix
-    to type bullet_item / level 0 (never heading/title/paragraph).
+    Bullet-prefixed lines must be bullet_item. Prefer raw DOCUMENT segment when aligned with blocks
+    (recovers prefix if the model stripped it).
     """
-    coerced: List[DocumentBlock] = []
-    for block in doc_struct.blocks:
-        if block.type == "title":
-            coerced.append(block)
-            continue
-        if _text_has_leading_bullet_prefix(block.text):
-            coerced.append(
-                DocumentBlock(
-                    id=block.id,
-                    type="bullet_item",
-                    level=0,
-                    text=block.text,
-                )
-            )
+    segments = [s.strip() for s in document_text.split("\n\n") if s.strip()]
+    aligned = len(segments) == len(doc_struct.blocks)
+    out: List[DocumentBlock] = []
+    for i, block in enumerate(doc_struct.blocks):
+        seg = segments[i] if aligned else None
+        if seg is not None and _text_has_leading_bullet_prefix(seg):
+            t = seg
+        elif _text_has_leading_bullet_prefix(block.text):
+            t = block.text
         else:
-            coerced.append(block)
-    return DocumentStructure(blocks=coerced)
-
-
-def _detect_bullet_char(paragraph) -> str:
-    """
-    Return the bullet character to prepend.
-
-    Tries to read the actual bullet character from the paragraph's
-    numbering definition. Falls back to '•' if it cannot be determined.
-    """
-    # Attempt to read the numFmt from the paragraph's numbering definition.
-    # For most bullet lists this will be 'bullet'; for numbered lists it will
-    # be 'decimal', 'lowerLetter', etc.  We only prepend '•' for bullet lists
-    # here — numbered lists are handled separately because they carry their
-    # number in the paragraph text already (Word renders the number via field
-    # codes, not plain text, so we can't retrieve it easily).
-    try:
-        pPr = paragraph._element.pPr
-        if pPr is not None and pPr.numPr is not None:
-            num_id_elem = pPr.numPr.numId
-            ilvl_elem = pPr.numPr.ilvl
-            if num_id_elem is not None:
-                num_id = num_id_elem.val
-                ilvl = ilvl_elem.val if ilvl_elem is not None else 0
-                # Walk the document's numbering definitions
-                doc_part = paragraph._element.getroottree().getroot()
-                # numFmt is inside w:numbering → w:abstractNum → w:lvl
-                # This is complex to traverse without the full numbering XML;
-                # fall back to '•' for simplicity.
-    except Exception:
-        pass
-    return "•"
+            out.append(block)
+            continue
+        out.append(DocumentBlock(id=block.id, type="bullet_item", level=0, text=t))
+    return DocumentStructure(blocks=out)
 
 
 def generate_title_from_content(document_text: str) -> str:
     """
-    Generate a title based on the entire document content using LLM.
-    Used when no title is found in the segmented document.
+    Generate a title when no title block exists in the segmented document.
     """
     title_prompt = f"""Based on the following document content, generate a concise and descriptive title (maximum 100 characters).
 
@@ -220,18 +174,15 @@ Generate only the title text, nothing else. The title should:
 - Not exceed 200 characters
 
 Title:"""
-    
+
     try:
         response = llm.invoke([HumanMessage(content=title_prompt)])
         title = response.content.strip() if hasattr(response, "content") else str(response).strip()
-        # Remove quotes if LLM added them
         title = re.sub(r'^["\']|["\']$', "", title)
-        # Limit to 200 characters
         title = title[:200].strip()
         return title if title else "Document"
-    except Exception as e:
-        # Fallback: use first sentence or first 50 chars
-        first_sentence = document_text.split('.')[0].strip()[:100]
+    except Exception:
+        first_sentence = document_text.split(".")[0].strip()[:100]
         return first_sentence if first_sentence else "Document"
 
 
@@ -250,57 +201,46 @@ def segment_document_with_llm(document_text: str, thread_id: str = "doc-1") -> D
     )
 
     doc_struct: DocumentStructure = response["structured_response"]
-    doc_struct = _coerce_bullet_blocks(doc_struct)
+    doc_struct = _fix_bullet_items_after_llm(doc_struct, document_text)
 
-    # Check if there's a title block
     has_title = any(block.type == "title" for block in doc_struct.blocks)
-    
+
     if not has_title:
-        # Generate title from all paragraph content
-        # Collect all text from paragraphs and headings
         all_content = []
         for block in doc_struct.blocks:
             if block.type in ["paragraph", "heading"]:
                 all_content.append(block.text)
-        
-        # If no paragraphs/headings, use the original document text
+
         content_for_title = "\n\n".join(all_content) if all_content else document_text
-        
-        # Generate title
         generated_title = generate_title_from_content(content_for_title)
-        
-        # Create title block as first block
+
         title_block = DocumentBlock(
             id="b1",
             type="title",
             level=0,
-            text=generated_title
+            text=generated_title,
         )
-        
-        # Renumber all existing blocks (b1 -> b2, b2 -> b3, etc.)
+
         renumbered_blocks = [title_block]
         for block in doc_struct.blocks:
-            # Extract number from existing id (e.g., "b1" -> 1)
-            match = re.match(r'b(\d+)', block.id)
+            match = re.match(r"b(\d+)", block.id)
             if match:
                 old_num = int(match.group(1))
-                new_num = old_num + 1
-                new_id = f"b{new_num}"
+                new_id = f"b{old_num + 1}"
             else:
-                # Fallback: if id doesn't match pattern, use index + 2 (since title is b1)
                 new_id = f"b{len(renumbered_blocks) + 1}"
-            
+
             renumbered_blocks.append(
                 DocumentBlock(
                     id=new_id,
                     type=block.type,
                     level=block.level,
-                    text=block.text
+                    text=block.text,
                 )
             )
-        
+
         doc_struct = DocumentStructure(blocks=renumbered_blocks)
-    
+
     return doc_struct
 
 
@@ -314,17 +254,14 @@ def read_docx_text(path: str) -> str:
             continue
 
         if _paragraph_is_bullet(paragraph):
-            # Word applies numPr to numbered lists too; do not prepend • when the line is a decimal outline.
+            # numPr applies to numbered lists too; keep "1. " lines as-is (no extra •).
             if re.match(r"^\s*\d+\.\s", text):
                 lines.append(text)
-            # Normalise bullet variants to '•' so the pipeline is consistent.
-            # If the text already starts with a known bullet char (e.g. manual bullet), avoid double-prefixing.
             elif text and text[0] in ("•", "-", "*", "–", "—"):
                 lines.append(text)
             else:
                 lines.append(f"• {text}")
         else:
-            # Manual bullets (typed •, -, *, etc. without list XML) pass through unchanged.
             lines.append(text)
 
     return "\n\n".join(lines)
@@ -336,81 +273,56 @@ def apply_decisions_to_document(
     paragraph_edits: List[dict],
     decisions: List[dict],
     accept_all: bool = False,
-    reject_all: bool = False
+    reject_all: bool = False,
 ) -> DocumentStructure:
     """
-    Apply user decisions (approve/reject) to update the document.
-    The updated document becomes the base for the next editor.
-    
-    Args:
-        original_doc: The original document structure
-        editor_result: The current editor's result
-        paragraph_edits: List of paragraph edit objects from frontend
-        decisions: List of decision objects with index and approved status
-        accept_all: Global flag to accept all edits
-        reject_all: Global flag to reject all edits
-    
-    Returns:
-        Updated DocumentStructure with approved/rejected changes applied
+    Apply user decisions (approve/reject) to update the document for the next editor pass.
     """
-    # Build decision map for quick lookup
-    decision_map = {
-        d["index"]: d.get("approved")
-        for d in decisions
-    }
-    
-    # Create a map of block_id to updated text from editor_result
-    # Ensure we have BlockEditResult objects with proper attributes
+    decision_map = {d["index"]: d.get("approved") for d in decisions}
+
     editor_block_map = {}
     for block in editor_result.blocks:
-        # Handle both BlockEditResult objects and dicts (for safety)
-        if hasattr(block, 'id'):
+        if hasattr(block, "id"):
             block_id = block.id
-            suggested = getattr(block, 'suggested_text', None) or getattr(block, 'original_text', None)
+            suggested = getattr(block, "suggested_text", None) or getattr(
+                block, "original_text", None
+            )
         elif isinstance(block, dict):
-            block_id = block.get('id')
-            suggested = block.get('suggested_text') or block.get('original_text')
+            block_id = block.get("id")
+            suggested = block.get("suggested_text") or block.get("original_text")
         else:
             continue
-        
+
         if block_id:
             editor_block_map[block_id] = suggested
-    
-    # Update blocks based on decisions
+
     updated_blocks = []
     for i, block in enumerate(original_doc.blocks):
-        # Get decision for this block (by index)
         approved = decision_map.get(i)
-        auto_approved = paragraph_edits[i].get("autoApproved", False) if i < len(paragraph_edits) else False
-        
-        # Determine final text based on user decisions
+        auto_approved = (
+            paragraph_edits[i].get("autoApproved", False) if i < len(paragraph_edits) else False
+        )
+
         if reject_all:
-            # Reject all: use original
             final_text = block.text
         elif accept_all:
-            # Accept all: use edited version (fallback to original if not found)
             final_text = editor_block_map.get(block.id, block.text)
         elif approved is True:
-            # Explicitly approved: use edited (fallback to original if not found)
             final_text = editor_block_map.get(block.id, block.text)
         elif approved is False:
-            # Explicitly rejected: use original
             final_text = block.text
         elif approved is None and auto_approved:
-            # Auto-approved (unchanged): use edited (which should be same as original)
             final_text = editor_block_map.get(block.id, block.text)
         else:
-            # Default: use original
             final_text = block.text
-        
-        # Create updated block with new text
+
         updated_blocks.append(
             DocumentBlock(
                 id=block.id,
                 type=block.type,
                 level=block.level,
-                text=final_text
+                text=final_text,
             )
         )
-    
+
     return DocumentStructure(blocks=updated_blocks)
