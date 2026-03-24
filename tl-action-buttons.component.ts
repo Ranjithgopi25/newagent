@@ -1,328 +1,335 @@
-from typing import List
-import re
-
+from pypdf import PdfReader
 from docx import Document
+import io
+import logging
+from typing import Optional
+from pptx import Presentation
+import base64
+import pandas as pd
+from io import BytesIO
+from PIL import Image
 
-from langchain.agents import create_agent
-from langchain.agents.structured_output import ToolStrategy
-from langgraph.checkpoint.memory import InMemorySaver
-from langchain_core.messages import HumanMessage
-from app.core.deps import get_llm_client_agent
+logger = logging.getLogger(__name__)
 
-from .schema import DocumentStructure, DocumentBlock, EditorResult
+# def extract_text_from_pdf(pdf_bytes: bytes, max_chars: Optional[int] = None) -> str:
+#     """
+#     Extract text from PDF file.
+    
+#     Args:
+#         pdf_bytes: PDF file content as bytes
+#         max_chars: Optional maximum characters limit (None = no limit, extracts all pages)
+    
+#     Returns:
+#         Extracted text from all pages
+#     """
+#     try:
+#         if not pdf_bytes:
+#             logger.warning("Empty PDF file provided")
+#             return ""
+        
+#         pdf_file = io.BytesIO(pdf_bytes)
+#         reader = PdfReader(pdf_file)
+#         text = ""
+#         total_pages = len(reader.pages)
+        
+#         if total_pages == 0:
+#             logger.warning("PDF file has no pages")
+#             return ""
+        
+#         # Extract text from ALL pages
+#         for page_num, page in enumerate(reader.pages, 1):
+#             try:
+#                 page_text = page.extract_text()
+#                 if page_text:
+#                     text += page_text
+#             except Exception as page_error:
+#                 logger.warning(f"Error extracting text from page {page_num}: {page_error}")
+#                 continue  # Continue with next page instead of failing
+            
+#             # Only check limit if max_chars is specified
+#             if max_chars and len(text) >= max_chars:
+#                 logger.warning(f"PDF text extraction reached max_chars limit ({max_chars}) at page {page_num}/{total_pages}")
+#                 break
+        
+#         # Apply truncation only if max_chars is specified
+#         if max_chars:
+#             text = text[:max_chars]
+        
+#         logger.info(f"Extracted {len(text)} characters from {total_pages} PDF pages")
+#         return text
+#     except Exception as e:
+#         logger.error(f"Error extracting PDF text: {e}")
+#         raise
 
-
-llm = get_llm_client_agent()
-
-SYSTEM_PROMPT = """
-You are a document structure analyzer.
-
-Objective:
-Break down the provided document into an ordered list of structured blocks:
-- Title
-- Section headings
-- Paragraphs
-- Bullet items
-
-You MUST output valid JSON matching the DocumentStructure schema provided below.
-
------------------------------------------
-Schema Requirements (MANDATORY)
------------------------------------------
-
-DocumentStructure:
-- blocks: Array<DocumentBlock>
-
-DocumentBlock:
-- id: string (b1, b2, b3, ...)
-- type: one of ["title", "heading", "paragraph", "bullet_item"]
-- level:
-    * 0 for title
-    * 1–3 for headings (1=main, 2=sub, 3=sub-sub)
-    * 0 for paragraphs and bullet items
-- text: string (exact original text including any bullet prefix character; do NOT strip • - * – from the start)
-
-How to choose type (mutually exclusive):
-- "title": The document's main title line only. Plain text with NO bullet prefix (•, -, *, –, —). One title block if present.
-- "heading": Section or subsection labels. NO bullet prefix. Use level 1–3 for outline depth only.
-- "paragraph": Normal body text. NO bullet prefix on the line.
-- "bullet_item": Any line that begins (after optional whitespace) with a bullet prefix. Always level 0.
-
------------------------------------------
-Parsing Rules (MANDATORY) — apply in this order
------------------------------------------
-
-PRIORITY 1 — Bullet prefix (overrides title/heading/paragraph):
-- If a logical line begins with a bullet prefix (•, -, *, –, — after optional leading whitespace),
-  it MUST be type "bullet_item" with level 0. NEVER use "title", "heading", or "paragraph" for that line.
-- Preserve the prefix at the start of "text" exactly as in the source.
-  Example: "• Reduce costs" → { "type": "bullet_item", "level": 0, "text": "• Reduce costs" }
-  Example: "- Improve margins" → { "type": "bullet_item", "level": 0, "text": "- Improve margins" }
-
-PRIORITY 2 — Structure:
-- Process the document strictly top-to-bottom. Never reorder or move content.
-- Preserve all original text exactly, including leading bullet prefix characters (•, -, *, –, —).
-- Do NOT remove or alter bullet prefixes from the DOCUMENT when copying into each block's "text" field.
-- Merge multi-line paragraphs.
-- A heading must appear alone on a line and look like a heading (only when PRIORITY 1 does not apply).
-- Extract bullet items one-by-one.
-- Assign IDs sequentially based on appearance.
-
------------------------------------------
-Output:
-Return ONLY the JSON for DocumentStructure. No explanation, no commentary.
-"""
-
-
-class Context:
-    user_id: str = "1"
-
-
-checkpointer = InMemorySaver()
-
-
-agent = create_agent(
-    model=llm,
-    system_prompt=SYSTEM_PROMPT,
-    tools=[],
-    context_schema=Context,
-    response_format=ToolStrategy(DocumentStructure),
-    checkpointer=checkpointer,
-)
-
-
-# Word bullet style names — extend if your docx uses custom styles; numPr also marks lists.
-BULLET_STYLES = {
-    "List Bullet",
-    "List Bullet 2",
-    "List Bullet 3",
-    "List Bullet 4",
-    "List Bullet 5",
-    "List Bullet 6",
-    "List Paragraph",
-    "List Continue",
-    "List Continue 2",
-    "List Continue 3",
-    "List Continue 4",
-    "List Continue 5",
-    "Bullet List",
-    "Bullet List 2",
-    "Bullet List 3",
-    "List Library Bullet",
-}
-
-
-def _paragraph_is_bullet(paragraph) -> bool:
-    """
-    True if this python-docx paragraph is a list item: known bullet style, style name contains
-    'bullet', or paragraph XML has w:numPr (Word list numbering).
-    """
-    style_name = paragraph.style.name if paragraph.style else ""
-    if style_name in BULLET_STYLES:
-        return True
-    if style_name and "bullet" in style_name.lower():
-        return True
-    pPr = paragraph._element.pPr
-    if pPr is not None and pPr.numPr is not None:
-        return True
-    return False
-
-
-def _text_has_leading_bullet_prefix(text: str) -> bool:
-    s = text.strip()
-    if not s:
-        return False
-    return s[0] in ("•", "-", "*", "–", "—")
-
-
-def _fix_bullet_items_after_llm(
-    doc_struct: DocumentStructure, document_text: str
-) -> DocumentStructure:
-    """
-    Bullet-prefixed lines must be bullet_item. Prefer raw DOCUMENT segment when aligned with blocks
-    (recovers prefix if the model stripped it).
-    """
-    segments = [s.strip() for s in document_text.split("\n\n") if s.strip()]
-    aligned = len(segments) == len(doc_struct.blocks)
-    out: List[DocumentBlock] = []
-    for i, block in enumerate(doc_struct.blocks):
-        seg = segments[i] if aligned else None
-        if seg is not None and _text_has_leading_bullet_prefix(seg):
-            t = seg
-        elif _text_has_leading_bullet_prefix(block.text):
-            t = block.text
-        else:
-            out.append(block)
-            continue
-        out.append(DocumentBlock(id=block.id, type="bullet_item", level=0, text=t))
-    return DocumentStructure(blocks=out)
-
-
-def generate_title_from_content(document_text: str) -> str:
-    """
-    Generate a title when no title block exists in the segmented document.
-    """
-    title_prompt = f"""Based on the following document content, generate a concise and descriptive title (maximum 100 characters).
-
-Document Content:
-\"\"\"{document_text}\"\"\"
-
-Generate only the title text, nothing else. The title should:
-- Be clear and descriptive
-- Capture the main topic or theme
-- Be professional and appropriate
-- Not exceed 200 characters
-
-Title:"""
-
+def extract_text_from_pdf(pdf_bytes: bytes, max_chars: Optional[int] = None) -> str:
     try:
-        response = llm.invoke([HumanMessage(content=title_prompt)])
-        title = response.content.strip() if hasattr(response, "content") else str(response).strip()
-        title = re.sub(r'^["\']|["\']$', "", title)
-        title = title[:200].strip()
-        return title if title else "Document"
-    except Exception:
-        first_sentence = document_text.split(".")[0].strip()[:100]
-        return first_sentence if first_sentence else "Document"
+        if not pdf_bytes:
+            logger.warning("Empty PDF file provided")
+            return ""
 
+        # Primary: pypdf
+        try:
+            pdf_file = io.BytesIO(pdf_bytes)
+            reader = PdfReader(pdf_file)
+            text = ""
+            total_pages = len(reader.pages)
 
-def segment_document_with_llm(document_text: str, thread_id: str = "doc-1") -> DocumentStructure:
-    response = agent.invoke(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"DOCUMENT:\n\"\"\"{document_text}\"\"\"",
-                }
-            ]
-        },
-        config={"configurable": {"thread_id": thread_id}},
-        context=Context(),
-    )
+            if total_pages == 0:
+                logger.warning("PDF file has no pages")
+                return ""
 
-    doc_struct: DocumentStructure = response["structured_response"]
-    doc_struct = _fix_bullet_items_after_llm(doc_struct, document_text)
+            for page_num, page in enumerate(reader.pages, 1):
+                try:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text
+                except Exception as page_error:
+                    logger.warning(f"Error extracting text from page {page_num}: {page_error}")
+                    continue
 
-    has_title = any(block.type == "title" for block in doc_struct.blocks)
+                if max_chars and len(text) >= max_chars:
+                    logger.warning(f"PDF text extraction reached max_chars limit ({max_chars}) at page {page_num}/{total_pages}")
+                    break
 
-    if not has_title:
-        all_content = []
-        for block in doc_struct.blocks:
-            if block.type in ["paragraph", "heading"]:
-                all_content.append(block.text)
+            if max_chars:
+                text = text[:max_chars]
 
-        content_for_title = "\n\n".join(all_content) if all_content else document_text
-        generated_title = generate_title_from_content(content_for_title)
+            if text.strip():
+                logger.info(f"Extracted {len(text)} characters from {total_pages} PDF pages using pypdf")
+                return text
 
-        title_block = DocumentBlock(
-            id="b1",
-            type="title",
-            level=0,
-            text=generated_title,
-        )
+            logger.warning("pypdf returned no text, falling back to pymupdf")
 
-        renumbered_blocks = [title_block]
-        for block in doc_struct.blocks:
-            match = re.match(r"b(\d+)", block.id)
-            if match:
-                old_num = int(match.group(1))
-                new_id = f"b{old_num + 1}"
-            else:
-                new_id = f"b{len(renumbered_blocks) + 1}"
+        except Exception as pypdf_error:
+            logger.warning(f"pypdf failed: {pypdf_error}, falling back to pymupdf")
 
-            renumbered_blocks.append(
-                DocumentBlock(
-                    id=new_id,
-                    type=block.type,
-                    level=block.level,
-                    text=block.text,
-                )
-            )
+        # Fallback: pymupdf
+        import fitz
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        text = ""
+        for page in doc:
+            text += page.get_text()
+            if max_chars and len(text) >= max_chars:
+                break
 
-        doc_struct = DocumentStructure(blocks=renumbered_blocks)
+        if max_chars:
+            text = text[:max_chars]
 
-    return doc_struct
+        logger.info(f"Extracted {len(text)} characters using pymupdf fallback")
+        return text
 
+    except Exception as e:
+        logger.error(f"Error extracting PDF text: {e}")
+        raise
 
-def read_docx_text(path: str) -> str:
-    doc = Document(path)
-    lines = []
-
-    for paragraph in doc.paragraphs:
-        text = paragraph.text.strip()
+def extract_text_from_docx(docx_bytes: bytes, max_chars: Optional[int] = None) -> str:
+    """
+    Extract text from DOCX file.
+    
+    Args:
+        docx_bytes: DOCX file content as bytes
+        max_chars: Optional maximum characters limit (None = no limit, extracts all content)
+    
+    Returns:
+        Extracted text from all paragraphs
+    """
+    try:
+        if not docx_bytes:
+            logger.warning("Empty DOCX file provided")
+            return ""
+        
+        doc = Document(io.BytesIO(docx_bytes))
+        paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
+        text = "\n".join(paragraphs)
+        
         if not text:
-            continue
+            logger.warning("DOCX file contains no text content")
+            return ""
+        
+        # Apply truncation only if max_chars is specified
+        if max_chars and len(text) > max_chars:
+            logger.warning(f"DOCX text extraction truncated to max_chars limit ({max_chars})")
+            text = text[:max_chars]
+        
+        logger.info(f"Extracted {len(text)} characters from DOCX file ({len(paragraphs)} paragraphs)")
+        return text
+    except Exception as e:
+        logger.error(f"Error extracting DOCX text: {e}")
+        raise
 
-        if _paragraph_is_bullet(paragraph):
-            # numPr applies to numbered lists too; keep "1. " lines as-is (no extra •).
-            if re.match(r"^\s*\d+\.\s", text):
-                lines.append(text)
-            elif text and text[0] in ("•", "-", "*", "–", "—"):
-                lines.append(text)
-            else:
-                lines.append(f"• {text}")
-        else:
-            lines.append(text)
-
-    return "\n\n".join(lines)
-
-
-def apply_decisions_to_document(
-    original_doc: DocumentStructure,
-    editor_result: EditorResult,
-    paragraph_edits: List[dict],
-    decisions: List[dict],
-    accept_all: bool = False,
-    reject_all: bool = False,
-) -> DocumentStructure:
+def extract_text_from_xlsx(xlsx_bytes: bytes, max_chars: Optional[int] = None) -> str:
     """
-    Apply user decisions (approve/reject) to update the document for the next editor pass.
+    Extract text from xslx file.
+    
+    Args:
+        docx_bytes: xlsx file content as bytes
+        max_chars: Optional maximum characters limit (None = no limit, extracts all content)
+    
+    Returns:
+        Extracted text from all sheets
     """
-    decision_map = {d["index"]: d.get("approved") for d in decisions}
+    try:
+        if not xlsx_bytes:
+            logger.warning("Empty xlsx file provided")
+            return ""
+        # chart_data_file_bytes = await xlsx_bytes.read()
 
-    editor_block_map = {}
-    for block in editor_result.blocks:
-        if hasattr(block, "id"):
-            block_id = block.id
-            suggested = getattr(block, "suggested_text", None) or getattr(
-                block, "original_text", None
-            )
-        elif isinstance(block, dict):
-            block_id = block.get("id")
-            suggested = block.get("suggested_text") or block.get("original_text")
-        else:
-            continue
+        chart_data_file_bytes = xlsx_bytes
 
-        if block_id:
-            editor_block_map[block_id] = suggested
+        sheets = pd.read_excel(BytesIO(chart_data_file_bytes), sheet_name=None, engine="openpyxl")
+        raw_text_chart = "".join(f"=== {name} ===\n{df.to_csv(index=False)}" for name, df in sheets.items())    
+                
+        logger.info(f"Extracted following data from xlsx file {raw_text_chart}")
+        return "<xlsx_data>"+raw_text_chart+"</xlsx_data>"
+    
+    except Exception as e:
+        logger.error(f"Error extracting xlsx text: {e}")
+        raise
 
-    updated_blocks = []
-    for i, block in enumerate(original_doc.blocks):
-        approved = decision_map.get(i)
-        auto_approved = (
-            paragraph_edits[i].get("autoApproved", False) if i < len(paragraph_edits) else False
-        )
+# def extract_text_from_image(image_bytes: bytes, file_extension: str, max_chars: Optional[int] = None) -> str:
+#     """
+#     Extract text from image file.
+    
+#     Args:
+#         docx_bytes: image file content as bytes
+#         max_chars: Optional maximum characters limit (None = no limit, extracts all content)
+    
+#     Returns:
+#         Extracted image bytes
+#     """
+#     try:
+#         if not image_bytes:
+#             logger.warning("Empty image file provided")
+#             return ""
+        
+#         img_bytes = base64.b64encode(image_bytes).decode("utf-8")    
+        
+#         #logger.info(f"Extracted image encoded data {img_bytes}")
+#         char_count = len(img_bytes)
 
-        if reject_all:
-            final_text = block.text
-        elif accept_all:
-            final_text = editor_block_map.get(block.id, block.text)
-        elif approved is True:
-            final_text = editor_block_map.get(block.id, block.text)
-        elif approved is False:
-            final_text = block.text
-        elif approved is None and auto_approved:
-            final_text = editor_block_map.get(block.id, block.text)
-        else:
-            final_text = block.text
+#         logger.info(f"Extracted image encoded data char count {char_count}")
 
-        updated_blocks.append(
-            DocumentBlock(
-                id=block.id,
-                type=block.type,
-                level=block.level,
-                text=final_text,
-            )
-        )
+#         return "<image_data>"+img_bytes+"<image_ext>"+file_extension
+#     except Exception as e:
+#         logger.error(f"Error extracting image data: {e}")
+#         raise
+def extract_text_from_image(image_bytes: bytes, file_extension: str, max_chars: Optional[int] = None) -> str:
+    """
+    Extract text from image file.
+    
+    Args:
+        docx_bytes: image file content as bytes
+        max_chars: Optional maximum characters limit (None = no limit, extracts all content)
+    
+    Returns:
+        Extracted image bytes
+    """
+    try:
+        if not image_bytes:
+            logger.warning("Empty image file provided")
+            return ""
+        logger.info(f"We are here")
+        # img_bytes = base64.b64encode(image_bytes).decode("utf-8")    
+        
+        # #logger.info(f"Extracted image encoded data {img_bytes}")
+        # char_count = len(img_bytes)
 
-    return DocumentStructure(blocks=updated_blocks)
+        # logger.info(f"Extracted image encoded data char count {char_count}")
+
+        # Optional: resize image to reduce size (helps with token limits)
+        img = Image.open(io.BytesIO(image_bytes))
+        max_dimension = 1024  # adjust to reduce size
+        img.thumbnail((max_dimension, max_dimension))
+        buffered = io.BytesIO()
+        img.save(buffered, format=img.format)
+        resized_bytes = buffered.getvalue()
+        
+        # Convert to Base64
+        img_b64 = base64.b64encode(resized_bytes).decode("utf-8")
+        
+        # Truncate if needed
+        if max_chars:
+            img_b64 = img_b64[:max_chars]
+
+        return "<image_data>"+img_b64+"<image_ext>"+file_extension
+    except Exception as e:
+        logger.error(f"Error extracting image data: {e}")
+        raise
+
+def extract_text_from_txt(txt_bytes: bytes, max_chars: Optional[int] = None) -> str:
+    """
+    Extract text from TXT file.
+    
+    Args:
+        txt_bytes: TXT file content as bytes
+        max_chars: Optional maximum characters limit (None = no limit, extracts all content)
+    
+    Returns:
+        Extracted text from file
+    """
+    try:
+        # Try UTF-8 first, fallback to other encodings if needed
+        try:
+            text = txt_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            # Fallback to latin-1 which can decode any byte sequence
+            logger.warning("UTF-8 decoding failed, trying latin-1 fallback")
+            text = txt_bytes.decode('latin-1')
+        
+        # Apply truncation only if max_chars is specified
+        if max_chars and len(text) > max_chars:
+            logger.warning(f"TXT text extraction truncated to max_chars limit ({max_chars})")
+            text = text[:max_chars]
+        
+        logger.info(f"Extracted {len(text)} characters from TXT file")
+        return text
+    except Exception as e:
+        logger.error(f"Error extracting TXT text: {e}")
+        raise
+
+
+
+def extract_text_from_pptx(pptx_bytes: bytes, max_chars: Optional[int] = None) -> str:
+    """
+    Extract text from PPTX file.
+    
+    Args:
+        pptx_bytes: PPTX file content as bytes
+        max_chars: Optional maximum characters limit (None = no limit, extracts all content)
+    
+    Returns:
+        Extracted text from all slides
+    """
+    try:
+        if not pptx_bytes:
+            logger.warning("Empty PPTX file provided")
+            return ""
+        
+        prs = Presentation(io.BytesIO(pptx_bytes))
+        text = ""
+        total_slides = len(prs.slides)
+        
+        if total_slides == 0:
+            logger.warning("PPTX file has no slides")
+            return ""
+        
+        # Extract text from all slides
+        for slide_num, slide in enumerate(prs.slides, 1):
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    text += shape.text + "\n"
+            
+            # Only check limit if max_chars is specified
+            if max_chars and len(text) >= max_chars:
+                logger.warning(f"PPTX text extraction reached max_chars limit ({max_chars}) at slide {slide_num}/{total_slides}")
+                break
+        
+        # Apply truncation only if max_chars is specified
+        if max_chars:
+            text = text[:max_chars]
+        
+        logger.info(f"Extracted {len(text)} characters from {total_slides} PPTX slides")
+        return text
+    except Exception as e:
+        logger.error(f"Error extracting PPTX text: {e}")
+        raise
