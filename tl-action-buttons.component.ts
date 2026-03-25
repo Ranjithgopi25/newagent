@@ -28,15 +28,13 @@ logger = logging.getLogger(__name__)
 
 def convert_word_bytes_to_pdf(word_bytes: bytes, file_extension: str = "docx") -> bytes:
     """
-    Convert DOC/DOCX bytes → PDF bytes using docx2pdf (requires MS Word on Windows).
+    Convert DOC/DOCX bytes → PDF bytes using docx2pdf.
 
-    Args:
-        word_bytes:     Raw bytes of the .doc or .docx file.
-        file_extension: "doc" or "docx" (with or without leading dot).
-
-    Returns:
-        PDF file content as bytes.
+    - Creates temp folder with UUID
+    - Stores input + output inside it
+    - Deletes entire folder after 120 seconds
     """
+
     if not word_bytes:
         return b""
 
@@ -45,66 +43,67 @@ def convert_word_bytes_to_pdf(word_bytes: bytes, file_extension: str = "docx") -
         raise ValueError(f"Unsupported Word extension: {file_extension!r}")
 
     try:
+        # Base directory
         app_root = Path(__file__).parent.parent.parent.parent
-        data_dir = app_root / "data"
+        data_dir = app_root / "data" / "convert_pdf"
         data_dir.mkdir(parents=True, exist_ok=True)
 
-        # Persistent temp folder for this conversion only (deleted after ~1 minute)
-        convert_uuid = uuid.uuid4().hex
+        # Unique temp folder
+        file_id = uuid.uuid4().hex
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        temp_dir = data_dir / "convert_pdf" / f"{convert_uuid}_{timestamp}"
+        temp_dir = data_dir / f"{file_id}_{timestamp}"
         temp_dir.mkdir(parents=True, exist_ok=False)
 
         input_path = temp_dir / f"input.{extension}"
         output_path = temp_dir / "output.pdf"
 
+        # Save input
         input_path.write_bytes(word_bytes)
 
-        logger.info(f"Converting {extension.upper()} → PDF using docx2pdf")
+        logger.info(f"[{file_id}] Converting {extension.upper()} → PDF")
+
         try:
             convert(input_path, output_path)
         except Exception as e:
             logger.exception("docx2pdf conversion raised an exception")
             raise RuntimeError(f"docx2pdf conversion failed: {str(e)}") from e
 
+        # Validate
         if not output_path.exists():
-            raise RuntimeError("docx2pdf ran but no PDF was created")
+            raise RuntimeError("PDF not created")
 
         pdf_bytes = output_path.read_bytes()
         if not pdf_bytes:
-            raise RuntimeError("docx2pdf produced an empty PDF")
+            raise RuntimeError("Empty PDF generated")
 
-        logger.info(f"docx2pdf conversion successful ({len(pdf_bytes)} bytes)")
+        logger.info(f"[{file_id}] Conversion successful ({len(pdf_bytes)} bytes)")
 
-        # Delay cleanup so you can inspect temp files briefly.
-        def _cleanup_temp_dir() -> None:
+        # Cleanup entire folder after 120 sec
+        def _cleanup():
             try:
-                # Using the UUID in the path ensures we only remove this conversion folder.
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                logger.info(f"Deleted temp convert_pdf folder for {convert_uuid}")
+                if temp_dir.exists():
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                logger.info(f"[{file_id}] Temp folder deleted")
             except Exception:
-                logger.exception(f"Failed to delete temp convert_pdf folder for {convert_uuid}")
+                logger.exception(f"[{file_id}] Cleanup failed")
 
-        timer = threading.Timer(60.0, _cleanup_temp_dir)
+        timer = threading.Timer(120.0, _cleanup)
         timer.daemon = True
         timer.start()
 
         return pdf_bytes
 
-    except ImportError as e:
-        raise RuntimeError(
-            f"Missing dependency: {e}. "
-        ) from e
     except Exception as e:
-        logger.exception("Word to PDF conversion failed")
-        # Best-effort cleanup on failure (do not wait for the timer).
+        logger.exception("Conversion failed")
+
+        # Immediate cleanup on failure
         try:
-            if "temp_dir" in locals() and temp_dir.exists():
+            if 'temp_dir' in locals() and temp_dir.exists():
                 shutil.rmtree(temp_dir, ignore_errors=True)
         except Exception:
-            logger.exception("Failed best-effort cleanup for convert_pdf temp_dir")
-        raise RuntimeError(f"docx2pdf conversion failed: {str(e)}") from e
+            logger.exception("Cleanup after failure failed")
 
+        raise RuntimeError(f"Conversion failed: {str(e)}") from e
 # def extract_text_from_pdf(pdf_bytes: bytes, max_chars: Optional[int] = None) -> str:
 #     """
 #     Extract text from PDF file.
