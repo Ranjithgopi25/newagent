@@ -2,7 +2,11 @@ from pypdf import PdfReader
 from docx import Document
 import io
 import logging
+import os
+import tempfile
 from typing import Optional
+from fastapi import UploadFile, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pptx import Presentation
 import base64
 import pandas as pd
@@ -10,6 +14,54 @@ from io import BytesIO
 from PIL import Image
 
 logger = logging.getLogger(__name__)
+
+
+def convert_word_bytes_to_pdf(word_bytes: bytes, file_extension: str = "docx") -> bytes:
+    """
+    Convert Word file bytes (.doc/.docx) to PDF bytes using docx2pdf.
+
+    Notes:
+    - On Windows, docx2pdf relies on Microsoft Word automation.
+    - This function writes temporary files and returns PDF bytes.
+    """
+    if not word_bytes:
+        logger.warning("Empty Word file provided for PDF conversion")
+        return b""
+
+    extension = file_extension.lower().lstrip(".")
+    if extension not in {"doc", "docx"}:
+        raise ValueError(f"Unsupported Word extension for conversion: {file_extension}")
+
+    try:
+        from docx2pdf import convert
+    except ImportError as import_error:
+        logger.error("docx2pdf is not installed, cannot convert Word to PDF")
+        raise RuntimeError("docx2pdf is required for Word to PDF conversion") from import_error
+
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = os.path.join(temp_dir, f"source.{extension}")
+            output_path = os.path.join(temp_dir, "converted.pdf")
+
+            with open(input_path, "wb") as source_file:
+                source_file.write(word_bytes)
+
+            convert(input_path, output_path)
+
+            if not os.path.exists(output_path):
+                raise RuntimeError("Word to PDF conversion did not produce an output file")
+
+            with open(output_path, "rb") as pdf_file:
+                pdf_bytes = pdf_file.read()
+
+            if not pdf_bytes:
+                raise RuntimeError("Generated PDF is empty after Word conversion")
+
+            logger.info("Successfully converted %s to PDF (%d bytes)", extension, len(pdf_bytes))
+            return pdf_bytes
+    except Exception as conversion_error:
+        logger.error("Word to PDF conversion failed: %s", conversion_error)
+        raise
 
 # def extract_text_from_pdf(pdf_bytes: bytes, max_chars: Optional[int] = None) -> str:
 #     """
@@ -121,8 +173,6 @@ def extract_text_from_pdf(pdf_bytes: bytes, max_chars: Optional[int] = None) -> 
     except Exception as e:
         logger.error(f"Error extracting PDF text: {e}")
         raise
-
-
 
 def extract_text_from_docx(docx_bytes: bytes, max_chars: Optional[int] = None) -> str:
     """
@@ -335,3 +385,46 @@ def extract_text_from_pptx(pptx_bytes: bytes, max_chars: Optional[int] = None) -
     except Exception as e:
         logger.error(f"Error extracting PPTX text: {e}")
         raise
+
+
+async def extract_text_from_upload(file: UploadFile) -> str:
+    """
+    Extract text from an uploaded file based on extension.
+
+    Supported: pdf, docx/doc, txt/md, pptx/ppt, jpeg/jpg/png, xlsx
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required")
+
+    file_content = await file.read()
+    if not file_content:
+        raise HTTPException(status_code=400, detail="File is empty")
+
+    file_extension = file.filename.lower().split(".")[-1] if "." in file.filename else ""
+    if not file_extension:
+        raise HTTPException(status_code=400, detail="File extension is required")
+
+    try:
+        if file_extension == "pdf":
+            return extract_text_from_pdf(file_content, max_chars=None)
+        if file_extension in ["docx", "doc"]:
+            pdf_bytes = await run_in_threadpool(convert_word_bytes_to_pdf, file_content, file_extension)
+            return extract_text_from_pdf(pdf_bytes, max_chars=None)
+        if file_extension in ["txt", "md"]:
+            return extract_text_from_txt(file_content, max_chars=None)
+        if file_extension in ["pptx", "ppt"]:
+            return extract_text_from_pptx(file_content, max_chars=None)
+        if file_extension in ["jpeg", "png", "jpg"]:
+            return extract_text_from_image(file_content, file_extension, max_chars=800_000)
+        if file_extension in ["xlsx"]:
+            return await run_in_threadpool(extract_text_from_xlsx, file_content, None)
+    except HTTPException:
+        raise
+    except Exception as extraction_error:
+        logger.error(f"Extraction failed for {file.filename}: {extraction_error}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to extract text from file: {str(extraction_error)}",
+        )
+
+    raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_extension}")
