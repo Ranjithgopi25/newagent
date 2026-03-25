@@ -14,6 +14,7 @@ import pythoncom
 from pathlib import Path
 import shutil
 import threading
+import time
 import uuid
 from datetime import datetime
 
@@ -54,8 +55,9 @@ def convert_word_bytes_to_pdf(word_bytes: bytes, file_extension: str = "docx") -
         temp_dir = data_dir / f"{file_id}_{timestamp}"
         temp_dir.mkdir(parents=True, exist_ok=False)
 
-        input_path = temp_dir / f"input.{extension}"
-        output_path = temp_dir / "output.pdf"
+        # Include UUID in filenames to make debugging/auditing easier.
+        input_path = temp_dir / f"{file_id}_input.{extension}"
+        output_path = temp_dir / f"{file_id}_output.pdf"
 
         # Save input
         input_path.write_bytes(word_bytes)
@@ -81,9 +83,23 @@ def convert_word_bytes_to_pdf(word_bytes: bytes, file_extension: str = "docx") -
         # Cleanup entire folder after 120 sec
         def _cleanup():
             try:
-                if temp_dir.exists():
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                logger.info(f"[{file_id}] Temp folder deleted")
+                # Re-compute from UUID+timestamp so cleanup is deterministic.
+                temp_dir_to_delete = data_dir / f"{file_id}_{timestamp}"
+
+                # Best-effort retry in case some files are briefly locked.
+                for attempt in range(3):
+                    if not temp_dir_to_delete.exists():
+                        logger.info(f"[{file_id}] Temp folder deleted")
+                        return
+
+                    shutil.rmtree(temp_dir_to_delete, ignore_errors=True)
+                    time.sleep(1.0)
+
+                # Final verification.
+                if temp_dir_to_delete.exists():
+                    logger.warning(
+                        f"[{file_id}] Temp folder still exists after cleanup attempts: {temp_dir_to_delete}"
+                    )
             except Exception:
                 logger.exception(f"[{file_id}] Cleanup failed")
 
