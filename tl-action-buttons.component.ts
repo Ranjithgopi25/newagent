@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 import os
 import tempfile
+import uuid
+import time
+import shutil
 import logging
 from typing import Optional
 
@@ -41,29 +44,41 @@ def convert_word_bytes_to_pdf(word_bytes: bytes, file_extension: str = "docx") -
     if extension not in {"doc", "docx"}:
         raise ValueError(f"Unsupported Word extension: {file_extension!r}")
 
+    run_id = uuid.uuid4().hex
+    # Include a timestamp in the temp path to make debugging easier ("time frame").
+    ts = int(time.time())
+    started_at = time.perf_counter()
+    tmp_dir = None
+
     try:
-        with tempfile.TemporaryDirectory() as tmp_dir:  # Auto-deleted on block exit
-            input_path  = os.path.join(tmp_dir, f"input.{extension}")
-            output_path = os.path.join(tmp_dir, "output.pdf")
+        # Store files in a local temp root, and clean them up manually when complete.
+        # (Using run_id + timestamp helps avoid collisions.)
+        local_root = os.path.join(tempfile.gettempdir(), "local")
+        tmp_dir = os.path.join(local_root, f"docx2pdf_{run_id}_{ts}")
+        os.makedirs(tmp_dir, exist_ok=True)
 
-            with open(input_path, "wb") as fh:
-                fh.write(word_bytes)
+        input_path = os.path.join(tmp_dir, f"input.{extension}")
+        output_path = os.path.join(tmp_dir, f"output_{run_id}.pdf")
 
-            logger.info(f"Converting {extension.upper()} → PDF using docx2pdf")
+        with open(input_path, "wb") as fh:
+            fh.write(word_bytes)
 
-            convert(input_path, output_path)
+        logger.info(f"[{run_id}] Converting {extension.upper()} → PDF using docx2pdf")
 
-            if not os.path.exists(output_path):
-                raise RuntimeError("docx2pdf ran but no PDF was created")
+        convert(input_path, output_path)
 
-            with open(output_path, "rb") as fh:
-                pdf_bytes = fh.read()
+        if not os.path.exists(output_path):
+            raise RuntimeError("docx2pdf ran but no PDF was created")
 
-            if not pdf_bytes:
-                raise RuntimeError("docx2pdf produced an empty PDF")
+        with open(output_path, "rb") as fh:
+            pdf_bytes = fh.read()
 
-            logger.info(f"docx2pdf conversion successful ({len(pdf_bytes)} bytes)")
-            return pdf_bytes  # tmp_dir and all its contents are deleted after this block
+        if not pdf_bytes:
+            raise RuntimeError("docx2pdf produced an empty PDF")
+
+        elapsed_s = time.perf_counter() - started_at
+        logger.info(f"[{run_id}] docx2pdf conversion successful ({len(pdf_bytes)} bytes) in {elapsed_s:.2f}s")
+        return pdf_bytes
 
     except ImportError as e:
         raise RuntimeError(
@@ -72,6 +87,11 @@ def convert_word_bytes_to_pdf(word_bytes: bytes, file_extension: str = "docx") -
     except Exception as e:
         logger.exception("Word to PDF conversion failed")
         raise RuntimeError(f"docx2pdf conversion failed: {str(e)}") from e
+
+    finally:
+        # Always remove the local temp directory after conversion (or failure).
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 # def extract_text_from_pdf(pdf_bytes: bytes, max_chars: Optional[int] = None) -> str:
 #     """
