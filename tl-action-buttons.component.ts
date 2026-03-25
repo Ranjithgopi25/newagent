@@ -1,563 +1,337 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
-from fastapi.responses import StreamingResponse, JSONResponse
-from fastapi.concurrency import run_in_threadpool
-from app.features.export.schemas import ExportRequest, ExportEdit
-from app.common.export_utils import (
-    export_to_pdf,
-    export_to_pdf_pwc_no_toc,
-    export_to_word_pwc_no_toc,
-    export_to_word,
-    export_to_word_with_metadata,
-    export_to_word_ui_plain,
-    export_to_text,
-    extract_subtitle_from_content,
-    export_to_pdf_with_pwc_template,
-    export_to_pdf_with_pwc_template_with_bullets,
-    export_to_pdf_edit_content,
-    export_to_word_edit_content,
-    html_to_marked_text,build_cover_title,
-)
-from app.common.document_utils import extract_text_from_pdf, extract_text_from_docx,extract_text_from_txt, extract_text_from_pptx,extract_text_from_image,extract_text_from_xlsx
-from io import BytesIO
+from pypdf import PdfReader
+from docx import Document
+import io
 import logging
-import re
-from urllib.parse import quote
-from app.common.export_utils import export_to_word_pwc_standalone
-from app.services.auth_service import validate_jwt_token
-from app.core.config import get_settings
+from typing import Optional
+from pptx import Presentation
+import base64
+import pandas as pd
+from io import BytesIO
+from PIL import Image
 
-router = APIRouter(prefix="/export", tags=["Export"], dependencies=[Depends(validate_jwt_token)])
 logger = logging.getLogger(__name__)
 
-@router.post("/word")
-async def export_word(request: ExportRequest):
-    """Export content to Word document using PwC template"""
+# def extract_text_from_pdf(pdf_bytes: bytes, max_chars: Optional[int] = None) -> str:
+#     """
+#     Extract text from PDF file.
+    
+#     Args:
+#         pdf_bytes: PDF file content as bytes
+#         max_chars: Optional maximum characters limit (None = no limit, extracts all pages)
+    
+#     Returns:
+#         Extracted text from all pages
+#     """
+#     try:
+#         if not pdf_bytes:
+#             logger.warning("Empty PDF file provided")
+#             return ""
+        
+#         pdf_file = io.BytesIO(pdf_bytes)
+#         reader = PdfReader(pdf_file)
+#         text = ""
+#         total_pages = len(reader.pages)
+        
+#         if total_pages == 0:
+#             logger.warning("PDF file has no pages")
+#             return ""
+        
+#         # Extract text from ALL pages
+#         for page_num, page in enumerate(reader.pages, 1):
+#             try:
+#                 page_text = page.extract_text()
+#                 if page_text:
+#                     text += page_text
+#             except Exception as page_error:
+#                 logger.warning(f"Error extracting text from page {page_num}: {page_error}")
+#                 continue  # Continue with next page instead of failing
+            
+#             # Only check limit if max_chars is specified
+#             if max_chars and len(text) >= max_chars:
+#                 logger.warning(f"PDF text extraction reached max_chars limit ({max_chars}) at page {page_num}/{total_pages}")
+#                 break
+        
+#         # Apply truncation only if max_chars is specified
+#         if max_chars:
+#             text = text[:max_chars]
+        
+#         logger.info(f"Extracted {len(text)} characters from {total_pages} PDF pages")
+#         return text
+#     except Exception as e:
+#         logger.error(f"Error extracting PDF text: {e}")
+#         raise
+
+def extract_text_from_pdf(pdf_bytes: bytes, max_chars: Optional[int] = None) -> str:
     try:
-        logger.info(f"[Export] Generating Word document: {request.title}")
-        
-    #     content_type = request.content_type
-    #     word_bytes = export_to_word_pwc_no_toc(
-    #         content=request.content,
-    #         title=request.title,
-    #         subtitle=request.subtitle,
-    #         include_toc=request.include_toc,
-    #         content_type=content_type
-    #     )
-    #     buffer = BytesIO(word_bytes)
+        if not pdf_bytes:
+            logger.warning("Empty PDF file provided")
+            return ""
 
-    #     safe_title = re.sub(r'[^\w\s\-]', '', request.title)
-    #     safe_title = re.sub(r'\s+', '_', safe_title)
-    #     filename = f"{safe_title}.docx"
-    #     encoded_filename = quote(filename, safe='')
-
-    #     return StreamingResponse(
-    #         buffer,
-    #         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    #         headers={
-    #             "Content-Disposition":
-    #             f"attachment; filename*=UTF-8''{encoded_filename}"
-    #         }
-    #     )
-
-    # except Exception as e:
-    #     logger.error(f"[Export] Word export error: {e}")
-    #     raise HTTPException(status_code=500, detail=str(e))
-    #     # Extract subtitle from first line of content if not provided
-        subtitle = request.subtitle
-        content = request.content
-        content_type = request.content_type  # From request body (sent by frontend)
-        
-        logger.info(f"[Export] Content Type from request body: {content_type}")
-        
-        if not subtitle and content:
-            extracted_subtitle, remaining_content = extract_subtitle_from_content(content)
-            if extracted_subtitle:
-                subtitle = extracted_subtitle
-                content = remaining_content
-                logger.info(f"[Export] Extracted subtitle from content: {subtitle[:50]}")
-        
-        # Clean subtitle by removing markdown asterisks
-        if subtitle:
-            subtitle = re.sub(r'\*\*(.+?)\*\*', r'\1', subtitle)
-            subtitle = subtitle.replace('**', '')
-        
-        # For draft content, use subtitle as title and remove original title
-        title = request.title
-        if subtitle:
-            # Use subtitle as the main title on the first page
-            title = subtitle
-            subtitle = None  # Clear subtitle so it doesn't appear twice
-            logger.info(f"[Export] Using subtitle as title for draft content export")
-        
-        # Use enhanced export with metadata if content_type provided or subtitle extracted
-        if content_type or subtitle:
-            logger.info(f"[Export] ✓ Applying content_type '{content_type}' to Word document")
-            word_bytes = export_to_word_with_metadata(
-                content=content, 
-                title=title,
-                subtitle=subtitle,
-                content_type=content_type
-            )
-        else:
-            word_bytes = export_to_word(content, title)
-        
-        buffer = BytesIO(word_bytes)
-        
-        # Sanitize filename to remove special characters and properly encode
-        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
-        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
-        filename = f"{safe_title}.docx"
-        
-        # Use RFC 5987 encoding for the filename in Content-Disposition header
-        encoded_filename = quote(filename, safe='')
-        
-        return StreamingResponse(
-            buffer,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
-        )
-    except Exception as e:
-        logger.error(f"[Export] Word export error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/ppt")
-async def export_ppt(request: ExportRequest):
-    """
-    Export content to PPT using PlusDocs Slides template
-    """
-    try:
-        settings = get_settings()
-        logger.info(f"[Export] Generating PPT document: {request.title}")
-        from app.features.ddc.services.slide_creation_service import PlusDocsClient
-        template_id = settings.PLUSDOCS_TEMPLATE_ID
-        API_TOKEN = settings.PLUSDOCS_API_TOKEN
-        client = PlusDocsClient(API_TOKEN)
-        download_url = client.create_and_wait(
-            prompt=request.content,
-            template_id=template_id,
-            isImage=False
-        )
-        if not download_url:
-            raise HTTPException(status_code=500, detail="PPT generation failed")
-        return JSONResponse({
-            "status": "success",
-            "download_url": download_url
-        })
-    except Exception as e:
-        logger.error(f"[Export] PPT export error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/pdf")
-async def export_pdf(request: ExportRequest):
-    """Export content to PDF document"""
-    try:
-        logger.info(f"[Export] Generating PDF document: {request.title}")
-        
-        pdf_bytes = export_to_pdf(request.content, request.title)
-        buffer = BytesIO(pdf_bytes)
-        
-        # Sanitize filename to remove special characters and properly encode
-        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
-        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
-        filename = f"{safe_title}.pdf"
-        
-        # Use RFC 5987 encoding for the filename in Content-Disposition header
-        encoded_filename = quote(filename, safe='')
-        
-        return StreamingResponse(
-            buffer,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
-        )
-    except Exception as e:
-        logger.error(f"[Export] PDF export error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/pdf-pwc")
-async def export_pdf_pwc(request: ExportRequest):
-    """Export content to PDF document using PwC template with logo and branding"""
-    try:
-        logger.info(f"[Export] Generating PDF document with PwC template: {request.title}")
-        
-        # Extract subtitle from first line of content if not provided
-        subtitle = request.subtitle
-        content = request.content
-        
-        if not subtitle and content:
-            extracted_subtitle, remaining_content = extract_subtitle_from_content(content)
-            if extracted_subtitle:
-                subtitle = extracted_subtitle
-                content = remaining_content
-                logger.info(f"[Export] Extracted subtitle from content: {subtitle[:50]}")
-        
-        # Clean subtitle by removing markdown asterisks
-        if subtitle:
-            subtitle = re.sub(r'\*\*(.+?)\*\*', r'\1', subtitle)
-            subtitle = subtitle.replace('**', '')
-        
-        # For draft content, use subtitle as title and remove original title
-        title = request.title
-        content_type = request.content_type  # From request body
-        if subtitle:
-            # Use subtitle as the main title on the cover page
-            title = subtitle
-            subtitle = None  # Clear subtitle so it doesn't appear twice
-            logger.info(f"[Export] Using subtitle as title for draft content export")
-        
-        logger.info(f"[Export] Content Type from request body: {content_type}")
-        
-        # Generate PWC branded PDF
-        pdf_bytes = export_to_pdf_with_pwc_template(
-            content=content, 
-            title=title,
-            subtitle=subtitle,
-            content_type=content_type
-        )
-        
-        logger.info(f"[Export] PDF generated: {len(pdf_bytes)} bytes")
-        
-        # Create buffer and reset position
-        buffer = BytesIO(pdf_bytes)
-        buffer.seek(0)
-        
-        # Create proper filename with sanitization
-        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
-        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
-        filename = f"{safe_title}.pdf"
-        encoded_filename = quote(filename, safe='')
-        logger.info(f"[Export] Returning PDF with filename: {encoded_filename}")
-        
-        return StreamingResponse(
-            iter([buffer.getvalue()]),
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
-                "Content-Length": str(len(pdf_bytes))
-            }
-        )
-    except FileNotFoundError as missing_template:
-        logger.error("[Export] PwC PDF template missing for pdf-pwc export", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=("PwC PDF template (pwc_pdf_template_2025.pdf) is missing. "
-                    "Ensure the template file is present under app/features/thought_leadership/template/")
-        ) from missing_template
-    except Exception as e:
-        logger.error(f"[Export] PDF-PWC export error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/text")
-async def export_text(request: ExportRequest):
-    """Export content to plain text file"""
-    try:
-        logger.info(f"[Export] Generating text file: {request.title}")
-        
-        content_with_title = f"{request.title}\n{'='*len(request.title)}\n\n{request.content}"
-        text_bytes = export_to_text(content_with_title)
-        buffer = BytesIO(text_bytes)
-        
-        # Sanitize filename to remove special characters and properly encode
-        safe_title = re.sub(r'[^\w\s\-]', '', request.title)  # Remove non-word chars except dash
-        safe_title = re.sub(r'\s+', '_', safe_title)  # Replace spaces with underscores
-        filename = f"{safe_title}.txt"
-        encoded_filename = quote(filename, safe='')
-        
-        return StreamingResponse(
-            buffer,
-            media_type="text/plain",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
-        )
-    except Exception as e:
-        logger.error(f"[Export] Text export error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/word-standalone")
-async def export_word_pwc(request: ExportRequest):
-    """
-    Standalone Word export (PwC template)
-    """
-    return StreamingResponse(
-        BytesIO(
-            export_to_word_pwc_standalone(
-                content=request.content,
-                title=request.title,
-                subtitle=request.subtitle,
-                content_type=request.content_type,
-                references=request.references
-            )
-        ),
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
-
-@router.post("/pdf-pwc-bullets")
-async def export_pdf_pwc_with_bullets(request: ExportRequest):
-    """
-    Standalone PDF export that supports bullet rendering.
-    Does NOT impact existing pdf-pwc flow.
-    """
-    try:
-        
-        pdf_bytes = export_to_pdf_with_pwc_template_with_bullets(
-            content=request.content,
-            title=request.title,
-            subtitle=request.subtitle
-        )
-
-        buffer = BytesIO(pdf_bytes)
-        buffer.seek(0)
-
-        # filename = f"{request.title}.pdf"
-        filename = f"{safe_filename(request.title)}.pdf"
-        return StreamingResponse(
-            iter([buffer.getvalue()]),
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}"
-            }
-        )
-
-    except Exception as e:
-        logger.error("PDF-PWC-BULLETS export failed", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-def safe_filename(value: str) -> str:
-    value = value.replace("“", '"').replace("”", '"')
-    value = value.replace("‘", "'").replace("’", "'")
-    value = re.sub(r"[^\w\-. ]", "", value)
-    return value.strip()
-
-@router.post("/extract-text", include_in_schema=True)
-@router.post("/extract-text/", include_in_schema=True)
-async def extract_text_from_file(file: UploadFile = File(...)):
-    """
-    Extract text from uploaded document (PDF, DOCX, TXT, MD).
-    Extracts content from the document for editing.
-    """
-    try:
-        logger.info(f"[Export] Extracting text from file: {file.filename}")
-        
-        if not file.filename:
-            raise HTTPException(status_code=400, detail="Filename is required")
-        
-        file_content = await file.read()
-        
-        if not file_content:
-            raise HTTPException(status_code=400, detail="File is empty")
-        
-        file_extension = file.filename.lower().split('.')[-1] if '.' in file.filename else ''
-        
-        if not file_extension:
-            raise HTTPException(status_code=400, detail="File extension is required")
-        
-        extracted_text = ""
-        
-        # Extract content from document
+        # Primary: pypdf
         try:
-            if file_extension == 'pdf':
-                extracted_text = extract_text_from_pdf(file_content, max_chars=None)
-            elif file_extension in ['docx', 'doc']:
-                extracted_text = extract_text_from_docx(file_content, max_chars=None)
-            elif file_extension in ['txt', 'md']:
-                extracted_text = extract_text_from_txt(file_content, max_chars=None)
-            elif file_extension in ['pptx', 'ppt']:
-                extracted_text = extract_text_from_pptx(file_content, max_chars=None)
-            elif file_extension in ['jpeg','png', 'jpg']:
-                extracted_text = extract_text_from_image(file_content, file_extension, max_chars=800_000)
-            elif file_extension in ['xlsx']:
-                #extracted_text = extract_text_from_xlsx(file_content, max_chars=None)
-                extracted_text = await run_in_threadpool(extract_text_from_xlsx, file_content, None)
-            else:
-                raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_extension}")
-        except HTTPException:
-            raise
-        except Exception as extraction_error:
-            logger.error(f"[Export] Extraction failed for {file.filename}: {extraction_error}")
-            raise HTTPException(status_code=500, detail=f"Failed to extract text from file: {str(extraction_error)}")
-        print(extracted_text)
-        if not extracted_text:
-            logger.warning(f"[Export] No text extracted from {file.filename}")
-            # Return empty string instead of error - some files might legitimately be empty
-            return JSONResponse(content={"text": ""})
-        
-        logger.info(f"[Export] Successfully extracted {len(extracted_text)} characters from {file.filename}")
-        
-        return JSONResponse(content={"text": extracted_text})
-        
-    except HTTPException:
+            pdf_file = io.BytesIO(pdf_bytes)
+            reader = PdfReader(pdf_file)
+            text = ""
+            total_pages = len(reader.pages)
+
+            if total_pages == 0:
+                logger.warning("PDF file has no pages")
+                return ""
+
+            for page_num, page in enumerate(reader.pages, 1):
+                try:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text
+                except Exception as page_error:
+                    logger.warning(f"Error extracting text from page {page_num}: {page_error}")
+                    continue
+
+                if max_chars and len(text) >= max_chars:
+                    logger.warning(f"PDF text extraction reached max_chars limit ({max_chars}) at page {page_num}/{total_pages}")
+                    break
+
+            if max_chars:
+                text = text[:max_chars]
+
+            if text.strip():
+                logger.info(f"Extracted {len(text)} characters from {total_pages} PDF pages using pypdf")
+                return text
+
+            logger.warning("pypdf returned no text, falling back to pymupdf")
+
+        except Exception as pypdf_error:
+            logger.warning(f"pypdf failed: {pypdf_error}, falling back to pymupdf")
+
+        # Fallback: pymupdf
+        import fitz
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        text = ""
+        for page in doc:
+            text += page.get_text()
+            if max_chars and len(text) >= max_chars:
+                break
+
+        if max_chars:
+            text = text[:max_chars]
+
+        logger.info(f"Extracted {len(text)} characters using pymupdf fallback")
+        return text
+
+    except Exception as e:
+        logger.error(f"Error extracting PDF text: {e}")
         raise
-    except Exception as e:
-        logger.error(f"[Export] Text extraction error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/word-ui")
-async def export_word_ui(request: ExportRequest):
-    """
-    UI-exact Word export (no template, no TOC)
-    """
-    try:
-        word_bytes = export_to_word_ui_plain(
-            content=request.content,
-            title=request.title
-        )
 
-        buffer = BytesIO(word_bytes)
-        filename = f"{re.sub(r'[^\\w\\s-]', '', request.title)}.docx"
 
-        return StreamingResponse(
-            buffer,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
-        )
-    except Exception as e:
-        logger.error(f"UI Word export error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/edit-content/word")
-async def export_edit_content_word(request: ExportEdit):
+def extract_text_from_docx(docx_bytes: bytes, max_chars: Optional[int] = None) -> str:
     """
-    Export edit content to Word document using PwC template.
-    Accepts markdown content; block_types optional (when absent, structure derived from markdown).
-    """
-    try:
-        logger.info(f"[Export] Generating Edit Content Word document: {request.title}")
-        block_types = None
-        if request.block_types:
-            block_types = [bt.model_dump() if hasattr(bt, 'model_dump') else bt for bt in request.block_types]
-        word_bytes = export_to_word_edit_content(
-            content=request.content,
-            title=request.title,
-            subtitle=request.subtitle,
-            references=request.references,
-            block_types=block_types
-        )
-        
-        buffer = BytesIO(word_bytes)
-        filename = f"{safe_filename(request.title)}.docx"
-        
-        return StreamingResponse(
-            buffer,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}"
-            }
-        )
-    except Exception as e:
-        logger.error(f"[Export] Edit Content Word export error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/edit-content/pdf")
-async def export_edit_content_pdf(request: ExportEdit):
-    """
-    Export edit content to PDF document using PwC template.
-    Accepts markdown content; block_types optional (when absent, structure derived from markdown).
-    """
-    try:
-        logger.info(f"[Export] Generating Edit Content PDF document: {request.title}")
-        block_types = None
-        if request.block_types:
-            block_types = [bt.model_dump() if hasattr(bt, 'model_dump') else bt for bt in request.block_types]
-        pdf_bytes = export_to_pdf_edit_content(
-            content=request.content,
-            title=request.title,
-            subtitle=request.subtitle,
-            block_types=block_types
-        )
-        
-        buffer = BytesIO(pdf_bytes)
-        filename = f"{safe_filename(request.title)}.pdf"
-        
-        return StreamingResponse(
-            iter([buffer.getvalue()]),
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}",
-                "Content-Length": str(len(pdf_bytes))
-            }
-        )
-    except Exception as e:
-        logger.error(f"[Export] Edit Content PDF export error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/word-pwc-mi-module")
-async def export_word_pwc_no_toc_module_api(request: ExportRequest):
-    # title = build_cover_title(
-    # module=normalize_module_name(request.content_type),
-    # client=request.client)
-    # title=('Refine Content' if request.content_type == "refine-content"
-    #     else request.title
-    # )
-    title= request.title
-    logger.info(f"?>>>>>WORD>>>>{request.title}:::::::{request.content_type}******{title}")
-    filename_source = request.content_type or title
-    logger.info(f"******WORD*****{filename_source}")
-    # if request.content_type.strip().lower() == "article":
-    content_type = (request.content_type or "").strip().lower()
-    if content_type == "article":
-        include_toc=True
-    else:
-        include_toc=False
+    Extract text from DOCX file.
     
-    logger.info(f"******include_toc*****{include_toc}")
-    return StreamingResponse(
-        BytesIO(
-            export_to_word_pwc_no_toc(
-                content=request.content,
-                # title=request.title,
-                title=title,
-                subtitle=request.subtitle,
-                include_toc=include_toc,
-                content_type=request.content_type)
-        ),
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={
-            "Content-Disposition": f"attachment; filename={safe_filename(filename_source)}.docx"
-        }
-    )
-
-@router.post("/pdf-pwc-mi-module")
-async def export_pdf_pwc_no_toc_module_api(request: ExportRequest):
-    logger.info(f"[PDF API] client = received: {request.client}")
-#     title = build_cover_title(
-#         module=normalize_module_name(request.content_type),
-#     client=request.client
-# )
-    # title=('Refine Content' if request.content_type == "refine-content"
-    #     else request.title
-    # )
-    title= request.title
+    Args:
+        docx_bytes: DOCX file content as bytes
+        max_chars: Optional maximum characters limit (None = no limit, extracts all content)
     
-    logger.info(f"?>>>>>PDF>>>>{request.title}:::::::{request.content_type}******{title}")
-    filename_source = request.content_type or title
-    logger.info(f"******PDF*****{filename_source}")
-    pdf_bytes = export_to_pdf_pwc_no_toc(
-        content=request.content,
-        title=title,
-        # title=request.title,
-        subtitle=request.subtitle,
-        content_type=request.content_type,
-        client=request.client,
-        include_toc=False
-    )
+    Returns:
+        Extracted text from all paragraphs
+    """
+    try:
+        if not docx_bytes:
+            logger.warning("Empty DOCX file provided")
+            return ""
+        
+        doc = Document(io.BytesIO(docx_bytes))
+        paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
+        text = "\n".join(paragraphs)
+        
+        if not text:
+            logger.warning("DOCX file contains no text content")
+            return ""
+        
+        # Apply truncation only if max_chars is specified
+        if max_chars and len(text) > max_chars:
+            logger.warning(f"DOCX text extraction truncated to max_chars limit ({max_chars})")
+            text = text[:max_chars]
+        
+        logger.info(f"Extracted {len(text)} characters from DOCX file ({len(paragraphs)} paragraphs)")
+        return text
+    except Exception as e:
+        logger.error(f"Error extracting DOCX text: {e}")
+        raise
 
-    return StreamingResponse(
-        BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"attachment; filename={safe_filename(filename_source)}.pdf"
-        }
-    )
+def extract_text_from_xlsx(xlsx_bytes: bytes, max_chars: Optional[int] = None) -> str:
+    """
+    Extract text from xslx file.
+    
+    Args:
+        docx_bytes: xlsx file content as bytes
+        max_chars: Optional maximum characters limit (None = no limit, extracts all content)
+    
+    Returns:
+        Extracted text from all sheets
+    """
+    try:
+        if not xlsx_bytes:
+            logger.warning("Empty xlsx file provided")
+            return ""
+        # chart_data_file_bytes = await xlsx_bytes.read()
 
-def get_router():
-    """Get export router for mounting"""
-    return router
+        chart_data_file_bytes = xlsx_bytes
 
-def normalize_module_name(module: str) -> str:
-    mapping = {
-        "industry-insights": "Industry Insights",
-        "industry_insights": "Industry Insights",
-        "proposal-inputs":"Proposal Inputs",
-        "pov": "Point of View",
-        "prep-meet": "Client Preparation Meeting",
-    }
-    return mapping.get(module.lower(), module)
+        sheets = pd.read_excel(BytesIO(chart_data_file_bytes), sheet_name=None, engine="openpyxl")
+        raw_text_chart = "".join(f"=== {name} ===\n{df.to_csv(index=False)}" for name, df in sheets.items())    
+                
+        logger.info(f"Extracted following data from xlsx file {raw_text_chart}")
+        return "<xlsx_data>"+raw_text_chart+"</xlsx_data>"
+    
+    except Exception as e:
+        logger.error(f"Error extracting xlsx text: {e}")
+        raise
+
+# def extract_text_from_image(image_bytes: bytes, file_extension: str, max_chars: Optional[int] = None) -> str:
+#     """
+#     Extract text from image file.
+    
+#     Args:
+#         docx_bytes: image file content as bytes
+#         max_chars: Optional maximum characters limit (None = no limit, extracts all content)
+    
+#     Returns:
+#         Extracted image bytes
+#     """
+#     try:
+#         if not image_bytes:
+#             logger.warning("Empty image file provided")
+#             return ""
+        
+#         img_bytes = base64.b64encode(image_bytes).decode("utf-8")    
+        
+#         #logger.info(f"Extracted image encoded data {img_bytes}")
+#         char_count = len(img_bytes)
+
+#         logger.info(f"Extracted image encoded data char count {char_count}")
+
+#         return "<image_data>"+img_bytes+"<image_ext>"+file_extension
+#     except Exception as e:
+#         logger.error(f"Error extracting image data: {e}")
+#         raise
+def extract_text_from_image(image_bytes: bytes, file_extension: str, max_chars: Optional[int] = None) -> str:
+    """
+    Extract text from image file.
+    
+    Args:
+        docx_bytes: image file content as bytes
+        max_chars: Optional maximum characters limit (None = no limit, extracts all content)
+    
+    Returns:
+        Extracted image bytes
+    """
+    try:
+        if not image_bytes:
+            logger.warning("Empty image file provided")
+            return ""
+        logger.info(f"We are here")
+        # img_bytes = base64.b64encode(image_bytes).decode("utf-8")    
+        
+        # #logger.info(f"Extracted image encoded data {img_bytes}")
+        # char_count = len(img_bytes)
+
+        # logger.info(f"Extracted image encoded data char count {char_count}")
+
+        # Optional: resize image to reduce size (helps with token limits)
+        img = Image.open(io.BytesIO(image_bytes))
+        max_dimension = 1024  # adjust to reduce size
+        img.thumbnail((max_dimension, max_dimension))
+        buffered = io.BytesIO()
+        img.save(buffered, format=img.format)
+        resized_bytes = buffered.getvalue()
+        
+        # Convert to Base64
+        img_b64 = base64.b64encode(resized_bytes).decode("utf-8")
+        
+        # Truncate if needed
+        if max_chars:
+            img_b64 = img_b64[:max_chars]
+
+        return "<image_data>"+img_b64+"<image_ext>"+file_extension
+    except Exception as e:
+        logger.error(f"Error extracting image data: {e}")
+        raise
+
+def extract_text_from_txt(txt_bytes: bytes, max_chars: Optional[int] = None) -> str:
+    """
+    Extract text from TXT file.
+    
+    Args:
+        txt_bytes: TXT file content as bytes
+        max_chars: Optional maximum characters limit (None = no limit, extracts all content)
+    
+    Returns:
+        Extracted text from file
+    """
+    try:
+        # Try UTF-8 first, fallback to other encodings if needed
+        try:
+            text = txt_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            # Fallback to latin-1 which can decode any byte sequence
+            logger.warning("UTF-8 decoding failed, trying latin-1 fallback")
+            text = txt_bytes.decode('latin-1')
+        
+        # Apply truncation only if max_chars is specified
+        if max_chars and len(text) > max_chars:
+            logger.warning(f"TXT text extraction truncated to max_chars limit ({max_chars})")
+            text = text[:max_chars]
+        
+        logger.info(f"Extracted {len(text)} characters from TXT file")
+        return text
+    except Exception as e:
+        logger.error(f"Error extracting TXT text: {e}")
+        raise
+
+
+
+def extract_text_from_pptx(pptx_bytes: bytes, max_chars: Optional[int] = None) -> str:
+    """
+    Extract text from PPTX file.
+    
+    Args:
+        pptx_bytes: PPTX file content as bytes
+        max_chars: Optional maximum characters limit (None = no limit, extracts all content)
+    
+    Returns:
+        Extracted text from all slides
+    """
+    try:
+        if not pptx_bytes:
+            logger.warning("Empty PPTX file provided")
+            return ""
+        
+        prs = Presentation(io.BytesIO(pptx_bytes))
+        text = ""
+        total_slides = len(prs.slides)
+        
+        if total_slides == 0:
+            logger.warning("PPTX file has no slides")
+            return ""
+        
+        # Extract text from all slides
+        for slide_num, slide in enumerate(prs.slides, 1):
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    text += shape.text + "\n"
+            
+            # Only check limit if max_chars is specified
+            if max_chars and len(text) >= max_chars:
+                logger.warning(f"PPTX text extraction reached max_chars limit ({max_chars}) at slide {slide_num}/{total_slides}")
+                break
+        
+        # Apply truncation only if max_chars is specified
+        if max_chars:
+            text = text[:max_chars]
+        
+        logger.info(f"Extracted {len(text)} characters from {total_slides} PPTX slides")
+        return text
+    except Exception as e:
+        logger.error(f"Error extracting PPTX text: {e}")
+        raise
