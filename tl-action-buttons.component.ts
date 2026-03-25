@@ -10,56 +10,68 @@ import base64
 import pandas as pd
 from io import BytesIO
 from PIL import Image
+from docx2pdf import convert
+import pythoncom
 
 logger = logging.getLogger(__name__)
 
 
+import os
+import tempfile
+import logging
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
 def convert_word_bytes_to_pdf(word_bytes: bytes, file_extension: str = "docx") -> bytes:
     """
-    Convert Word file bytes (.doc/.docx) to PDF bytes using docx2pdf.
+    Convert DOC/DOCX bytes → PDF bytes using docx2pdf (requires MS Word on Windows).
 
-    Notes:
-    - On Windows, docx2pdf relies on Microsoft Word automation.
-    - This function writes temporary files and returns PDF bytes.
+    Args:
+        word_bytes:     Raw bytes of the .doc or .docx file.
+        file_extension: "doc" or "docx" (with or without leading dot).
+
+    Returns:
+        PDF file content as bytes.
     """
     if not word_bytes:
-        logger.warning("Empty Word file provided for PDF conversion")
         return b""
 
     extension = file_extension.lower().lstrip(".")
     if extension not in {"doc", "docx"}:
-        raise ValueError(f"Unsupported Word extension for conversion: {file_extension}")
+        raise ValueError(f"Unsupported Word extension: {file_extension!r}")
 
     try:
-        from docx2pdf import convert
-    except ImportError as import_error:
-        logger.error("docx2pdf is not installed, cannot convert Word to PDF")
-        raise RuntimeError("docx2pdf is required for Word to PDF conversion") from import_error
+        with tempfile.TemporaryDirectory() as tmp_dir:  # Auto-deleted on block exit
+            input_path  = os.path.join(tmp_dir, f"input.{extension}")
+            output_path = os.path.join(tmp_dir, "output.pdf")
 
-    try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            input_path = os.path.join(temp_dir, f"source.{extension}")
-            output_path = os.path.join(temp_dir, "converted.pdf")
+            with open(input_path, "wb") as fh:
+                fh.write(word_bytes)
 
-            with open(input_path, "wb") as source_file:
-                source_file.write(word_bytes)
+            logger.info(f"Converting {extension.upper()} → PDF using docx2pdf")
 
             convert(input_path, output_path)
 
             if not os.path.exists(output_path):
-                raise RuntimeError("Word to PDF conversion did not produce an output file")
+                raise RuntimeError("docx2pdf ran but no PDF was created")
 
-            with open(output_path, "rb") as pdf_file:
-                pdf_bytes = pdf_file.read()
+            with open(output_path, "rb") as fh:
+                pdf_bytes = fh.read()
 
             if not pdf_bytes:
-                raise RuntimeError("Generated PDF is empty after Word conversion")
+                raise RuntimeError("docx2pdf produced an empty PDF")
 
-            logger.info("Successfully converted %s to PDF (%d bytes)", extension, len(pdf_bytes))
-            return pdf_bytes
-    except Exception as conversion_error:
-        logger.error("Word to PDF conversion failed: %s", conversion_error)
-        raise
+            logger.info(f"docx2pdf conversion successful ({len(pdf_bytes)} bytes)")
+            return pdf_bytes  # tmp_dir and all its contents are deleted after this block
+
+    except ImportError as e:
+        raise RuntimeError(
+            f"Missing dependency: {e}. "
+        ) from e
+    except Exception as e:
+        logger.exception("Word to PDF conversion failed")
+        raise RuntimeError(f"docx2pdf conversion failed: {str(e)}") from e
 
 # def extract_text_from_pdf(pdf_bytes: bytes, max_chars: Optional[int] = None) -> str:
 #     """
@@ -383,4 +395,3 @@ def extract_text_from_pptx(pptx_bytes: bytes, max_chars: Optional[int] = None) -
     except Exception as e:
         logger.error(f"Error extracting PPTX text: {e}")
         raise
-
