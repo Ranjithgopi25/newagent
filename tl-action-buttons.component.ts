@@ -186,21 +186,25 @@ def ask_user_choice() -> bool:
 def process_file(file_path: str) -> Dict[str, Any]:
     """
     Load a file, ask the user what to do, then either:
-      • NO  → save a timestamped copy locally under ./downloads/
-      • YES → token → site → drive → folder → list → upload → list again
+      • Always → save a timestamped copy locally under ./downloads/
+      • NO     → token flow is skipped
+      • YES    → token → site → drive → folder → list → upload → list again
     """
     file_bytes, path = load_file(file_path)
+
+    # Keep a local copy regardless of upload choice.
+    local_path = download_locally(file_bytes, path)
 
     result: Dict[str, Any] = {
         "file_name":       path.name,
         "file_size_bytes": len(file_bytes),
         "file_format":     path.suffix.lower().lstrip("."),
+        "local_path":     local_path,
     }
 
     if not ask_user_choice():
-        local_path = download_locally(file_bytes, path)
-        print(f"📥 Saved locally → {local_path}")
-        result.update({"status": "saved_locally", "path": local_path})
+        print(f"📥 SharePoint upload not requested; saved locally → {local_path}")
+        result.update({"status": "saved_locally"})
         return result
 
     # ── SharePoint flow (steps 1 → 4) ────────────────────────────────────────
