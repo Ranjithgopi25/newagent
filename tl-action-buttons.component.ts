@@ -1,4 +1,5 @@
 
+
 import { Component, EventEmitter, OnInit, OnDestroy, HostListener, ViewChild, ElementRef, AfterViewChecked, ChangeDetectorRef, inject, Output } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -147,6 +148,7 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
   showGuidedDialog: boolean = false;
   showPromptSuggestions: boolean = false;
   showLandingPage: boolean = true;
+  showExploreShowcase: boolean = false;
   landingPageFadingOut: boolean = false;
   showCortexReminder: boolean = false;
   cortexReminderConfirmed: boolean = false;
@@ -2512,6 +2514,10 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.showDraftForm = !this.showDraftForm;
   }
 
+  onExploreWhatsNextClick(): void {
+    this.showExploreShowcase = true;
+  }
+
   selectFlow(flow: 'ppt' | 'thought-leadership' | 'market-intelligence'): void {
     // Close My Requests panel when switching flows
     this.closeMyRequestsPanel();
@@ -2580,6 +2586,7 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
     
     // Reset to home state (landing page)
     this.showLandingPage = true;
+    this.showExploreShowcase = false;
     this.selectedFlow = undefined;
     this.showDraftForm = false;
     this.showGuidedDialog = false;
@@ -2884,7 +2891,7 @@ export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
       this.showGuidedDialog = true;
     }
   }
-  
+
   onWorkflowSelected(workflowId: string): void {
     console.log('[ChatComponent] DDC Workflow selected:', workflowId);
     // Set context: opened from guided dialog
