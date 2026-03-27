@@ -5936,7 +5936,7 @@
   font-size: 1rem;
   font-weight: 700;
   color: var(--text-primary);
-  background: linear-gradient(135deg, #ffffff 0%, rgba(255, 159, 0, 0.03) 100%);
+  background-color: #f6deca;
   border-bottom: 1px solid #e6e6e9;
   padding: 0.7rem 0.9rem;
   min-height: 52px;
@@ -5948,7 +5948,7 @@
 
 .explore-showcase-body {
   margin: 0;
-  color: var(--text-secondary);
+  color: #6b7280;
   font-size: 0.8rem;
   line-height: 1.5;
   font-weight: 500;
