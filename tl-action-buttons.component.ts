@@ -5916,12 +5916,13 @@
 
 .explore-showcase-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.9rem;
   align-items: stretch;
 }
 
 .explore-showcase-card {
+  grid-column: span 2;
   border: 1px solid #9ca3af;
   background-color: #fff;
   min-height: 250px;
@@ -5962,22 +5963,41 @@
   padding: 0.85rem 0.9rem 0.95rem 0.9rem;
 }
 
-.bottom-left {
-  grid-column: 1 / span 2;
-}
+.explore-showcase-grid {
+  .top-left {
+    grid-column: 1 / span 2;
+  }
 
-.bottom-right {
-  grid-column: 3;
+  .top-center {
+    grid-column: 3 / span 2;
+  }
+
+  .top-right {
+    grid-column: 5 / span 2;
+  }
+
+  // Center the second row (cards 4 and 5) in the middle
+  .bottom-left {
+    grid-column: 2 / span 2;
+  }
+
+  .bottom-right {
+    grid-column: 4 / span 2;
+  }
 }
 
 @media (max-width: 900px) {
   .explore-showcase-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 
-  .bottom-left,
-  .bottom-right {
-    grid-column: auto;
+    .explore-showcase-card,
+    .top-left,
+    .top-center,
+    .top-right,
+    .bottom-left,
+    .bottom-right {
+      grid-column: auto;
+    }
   }
 
   .explore-showcase-card {
