@@ -2936,14 +2936,14 @@
             </div>
             <div class="explore-showcase-card bottom-left">
               <div class="explore-showcase-title">Workshop Architect</div>
-                A structured, repeatable solution for designing and delivering high-impact client workshops and experiences – leveraging proven methodologies, curated assets, and intelligent guidance to drive consistent, high-quality outputs at scale 
               <p class="explore-showcase-body">
+                A structured, repeatable solution for designing and delivering high-impact client workshops and experiences – leveraging proven methodologies, curated assets, and intelligent guidance to drive consistent, high-quality outputs at scale
               </p>
             </div>
             <div class="explore-showcase-card bottom-right">
               <div class="explore-showcase-title">Deliverable Builder</div>
-                Generate and refine client-ready deliverables by combining structured templates with client-specific inputs—enabling consistent, high-quality presentations and proposals across repeatable use cases
               <p class="explore-showcase-body">
+                Generate and refine client-ready deliverables by combining structured templates with client-specific inputs—enabling consistent, high-quality presentations and proposals across repeatable use cases
               </p>
             </div>
           </div>
