@@ -1,1084 +1,2756 @@
+import { Injectable } from '@angular/core';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { Observable, from, switchMap } from 'rxjs';
+import { Message, ChatRequest, DraftRequest, ThoughtLeadershipRequest, ResearchRequest, ArticleRequest, BestPracticesRequest, PodcastRequest, UpdateSectionRequest } from '../models';
+import { environment } from '../../../environments/environment';
+import { MsalService } from '@azure/msal-angular';
 
-import { Component, Input, ViewChild, ElementRef, HostListener, Output, EventEmitter, OnInit } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { HttpClient } from '@angular/common/http';
-import { ThoughtLeadershipMetadata, Message } from '../../../../../core/models';
-import { CanvasStateService } from '../../../../../core/services/canvas-state.service';
-import { TlChatBridgeService } from '../../../../../core/services/tl-chat-bridge.service';
-import { ChatService } from '../../../../../core/services/chat.service';
-import { ToastService } from '../../../../../core/services/toast.service';
-import { ChatEditWorkflowService } from '../../../../../core/services/chat-edit-workflow.service';
-import { environment } from '../../../../../../environments/environment';
-import { TlRequestFormComponent } from '../../../../phoenix/TL/request-form';
-import { AuthFetchService } from '../../../../../core/services/auth-fetch.service';
-import { TlFlowService } from '../../../../../core/services/tl-flow.service';
-import { extractDocumentTitle } from '../../../../../core/utils/edit-content.utils';
-import { formatFinalArticleWithBlockTypes} from '../../../../../core/utils/edit-content.utils';
-import { BlockTypeInfo } from '../../../../../core/utils/edit-content.utils';
-import { renderMarkdownForDisplay } from '../../../../../core/utils/edit-content.utils';
+// Chat History Models
+export interface ChatSessionSummary {
+  session_id: string;
+  source: string;
+  title?: string;
+  preview: string;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
 
-@Component({
-    selector: 'app-tl-action-buttons',
-    imports: [CommonModule, TlRequestFormComponent],
-    templateUrl: './tl-action-buttons.component.html',
-    styleUrls: ['./tl-action-buttons.component.scss']
+export interface ChatSessionDetail {
+  session_id: string;
+  source: string;
+  title?: string;
+  conversation: {
+    messages: Message[];
+  };
+  created_at: string;
+  updated_at: string;
+}
+
+@Injectable({
+  providedIn: 'root'
 })
-export class TlActionButtonsComponent implements OnInit {
-  @Input() metadata!: ThoughtLeadershipMetadata;
-  @Input() messageId?: string;
-  @Input() message?: Message;  // Optional: Full message for accessing paragraph_edits
-  @Input() selectedFlow?: 'ppt' | 'thought-leadership' | 'market-intelligence';
-  @ViewChild('exportButton') exportButton?: ElementRef<HTMLButtonElement>;
-  
-  isConvertingToPodcast = false;
-  showExportDropdown = false;
-  isCopied = false;
-  isExporting = false;
-  isExported = false;
-  exportFormat = '';
-  showRequestForm = false;
-  translatedContent = '';
-  isPreparingDocument = false;
-  isDocumentPrepared = false;
-
-  @Output() raisePhoenix = new EventEmitter<void>();
-  @Output() exportRequested = new EventEmitter<{ format: 'word' | 'pdf' | 'ppt', component: any }>();
-  @Output() copyRequested = new EventEmitter<{ content: string, component: any }>();
-
-  @HostListener('document:click', ['$event'])
-  onDocumentClick(event: MouseEvent): void {
-    const target = event.target as HTMLElement;
-    const exportDropdown = target.closest('.export-dropdown');
-    if (!exportDropdown && this.showExportDropdown) {
-      this.showExportDropdown = false;
+export class ChatService {
+  private get apiUrl(): string {
+    // Support runtime configuration via window._env (for production)
+    // Validate URL to prevent open redirect attacks (CWE-601)
+    const windowApiUrl = (window as any)._env?.apiUrl;
+    const configuredUrl = windowApiUrl || environment.apiUrl || '';
+    
+    if (configuredUrl && windowApiUrl) {
+      // If window._env.apiUrl is set, validate it before using
+      try {
+        const url = new URL(configuredUrl);
+        // Only allow http and https protocols
+        if (!['http:', 'https:'].includes(url.protocol)) {
+          console.error('[ChatService] Invalid API URL protocol. Using environment.apiUrl instead.');
+          return environment.apiUrl || '';
+        }
+      } catch (e) {
+        console.error('[ChatService] Invalid API URL format. Using environment.apiUrl instead.');
+        return environment.apiUrl || '';
+      }
     }
+    
+    return configuredUrl;
   }
+  
 
   constructor(
-    private canvasStateService: CanvasStateService,
     private http: HttpClient,
-    private tlChatBridge: TlChatBridgeService,
-    private authFetchService: AuthFetchService,
-    private chatService: ChatService,
-    private toastService: ToastService,
-    private editWorkflowService: ChatEditWorkflowService,
-    private sanitizer: DomSanitizer,
-    private tlFlowService: TlFlowService
-  ) {}
-  
-
-  ngOnInit(): void {
-    console.log('[TL Action Buttons] Component initialized with metadata:', {
-      contentType: this.metadata?.contentType,
-      hasPodcastUrl: !!this.metadata?.podcastAudioUrl,
-      podcastUrl: this.metadata?.podcastAudioUrl?.substring(0, 80),
-      showActions: this.metadata?.showActions,
-      isPodcast: this.isPodcast
-    });
-  }
-private exportWordNewLogic(): void {
-  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-    this.toastService.error('Content is not available yet.');
-    return;
+    private msalService: MsalService
+  ) {
+    console.log('[ChatService] Constructor - apiUrl:', this.apiUrl);
+    console.log('[ChatService] window._env:', (window as any)._env);
+    console.log('[ChatService] environment.apiUrl:', environment.apiUrl);
   }
 
-  // Prepare content according to new logic
-  const plainText = this.metadata.fullContent
-    .replace(/<br>/g, '\n')
-    .replace(/<[^>]+>/g, ''); // strip HTML
-
-  const title = this.metadata.topic?.trim() || 'Generated Document';
-  const filename = `${this.sanitizeFilename(title)}.docx`;
-
-  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-  const endpoint = `${apiUrl}/api/v1/export/word-standalone`; 
-
-  this.authFetchService.authenticatedFetch(endpoint, {
-    method: 'POST',
-    body: JSON.stringify({
-      content: plainText,
-      title,
-      content_type: this.metadata.contentType
-    })
-  })
-    .then(response => {
-      if (!response.ok) throw new Error('Failed to generate Word document');
-      return response.blob();
-    })
-    .then(blob => {
-      return this.downloadBlobWithSaveDialog(blob, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    })
-    .then(() => {
-      this.resetExportState();
-    })
-    .catch(err => {
-      // Log generic message without full error object to prevent information leakage
-      console.error('[TL Action Buttons] Word document export failed');
-      this.toastService.error('Failed to generate Word document. Please try again.');
-      this.isExporting = false;
-    });
-}
-
-  // private isEditContent(): boolean {
-  //   // Check if this is edit content workflow
-  //   // Edit content may have contentType 'edit-content' 
-  //   return this.metadata?.contentType === 'edit-content';
-  // }
-
-
-
-  downloadWord(): void {
-    // this.exportDocument('/api/v1/export/word', 'docx', 'docx');
-    const isSocialModule = this.metadata?.contentType === 'socialMedia';
-    const isEditContent = this.metadata?.contentType === 'edit-article';
-    const isMarketModule = this.metadata?.contentType === 'conduct-research'; 
-    const isindustryModule = this.metadata?.contentType === 'industry-insights';
-    const isproposalModule = this.metadata?.contentType === 'proposal-inputs';
-    const isprepMeetModule = this.metadata?.contentType === 'prep-meet';
-    const isPovModule = this.metadata?.contentType === 'pov';
-    const isDraftModule = this.metadata?.contentType === 'article' || 'blog' ||'executive_brief';
-    const isrefineModule = this.metadata?.contentType === 'refine-content';
-    console.log('[TL Action Buttons] downloadWord() called:', {
-      contentType: this.metadata?.contentType,
-      selectedFlow: this.selectedFlow,
-      isSocialModule,
-      isPovModule,isrefineModule,
-      isMarketModule,
-      timestamp: new Date().toISOString()
-    });
-    
-    if (isEditContent) {
-      this.exportEditContentWord();
-    } else if (isSocialModule) {
-      this.exportUIWord();  
-    }
-    else if (isindustryModule || isprepMeetModule || isproposalModule || isMarketModule || isrefineModule ){
-       this.exportDocument('/api/v1/export/word-pwc-mi-module', 'docx', 'docx');
-    }
-    else if (isPovModule ) {
-      this.exportDocument('/api/v1/export/word', 'docx', 'docx');
-    }
-    else if (isDraftModule){
-      this.exportDocument('/api/v1/export/word', 'docx', 'docx'); 
-    }
-    else {
-      console.log("Export word 2")
-      this.exportDocument('/api/v1/export/word', 'docx', 'docx'); 
-    }
-  }
-
-  /** Extract export title from markdown: prefer # Title (level-1), then ## heading, then first short non-list line. */
-  private getEditContentExportTitleAndContent(): { content: string; title: string } {
-    const content = this.metadata.fullContent || '';
-    const lines = content.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
-    let title = '';
-    let fallbackHeading = '';
-    for (const line of lines) {
-      const h1 = line.match(/^#\s+(.+)$/);
-      if (h1 && h1[1]) {
-        title = h1[1].replace(/\*\*/g, '').trim();
-        break;
-      }
-      const hAny = line.match(/^#+\s+(.+)$/);
-      if (hAny && hAny[1] && !fallbackHeading) {
-        fallbackHeading = hAny[1].replace(/\*\*/g, '').trim();
-      }
-      if (!title && !/^#+\s/.test(line) && line.length < 120 && !/^[-*]\s/.test(line) && !/^\d+\.\s/.test(line)) {
-        title = line.replace(/\*\*/g, '').trim();
-        break;
-      }
-    }
-    return { content, title: title || fallbackHeading || 'Revised Article' };
-  }
-
-  private async exportEditContentWord(): Promise<void> {
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      alert('Content is not available yet.');
-      return;
-    }
-    this.isExporting = true;
-    try {
-      const { content, title: exportTitle } = this.getEditContentExportTitleAndContent();
-      const finalTitle = exportTitle;
-      const filename = `${this.sanitizeFilename(finalTitle)}.docx`;
-      this.chatService.exportEditContentToWord({
-        content,
-        title: exportTitle,
-        block_types: [],
-        content_type: this.metadata.contentType
-      }).subscribe({
-        next: (blob: Blob) => {
-          this.downloadBlobWithSaveDialog(blob, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document').then(() => {
-            this.resetExportState();
-          }).catch(err => {
-            // Log generic message without full error object to prevent information leakage
-            console.error('[TL Action Buttons] Download failed');
-            this.isExporting = false;
-          });
-        },
-        error: (error) => {
-          // Log generic message without full error object to prevent information leakage
-          console.error('[TL Action Buttons] Word export failed');
-          alert('Failed to generate Word document. Please try again.');
-          this.isExporting = false;
-        }
-      });
-    } catch (error) {
-      // Log generic message without full error object to prevent information leakage
-      console.error('[TL Action Buttons] Word export exception');
-      alert('Failed to generate Word document. Please try again.');
-      this.isExporting = false;
-    }
-  }
-
-  downloadPDF(): void {
-    // Consider message as 'market module' when contentType is conduct-research or selectedFlow is market-intelligence
-    const contentType = String(this.metadata?.contentType || '');
-    const isEditContent = this.metadata?.contentType === 'edit-article';
-    const isMarketModule = contentType === 'conduct-research';
-    const isIndustryModule = contentType === 'industry-insights';
-    const isproposalModule = contentType === 'proposal-inputs';
-    const isprepMeetModule = contentType === 'prep-meet';
-    const isPovModule = contentType === 'pov';
-    const isDraftModule = contentType === 'article'||'blog'||'executive_brief';
-    const isrefineModule = this.metadata?.contentType === 'refine-content';
-    const isConductResearch = this.metadata?.contentType === 'conduct-research';
-    console.log('[TL Action Buttons] downloadPDF() called:', {
-      contentType,
-      selectedFlow: this.selectedFlow,
-      isMarketModule,
-      isIndustryModule,
-      isPovModule,
-      isprepMeetModule,
-      isproposalModule,isrefineModule,
-      timestamp: new Date().toISOString()
-    });
-      if (isEditContent) {
-        this.exportEditContentPDF();
-        return;
-    }
-      else if (isIndustryModule || isprepMeetModule || isproposalModule || isMarketModule || isrefineModule || isConductResearch ){
-          this.exportDocument('/api/v1/export/pdf-pwc-mi-module', 'pdf', 'pdf');
-          return;
- 
-      }
-      else if (isPovModule ) {
-        this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
-        return;
-      }
-      else if(isDraftModule){
-        this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
-        return;
-      }
-      else {
-        this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
-      }
-    // const endpoint = isMarketModule
-    //   ? '/api/v1/export/pdf-pwc-no-toc'
-    //   : '/api/v1/export/pdf-pwc';
-    
-    // console.log('[TL Action Buttons] Using endpoint:', endpoint);
-    // this.exportDocument(endpoint, 'pdf', 'pdf');
-  }
-
-  private async exportEditContentPDF(): Promise<void> {
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      alert('Content is not available yet.');
-      return;
-    }
-    this.isExporting = true;
-    try {
-      const { content, title: exportTitle } = this.getEditContentExportTitleAndContent();
-      const finalTitle = exportTitle;
-      const filename = `${this.sanitizeFilename(finalTitle)}.pdf`;
-      this.chatService.exportEditContentToPDF({
-        content,
-        content_type: this.metadata.contentType,
-        title: exportTitle,
-        block_types: []
-      }).subscribe({
-        next: (blob: Blob) => {
-          this.downloadBlobWithSaveDialog(blob, filename, 'application/pdf').then(() => {
-            this.resetExportState();
-          }).catch(err => {
-            // Log generic message without full error object to prevent information leakage
-            console.error('[TL Action Buttons] PDF download failed');
-            this.isExporting = false;
-          });
-        },
-        error: (error) => {
-          // Log generic message without full error object to prevent information leakage
-          console.error('[TL Action Buttons] PDF export failed');
-          alert('Failed to generate PDF document. Please try again.');
-          this.isExporting = false;
-        }
-      });
-    } catch (error) {
-      // Log generic message without full error object to prevent information leakage
-      console.error('[TL Action Buttons] PDF export exception');
-      alert('Failed to generate PDF document. Please try again.');
-      this.isExporting = false;
-    }
-  }
-  
-  downloadPPT(): void {
-    this.exportPPT('/api/v1/export/ppt');
-  }
-
-  downloadPodcast(): void {
-    if (this.metadata.podcastAudioUrl && this.metadata.podcastFilename) {
-      const link = document.createElement('a');
-      link.href = this.metadata.podcastAudioUrl;
-      link.download = this.metadata.podcastFilename;
-      link.click();
-    }
-  }
-
-  cleanedDocumentText!: string;
-  documentTitle!: string;
-  preGeneratedDocFile: File | null = null;
-  isGeneratingDocument = false;
-
-  onRaisePhoenix(): void {
-
-    this.cleanedDocumentText = this.metadata.fullContent
-    .replace(/<br>/g, '\n')
-    .replace(/<[^>]+>/g, '');
-
-    const lines = this.cleanedDocumentText
-    .split('\n')
-    .filter(line => line.trim());
-
-    this.documentTitle = lines.length > 0
-    ? lines[0].substring(0, 150)
-    : 'Generated Document';
-
-    this.showRequestForm = true;
-    this.raisePhoenix.emit();
-  }
-
-  onReadyToPublish(): void {
-    // Check if content is available
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      this.toastService.error('Content is not available yet.');
-      return;
-    }
-
-    this.isPreparingDocument = true;
-    this.isDocumentPrepared = false;
-    this.toastService.info('Preparing document for publication...');
-
-    // Clean content (same pattern as onRaisePhoenix)
-    const cleanedText = this.metadata.fullContent
-      .replace(/<br>/g, '\n')
-      .replace(/<[^>]+>/g, '');
-
-    const title = this.metadata.topic?.trim() || 'Generated Document';
-
-    // Generate DOCX via API
-    const plainText = cleanedText;
-    const filename = 'generated_content.docx';
-
-    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-    const endpoint = `${apiUrl}/api/v1/export/word-standalone`;
-
-    console.log('[TL Action Buttons] Generating document for ready-to-publish:', { 
-      title, 
-      contentType: this.metadata.contentType 
-    });
-
-    this.authFetchService.authenticatedFetch(endpoint, {
-      method: 'POST',
-      body: JSON.stringify({
-        content: plainText,
-        title,
-        content_type: this.metadata.contentType
-      })
-    })
-      .then(response => {
-        if (!response.ok) throw new Error('Failed to generate Word document');
-        return response.blob();
-      })
-      .then(blob => {
-        // Create File object from blob
-        const file = new File(
-          [blob], 
-          filename, 
-          { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }
-        );
-        
-        // Store in component property (following onRaisePhoenix pattern)
-        this.preGeneratedDocFile = file;
-        
-        // Store in service for ready-to-publish-flow to access
-        this.tlFlowService.setPreGeneratedDocument(file);
-        
-        console.log('[TL Action Buttons] Document generated and stored');
-        
-        // Show prepared state
-        this.isPreparingDocument = false;
-        this.isDocumentPrepared = true;
-        
-        // Open the ready-to-publish flow
-        this.tlFlowService.openFlow('ready-to-publish');
-        
-        this.toastService.success('Document prepared! Opening publication window...');
-        
-        // Reset animation state after delay
-        setTimeout(() => {
-          this.isDocumentPrepared = false;
-        }, 2000);
-      })
-      .catch(err => {
-        // Log generic message without full error object to prevent information leakage
-        console.error('[TL Action Buttons] Document generation failed');
-        this.toastService.error('Failed to prepare document. Please try again.');
-        this.isPreparingDocument = false;
-        this.isDocumentPrepared = false;
-      });
-  }
-  
-  phoenixRdpLink = '';
-  ticketNumber = '';
-
-  onTicketCreated(event: {
-  requestNumber: string;
-  phoenixRdpLink: string;
-  }): void {
-  // Validate and escape untrusted data before using in HTTP response
-  try {
-    this.validateAndEscapeUrl(event.phoenixRdpLink);
-    const escapedRequestNumber = this.escapeHtmlSpecialChars(event.requestNumber);
-    const escapedLink = this.escapeHtmlAttribute(event.phoenixRdpLink);
-    this.phoenixRdpLink = event.phoenixRdpLink;
-    this.ticketNumber = event.requestNumber;
-    console.log('Ticket created:', event.requestNumber);
-    this.translatedContent = `Request created successfully! Your request number is: <a href="${escapedLink}" target="_blank" rel="noopener noreferrer">${escapedRequestNumber}</a>`.trim();
-  } catch (error) {
-    // Log generic message without full error object to prevent information leakage
-    console.error('[TL Action Buttons] Invalid ticket data');
-    this.translatedContent = 'Error processing request. Please try again.';
-  }
-  this.showRequestForm = false; 
-  this.sendToChat();
-}
-
-sendToChat(): void {
-
-  const topic = `Phoenix Request - ${this.ticketNumber}`;
-  let contentType: string;
-
-   
-    // Create metadata for the message
-    const metadata: ThoughtLeadershipMetadata = {
-      contentType: 'Phoenix_Request',
-      topic: topic,
-      fullContent: this.translatedContent,
-      showActions: false
+  /**
+   * Get authentication headers for JSON requests
+   * MSAL interceptor only works with HttpClient, so we need to manually add headers for fetch()
+   */
+  private async getAuthHeaders(): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
     };
-  const chatMessage = this.translatedContent;
-   
-    // Send to chat via bridge
-    console.log('[FormatTranslatorFlow] Sending to chat with metadata:', metadata);
-    this.tlChatBridge.sendToChat(chatMessage, metadata);
-    //this.onClose();
-}
 
-  copyToClipboard(): void {
-    // Emit event to parent (chat component) to show reminder dialog
-    const markdownContent = this.metadata.fullContent ?? '';
-    this.copyRequested.emit({ content: markdownContent, component: this });
+    if (environment.useAuth) {
+      try {
+        const account = this.msalService.instance.getActiveAccount();
+        if (account) {
+          const response = await this.msalService.instance.acquireTokenSilent({
+            scopes: ['User.Read'], // Use the same scope as in protectedResourceMap
+            account: account
+          });
+          
+          if (response.idToken) {
+            headers['Authorization'] = `Bearer ${response.idToken}`;
+            console.log('[ChatService] Added auth header (ID token) to fetch() call');
+          }
+        }
+      } catch (error) {
+        console.error('[ChatService] Failed to acquire token for fetch():', error);
+      }
+    }
+
+    return headers;
   }
 
-  proceedWithCopy(content: string): void {
-    // Convert markdown to HTML (same format as UI display)
-    const htmlContent = renderMarkdownForDisplay(content);
+  /**
+   * Get authentication headers for FormData requests (no Content-Type header)
+   * Browser will automatically set Content-Type with multipart boundary
+   */
+  private async getAuthHeadersForFormData(): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {};
+
+    if (environment.useAuth) {
+      try {
+        const account = this.msalService.instance.getActiveAccount();
+        if (account) {
+          const response = await this.msalService.instance.acquireTokenSilent({
+            scopes: ['User.Read'],
+            account: account
+          });
+          
+          if (response.idToken) {
+            headers['Authorization'] = `Bearer ${response.idToken}`;
+            console.log('[ChatService] Added auth header (ID token) to FormData fetch() call');
+          }
+        }
+      } catch (error) {
+        console.error('[ChatService] Failed to acquire token for FormData fetch():', error);
+      }
+    }
+
+    return headers;
+  }
+
+  /**
+   * Wrapper around fetch() that automatically adds authentication headers for JSON requests
+   * Use this instead of fetch() for all API calls with JSON body
+   */
+  private async authenticatedFetch(url: string, options: RequestInit = {}): Promise<Response> {
+    const authHeaders = await this.getAuthHeaders();
     
-    // Use ClipboardItem to support both HTML and plain text formats
-    if (navigator.clipboard && navigator.clipboard.write) {
-      const clipboardItem = new ClipboardItem({
-        'text/html': new Blob([htmlContent], { type: 'text/html' }),
-        'text/plain': new Blob([content], { type: 'text/plain' })
-      });
-      
-      navigator.clipboard.write([clipboardItem]).then(() => {
-        this.isCopied = true;
-        // Reset the "copied" feedback after 2 seconds
-        setTimeout(() => {
-          this.isCopied = false;
-        }, 2000);
-      }).catch(err => {
-        console.error('Failed to copy to clipboard:', err);
-        // Fallback to plain text if HTML copy fails
-        navigator.clipboard.writeText(content).then(() => {
-          this.isCopied = true;
-          setTimeout(() => {
-            this.isCopied = false;
-          }, 2000);
-        }).catch(fallbackErr => {
-          console.error('Failed to copy plain text to clipboard:', fallbackErr);
-        });
-      });
-    } else {
-      // Fallback for older browsers
-      navigator.clipboard.writeText(content).then(() => {
-        this.isCopied = true;
-        setTimeout(() => {
-          this.isCopied = false;
-        }, 2000);
-      }).catch(err => {
-        console.error('Failed to copy to clipboard:', err);
-      });
-    }
+    // Merge auth headers with any existing headers
+    const headers: Record<string, string> = {
+      ...authHeaders,
+      ...(options.headers as Record<string, string> || {})
+    };
+
+    console.log('[ChatService] authenticatedFetch - URL:', url);
+    console.log('[ChatService] authenticatedFetch - Has Authorization:', !!headers['Authorization']);
+
+    return fetch(url, {
+      ...options,
+      headers
+    });
   }
 
-  openInCanvas(): void {
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      this.toastService.error('Content is not available yet.');
-      return;
-    }
-    // Only allow supported types for canvas
-    const allowedTypes = ['article', 'blog', 'white_paper', 'executive_brief', 'socialMedia','conduct-research'];
-    if (!allowedTypes.includes(this.metadata.contentType)) {
-      this.toastService.warning('Canvas is only available for articles, blogs, white papers, executive briefs, social media posts, and conduct research.');
-      return;
-    }
-    // Map socialMedia and conduct-research to an accepted canvas type (they function like articles)
-    let canvasContentType: 'article' | 'blog' | 'white_paper' | 'executive_brief';
-    switch (this.metadata.contentType) {
-      case 'article':
-      case 'blog':
-      case 'white_paper':
-      case 'executive_brief':
-        canvasContentType = this.metadata.contentType;
-        break;
-      case 'socialMedia':
-      case 'conduct-research':
-      default:
-        canvasContentType = 'article';
-        break;
-    }
-    this.canvasStateService.loadFromContent(
-      this.metadata.fullContent,
-      this.metadata.topic || 'Untitled',
-      canvasContentType,
-      this.messageId
+  /**
+   * Wrapper around fetch() for FormData requests - doesn't set Content-Type (browser sets it with boundary)
+   * Use this for file uploads and multipart form data
+   */
+  private async authenticatedFetchFormData(url: string, options: RequestInit = {}): Promise<Response> {
+    const authHeaders = await this.getAuthHeadersForFormData();
+    
+    // Merge auth headers with any existing headers
+    const headers: Record<string, string> = {
+      ...authHeaders,
+      ...(options.headers as Record<string, string> || {})
+    };
+
+    console.log('[ChatService] authenticatedFetchFormData - URL:', url);
+    console.log('[ChatService] authenticatedFetchFormData - Has Authorization:', !!headers['Authorization']);
+
+    return fetch(url, {
+      ...options,
+      headers
+    });
+  }
+
+  detectEditIntent(input: string): Observable<{is_edit_intent: boolean, confidence: number, detected_editors?: string[]}> {
+    const fullUrl = `${this.apiUrl}/api/v1/chat/detect-edit-intent`;
+    console.log('[ChatService] detectEditIntent - Full URL:', fullUrl);
+    console.log('[ChatService] detectEditIntent - this.apiUrl:', this.apiUrl);
+    console.log('[ChatService] detectEditIntent - Expected to match: http://localhost:8000/api/v1/');
+    
+    return this.http.post<{is_edit_intent: boolean, confidence: number, detected_editors?: string[]}>(
+      fullUrl,
+      { input: input.trim() }
     );
   }
 
-  toggleExportDropdown(): void {
-    this.showExportDropdown = !this.showExportDropdown;
-  }
-  // downloadProcessedFile(): void {
-  //   if (!this.downloadUrl) {
-  //     console.warn('[SlideCreationFlow] No download URL available');
-  //     return;
-  //   }
-
-  //   const link = document.createElement('a');
-  //   link.href = this.downloadUrl;
-  //   link.target = '_blank';
-  //   link.download = 'Slide.pptx'; // default filename
-  //   link.click();
-  // }
-  exportSelected(format: 'word' | 'pdf' | 'ppt'): void {
-    this.showExportDropdown = false;
-    // Emit event to parent (chat component) to show reminder dialog
-    this.exportRequested.emit({ format, component: this });
+  detectDraftIntent(input: string): Observable<{ is_draft_intent: boolean, confidence: number, detected_topic?: string, detected_content_type?: string[] }> {
+    return this.http.post<{ is_draft_intent: boolean, confidence: number, detected_topic?: string, detected_content_type?: string[] }>(
+      `${this.apiUrl}/api/v1/chat/detect-draft-intent`,
+      { input: input.trim() }
+    );
   }
 
-  // Called by parent after reminder confirmation
-  proceedWithExport(format: 'word' | 'pdf' | 'ppt'): void {
-    this.isExporting = true;
-    this.isExported = false;
-    this.exportFormat = format.toUpperCase();
-    
-    if (format === 'word') {
-      this.downloadWord();       
-    } else if(format === 'pdf') {
-      this.downloadPDF();
-    } else if (format === 'ppt') {
-      this.downloadPPT();
-    }
-  }
-
-  private resetExportState(): void {
-    setTimeout(() => {
-      this.isExporting = false;
-    }, 500);
-    
-    this.isExported = true;
-    // Reset success indicator after 3 seconds
-    setTimeout(() => {
-      this.isExported = false;
-    }, 3000);
-  }
-
-  private exportDocument(endpoint: string, extension: string, format: string): void {
-    // Reuse the same approach as EditContentFlowComponent.downloadRevised()
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      this.toastService.error('Content is not available yet.');
-      return;
-    }
-
-    // Clean content the same way as the working implementation
-    const plainText = this.metadata.fullContent.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
-    
-    // Extract first line as subtitle (title for download)
-    const lines = plainText.split('\n').filter(line => line.trim());
-    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : 'Generated Document'; // First line as title, max 150 chars
-    const title = subtitle; // Use subtitle as the main title, not the topic
-    
-    // console.log(`>>>>>>>>>>>>>`,plainText);
-
-    // Get API URL from environment (supports runtime config via window._env)
-    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-    const fullEndpoint = `${apiUrl}${endpoint}`;
-
-    // Use fetch API like the working implementation (same as EditContentFlowComponent.downloadRevised)
-    this.authFetchService.authenticatedFetch(fullEndpoint, {
-      method: 'POST',
-      body: JSON.stringify({
-        content: plainText,
-        title,
-        subtitle: '',  // Don't pass subtitle separately since title is already set to it
-        content_type: this.metadata.contentType,  // Use snake_case to match backend
-
-      })
-    })
-    .then(response => {
-      if (!response.ok) {
-        throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
-      }
-      return response.blob();
-    })
-    .then(blob => {
-      const filename = `${this.sanitizeFilename(title)}.${extension}`;
-      return this.downloadBlobWithSaveDialog(blob, filename);
-    })
-    .then(() => {
-      this.resetExportState();
-    })
-    .catch(error => {
-      // Log generic message without full error object to prevent information leakage
-      console.error(`[TL Action Buttons] ${extension.toUpperCase()} export failed`);
-      this.toastService.error(`Failed to generate ${extension.toUpperCase()} file. Please try again.`);
-      this.isExporting = false;
-    });
-  }
-  private exportUIWord(): void {
-  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-    this.toastService.error('Content is not available yet.');
-    return;
-  }
-
-  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-  const endpoint = `${apiUrl}/api/v1/export/word-ui`;
-
-  // IMPORTANT: send content AS-IS (no stripping)
-  const content = this.metadata.fullContent;
-
-  // Title logic can stay simple
-  const title = 'Generated Document';
-
-  this.authFetchService.authenticatedFetch(endpoint, {
-    method: 'POST',
-    body: JSON.stringify({
-      content,
-      title
-    })
-  })
-  .then(response => {
-    if (!response.ok) {
-      throw new Error('Failed to generate Word document');
-    }
-    return response.blob();
-  })
-  .then(blob => {
-    const filename = `${this.sanitizeFilename(title)}.docx`;
-    return this.downloadBlobWithSaveDialog(blob, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-  })
-  .then(() => {
-    this.resetExportState();
-  })
-  .catch(error => {
-    // Log generic message without full error object to prevent information leakage
-    console.error('[TL Action Buttons] Word export failed');
-    this.toastService.error('Failed to generate Word file.');
-    this.isExporting = false;
-  });
-}
-
-  private async exportPPT(endpoint: string): Promise<void> {
-  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-    this.toastService.error('Content is not available yet.');
-    return;
-  }
-
-  const plainText = this.metadata.fullContent
-    .replace(/<br>/g, '\n')
-    .replace(/<[^>]+>/g, '');
-
-  const title = this.metadata.topic?.trim() || 'Generated Presentation';
-  const filename = `${this.sanitizeFilename(title)}.pptx`;
-  const pptMimeType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-
-  let selectedPptFileHandle: any | null = null;
-  if ('showSaveFilePicker' in window) {
-    try {
-      selectedPptFileHandle = await (window as any).showSaveFilePicker({
-        suggestedName: filename,
-        types: [
-          {
-            description: 'PPTX Files',
-            accept: { [pptMimeType]: ['.pptx'] }
-          }
-        ]
-      });
-    } catch (error: any) {
-      if (error?.name === 'AbortError') {
-        this.isExporting = false;
-        return;
-      }
-      console.error('[TL Action Buttons] PPT save dialog unavailable');
-    }
-  }
-
-  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-  const fullEndpoint = `${apiUrl}${endpoint}`;
-
-  try {
-    const response = await this.authFetchService.authenticatedFetch(fullEndpoint, {
-      method: 'POST',
-      body: JSON.stringify({
-        content: plainText,
-        title
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to start PPT generation');
-    }
-
-    const data = await response.json();
-    console.log('PPT download URL:', data.download_url);
-
-    const downloadUrl = data.download_url;
-    if (!downloadUrl) {
-      throw new Error('No download URL returned');
-    }
-
-    const fileResponse = await fetch(downloadUrl, {
-      method: 'GET'
-    });
-
-    if (!fileResponse.ok) {
-      throw new Error('Failed to retrieve PPT file');
-    }
-
-    const blob = await fileResponse.blob();
-
-    if (selectedPptFileHandle) {
-      await this.writeBlobToSelectedFile(selectedPptFileHandle, blob);
-    } else {
-      await this.downloadBlobWithSaveDialog(blob, filename, pptMimeType);
-    }
-
-    this.resetExportState();
-  } catch (err) {
-    console.error(err);
-    this.toastService.error('Failed to generate PPT file.');
-    this.isExporting = false;
-  }
-}
-
-  private async writeBlobToSelectedFile(fileHandle: any, blob: Blob): Promise<void> {
-    const writable = await fileHandle.createWritable();
-    await writable.write(blob);
-    await writable.close();
-  }
-
-
-  private downloadFile(extension: string, mimeType: string): void {
-    const blob = new Blob([this.metadata.fullContent], { type: mimeType });
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${this.sanitizeFilename(this.metadata.topic)}.${extension}`;
-    link.click();
-    window.URL.revokeObjectURL(url);
-  }
-
-  private sanitizeFilename(filename: string): string {
-    return filename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-  }
-
-  get isPodcast(): boolean {
-    const result = this.metadata.contentType === 'podcast' && !!this.metadata.podcastAudioUrl;
-    // console.log('[TL Action Buttons] isPodcast check:', {
-    //   contentType: this.metadata.contentType,
-    //   hasPodcastUrl: !!this.metadata.podcastAudioUrl,
-    //   podcastUrl: this.metadata.podcastAudioUrl?.substring(0, 50),
-    //   result: result
-    // });
-    return result;
-  }
-  
-  convertToPodcast(): void {
-    if (this.isConvertingToPodcast) return;
-    
-    this.isConvertingToPodcast = true;
-    
-    // Prepare the podcast generation request with correct backend schema
-    const formData = new FormData();
-    formData.append('topic', this.metadata.topic); // Required field
-    formData.append('style', 'dialogue'); // dialogue or monologue
-    formData.append('duration', 'medium'); // short, medium, or long
-    formData.append('context', this.metadata.fullContent); // The content to convert
-    
-    let scriptContent = '';
-    let audioBase64 = '';
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    
-    // Get API URL from environment (supports runtime config via window._env)
-    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-    
-    // Use fetch for SSE streaming
-    this.authFetchService.authenticatedFetchFormData(`${apiUrl}/api/v1/tl/generate-podcast`, {
-      method: 'POST',
-      body: formData
-    })
-    .then(response => {
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  /**
+   * DDC Chat Agent
+   * Posts FormData to `/api/v1/ddc/ddc_chat_agent`.
+   * - Accepts a message string, optional conversation id, and optional PPT file.
+   * - Handles PPTX blob responses (sanitized/improved presentations) and JSON responses.
+   */
+  ddcChatAgent(message: string, conversationId?: string, file?: File, userId?: string, sessionId?: string): Observable<any> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      formData.append('message', message);
+      // Always append conversation_id (blank on first message, backend ID on subsequent messages)
+      formData.append('conversation_id', conversationId || '');
+      if (file) {
+        formData.append('file', file, file.name);
       }
       
-      reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+      // Add chat history fields for persistence
+      if (userId) {
+        formData.append('user_id', userId);
+      }
+      if (sessionId) {
+        formData.append('session_id', sessionId);
+      }
+      formData.append('source', 'Doc_Studio');
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ddc/ddc_chat_agent`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`Network response was not ok: ${response.status} ${response.statusText}`);
+        }
+
+        const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
+        const convId = response.headers.get('X-Conversation-ID') || undefined;
+        const summaryHeader = response.headers.get('X-Sanitization-Summary');
+        let summary = null;
+        if (summaryHeader) {
+          try { summary = JSON.parse(summaryHeader); } catch (e) { /* ignore parse errors */ }
+        }
+
+        if (contentType.includes('application/vnd.openxmlformats-officedocument.presentationml.presentation') || contentType.includes('application/octet-stream')) {
+          return response.blob().then(blob => {
+            observer.next({ blob, conversation_id: convId, summary });
+          });
+        }
+
+        return response.json().then(json => {
+          if (convId && !json.conversation_id) json.conversation_id = convId;
+          if (summary && !json.sanitization_summary) json.sanitization_summary = summary;
+          observer.next(json);
+        });
+      })
+      .then(() => observer.complete())
+      .catch(error => observer.error(error));
+    });
+  }
+ 
+
+  sendMessage(messages: Message[], userId?: string, sessionId?: string, threadId?: string, source?: string): Observable<any> {
+    const request: ChatRequest = {
+      messages: messages,
+      stream: false,
+      user_id: userId,
+      session_id: sessionId,
+      thread_id: threadId,
+      source: source || "Chat"
+    };
+    
+    console.log('[ChatService] sendMessage - URL:', `${this.apiUrl}/api/v1/chat`);
+    console.log('[ChatService] sendMessage - Request:', request);
+    console.log("Calling from sendMessage Chat");
+    return this.http.post(`${this.apiUrl}/api/v1/chat`, request);
+  }
+
+  createDraft(draftRequest: DraftRequest): Observable<any> {
+    return this.http.post(`${this.apiUrl}/api/draft`, draftRequest);
+  }
+
+  streamChat(messages: Message[], userId?: string, sessionId?: string, threadId?: string, source?: string): Observable<string> {
+    return new Observable(observer => {
+      let endpointUrl = '';
+      let actualSource = source || 'Chat';
       
-      const readStream = (): any => {
-        return reader?.read().then(({ done, value }) => {
-          if (done) {
-            this.isConvertingToPodcast = false;
-            
-            console.log('[Podcast Debug] Stream complete');
-            console.log('[Podcast Debug] audioBase64 length:', audioBase64?.length || 0);
-            console.log('[Podcast Debug] scriptContent length:', scriptContent?.length || 0);
-            
-            // Send podcast to chat with metadata
-            if (audioBase64 && scriptContent) {
-              console.log('[Podcast Debug] Converting base64 to blob...');
-              const audioBlob = this.base64ToBlob(audioBase64, 'audio/mpeg');
-              console.log('[Podcast Debug] Blob size:', audioBlob.size, 'bytes');
-              
-              const audioUrl = URL.createObjectURL(audioBlob);
-              console.log('[Podcast Debug] Audio URL created:', audioUrl);
-              
-              // Create metadata for the podcast message
-              const podcastMetadata: ThoughtLeadershipMetadata = {
-                contentType: 'podcast',
-                topic: `${this.metadata.topic} (Podcast)`,
-                fullContent: scriptContent,
-                showActions: true,
-                podcastAudioUrl: audioUrl,
-                podcastFilename: `${this.sanitizeFilename(this.metadata.topic)}_podcast.mp3`
-              };
-              
-              console.log('[Podcast Debug] Metadata:', podcastMetadata);
-              
-              // Send to chat via bridge
-              const podcastMessage = `📻 **Podcast Generated Successfully!**\n\n**Script:**\n\n${scriptContent}\n\n🎧 **Audio Ready!** Listen below or download the MP3 file.`;
-              this.tlChatBridge.sendToChat(podcastMessage, podcastMetadata);
-              
-              console.log('[Podcast Debug] Sent to chat via bridge');
-              this.toastService.success('Podcast generated and added to chat!');
-            } else {
-              console.error('[Podcast Debug] Missing data - audioBase64:', !!audioBase64, 'scriptContent:', !!scriptContent);
+      if (source === 'Market_Intelligence') {
+        endpointUrl = '/api/v1/tl/mi_chat_agent';
+        actualSource = 'Market_Intelligence';
+      } else if (source === 'Cortex' || source === 'Thought_Leadership') {
+        endpointUrl = '/api/v1/tl/tl_chat_agent';
+        actualSource = 'Cortex';
+      } else {
+        endpointUrl = '/api/v1/tl/tl_chat_agent';
+        actualSource = 'Cortex';
+      }
+      
+      const request: ChatRequest = {
+        messages: messages,
+        stream: true,
+        user_id: userId,
+        session_id: sessionId,
+        thread_id: threadId,
+        source: actualSource
+      };
+      console.log("Calling from Stream Chat Source is:", actualSource, "Endpoint:", endpointUrl);
+      this.authenticatedFetch(`${this.apiUrl}${endpointUrl}`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          try {
+            const parsed = JSON.parse(eventData);
+            if (parsed.content) {
+              observer.next(parsed.content);
+            } else if (parsed.error) {
+              observer.error(new Error(parsed.error));
             }
-            return;
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamChat');
+            observer.next(eventData);
           }
-          
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          
-          lines.forEach(line => {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6).trim();
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) return;
+              if (trimmedLine.startsWith('data: ')) {
+                const data = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(data);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  streamDraft(draftRequest: DraftRequest): Observable<string> {
+    return new Observable(observer => {
+      this.authenticatedFetch(`${this.apiUrl}/api/draft`, {
+        method: 'POST',
+        body: JSON.stringify(draftRequest)
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          try {
+            const parsed = JSON.parse(eventData);
+            if (parsed.content) {
+              observer.next(parsed.content);
+            } else if (parsed.error) {
+              observer.error(new Error(parsed.error));
+            }
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamDraft');
+            observer.next(eventData);
+          }
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) return;
+              if (trimmedLine.startsWith('data: ')) {
+                const data = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(data);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  streamThoughtLeadership(tlRequest: ThoughtLeadershipRequest): Observable<string> {
+    return new Observable(observer => {
+      this.authenticatedFetch(`${this.apiUrl}/api/thought-leadership`, {
+        method: 'POST',
+        body: JSON.stringify(tlRequest)
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          try {
+            const parsed = JSON.parse(eventData);
+            if (parsed.content) {
+              observer.next(parsed.content);
+            } else if (parsed.error) {
+              observer.error(new Error(parsed.error));
+            }
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamThoughtLeadership');
+            observer.next(eventData);
+          }
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) return;
+              if (trimmedLine.startsWith('data: ')) {
+                const data = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(data);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  improvePPT(originalFile: File, referenceFile: File | null): Observable<Blob> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      formData.append('original_ppt', originalFile);
+      if (referenceFile) {
+        formData.append('reference_ppt', referenceFile);
+      }
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ppt/improve`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        return response.blob();
+      })
+      .then(blob => {
+        observer.next(blob);
+        observer.complete();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  downloadDdcFormatted(formData: FormData) {
+    // Use HttpClient to get response with headers and blob body
+    // Return an Observable of the full HttpResponse containing the blob
+    return this.http.post(`${this.apiUrl}/api/v1/ddc/brand-format/format-file`, formData, {
+      responseType: 'blob',
+      observe: 'response' as 'body'
+    });
+  }
+
+  streamSanitizationConversation(
+    messages: Message[], 
+    uploadedFileName?: string,
+    clientIdentity?: string,
+    pageRange?: string,
+    tier1Services?: string[],
+    tier2Services?: string[]
+  ): Observable<string> {
+    return new Observable(observer => {
+      const request = {
+        messages: messages,
+        uploaded_file_name: uploadedFileName,
+        client_identity: clientIdentity,
+        page_range: pageRange,
+        tier1_services: tier1Services,
+        tier2_services: tier2Services,
+        stream: true
+      };
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/ppt/sanitize/conversation`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          try {
+            const parsed = JSON.parse(eventData);
+            if (parsed.content) {
+              observer.next(parsed.content);
+            } else if (parsed.error) {
+              observer.error(new Error(parsed.error));
+            }
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamSanitizationConversation');
+            observer.next(eventData);
+          }
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) return;
+              if (trimmedLine.startsWith('data: ')) {
+                const data = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(data);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  sanitizePPT(file: File, clientName: string, products: string, options?: any): Observable<{blob: Blob, stats: any}> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      formData.append('original_ppt', file);
+      if (clientName) {
+        formData.append('client_name', clientName);
+      }
+      if (products) {
+        formData.append('client_products', products);
+      }
+      if (options) {
+        // Convert camelCase to snake_case for backend
+        const backendOptions = {
+          numeric_data: options.numericData,
+          personal_info: options.personalInfo,
+          financial_data: options.financialData,
+          locations: options.locations,
+          identifiers: options.identifiers,
+          names: options.names,
+          logos: options.logos,
+          metadata: options.metadata,
+          llm_detection: options.llmDetection,
+          hyperlinks: options.hyperlinks,
+          embedded_objects: options.embeddedObjects
+        };
+        formData.append('sanitization_options', JSON.stringify(backendOptions));
+      }
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ppt/sanitize`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        const statsHeader = response.headers.get('X-Sanitization-Stats');
+        let stats = null;
+        if (statsHeader) {
+          try {
+            stats = JSON.parse(statsHeader);
+          } catch (e) {
+            console.warn('Could not parse sanitization stats');
+          }
+        }
+        return response.blob().then(blob => ({blob, stats}));
+      })
+      .then(result => {
+        observer.next(result);
+        observer.complete();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  streamDdcWorkflow(workflow: 'brand-format' | 'professional-polish' | 'sanitization' | 'client-customization' | 'rfp-response' | 'ddc-format-translator' | 'slide-creation' | 'slide-creation-prompt' |'event-branding', formData: FormData): Observable<string> {
+    return this.streamFormData(`${this.apiUrl}/api/v1/ddc/${workflow}`, formData);
+  }
+
+  streamDdcBrandFormat(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('brand-format', formData);
+  }
+
+  streamDdcProfessionalPolish(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('professional-polish', formData);
+  }
+
+  streamDdcSanitization(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('sanitization', formData);
+  }
+
+  streamDdcEventBranding(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('event-branding', formData);
+  }
+
+  streamDdcClientCustomization(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('client-customization', formData);
+  }
+
+  streamDdcRfpResponse(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('rfp-response', formData);
+  }
+
+  streamDdcFormatTranslator(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('ddc-format-translator', formData);
+  }
+
+  streamDdcSlideCreation(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('slide-creation', formData);
+  }
+  streamDdcSlideCreationPrompt(formData: FormData): Observable<string> {
+    return this.streamDdcWorkflow('slide-creation-prompt', formData);
+  }
+
+  createDdcSlide(formData: FormData): Observable<any> {
+  return this.http.post(`${this.apiUrl}/api/v1/ddc/slide-creation`, formData);
+  }
+
+  createPhoenixRequest(formData: FormData): Observable<any> {
+  return this.http.post(
+    `${this.apiUrl}/api/v1/ddc/phoenix/create-request`,formData);
+  } 
+
+  searchPeople(name: string, email?: string): Observable<any> {
+    // return this.http.get(
+    //   `${this.apiUrl}/api/v1/ddc/phoenix/people-search/${encodeURIComponent(name)}`
+    // );
+
+      let url = `${this.apiUrl}/api/v1/ddc/phoenix/people-search/${encodeURIComponent(name)}`;
+
+      if (email) {
+        url += `?email=${encodeURIComponent(email)}`;
+      }
+
+      return this.http.get(url);
+  }
+
+  submitRiskAssessment(payload: any): Observable<any> {
+    return this.http.post(
+      `${this.apiUrl}/api/v1/ddc/risk-assessment/submit`,
+      payload
+    );
+  }
+
+  getPhoenixRequestConfigDdc(): Observable<any> {
+  return this.http.get(
+    `${this.apiUrl}/api/v1/ddc/phoenix/request-config-ddc`
+  );
+}
+
+  getPhoenixRequestConfigTl(): Observable<any> {
+  return this.http.get(
+    `${this.apiUrl}/api/v1/ddc/phoenix/request-config-tl`
+  );
+}
+
+  getPhoenixRequestConfigRisk(): Observable<any> {
+  return this.http.get(
+    `${this.apiUrl}/api/v1/ddc/phoenix/request-config-risk`
+  );
+}
+
+createRequestToPublishAuditLog(payload: any): Observable<any> {
+  return this.http.post(
+    `${this.apiUrl}/api/v1/tl/request-to-publish/audit`, payload
+  );
+}
+// "Request to Publish" feature - get all requests created by the user
+//parse form data if required: JSON.parse(item.user_form_data)
+/* sample response
+{
+  "success": true,
+  "data": [
+    {
+      "user_name": "Esha",
+      "user_email": "esha@example.com",
+      "content_category": "Public sources",
+      "request_id": "REQ123",
+      "request_status": "Pending",
+      "updated_at": "2026-03-17T10:30:00Z"
+    }
+  ]
+}
+ *
+ */
+getMyRequests(userEmail: string): Observable<any> {
+  return this.http.post(
+    `${this.apiUrl}/api/v1/tl/request-to-publish/get-my-requests`,
+    { user_email: userEmail }
+  );
+}
+
+
+getLeaderTasks(email: string): Observable<any> {
+  return this.http.post(
+    `${this.apiUrl}/api/v1/tl/request-to-publish/get-leader-tasks`,
+    { leader_email: email }
+  );
+}
+
+/* payload should be like this
+{
+  request_id: "REQ123",
+  leader_email: "leader@example.com",
+  status: "Approved",  //Approved / Rejected
+  form_data: ""   //JSON.stringify(form_data)
+}
+  */
+updateLeaderAction(payload: any): Observable<any> {
+  return this.http.post(
+    `${this.apiUrl}/api/v1/tl/request-to-publish/update-leader-action`,
+    payload
+  );
+}
+
+//to get the uploaded file
+downloadFile(requestId: string): Observable<Blob> {
+  return this.http.get(
+    `${this.apiUrl}/api/v1/tl/request-to-publish/download-file/${requestId}`,
+    { responseType: 'blob' }
+  );
+}
+
+
+ getUserProfile(email: string): Observable<any> {
+  return this.http.get(
+    `${this.apiUrl}/api/v1/profile/details/user/${email}`);
+  }
+  private streamFormData(endpoint: string, formData: FormData): Observable<string> {
+    return new Observable(observer => {
+      this.authenticatedFetchFormData(endpoint, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`Network response was not ok: ${response.status}`);
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          try {
+            const parsed = JSON.parse(eventData);
+            if (parsed.content) {
+              observer.next(parsed.content);
+            } else if (parsed.error) {
+              observer.error(new Error(parsed.error));
+            }
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamFormData');
+            observer.next(eventData);
+          }
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) return;
+              if (trimmedLine.startsWith('data: ')) {
+                const data = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(data);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  exportDocument(content: string, title: string, format: string): Observable<Blob> {
+    return new Observable(observer => {
+      const endpoint = format === 'pdf' ? '/api/v1/export/pdf-pwc' : '/api/v1/export/word';
+      
+      this.authenticatedFetch(`${this.apiUrl}${endpoint}`, {
+        method: 'POST',
+        body: JSON.stringify({ content, title, format })
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`Export failed: ${response.statusText}`);
+        }
+        return response.blob();
+      })
+      .then(blob => {
+        observer.next(blob);
+        observer.complete();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  streamResearch(researchRequest: any): Observable<string> {
+    return new Observable(observer => {
+      this.authenticatedFetch(`${this.apiUrl}/api/research`, {
+        method: 'POST',
+        body: JSON.stringify(researchRequest)
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          try {
+            const parsed = JSON.parse(eventData);
+            if (parsed.content) {
+              observer.next(parsed.content);
+            } else if (parsed.error) {
+              observer.error(new Error(parsed.error));
+            }
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamResearch');
+            observer.next(eventData);
+          }
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) return;
+              if (trimmedLine.startsWith('data: ')) {
+                const data = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(data);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  draftArticle(articleData: any, outlineFile?: File, supportingDocs?: File[]): Observable<string> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      formData.append('topic', articleData.topic);
+      formData.append('content_type', articleData.content_type);
+      formData.append('desired_length', articleData.desired_length.toString());
+      formData.append('tone', articleData.tone);
+      
+      if (articleData.outline_text) {
+        formData.append('outline_text', articleData.outline_text);
+      }
+      if (articleData.additional_context) {
+        formData.append('additional_context', articleData.additional_context);
+      }
+      if (outlineFile) {
+        formData.append('outline_file', outlineFile);
+      }
+      if (supportingDocs && supportingDocs.length > 0) {
+        supportingDocs.forEach(doc => {
+          formData.append('supporting_docs', doc);
+        });
+      }
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/draft-article`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.content) {
+                      observer.next(parsed.content);
+                    } else if (parsed.done) {
+                      observer.complete();
+                    } else if (parsed.error) {
+                      observer.error(new Error(parsed.error));
+                    }
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  streamBestPractices(file: File, categories?: string[]): Observable<string> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (categories && categories.length > 0) {
+        formData.append('categories', categories.join(','));
+      }
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ppt/validate-best-practices`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          try {
+            const parsed = JSON.parse(eventData);
+            if (parsed.content) {
+              observer.next(parsed.content);
+            } else if (parsed.error) {
+              observer.error(new Error(parsed.error));
+            }
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamBestPractices');
+            observer.next(eventData);
+          }
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) return;
+              if (trimmedLine.startsWith('data: ')) {
+                const data = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(data);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  generatePodcast(
+    files: File[] | null, 
+    contentText: string | null, 
+    customization: string | null, 
+    podcastStyle: string = 'dialogue',
+    speaker1Name?: string,
+    speaker1Voice?: string,
+    speaker1Accent?: string,
+    speaker2Name?: string,
+    speaker2Voice?: string,
+    speaker2Accent?: string
+  ): Observable<any> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      
+      if (files && files.length > 0) {
+        files.forEach(file => {
+          formData.append('files', file);
+        });
+      }
+      
+      if (contentText) {
+        formData.append('content_text', contentText);
+      }
+      
+      if (customization) {
+        formData.append('customization', customization);
+      }
+      
+      formData.append('podcast_style', podcastStyle);
+      
+      if (speaker1Name) formData.append('speaker1_name', speaker1Name);
+      if (speaker1Voice) formData.append('speaker1_voice', speaker1Voice);
+      if (speaker1Accent) formData.append('speaker1_accent', speaker1Accent);
+      if (speaker2Name) formData.append('speaker2_name', speaker2Name);
+      if (speaker2Voice) formData.append('speaker2_voice', speaker2Voice);
+      if (speaker2Accent) formData.append('speaker2_accent', speaker2Accent);
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/generate-podcast`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    observer.next(parsed);
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  streamResearchWithMaterials(
+    files: File[] | null,
+    links: string[] | null,
+    query: string,
+    focusAreas: string[],
+    additionalContext: string | null
+  ): Observable<any> {
+    return new Observable(observer => {
+      const formData = new FormData();
+      
+      if (files && files.length > 0) {
+        files.forEach(file => {
+          formData.append('files', file);
+        });
+      }
+      
+      if (links && links.length > 0) {
+        links.forEach(link => {
+          formData.append('links', link);
+        });
+      }
+      
+      formData.append('query', query);
+      
+      if (focusAreas && focusAreas.length > 0) {
+        formData.append('focus_areas', JSON.stringify(focusAreas));
+      }
+      
+      if (additionalContext) {
+        formData.append('additional_context', additionalContext);
+      }
+
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/research-with-materials`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    const parsed = JSON.parse(data);
+                    observer.next(parsed);
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e, 'Data:', data);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
+  }
+
+  // NEW: Thought Leadership Section Methods (5 Sections)
+
+  streamDraftContent(
+    payload: Message[] | {
+      messages: Message[],
+      content_type?: string,
+      topic?: string,
+      word_limit?: string,
+      audience_tone?: string,
+      outline?: { type: string, content: string },
+      supporting_documents?: { content: string },
+      research?: any,
+      stream: boolean
+    },
+    improvementPrompt?: string,
+    draftParams?: any
+  ): Observable<any> {
+    return new Observable(observer => {
+      let request: any;
+
+      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
+      if (Array.isArray(payload)) {
+        // Old format: Message[] for improvement iterations
+        request = { messages: payload, stream: true };
+        
+        // Add improvement_prompt to request if provided
+        if (improvementPrompt) {
+          request.improvement_prompt = improvementPrompt;
+        }
+        
+        // Add draft parameters for improvement iterations
+        if (draftParams) {
+          if (draftParams.contentType) request.content_type = draftParams.contentType;
+          if (draftParams.topic) request.topic = draftParams.topic;
+          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
+          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
+          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
+          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
+          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
+        }
+      } else {
+        // New format: Structured payload object with all fields
+        request = payload;
+      }
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/draft-content`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    observer.next(JSON.parse(data));
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  /**
+   * Stream POV (Point of View) content generation
+   * Routes to /api/v1/tl/pov endpoint instead of draft-content
+   */
+  streamPOVContent(
+    payload: Message[] | {
+      messages: Message[],
+      content_type?: string,
+      topic?: string,
+      word_limit?: string,
+      audience_tone?: string,
+      outline?: { type: string, content: string },
+      supporting_documents?: { content: string },
+      research?: any,
+      stream: boolean
+    },
+    improvementPrompt?: string,
+    draftParams?: any
+  ): Observable<any> {
+    return new Observable(observer => {
+      let request: any;
+
+      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
+      if (Array.isArray(payload)) {
+        // Old format: Message[] for improvement iterations
+        request = { messages: payload, stream: true };
+        
+        // Add improvement_prompt to request if provided
+        if (improvementPrompt) {
+          request.improvement_prompt = improvementPrompt;
+        }
+        
+        // Add draft parameters for improvement iterations
+        if (draftParams) {
+          if (draftParams.contentType) request.content_type = draftParams.contentType;
+          if (draftParams.topic) request.topic = draftParams.topic;
+          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
+          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
+          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
+          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
+          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
+        }
+      } else {
+        // New format: Structured payload object with all fields
+        request = payload;
+      }
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/pov`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    observer.next(JSON.parse(data));
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+    /**
+   * Stream RFP (Request for Proposal) content generation
+   * Routes to /api/v1/tl/rfp endpoint instead of draft-content
+   */
+  streamRFPContent(
+    payload: Message[] | {
+      messages: Message[],
+      content_type?: string,
+      topic?: string,
+      client?: string,
+      word_limit?: string,
+      audience_tone?: string,
+      outline?: { type: string, content: string },
+      supporting_documents?: { content: string },
+      research?: any,
+      stream: boolean
+    },
+    improvementPrompt?: string,
+    draftParams?: any
+  ): Observable<any> {
+    return new Observable(observer => {
+      let request: any;
+
+      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
+      if (Array.isArray(payload)) {
+        // Old format: Message[] for improvement iterations
+        request = { messages: payload, stream: true };
+        
+        // Add improvement_prompt to request if provided
+        if (improvementPrompt) {
+          request.improvement_prompt = improvementPrompt;
+        }
+        
+        // Add draft parameters for improvement iterations
+        if (draftParams) {
+          if (draftParams.contentType) request.content_type = draftParams.contentType;
+          if (draftParams.topic) request.topic = draftParams.topic;
+          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
+          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
+          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
+          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
+          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
+        }
+      } else {
+        // New format: Structured payload object with all fields
+        request = payload;
+      }
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/rfp`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          try {
+            const parsed = JSON.parse(eventData);
+            observer.next(parsed);
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamRFPContent');
+            observer.next({ type: 'content', content: eventData });
+          }
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) return;
+              if (trimmedLine.startsWith('data: ')) {
+                const data = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(data);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  /**
+   * Analyze user satisfaction with generated draft content using LLM backend
+   */
+  analyzeSatisfaction(request: {
+    user_input: string,
+    generated_content: string,
+    content_type: string,
+    topic: string
+  }): Observable<any> {
+    return this.http.post<any>(`${this.apiUrl}/api/v1/tl/draft-content/analyze-satisfaction`, request);
+  }
+
+  // streamConductResearch(messages: Message[], sourceGroups?: string[]): Observable<any> {
+  streamConductResearch(formData: FormData): Observable<any> {  
+  return new Observable(observer => {
+      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/conduct-research`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          try {
+            const parsed = JSON.parse(eventData);
+            observer.next(parsed);
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamConductResearch');
+            observer.next({ type: 'content', content: eventData });
+          }
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) return;
+              if (trimmedLine.startsWith('data: ')) {
+                const data = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(data);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  /** Stream edit content workflow with specified editor types */
+  streamEditContent(
+    messages: Message[], 
+    editorTypes?: string[], 
+    temperature: number = 0,
+    maxTokens: number = 50000
+  ): Observable<any> {
+    if (temperature < 0 || temperature > 2) {
+      console.warn(`[ChatService] Temperature ${temperature} is outside valid range (0.0-2.0), using default 0`);
+      temperature = 0;
+    }
+    
+    if (maxTokens < 1000 || maxTokens > 128000) {
+      console.warn(`[ChatService] maxTokens ${maxTokens} is outside valid range (1000-128000), using default 50000`);
+      maxTokens = 50000;
+    }
+    
+    return new Observable(observer => {
+      const request: any = { 
+        messages, 
+        stream: true,
+        editor_types: editorTypes || [],
+        temperature: temperature,
+        max_tokens: maxTokens
+      };
+// streamEditContent(messages: Message[], editorTypes?: string[], temperature: number = 0.0): Observable<any> {
+//     return new Observable(observer => {
+//       const request = { 
+//         messages, 
+//         stream: true,
+//         editor_types: editorTypes || [],
+//         temperature: temperature
+//       };
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/edit-content`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data) {
+                  try {
+                    observer.next(JSON.parse(data));
+                  } catch (e) {
+                    console.error('Error parsing SSE data:', e);
+                  }
+                }
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  // Accept either an array of messages OR a structured payload { messages, original_content, services, stream }
+  streamRefineContent(payload: Message[] | { messages: Message[]; original_content?: string; services?: any[]; stream?: boolean }): Observable<any> {
+    return new Observable(observer => {
+      const request = Array.isArray(payload)
+        ? { messages: payload, stream: true }
+        : { messages: payload.messages || [], original_content: (payload as any).original_content, services: (payload as any).services, stream: (payload as any).stream ?? true };
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/refine-content`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          try {
+            const parsed = JSON.parse(eventData);
+            observer.next(parsed);
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamRefineContent');
+            observer.next({ type: 'content', content: eventData });
+          }
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) return;
+              if (trimmedLine.startsWith('data: ')) {
+                const data = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(data);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
+  }
+
+  streamFormatTranslator(params: any): Observable<any> {
+    return new Observable(observer => {
+      // Determine if this is the new JSON format or old FormData format
+      const isJsonFormat = params.messages && params.services && params.stream !== undefined;
+      
+      if (isJsonFormat) {
+        // New JSON format: structured payload with messages and services
+        console.log('[ChatService] Format Translator Request (JSON):', {
+          sourceFormat: params.services?.format_translator?.source_format,
+          targetFormat: params.services?.format_translator?.target_format
+        });
+
+        this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/format-translator`, {
+          method: 'POST',
+          body: JSON.stringify(params)
+        })
+        .then(response => this.handleFormatTranslatorStream(response, observer))
+        .catch(error => observer.error(error));
+      } else {
+        // Old FormData format: for backward compatibility
+        const formData = new FormData();
+        formData.append('content', params.content);
+        formData.append('source_format', params.sourceFormat);
+        formData.append('target_format', params.targetFormat);
+        formData.append('uploadedFile', params.uploadedFile, params.uploadedFile.name);
+        
+        if (params.customization) formData.append('customization', params.customization);
+        if (params.podcastStyle) formData.append('podcast_style', params.podcastStyle);
+        if (params.podcastDuration) formData.append('podcast_duration', params.podcastDuration);
+        if (params.speaker1Name !== undefined) formData.append('speaker1_name', params.speaker1Name);
+        if (params.speaker1Voice !== undefined) formData.append('speaker1_voice', params.speaker1Voice);
+        if (params.speaker1Accent !== undefined) formData.append('speaker1_accent', params.speaker1Accent);
+        if (params.speaker2Name !== undefined) formData.append('speaker2_name', params.speaker2Name);
+        if (params.speaker2Voice !== undefined) formData.append('speaker2_voice', params.speaker2Voice);
+        if (params.speaker2Accent !== undefined) formData.append('speaker2_accent', params.speaker2Accent);
+        if (params.wordLimit) formData.append('word_limit', params.wordLimit);
+
+        console.log('[ChatService] Format Translator Request (FormData):', {
+          sourceFormat: params.sourceFormat,
+          targetFormat: params.targetFormat,
+          hasSpeaker1: !!params.speaker1Name,
+          hasSpeaker2: !!params.speaker2Name
+        });
+
+        this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/format-translator`, {
+          method: 'POST',
+          body: formData
+        })
+        .then(response => this.handleFormatTranslatorStream(response, observer))
+        .catch(error => observer.error(error));
+      }
+    });
+  }
+
+  /**
+   * Helper method to handle Format Translator stream response
+   */
+  private handleFormatTranslatorStream(response: Response, observer: any): void {
+    if (!response.ok) {
+      console.error('[ChatService] Format translator API failed');
+      throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+    }
+    
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    const readStream = (): any => {
+      return reader?.read().then(({ done, value }) => {
+        if (done) {
+          // Process any remaining buffered data before completing (fix for missing last content)
+          if (buffer.trim()) {
+            if (buffer.startsWith('data: ')) {
+              const data = buffer.slice(6).trim();
               if (data) {
                 try {
                   const parsed = JSON.parse(data);
-                  console.log('[Podcast Debug] SSE event type:', parsed.type);
-                  
-                  if (parsed.type === 'script') {
-                    scriptContent = parsed.content;
-                    console.log('[Podcast Debug] Script received, length:', scriptContent.length);
-                  } else if (parsed.type === 'complete') {
-                    audioBase64 = parsed.audio;
-                    console.log('[Podcast Debug] Audio received, base64 length:', audioBase64?.length || 0);
-                  } else if (parsed.type === 'error') {
-                    console.error('[TL Action Buttons] Podcast generation failed');
-                    this.toastService.error(`Error generating podcast: ${parsed.message}`);
-                    
-                    // Abort the reader and reset state immediately
-                    reader?.cancel();
-                    this.isConvertingToPodcast = false;
-                    throw new Error(parsed.message);
-                  } else if (parsed.type === 'progress') {
-                    console.log('[Podcast Debug] Progress:', parsed.message);
-                  }
+                  console.log('[ChatService] Format Translator final SSE data:', parsed);
+                  observer.next(parsed);
                 } catch (e) {
-                  console.error('[TL Action Buttons] Error parsing SSE data');
+                  console.error('[ChatService] Error parsing final SSE data');
+                  observer.next({ type: 'content', content: data });
                 }
               }
+            } else if (buffer.includes("placemat")) {
+              try {
+                const parsed = JSON.parse(buffer);
+                observer.next({ type: 'placemat', content: buffer, url: parsed.download_url, status: parsed.status });
+              } catch (e) {
+                console.error('[ChatService] Error parsing final placemat data');
+              }
             }
-          });
-          
-          return readStream();
-        }).catch((error) => {
-          // Handle stream reading errors
-          this.isConvertingToPodcast = false;
-          reader?.cancel();
-          throw error;
-        });
-      };
-      
-      return readStream();
-    })
-    .catch(error => {
-      console.error('[TL Action Buttons] Error converting to podcast');
-      this.toastService.error(`Failed to convert content to podcast: ${error.message || 'Unknown error'}`);
-      this.isConvertingToPodcast = false;
-      reader?.cancel();
-    });
-  }
-  
-  private base64ToBlob(base64: string, contentType: string): Blob {
-    const byteCharacters = atob(base64);
-    const byteArrays = [];
-    
-    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
-      const slice = byteCharacters.slice(offset, offset + 512);
-      const byteNumbers = new Array(slice.length);
-      for (let i = 0; i < slice.length; i++) {
-        byteNumbers[i] = slice.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      byteArrays.push(byteArray);
-    }
-    
-    return new Blob(byteArrays, { type: contentType });
-  }
+          }
+          observer.complete();
+          return;
+        }
 
-  /**
-   * Escape HTML special characters to prevent XSS attacks
-   */
-  private escapeHtmlSpecialChars(untrustedData: string): string {
-    if (!untrustedData) return '';
-    const div = document.createElement('div');
-    div.textContent = untrustedData;
-    return div.innerHTML;
-  }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-  /**
-   * Escape data for use in HTML attributes
-   */
-  private escapeHtmlAttribute(untrustedData: string): string {
-    if (!untrustedData) return '';
-    return untrustedData
-      .replace(/&/g, '&amp;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#x27;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-  }
-
-  /**
-   * Validate URL to prevent open redirect attacks
-   */
-  private validateAndEscapeUrl(urlString: string): void {
-    if (!urlString) throw new Error('URL is empty');
-    
-    try {
-      const url = new URL(urlString);
-      
-      if (!['http:', 'https:'].includes(url.protocol)) {
-        throw new Error(`Invalid protocol: ${url.protocol}`);
-      }
-    } catch (error) {
-      throw new Error(`URL validation failed: ${error instanceof Error ? error.message : 'Invalid URL'}`);
-    }
-  }
-
-  private async downloadBlobWithSaveDialog(blob: Blob, filename: string, mimeTypeOverride?: string): Promise<void> {
-    // Check if File System Access API is available (Chrome, Edge, Firefox with flag)
-    if ('showSaveFilePicker' in window) {
-      try {
-        const ext = filename.split('.').pop()?.toLowerCase() || '';
-        let mimeType = mimeTypeOverride || blob.type || 'application/octet-stream';
-        
-        // Map extensions to proper MIME types if needed
-        if (!mimeTypeOverride && (!blob.type || blob.type === 'application/octet-stream')) {
-          switch (ext) {
-            case 'docx':
-              mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-              break;
-            case 'pdf':
-              mimeType = 'application/pdf';
-              break;
-            case 'pptx':
-              mimeType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-              break;
-            case 'txt':
-              mimeType = 'text/plain';
-              break;
-            case 'mp3':
-              mimeType = 'audio/mpeg';
-              break;
+        if(buffer.includes("placemat")) {
+          try {
+            const parsed = JSON.parse(buffer);
+            observer.next({ type: 'placemat', content: buffer, url: parsed.download_url, status: parsed.status });
+          } catch (e) {
+            console.error('[ChatService] Error parsing placemat data');
           }
         }
-        
-        const handle = await (window as any).showSaveFilePicker({
-          suggestedName: filename,
-          types: [
-            {
-              description: `${ext.toUpperCase()} Files`,
-              accept: { [mimeType]: [`.${ext}`] }
+
+        lines.forEach(line => {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6).trim();
+            if (data) {
+              try {
+                const parsed = JSON.parse(data);
+                console.log('[ChatService] Format Translator SSE data:', parsed);
+                observer.next(parsed);
+              } catch (e) {
+                console.error('[ChatService] Error parsing SSE data');
+                // If parsing fails, try to send as string content
+                observer.next({ type: 'content', content: data });
+              }
             }
-          ]
+          }
         });
 
-        const writable = await handle.createWritable();
-        await writable.write(blob);
-        await writable.close();
+        return readStream();
+      });
+    };
 
-        console.log(`File saved: ${filename}`);
-      } catch (error: any) {
-        if (error.name !== 'AbortError') {
-          console.error('[TL Action Buttons] Error saving file');
-          // Fallback to default download if dialog fails
-          this.fallbackDownload(blob, filename);
+    return readStream();
+  }
+
+  streamSectionUpdate(request: UpdateSectionRequest): Observable<string> {
+    return new Observable(observer => {
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/update-section`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
         }
-      }
-    } else {
-      // Fallback: use default download behavior for unsupported browsers
-      this.fallbackDownload(blob, filename);
-    }
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          try {
+            const parsed = JSON.parse(eventData);
+            if (parsed.content) {
+              observer.next(parsed.content);
+            } else if (parsed.error) {
+              observer.error(new Error(parsed.error));
+            }
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamSectionUpdate');
+            observer.next(eventData);
+          }
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) return;
+              if (trimmedLine.startsWith('data: ')) {
+                const data = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(data);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        observer.error(error);
+      });
+    });
   }
 
-  private fallbackDownload(blob: Blob, filename: string): void {
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    setTimeout(() => {
-      window.URL.revokeObjectURL(url);
-    }, 100);
+  streamPrepareClientMeeting(
+    payload: Message[] | {
+      messages: Message[],
+      content_type?: string,
+      topic?: string,
+      word_limit?: string,
+      audience_tone?: string,
+      outline?: { type: string, content: string },
+      supporting_documents?: { content: string },
+      research?: any,
+      stream: boolean
+    },
+    improvementPrompt?: string,
+    draftParams?: any
+  ): Observable<any> {
+    return new Observable(observer => {
+      let request: any;
+
+      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
+      if (Array.isArray(payload)) {
+        // Old format: Message[] for improvement iterations
+        request = { messages: payload, stream: true };
+        
+        // Add improvement_prompt to request if provided
+        if (improvementPrompt) {
+          request.improvement_prompt = improvementPrompt;
+        }
+        
+        // Add draft parameters for improvement iterations
+        if (draftParams) {
+          if (draftParams.contentType) request.content_type = draftParams.contentType;
+          if (draftParams.topic) request.topic = draftParams.topic;
+          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
+          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
+          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
+          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
+          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
+        }
+      } else {
+        // New format: Structured payload object with all fields
+        request = payload;
+      }
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/prep-client-meeting`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          try {
+            const parsed = JSON.parse(eventData);
+            observer.next(parsed);
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamPrepareClientMeeting');
+            observer.next({ type: 'content', content: eventData });
+          }
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            lines.forEach(line => {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) return;
+              if (trimmedLine.startsWith('data: ')) {
+                const data = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(data);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => observer.error(error));
+    });
   }
- 
+
+  streamProposalInsights(
+    payload: Message[] | {
+      messages: Message[],
+      content_type?: string,
+      topic?: string,
+      word_limit?: string,
+      audience_tone?: string,
+      outline?: { type: string, content: string },
+      supporting_documents?: { content: string },
+      research?: any,
+      stream: boolean
+    },
+    improvementPrompt?: string,
+    draftParams?: any
+  ): Observable<any> {
+    return new Observable(observer => {
+      let request: any;
+
+      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
+      if (Array.isArray(payload)) {
+        // Old format: Message[] for improvement iterations
+        request = { messages: payload, stream: true };
+        
+        // Add improvement_prompt to request if provided
+        if (improvementPrompt) {
+          request.improvement_prompt = improvementPrompt;
+        }
+        
+        // Add draft parameters for improvement iterations
+        if (draftParams) {
+          if (draftParams.contentType) request.content_type = draftParams.contentType;
+          if (draftParams.topic) request.topic = draftParams.topic;
+          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
+          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
+          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
+          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
+          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
+        }
+      } else {
+        // New format: Structured payload object with all fields
+        request = payload;
+      }
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/proposal_insights`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          
+          try {
+            const parsed = JSON.parse(eventData);
+            console.log('[ChatService] Proposal Insights SSE event:', parsed);
+            observer.next(parsed);
+            
+            // Check if this is the done signal
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamProposalInsights');
+            // Still emit unparseable data as string content
+            observer.next({ type: 'content', content: eventData });
+          }
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              // Edge case: Flush remaining buffer when stream ends
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                // Handle case where final event doesn't end with newline
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  // Try to parse as JSON directly
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              
+              // Only complete the observable when done signal received or stream fully read
+              if (doneSignalReceived) {
+                console.log('[ChatService] Proposal Insights stream completed with done signal');
+                observer.complete();
+              } else {
+                console.log('[ChatService] Proposal Insights stream ended without explicit done signal');
+                observer.complete();
+              }
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            
+            // Split by double newline (SSE standard format) and single newlines
+            // SSE events are separated by \n\n, but we also handle \n for compatibility
+            const events = buffer.split('\n');
+            buffer = events.pop() || '';
+
+            events.forEach(line => {
+              const trimmedLine = line.trim();
+              
+              // Skip empty lines
+              if (!trimmedLine) return;
+              
+              // Parse SSE format "data: {json}"
+              if (trimmedLine.startsWith('data: ')) {
+                const eventData = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(eventData);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                // Handle case where JSON is sent without "data: " prefix
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        console.error('[ChatService] Proposal Insights stream error');
+        observer.error(error);
+      });
+    });
+  }
+
+  streamIndustryInsights(
+    payload: Message[] | {
+      messages: Message[],
+      content_type?: string,
+      topic?: string,
+      word_limit?: string,
+      audience_tone?: string,
+      outline?: { type: string, content: string },
+      supporting_documents?: { content: string },
+      research?: any,
+      stream: boolean
+    },
+    improvementPrompt?: string,
+    draftParams?: any
+  ): Observable<any> {
+    return new Observable(observer => {
+      let request: any;
+
+      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
+      if (Array.isArray(payload)) {
+        // Old format: Message[] for improvement iterations
+        request = { messages: payload, stream: true };
+        
+        // Add improvement_prompt to request if provided
+        if (improvementPrompt) {
+          request.improvement_prompt = improvementPrompt;
+        }
+        
+        // Add draft parameters for improvement iterations
+        if (draftParams) {
+          if (draftParams.contentType) request.content_type = draftParams.contentType;
+          if (draftParams.topic) request.topic = draftParams.topic;
+          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
+          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
+          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
+          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
+          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
+        }
+      } else {
+        // New format: Structured payload object with all fields
+        request = payload;
+      }
+
+      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/industry_insights`, {
+        method: 'POST',
+        body: JSON.stringify(request)
+      })
+      .then(response => {
+        if (!response.ok) throw new Error('Network response was not ok');
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneSignalReceived = false;
+
+        const parseAndEmitEvent = (eventData: string): void => {
+          if (!eventData || !eventData.trim()) return;
+          
+          try {
+            const parsed = JSON.parse(eventData);
+            console.log('[ChatService] Industry Insights SSE event:', parsed);
+            observer.next(parsed);
+            
+            // Check if this is the done signal
+            if (parsed.done === true) {
+              doneSignalReceived = true;
+            }
+          } catch (error) {
+            console.error('[ChatService] Error parsing SSE JSON in streamIndustryInsights');
+            // Still emit unparseable data as string content
+            observer.next({ type: 'content', content: eventData });
+          }
+        };
+
+        function readStream(): any {
+          return reader?.read().then(({ done, value }) => {
+            if (done) {
+              // Edge case: Flush remaining buffer when stream ends
+              const remainingData = buffer.trim();
+              if (remainingData) {
+                // Handle case where final event doesn't end with newline
+                if (remainingData.startsWith('data: ')) {
+                  const data = remainingData.slice(6).trim();
+                  parseAndEmitEvent(data);
+                } else if (remainingData) {
+                  // Try to parse as JSON directly
+                  parseAndEmitEvent(remainingData);
+                }
+              }
+              
+              // Only complete the observable when done signal received or stream fully read
+              if (doneSignalReceived) {
+                console.log('[ChatService] Industry Insights stream completed with done signal');
+              } else {
+                console.log('[ChatService] Industry Insights stream ended without explicit done signal');
+              }
+              observer.complete();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            
+            // Split by double newline (SSE standard format) and single newlines
+            // SSE events are separated by \n\n, but we also handle \n for compatibility
+            const events = buffer.split('\n');
+            buffer = events.pop() || '';
+
+            events.forEach(line => {
+              const trimmedLine = line.trim();
+              
+              // Skip empty lines
+              if (!trimmedLine) return;
+              
+              // Parse SSE format "data: {json}"
+              if (trimmedLine.startsWith('data: ')) {
+                const eventData = trimmedLine.slice(6).trim();
+                parseAndEmitEvent(eventData);
+              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
+                // Handle case where JSON is sent without "data: " prefix
+                parseAndEmitEvent(trimmedLine);
+              }
+            });
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        console.error('[ChatService] Industry Insights stream error');
+        observer.error(error);
+      });
+    });
+  }
+
+  // exportToWord(data: { content: string; title: string }): Observable<Blob> {
+  //   return this.http.post(`${this.apiUrl}/api/v1/export/word`, data, {
+
+  exportToWord(data: { content: string; title: string; content_type?: string }): Observable<Blob> {
+        return this.http.post(`${this.apiUrl}/api/v1/export/word`, data, {
+      responseType: 'blob'
+    });
+  }
+
+  exportToPDF(data: { content: string; title: string }): Observable<Blob> {
+    return this.http.post(`${this.apiUrl}/api/v1/export/pdf-pwc`, data, {
+      responseType: 'blob'
+    });
+  }
+  exportPdfWithBullets(payload: {content: string;title: string;}): Observable<Blob> {
+    return this.http.post(`${this.apiUrl}/api/v1/export/pdf-pwc-bullets`,payload,
+      { responseType: 'blob' }
+    );
+  }
+  exportToText(data: { content: string; title: string }): Observable<Blob> {
+    return this.http.post(`${this.apiUrl}/api/v1/export/text`, data, {
+      responseType: 'blob'
+    });
+  }
+
+
+  exportEditContentToWord(data: { 
+    content: string; 
+    title: string; 
+    block_types?: Array<{index: number; type: string; level?: number}>;
+    subtitle?: string;
+    content_type?: string;
+    references?: Array<Record<string, any>> | null;
+  }): Observable<Blob> {
+      return this.http.post(`${this.apiUrl}/api/v1/export/edit-content/word`, data, {
+        responseType: 'blob'
+      });
+    }
+
+
+  exportEditContentToPDF(data: { 
+    content: string; 
+    title: string; 
+    block_types?: Array<{index: number; type: string; level?: number}>;
+    subtitle?: string;
+    content_type?: string;
+    references?: Array<Record<string, any>> | null;
+  }): Observable<Blob> {
+      return this.http.post(`${this.apiUrl}/api/v1/export/edit-content/pdf`, data, {
+        responseType: 'blob'
+      });
+    }
+
+
+  // ===== Chat History Management Methods =====
+  // These methods manage chat history retrieval from database (lazy loading)
+
+  /**
+   * Get all chat session summaries for a user.
+   * Returns only titles and metadata, NOT full conversations.
+   * @param userId User email or identifier
+   * @param source Optional source filter (Chat, DDDC, Cortex, etc.)
+   * @returns List of session summaries
+   */
+  getUserSessions(userId: string, source?: string): Observable<ChatSessionSummary[]> {
+    let url = `${this.apiUrl}/api/v1/chat-history/sessions?user_id=${encodeURIComponent(userId)}`;
+    if (source) {
+      url += `&source=${encodeURIComponent(source)}`;
+    }
+    return this.http.get<ChatSessionSummary[]>(url);
+  }
+
+  /**
+   * Preload all user sessions from database into Redis cache when the user logs in.
+   * Subsequent calls to getUserSessions() will be extremely fast (cache hit).
+   * 
+   * Benefits:
+   * - Loads all historical sessions into cache at login, New chats append to pre-warmed cache
+   * - History panel loads instantly from cache (no DB hit)
+   * - Auto-refreshes after 2-hour TTL expiry
+   * 
+   * @param userId User email or identifier
+   * @returns Preload status with session count
+   */
+  preloadChatHistoryCache(userId: string): Observable<{ status: string; message: string; session_count: number }> {
+    const url = `${this.apiUrl}/api/v1/chat-history/sessions/preload?user_id=${encodeURIComponent(userId)}`;
+    return this.http.post<{ status: string; message: string; session_count: number }>(url, {});
+  }
+
+  /**
+   * Get full conversation for a specific session.
+   * Call this only when user clicks on a session to load the conversation.
+   * @param sessionId Session identifier
+   * @returns Complete session data with conversation messages
+   */
+  getSessionConversation(sessionId: string): Observable<ChatSessionDetail> {
+    return this.http.get<ChatSessionDetail>(
+      `${this.apiUrl}/api/v1/chat-history/sessions/${encodeURIComponent(sessionId)}`
+    );
+  }
+
+  /**
+   * Delete a chat session (soft delete).
+   * @param sessionId Session identifier
+   * @returns Deletion confirmation
+   */
+  deleteSession(sessionId: string): Observable<any> {
+    return this.http.delete(
+      `${this.apiUrl}/api/v1/chat-history/sessions/${encodeURIComponent(sessionId)}`
+    );
+  }
+  exportWordStandalone(payload: {
+  content: string;
+  title: string;
+  content_type?: string;
+}): Observable<Blob> {
+  return this.http.post(
+    `${this.apiUrl}/api/v1/export/word-standalone`,
+    payload,
+    { responseType: 'blob' }
+  );
+}
+exportWordUI(data: { content: string; title: string }): Observable<Blob> {
+  return this.http.post(
+    `${this.apiUrl}/api/v1/export/word-ui`,
+    data,
+    { responseType: 'blob' }
+  );
+}
+
+exportPdfStandalone(payload: {
+  content: string;
+  title: string;
+}): Observable<Blob> {
+  return this.http.post(
+    `${this.apiUrl}/api/v1/export/pdf-pwc`,
+    payload,
+    { responseType: 'blob' }
+  );
+}
+
+/**
+ * Stream from tl_chat_agent endpoint which can return:
+ * 1. JSON response with edit intent workflow data -> trigger edit workflow
+ * 2. Streaming response for normal chat -> stream content
+ */
+streamTlChatAgent(
+  messages: Array<{role: string, content: string}>,
+  userId?: string,
+  sessionId?: string,
+  threadId?: string,
+  source?: string
+): Observable<any> {
+  return new Observable(observer => {
+    const apiUrl = `${this.apiUrl}/api/v1/tl/tl_chat_agent`;
+    console.log('[ChatService] streamTlChatAgent - URL:', apiUrl);
+
+    const payload = {
+      messages: messages,
+      user_id: userId,
+      session_id: sessionId,
+      thread_id: threadId,
+      source: source || 'Cortex'
+    };
+
+    this.authenticatedFetch(apiUrl, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`API responded with status: ${response.status}`);
+        }
+
+        const contentType = response.headers.get('content-type');
+        console.log('[ChatService] streamTlChatAgent - Content-Type:', contentType);
+
+        // Check if response is JSON (edit intent workflow)
+        if (contentType && contentType.includes('application/json')) {
+          return response.json().then(data => {
+            console.log('[ChatService] Received JSON response:', data);
+            observer.next({ ...data, isStreamChunk: false });
+            observer.complete();
+          });
+        }
+
+        // Otherwise, stream text content
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('Response body is not readable');
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        const processChunk = ({ done, value }: ReadableStreamReadResult<Uint8Array>) => {
+          if (done) {
+            observer.complete();
+            return;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+
+          // Keep the last incomplete line in the buffer
+          buffer = lines[lines.length - 1];
+
+          // Process complete lines
+          for (let i = 0; i < lines.length - 1; i++) {
+            const line = lines[i].trim();
+            if (line.startsWith('data: ')) {
+              const dataStr = line.slice(6); // Remove 'data: ' prefix
+              try {
+                const parsedData = JSON.parse(dataStr);
+                console.log('[ChatService] Parsed streaming data:', parsedData);
+
+                // Handle content chunks
+                if (parsedData.type === 'content' && parsedData.content) {
+                  observer.next(parsedData.content);
+                }
+                // Handle webpage_ready signal with optional content and URL
+                else if (parsedData.type === 'webpage_ready' && parsedData.content === 'completed') {
+                  console.log('[ChatService] Received webpage_ready signal:', parsedData);
+                  observer.next({ type: 'webpage_ready', isWebpageReady: true, url: parsedData.url || null });
+                }
+                // Handle done signal
+                else if (parsedData.type === 'done' && parsedData.done) {
+                  observer.complete();
+                  return;
+                }
+                // Emit metadata chunks so component can track workflow responses
+                else if (parsedData.type === 'metadata') {
+                  console.log('[ChatService] Received metadata in stream:', parsedData);
+                  // Emit metadata signal so component knows this is a workflow interaction
+                  observer.next({ type: 'metadata', isMetadata: true, workflow: parsedData.workflow });
+                }
+              } catch (e) {
+                console.error('[ChatService] Error parsing streaming data');
+              }
+            }
+          }
+
+          reader.read().then(processChunk).catch(err => observer.error(err));
+        };
+
+        reader.read().then(processChunk).catch(err => observer.error(err));
+        return Promise.resolve();
+      })
+      .catch(error => {
+        console.error('[ChatService] Error in streamTlChatAgent');
+        observer.error(error);
+      });
+  });
+}
 }
