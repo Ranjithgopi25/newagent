@@ -1,2949 +1,7044 @@
-<div
-  class="app-container"
-  [class.sidebar-expanded]="sidebarExpanded"
-  >
-  <!-- Top Header Bar -->
-  <header class="top-header">
-    <div class="header-left">
-      <button
-          class="menu-toggle"
-          (click)="toggleMobileMenu()"
-          type="button"
-          aria-label="Toggle menu"
-          >
-          <svg
-            width="24"
-            height="24"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            >
-            <line x1="3" y1="12" x2="21" y2="12"></line>
-            <line x1="3" y1="6" x2="21" y2="6"></line>
-            <line x1="3" y1="18" x2="21" y2="18"></line>
-          </svg>
-      </button>
-      <img
-        src="assets/images/pwc-logo-2025.png"
-        alt="PwC"
-        (click)="goHome()"
-        class="pwc-header-logo"
-        />
-        <!-- <span class="business-services-text">Business Services</span> -->
-        <span class="mcx-ai-text"></span>
-      </div>
 
-      <div class="llm-container">
-        <div class="llm-selector-container">
-          <!-- Service Provider Dropdown -->
-          <!-- <div class="dropdown-wrapper">
-            <button
-              class="dropdown-btn"
-              (click)="toggleDropdown('service-provider', $event)"
-              type="button"
-              title="Select Service Provider"
-              >
-             <span class="dropdown-label">{{ selectedServiceProvider === 'openai' ? 'OpenAI' : 'Anthropic' }}</span> 
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                [class.rotate]="openDropdown === 'service-provider'"
-                >
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </button> 
-            @if (openDropdown === 'service-provider') {
-              <div
-                class="dropdown-menu"
-                (click)="$event.stopPropagation()"
-                >
-                <button
-                  class="dropdown-item"
-                  [class.active]="selectedServiceProvider === 'openai'"
-                  (click)="selectServiceProvider('openai', $event)"
-                  type="button"
-                  >
-                  OpenAI
-                </button>
-                <button
-                  class="dropdown-item"
-                  [class.active]="selectedServiceProvider === 'anthropic'"
-                  (click)="selectServiceProvider('anthropic', $event)"
-                  type="button"
-                  >
-                  Anthropic
-                </button>
-              </div>
-            }
-          </div> -->
 
-          <!-- Model Dropdown -->
-          <!-- <div class="dropdown-wrapper">
-            <button
-              class="dropdown-btn"
-              (click)="toggleDropdown('model-select', $event)"
-              type="button"
-              title="Select LLM Model"
-              >
-              <span class="dropdown-label">{{ selectedModel }}</span>
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                [class.rotate]="openDropdown === 'model-select'"
-                >
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </button>
-            @if (openDropdown === 'model-select') {
-              <div
-                class="dropdown-menu"
-                (click)="$event.stopPropagation()"
-                >
-                @for (model of availableModels; track model) {
-                  <button
-                    class="dropdown-item"
-                    [class.active]="selectedModel === model"
-                    (click)="selectModel(model, $event)"
-                    type="button"
-                    >
-                    {{ model }}
-                  </button>
-                }
-              </div>
-            } 
-          </div>-->
-        </div>
-      </div>
+import { Component, EventEmitter, OnInit, OnDestroy, HostListener, ViewChild, ElementRef, AfterViewChecked, ChangeDetectorRef, inject, Output } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { ChatService, ThemeService, ThemeMode, TlChatBridgeService, ToastService } from '../../core/services';
+import { ChatEditWorkflowService } from '../../core/services/chat-edit-workflow.service';
+import { ChatDraftWorkflowService } from '../../core/services/chat-draft-workflow.service';
+import { Message, ChatSession, ThoughtLeadershipRequest, ThoughtLeadershipMetadata, MarketIntelligenceMetadata, EditorOption } from '../../core/models';
+import { SourceCitationPipe } from '../../core/pipes';
+import { TlFlowService } from '../../core/services/tl-flow.service';
+import { DdcFlowService } from '../../core/services/ddc-flow.service';
+import { AuthService } from '../../auth/auth.service';
+import { AuthFetchService } from '../../core/services/auth-fetch.service';
+import { MiFlowService } from '../../features/market-intelligence/mi-flow.service';
+import { MiChatBridgeService } from '../../features/market-intelligence/mi-chat-bridge.service';
+import { DDC_WORKFLOWS, MI_WORKFLOWS, DDC_INTRO_TEXT, DDC_SUB_INTRO_TEXT } from '../../core/models/guided-journey.models';
+import { DraftContentFlowComponent } from '../../features/thought-leadership/draft-content-flow/draft-content-flow.component';
+import { ConductResearchFlowComponent } from '../../features/thought-leadership/conduct-research-flow/conduct-research-flow.component';
+import { EditContentFlowComponent } from '../../features/thought-leadership/edit-content-flow/edit-content-flow.component';
+import { RefineContentFlowComponent } from '../../features/thought-leadership/refine-content-flow/refine-content-flow.component';
+import { FormatTranslatorFlowComponent } from '../../features/thought-leadership/format-translator-flow/format-translator-flow.component';
+import { GeneratePodcastFlowComponent } from '../../features/thought-leadership/generate-podcast-flow/generate-podcast-flow.component';
+import { ReadyToPublishFlowComponent } from '../../features/thought-leadership/ready-to-publish-flow/ready-to-publish-flow.component';
+import { BrandFormatFlowComponent } from '../../features/ddc/brand-format-flow/brand-format-flow.component';
+import { ProfessionalPolishFlowComponent } from '../../features/ddc/professional-polish/professional-polish-flow.component';
+import { SanitizationFlowComponent } from '../../features/ddc/sanitization/sanitization-flow.component';
+import { EventBrandingFlowComponent } from '../../features/ddc/event-branding/event-branding-flow.component';
+import { ClientCustomizationFlowComponent } from '../../features/ddc/client-customization/client-customization-flow.component';
+import { RfpResponseFlowComponent } from '../../features/ddc/rfp-response/rfp-response-flow.component';
+import { FormatTranslatorFlowComponent as DdcFormatTranslatorFlowComponent } from '../../features/ddc/format-translator/format-translator-flow.component';
+import { SlideCreationFlowComponent } from '../../features/ddc/slide-creation/slide-creation-flow.component';
+import { SlideCreationPromptFlowComponent } from '../../features/ddc/slide-creation-prompt/slide-creation-prompt-flow.component';
+import { GuidedDialogComponent } from '../../shared/components/guided-dialog/guided-dialog.component';
+import { QuickDraftDialogComponent, QuickDraftInputs } from '../../shared/components/quick-draft-dialog/quick-draft-dialog.component';
+import { TlActionButtonsComponent } from '../../features/chat/components/message-list/tl-action-buttons/tl-action-buttons.component';
+import { TlRequestFormComponent } from '../../features/phoenix/TL/request-form';
+import { DDCRequestFormComponent } from '../../features/phoenix/ddc/request-form-ddc';
+import { EditorSelectionComponent } from '../../features/chat/components/editor-selection/editor-selection.component';
+import { EditorProgressComponent } from '../../shared/ui/components/editor-progress/editor-progress.component';
+import { ParagraphEditsConsolidatedComponent } from '../../shared/ui/components/paragraph-edits/paragraph-edits-consolidated.component';
+import { CanvasEditorComponent } from '../../features/thought-leadership/canvas-editor/canvas-editor.component';
+import { CanvasStateService } from '../../core/services/canvas-state.service';
+import { VoiceInputComponent } from '../../shared/components/voice-input/voice-input.component';
+import { FileUploadComponent } from '../../shared/components/file-upload/file-upload.component';
+import { MarkdownPipe } from '../../core/pipes/markdown.pipe';
+import { Observable, Subject } from 'rxjs'
+import { takeUntil } from 'rxjs/operators';
+import { marked } from 'marked';
+import { CurrentUserService } from '../../core/services/current-user.service';
+import { User } from '../../core/models/user.model';
+import { environment } from '../../../environments/environment';
+import { extractDocumentTitle, convertMarkdownToHtml, BlockTypeInfo } from '../../core/utils/edit-content.utils';
+import { formatFinalArticleWithBlockTypes } from '../../core/utils/edit-content.utils';
 
-      <div class="header-center">
-      </div>
-      <!-- Home Button -->
-      <div class="header-right">
-        <button
-          class="header-icon-btn"
-          (click)="goHome()"
-          type="button"
-          title="Home"
-          >
-          <!-- <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            >
-            <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-            <polyline points="9 22 9 12 15 12 15 22"></polyline>
-          </svg> -->
-          <svg width="20.000000pt" height="20.000000pt" viewBox="0 0 90.000000 90.000000"  preserveAspectRatio="xMidYMid meet"> <g transform="translate(0.000000,90.000000) scale(0.100000,-0.100000)" fill="#000000" stroke="none"> <path d="M234 681 l-211 -168 19 -23 19 -23 22 22 c13 11 25 21 28 21 2 0 3 -90 1 -200 l-3 -200 319 0 318 0 22 30 23 30 -101 0 -100 0 0 140 0 140 -140 0 -140 0 0 -140 0 -140 -70 0 -70 0 0 194 0 193 140 112 140 111 140 -112 140 -112 0 -168 0 -168 31 0 30 0 -3 150 -3 149 28 -26 c26 -26 27 -26 42 -7 8 10 15 22 15 26 0 3 -30 30 -67 59 -38 30 -132 104 -210 166 -77 62 -143 113 -145 112 -1 0 -98 -76 -214 -168z m-87 -130 c0 -11 -4 -18 -8 -15 -4 2 -10 0 -14 -6 -3 -5 -12 -10 -18 -10 -7 0 -6 4 3 10 8 5 11 10 6 10 -6 0 -1 7 10 15 24 18 23 18 21 -4z m386 -270 l2 -111 -85 0 -85 0 2 112 c2 62 3 113 3 113 0 0 36 -1 80 -2 l81 -1 2 -111z m-196 -133 c-3 -8 -6 -5 -6 6 -1 11 2 17 5 13 3 -3 4 -12 1 -19z m243 1 c0 -13 -27 -11 -36 3 -4 7 -3 8 4 4 7 -4 12 -2 12 4 0 6 5 8 10 5 6 -3 10 -10 10 -16z"/> </g> </svg>
-        </button>
-        <!-- Notification Bell Button with Dropdown -->
-        <div class="notification-dropdown-wrapper">
-          <button
-            class="header-icon-btn notifications"
-            type="button"
-            title="Notifications"
-            (click)="toggleNotificationDropdown()"
-            >
-            <!-- <svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              >
-              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
-              <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
-            </svg> -->
-            <svg width="20.000000pt" height="20.000000pt" viewBox="0 0 90.000000 90.000000"  preserveAspectRatio="xMidYMid meet"> <g transform="translate(0.000000,90.000000) scale(0.100000,-0.100000)" fill="#000000" stroke="none"> <path d="M420 800 c0 -47 0 -48 -37 -54 -50 -8 -94 -36 -128 -80 -41 -54 -54 -102 -55 -202 l0 -90 -69 -102 -69 -102 353 0 353 0 16 25 c9 13 16 26 16 27 0 2 -142 2 -315 0 -173 -1 -315 0 -315 3 0 3 17 32 39 63 37 55 38 61 44 162 3 58 10 119 17 135 47 123 230 157 322 59 40 -43 55 -97 57 -202 2 -78 6 -100 24 -128 18 -27 29 -34 55 -34 17 0 32 3 32 6 0 3 -13 25 -30 49 -27 40 -30 51 -30 127 0 46 -5 100 -10 120 -23 80 -118 167 -182 168 -26 0 -28 3 -28 44 0 41 -2 44 -30 48 -30 4 -30 4 -30 -42z m40 -60 c0 -5 -7 -10 -16 -10 -8 0 -12 5 -9 10 3 6 10 10 16 10 5 0 9 -4 9 -10z m-308 -525 c16 -19 15 -20 -11 -20 -24 0 -26 2 -16 22 5 12 10 21 10 20 0 -1 8 -11 17 -22z"/> <path d="M280 83 l0 -28 170 0 170 0 0 28 0 27 -170 0 -170 0 0 -27z"/> </g> </svg>
-            <!-- <span class="notification-badge">3</span> -->
-          </button>
-          <!-- @if (showNotificationDropdown) {
-            <div class="notification-dropdown-menu">
-            </div>
-          } -->
-        </div>
-        <!-- Support Button -->
-        <button
-          class="header-icon-btn support-btn"
-          type="button"
-          title="Support"
-          (click)="openSupport()"
-          >
-          Support
-        </button>
+// Market Intelligence imports
+import { MiDraftContentFlowComponent } from '../../features/market-intelligence/draft-content-flow/draft-content-flow.component';
+import { MiConductResearchFlowComponent } from '../../features/market-intelligence/conduct-research-flow/conduct-research-flow.component';
+import { MiEditContentFlowComponent } from '../../features/market-intelligence/edit-content-flow/edit-content-flow.component';
+import { MiFormatTranslatorFlowComponent } from '../../features/market-intelligence/format-translator-flow/format-translator-flow.component';
+import { MiGeneratePodcastFlowComponent } from '../../features/market-intelligence/generate-podcast-flow/generate-podcast-flow.component';
+import { MiRefineContentFlowComponent } from '../../features/market-intelligence/refine-content-flow/refine-content-flow.component';
+import { MiBrandFormatFlowComponent } from '../../features/market-intelligence/brand-format-flow/brand-format-flow.component';
+import { MiProfessionalPolishFlowComponent } from '../../features/market-intelligence/professional-polish-flow/professional-polish-flow.component';
+import { MiActionButtonsComponent } from '../../features/market-intelligence/mi-action-buttons/mi-action-buttons.component';
+import { MiCreatePOVFlowComponent } from '../../features/market-intelligence/create-pov-flow/create-pov-flow.component';
+import { MiPrepareClientMeetingFlowComponent } from '../../features/market-intelligence/prepare-client-meeting-flow/prepare-client-meeting-flow.component';
+import { MiGatherProposalInsightsFlowComponent } from '../../features/market-intelligence/gather-proposal-insights-flow/gather-proposal-insights-flow.component';
+import { MiTargetIndustryInsightsFlowComponent } from '../../features/market-intelligence/target-industry-insights-flow/target-industry-insights-flow.component';
+import { MiCreateRFPFlowComponent } from '../../features/market-intelligence/create-rfp-response-flow/create-rfp-response-flow.component';
+import { RiskAssessmentFlowComponent } from '../../features/thought-leadership/risk-assessment/risk-assessment-flow.component';
+import { LeaderReviewFlowComponent } from '../../features/thought-leadership/leader-review/leader-review-flow.component';
+import { MyRequestsTableComponent } from './my-requests-table/my-requests-table.component';
 
- 
-        @if (user$ | async; as user) {
-          <div class="dropdown-wrapper profile-dropdown-wrapper">
-            <button
-              class="header-icon-btn profile-menu"
-              type="button"
-              title="User profile"
-              (click)="toggleDropdown('profile-menu', $event)"
-              >
-              <div class="header-profile-avatar">
-                @if (profileImageUrl) {
-                  <img 
-                    [src]="profileImageUrl" 
-                    [alt]="displayName"
-                    class="header-profile-image"
-                    (error)="$event.target.style.display='none'">
-                }
-                @if (!profileImageUrl) {
-                  <svg 
-                    width="20"
-                    height="20"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    class="header-profile-icon"
-                    >
-                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                    <circle cx="12" cy="7" r="4"></circle>
-                  </svg>
-                }
-              </div>
-              <span class="username">{{ user.name }}</span>
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                class="dropdown-arrow"
-                [class.rotate]="openDropdown === 'profile-menu'"
-                >
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
-            </button>
-            @if (openDropdown === 'profile-menu') {
-              <div
-                class="dropdown-menu profile-dropdown-menu"
-                (click)="$event.stopPropagation()"
-                >
-                <div class="profile-info">
-                  @if (userProfile) {
-                    <div class="profile-avatar-large">
-                      @if (profileImageUrl) {
-                        <img 
-                          [src]="profileImageUrl" 
-                          [alt]="displayName"
-                          class="profile-image-large"
-                          (error)="$event.target.style.display='none'">
-                      }
-                      @if (!profileImageUrl) {
-                        <svg 
-                          class="avatar-icon-large" 
-                          viewBox="0 0 24 24" 
-                          fill="none" 
-                          stroke="currentColor" 
-                          stroke-width="2">
-                          <circle cx="12" cy="8" r="4" />
-                          <path d="M6 20c0-3.3 2.7-6 6-6s6 2.7 6 6" />
-                        </svg>
-                      }
-                    </div>
-                  }
-                  <div class="profile-text">
-                    <div class="profile-name">
-                      {{ displayName.includes('(') ? displayName.split('(')[0] : displayName }}
-                    </div>
-                    @if (userProfile) {
-                      <div class="profile-role">
-                        {{ userProfile.jobTitle }}
-                      </div>
-                    }
-                    @if (userProfile) {
-                      <div class="profile-location">
-                        {{ userProfile.location }}
-                      </div>
-                    }
-                  </div>
-                </div>
-                <div class="dropdown-divider"></div>
-                <button
-                  class="dropdown-item logout-item"
-                  (click)="logout()"
-                  type="button"
-                  >
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                    <polyline points="16 17 21 12 16 7"></polyline>
-                    <line x1="21" y1="12" x2="9" y2="12"></line>
-                  </svg>
-                  Logout
-                </button>
-              </div>
-            }
-          </div>
-        }
-      </div>
-    </header>
+@Component({
+    selector: 'app-chat',
+    imports: [
+        CommonModule,
+        FormsModule,
+        SourceCitationPipe,
+        DraftContentFlowComponent,
+        ConductResearchFlowComponent,
+        EditContentFlowComponent,
+        RefineContentFlowComponent,
+        FormatTranslatorFlowComponent,
+        GeneratePodcastFlowComponent,
+        ReadyToPublishFlowComponent,
+        BrandFormatFlowComponent,
+        ProfessionalPolishFlowComponent,
+        SanitizationFlowComponent,
+        EventBrandingFlowComponent,
+        ClientCustomizationFlowComponent,
+        RfpResponseFlowComponent,
+        DdcFormatTranslatorFlowComponent,
+        SlideCreationFlowComponent,
+        SlideCreationPromptFlowComponent,
+        GuidedDialogComponent,
+        QuickDraftDialogComponent,
+        TlActionButtonsComponent,
+        TlRequestFormComponent,
+        DDCRequestFormComponent,
+        EditorSelectionComponent,
+        CanvasEditorComponent,
+        VoiceInputComponent,
+        FileUploadComponent,
+        EditorProgressComponent,
+        ParagraphEditsConsolidatedComponent,
+        MarkdownPipe,
+        // Market Intelligence components
+        MiDraftContentFlowComponent,
+        MiConductResearchFlowComponent,
+        MiEditContentFlowComponent,
+        MiFormatTranslatorFlowComponent,
+        MiGeneratePodcastFlowComponent,
+        MiRefineContentFlowComponent,
+        MiBrandFormatFlowComponent,
+        MiProfessionalPolishFlowComponent,
+        MiActionButtonsComponent,
+        MiCreatePOVFlowComponent,
+        MiPrepareClientMeetingFlowComponent,
+        MiGatherProposalInsightsFlowComponent,
+        MiTargetIndustryInsightsFlowComponent,
+        MiCreateRFPFlowComponent,
+        RiskAssessmentFlowComponent,
+        LeaderReviewFlowComponent,
+        MyRequestsTableComponent
+    ],
+    templateUrl: './chat.component.html',
+    styleUrls: ['./chat.component.scss']
+})
+export class ChatComponent implements OnInit, OnDestroy, AfterViewChecked {
+  @ViewChild('messagesContainer') private messagesContainer?: ElementRef;
+  @ViewChild('quickStartBtn') private quickStartBtn?: ElementRef;
+  @ViewChild('composerTextarea') private composerTextarea?: ElementRef<HTMLTextAreaElement>;
+  @ViewChild(VoiceInputComponent) voiceInput?: VoiceInputComponent;
+  @ViewChild(RefineContentFlowComponent) refineContentFlow?: RefineContentFlowComponent;
+  @ViewChild(MyRequestsTableComponent, { static: false }) myRequestsTableComponent?: MyRequestsTableComponent;
+  @Output() raisePhoenix = new EventEmitter<void>();
+  private shouldScrollToBottom = false;
+  private destroy$ = new Subject<void>();
+  private sanitizer = inject(DomSanitizer);
+  messages: Message[] = [];
+  userInput: string = '';
+  isLoading: boolean = false;
+  isComposerExpanded: boolean = false;
+  showDraftForm: boolean = false;
+  showGuidedDialog: boolean = false;
+  showPromptSuggestions: boolean = false;
+  showLandingPage: boolean = true;
+  landingPageFadingOut: boolean = false;
+  showCortexReminder: boolean = false;
+  showExploreShowcase: boolean = false;
+  cortexReminderConfirmed: boolean = false;
+  pendingClipboardContent: string = '';
+  pendingClipboardButtonId: string | null = null;
+  pendingCopyComponent: any = null;
+  pendingExportFormat: 'word' | 'pdf' | 'ppt' | null = null;
+  pendingExportComponent: any = null;
+  pendingExportMessageIndex: number | null = null;
+  // Simple in-component notification (toast)
+  isDraftFallback: boolean = false;
+  showNotification: boolean = false;
+  notificationMessage: string = '';
+  notificationType: 'success' | 'error' = 'success';
+  showQuickDraftDialog: boolean = false;
+  quickDraftTopic: string = '';
+  quickDraftContentType: string = '';
+  showMyRequestsPanelParent: boolean = false;
+  selectedActionCategory: string = '';
+  selectedFlow: 'ppt' | 'thought-leadership' | 'market-intelligence' | undefined = undefined;
+  selectedTLOperation: string = 'generate';
+  selectedPPTOperation: string = 'draft';
+  originalPPTFile: File | null = null;
+  referencePPTFile: File | null = null;
+  sanitizePPTFile: File | null = null;
+  uploadedPPTFile: File | null = null;
+  uploadedEditDocumentFile: File | null = null; // For Edit Content workflow
+  editDocumentUploadError: string = ''; // Error message for file upload validation
+  MAX_FILE_SIZE_MB = 5; 
+  referenceDocument: File | null = null;
+  editorialDocumentFile: File | null = null;
+  referenceLink: string = '';
+  currentAction: string = '';
+  selectedDownloadFormat: string = 'word';
+  showAttachmentArea: boolean = false;
+  showRequestForm = false; // For DDC Request Form
+  showTLRequestForm = false; // For TL Request Form (MCX Publication Support)
+  showNotificationDropdown = false; // For notification dropdown menu
+  // Store extracted text from uploaded documents (for non-workflow analysis) - supports multiple files
+  extractedDocuments: Array<{ fileName: string; extractedText: string }> = [];
+  isExtractingText: boolean = false;
+  
+  // Market Intelligence flow visibility
+  showMIFlow: boolean = false;
+  showTLFlow: boolean = false;
+  showDDCFlow: boolean = false;
 
-    <!-- Collapsible Left Sidebar -->
-    <aside
-      class="icon-sidebar"
-      [class.mobile-open]="mobileMenuOpen"
-      [class.expanded]="sidebarExpanded"
-      >
-      <div class="sidebar-header">
-        <button
-          class="sidebar-toggle-btn"
-          (click)="toggleSidebar()"
-          type="button"
-        [attr.aria-label]="
-          sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'
-        "
-          >
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            >
-            <line x1="3" y1="12" x2="21" y2="12"></line>
-            <line x1="3" y1="6" x2="21" y2="6"></line>
-            <line x1="3" y1="18" x2="21" y2="18"></line>
-          </svg>
-        </button>
-      </div>
+  // Profile details
+  profile = '';
 
-      <nav class="icon-nav" role="navigation" aria-label="Main navigation">
-        <button
-          class="icon-nav-btn"
-          [class.active]="selectedFlow === 'ppt'"
-          [class.hidden]="!offeringVisibility['ppt']"
-          (click)="selectFlow('ppt')"
-          type="button"
-          *ngIf="docStudioAccessible"
-          title="Doc studio"
-          >
-          <svg width="96.000000pt" height="96.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="currentColor" stroke="none"> <path d="M545 941 c-3 -5 -2 -12 3 -15 5 -3 9 1 9 9 0 17 -3 19 -12 6z"/> <path d="M546 893 c-6 -14 -5 -15 5 -6 7 7 10 15 7 18 -3 3 -9 -2 -12 -12z"/> <path d="M150 480 l0 -420 214 0 c178 0 216 3 226 15 11 13 5 15 -49 15 l-61 0 0 75 c0 60 -3 75 -15 75 -12 0 -15 -15 -15 -75 l0 -75 -135 0 -135 0 0 390 0 390 150 0 150 0 0 -120 0 -120 120 0 120 0 0 -60 c0 -52 -2 -60 -19 -60 -10 0 -21 -7 -25 -15 -4 -12 5 -15 49 -15 l55 0 0 -90 c0 -73 3 -90 15 -90 12 0 15 18 15 105 l0 105 -30 0 -30 0 0 71 0 70 -124 125 -125 124 -175 0 -176 0 0 -420z m487 239 l68 -64 -97 3 -98 3 0 95 0 95 30 -34 c16 -19 60 -63 97 -98z"/> <path d="M785 710 c3 -5 8 -10 11 -10 2 0 4 5 4 10 0 6 -5 10 -11 10 -5 0 -7 -4 -4 -10z"/> <path d="M240 495 c0 -12 15 -15 75 -15 60 0 75 3 75 15 0 12 -15 15 -75 15 -60 0 -75 -3 -75 -15z"/> <path d="M450 405 c0 -87 3 -105 15 -105 12 0 15 17 15 90 l0 90 49 0 c31 0 53 5 61 15 11 13 3 15 -64 15 l-76 0 0 -105z"/> <path d="M240 405 c0 -12 15 -15 75 -15 60 0 75 3 75 15 0 12 -15 15 -75 15 -60 0 -75 -3 -75 -15z"/> <path d="M540 405 c0 -12 17 -15 90 -15 73 0 90 3 90 15 0 12 -17 15 -90 15 -73 0 -90 -3 -90 -15z"/> <path d="M240 315 c0 -12 15 -15 75 -15 60 0 75 3 75 15 0 12 -15 15 -75 15 -60 0 -75 -3 -75 -15z"/> <path d="M540 315 c0 -12 17 -15 90 -15 73 0 90 3 90 15 0 12 -17 15 -90 15 -73 0 -90 -3 -90 -15z"/> <path d="M240 225 c0 -12 15 -15 75 -15 60 0 75 3 75 15 0 12 -15 15 -75 15 -60 0 -75 -3 -75 -15z"/> <path d="M540 225 c0 -12 17 -15 90 -15 73 0 90 3 90 15 0 12 -17 15 -90 15 -73 0 -90 -3 -90 -15z"/> <path d="M780 165 l0 -75 -49 0 c-31 0 -53 -5 -61 -15 -11 -13 -3 -15 64 -15 l76 0 0 90 c0 73 -3 90 -15 90 -12 0 -15 -15 -15 -75z"/> </g> </svg>
-          <span class="nav-label">Doc studio</span>
-        </button>
-        <button
-          class="icon-nav-btn"
-          [class.active]="selectedFlow === 'market-intelligence'"
-          [class.hidden]="!offeringVisibility['market-intelligence']"
-          (click)="selectFlow('market-intelligence')"
-          type="button"
-          *ngIf="marketIntelligenceAccessible"
-          title="Market intelligence and insights"
-          >
-          <svg width="96.000000pt" height="96.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="currentColor" stroke="none"> <path d="M750 836 c0 -8 9 -16 20 -18 15 -2 -13 -31 -117 -123 -203 -178 -174 -164 -233 -109 l-50 46 -27 -17 c-16 -10 -81 -56 -145 -102 -83 -59 -115 -88 -111 -99 3 -9 9 -11 17 -6 6 5 68 50 137 100 l127 90 48 -49 c26 -27 51 -49 54 -49 3 0 79 65 170 145 133 116 166 141 168 125 4 -25 32 -26 32 -1 0 10 3 33 6 50 l7 31 -52 0 c-38 0 -51 -4 -51 -14z"/> <path d="M705 380 l0 -271 84 3 c57 2 86 7 89 16 3 9 -15 12 -70 12 l-73 0 0 240 0 240 63 0 63 0 -1 -217 c-1 -191 0 -218 14 -221 14 -3 16 23 16 232 l0 236 -92 0 -93 0 0 -270z"/> <path d="M536 498 c3 -5 10 -6 15 -3 13 9 11 12 -6 12 -8 0 -12 -4 -9 -9z"/> <path d="M285 275 l0 -165 81 0 c60 0 85 4 94 15 11 13 2 15 -69 15 l-81 0 0 135 0 135 66 0 66 0 -4 -112 c-2 -90 0 -113 11 -113 10 0 14 27 15 127 l1 128 -90 0 -90 0 0 -165z"/> <path d="M495 260 l0 -150 92 0 92 0 -1 150 -1 150 -91 0 -91 0 0 -150z m155 0 l0 -120 -62 0 -63 0 0 120 0 120 63 0 62 0 0 -120z"/> <path d="M70 215 l0 -105 93 0 92 0 0 105 0 105 -92 0 -93 0 0 -105z m155 0 l0 -75 -62 0 -63 0 0 75 0 75 63 0 62 0 0 -75z"/> </g> </svg>
-          <span class="nav-label">
-            <span class="label-line">Market intelligence and insights</span>
-          </span>
-        </button>
-        <button
-          class="icon-nav-btn"
-          [class.active]="selectedFlow === 'thought-leadership'"
-          [class.hidden]="!offeringVisibility['thought-leadership']"
-          (click)="selectFlow('thought-leadership')"
-          type="button"
-          *ngIf="isProfilePresent(profile) && cortexAccessible"
-          title="Cortex content studio"
-          >
-          <svg width="96.000000pt" height="96.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="currentColor" stroke="none"> <path d="M380 917 c-129 -37 -200 -132 -200 -269 0 -62 11 -91 76 -199 32 -53 34 -62 34 -148 l0 -91 162 2 c124 2 162 6 166 16 3 9 -3 13 -14 12 -11 -1 -80 -2 -154 -1 l-135 1 3 78 c3 77 3 79 -43 157 -60 100 -66 117 -66 180 -2 155 122 255 298 242 132 -10 209 -70 221 -172 3 -31 9 -45 20 -45 25 0 8 97 -25 144 -45 63 -115 96 -215 101 -52 3 -100 0 -128 -8z"/> <path d="M606 711 c-4 -5 -2 -12 3 -15 5 -4 12 -2 15 3 4 5 2 12 -3 15 -5 4 -12 2 -15 -3z"/> <path d="M350 650 c-15 -28 -4 -57 27 -73 l25 -14 -1 -156 c-2 -136 0 -157 14 -157 13 0 15 22 15 161 l0 160 33 -3 32 -3 3 -157 c2 -138 5 -158 19 -158 14 0 15 17 11 159 l-5 160 23 5 c58 15 53 96 -6 96 -35 0 -53 -30 -40 -65 7 -19 4 -20 -31 -17 -35 4 -39 7 -37 31 3 37 -9 51 -42 51 -19 0 -33 -7 -40 -20z m60 -37 c0 -25 0 -26 -20 -8 -11 10 -20 22 -20 27 0 4 9 8 20 8 15 0 20 -7 20 -27z m143 21 c9 -10 -4 -34 -19 -34 -8 0 -14 9 -14 20 0 19 19 27 33 14z"/> <path d="M747 638 c-2 -7 14 -41 35 -76 21 -34 38 -66 38 -70 0 -4 -13 -16 -30 -25 -27 -16 -30 -23 -30 -68 l0 -49 -85 0 -85 0 0 -35 c0 -24 5 -35 15 -35 8 0 15 9 15 20 0 18 7 20 73 20 43 0 78 5 85 12 7 7 12 33 12 58 0 42 3 47 35 64 19 11 35 22 35 26 0 13 -94 170 -102 170 -3 0 -8 -6 -11 -12z"/> <path d="M300 165 c-11 -13 6 -15 143 -15 125 0 157 3 167 15 11 13 -6 15 -143 15 -125 0 -157 -3 -167 -15z"/> <path d="M300 105 c-11 -13 6 -15 143 -15 125 0 157 3 167 15 11 13 -6 15 -143 15 -125 0 -157 -3 -167 -15z"/> <path d="M360 45 c-11 -13 -1 -15 83 -15 72 0 98 4 107 15 11 13 1 15 -83 15 -72 0 -98 -4 -107 -15z"/> </g> </svg>
-          <span class="nav-label">
-            <span class="label-line">Cortex content studio</span>
-          </span>
-        </button>
-        <!-- separator below Cortex -->
-        <div class="sidebar-separator" aria-hidden="true"></div>
-        <button
-          class="icon-nav-btn"
-          (click)="toggleHistoryPanel()"
-          [class.active]="showHistoryPanel"
-          type="button"
-          title="Research and request history"
-          >
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            >
-            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-            <path d="M3 3v5h5"></path>
-            <path d="M12 7v5l4 2"></path>
-          </svg>
-          <span class="nav-label">
-            <span class="label-line">Research and request history</span>
-          </span>
-        </button>
-        @if(true) {
-        <button 
-          class="icon-nav-btn" 
-          type="button" 
-          title="My requests" 
-          (click)="onMyRequestsClick()"
-          [class.active]="showMyRequestsPanelParent">
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            >
-            <path d="M9 11l3 3L22 4"></path>
-            <path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"></path>
-          </svg>
-          <span class="nav-label">My requests</span>
-        </button>
-        }
-        @if(!showLandingPage && !showMyRequestsPanelParent) {
-        <button class="icon-nav-btn" type="button" title="New chat" (click)="startNewChat()">
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            >
-            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-          </svg>
-          <span class="nav-label">New chat</span>
-        </button>
-      }
-        <!-- separator below New Chat -->
-        <div class="sidebar-separator" aria-hidden="true"></div>
-        @if (selectedFlow === 'ppt') {
-          <button
-                class="icon-nav-btn"
-                (click)="openRequestForm()"
-                title="Request DDC support"
-                 >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" 
-                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <!-- Headband -->
-                    <path d="M4 12a8 8 0 0 1 16 0" />
-                    <!-- Left earcup -->
-                    <rect x="2" y="12" width="4" height="6" rx="1" />
-                    <!-- Right earcup -->
-                    <rect x="18" y="12" width="4" height="6" rx="1" />
-                    <!-- Mic boom -->
-                  <path d="M18 18v2a2 2 0 0 1-2 2h-4" />
-                </svg>
-                 <span class="nav-label">
-                  <span class="label-line">Request DDC support</span>
-                </span>
-            </button>
-        }
-        <!-- @if (selectedFlow === 'thought-leadership') {
-         <button
-                class="icon-nav-btn"
-                (click)="onRaisePhoenix()"
-                title="Request MCX Publication Support"
-                [disabled]="true"
-                *ngIf="isProfilePresent(profile)">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 2s-4 3-4 7c0 5 4 9 4 9s4-4 4-9c0-4-4-7-4-7z"></path>
-                  <path d="M5 18c2 2 5 3 7 3s5-1 7-3"></path>
-                </svg>
-                <span class="nav-label">
-                  <span class="label-line">Request MCX publication support</span>
-                </span>
-              </button>
-        } -->
-        @if (selectedFlow === 'thought-leadership') {
-          <button
-                class="icon-nav-btn"
-                (click)="onTLActionCardClick('ready-to-publish')"
-                title="Ready to publish"
-                *ngIf="isProfilePresent(profile)"
-                >
-                <svg width="20" height="20" viewBox="0 0 96.000000 96.000000" preserveAspectRatio="xMidYMid meet"> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="currentColor" stroke="none"> <path d="M60 554 l0 -324 173 2 c220 4 229 22 12 26 l-155 3 0 292 0 292 390 0 390 0 0 -285 0 -285 -41 73 -40 73 -117 -3 -117 -3 -53 -92 -54 -92 43 -76 c34 -59 48 -75 66 -75 23 0 23 2 23 110 0 90 -3 110 -15 110 -11 0 -15 -19 -17 -90 l-3 -91 -31 58 -32 58 47 78 46 77 99 -2 99 -3 43 -70 c24 -38 43 -75 44 -81 0 -6 -15 -37 -32 -70 l-33 -59 -3 98 c-2 77 -6 97 -17 97 -12 0 -15 -20 -15 -110 l0 -110 28 0 c23 1 33 11 70 75 l42 75 0 324 0 325 -420 0 -420 0 0 -325z"/> <path d="M208 765 c-31 -17 -63 -67 -73 -112 -9 -44 24 -117 65 -142 52 -31 94 -35 145 -12 107 47 118 197 19 262 -35 23 -117 25 -156 4z m62 -72 c0 -62 -35 -166 -54 -160 -6 1 -22 24 -35 50 -28 57 -23 87 24 134 50 50 65 45 65 -24z m96 23 c50 -50 46 -66 -16 -66 l-50 0 0 50 c0 62 16 66 66 16z m34 -107 c0 -24 -35 -68 -67 -83 -35 -16 -87 -22 -81 -8 2 4 11 28 22 55 l19 47 53 0 c33 0 54 -4 54 -11z"/> <path d="M603 700 c-110 -67 -64 -240 64 -242 104 -1 170 96 127 187 -33 71 -123 97 -191 55z m140 -36 c63 -62 36 -149 -56 -178 -44 -14 -117 46 -117 96 0 63 44 107 106 108 31 0 48 -6 67 -26z"/> <path d="M150 441 c0 -13 15 -16 95 -16 78 0 95 3 95 15 0 12 -18 15 -95 16 -80 0 -95 -2 -95 -15z"/> <path d="M150 378 c0 -16 13 -18 130 -18 117 0 130 2 130 18 0 15 -13 17 -130 17 -117 0 -130 -2 -130 -17z"/> </g> </svg>
-                <span class="nav-label">
-                  <span class="label-line">Ready to publish</span>
-                </span>
-              </button>
-        }
-      </nav>
-      
-      <!-- Copyright Footer -->
-      <!-- <div class="sidebar-copyright">
-        <p>©2026 PwC. All rights reserved.</p>
-      </div> -->
-    </aside>    <!-- Chat History Panel -->
-    <div class="history-panel" [class.show]="showHistoryPanel">
-      <div class="history-header">
-        <h3>Research and request history</h3>
-        <button
-          class="close-history-btn"
-          (click)="showHistoryPanel = false"
-          type="button"
-          aria-label="Close history"
-          >
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            >
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
-      </div>
-      <div class="history-content">
-        <div class="history-search">
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            class="search-icon"
-            >
-            <circle cx="11" cy="11" r="8"></circle>
-            <path d="m21 21-4.35-4.35"></path>
-          </svg>
-          <input
-            type="text"
-            placeholder="Search history..."
-            class="history-search-input"
-            [(ngModel)]="searchQuery"
-            />
-          </div>
-          @if (filteredChatSessions.length > 0) {
-            <div class="history-list">
-              @for (session of filteredChatSessions; track session.id) {
-                <button
-                  class="history-item"
-                  (click)="loadDbConversation(session.id); showHistoryPanel = false"
-                  type="button"
-                  >
-                  <div class="history-item-content">
-                    <h4 class="history-item-title">{{ session.title }}</h4>
-                    <p class="history-item-date">
-                      {{ session.lastModified | date: "MMM d, h:mm a" }}
-                    </p>
-                  </div>
-                  <button
-                    class="history-item-delete"
-                    (click)="deleteDbSession(session.id, $event)"
-                    type="button"
-                    aria-label="Delete chat"
-                    >
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      >
-                      <polyline points="3 6 5 6 21 6"></polyline>
-                      <path
-                        d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
-                      ></path>
-                    </svg>
-                  </button>
-                </button>
-              }
-            </div>
-          }
-          @if (filteredChatSessions.length === 0) {
-            <div class="history-empty">
-              <svg
-                width="48"
-                height="48"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                >
-                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
-                <path d="M3 3v5h5"></path>
-                <path d="M12 7v5l4 2"></path>
-              </svg>
-              @if (searchQuery.trim()) {
-                <p>No matching history</p>
-                <span>Try different keywords</span>
-              } @else {
-                <p>No chat history yet</p>
-                <span>Your conversations will appear here</span>
-              }
-            </div>
-          }
-        </div>
-      </div>
-      <!-- Main Content -->
-      <main class="main-content">
-        <!-- Global toast notification (centered with backdrop) -->
-        @if (showNotification) {
-          <!-- Backdrop overlay with blur -->
-          <div class="toast-backdrop"></div>
-          
-          <!-- Toast notification -->
-          <div class="toast-container" [attr.data-type]="notificationType">
-            <div class="toast-content">
-              <span>{{ notificationMessage }}</span>
-            </div>
-          </div>
-        }
-
-        <!-- MCX AI Banner -->
-        <div class="mcx-banner">
-          <div class="banner-content">
-            <h1 class="banner-title" [class.market-intelligence]="selectedFlow === 'market-intelligence'" [class.ppt]="selectedFlow === 'ppt'">
-              @if (showMyRequestsPanelParent) {
-                My Requests
-              } @else {
-                {{ getFeatureName() }}
-              }
-            </h1>
-          </div>
-          <div class="banner-image"></div>
-        </div>
-
-        <!-- Feature Name -->
-        <!-- <h1 class="feature-name">{{ getFeatureName() }}</h1> -->
-
-        <!-- Landing Page (First Time User) -->
-        @if (showLandingPage && !showMyRequestsPanelParent) {
-          <div class="content-area landing-page-view" [class.fade-out]="landingPageFadingOut">
-            <div class="landing-page-content">
-              <div class="landing-header">
-                <h1>Welcome to Think Space</h1>
-                <p>A space for bold thinking</p>
-              </div>
-
-              <div class="landing-buttons-grid" 
-                   [ngClass]="{
-                     'grid-cols-1': accessibleModuleCount === 1,
-                     'grid-cols-2': accessibleModuleCount === 2,
-                     'grid-cols-3': accessibleModuleCount === 3
-                   }">
-                <button
-                  class="landing-flow-btn ddc-flow-btn"
-                  (click)="selectFlow('ppt')"
-                  type="button"
-                  *ngIf="docStudioAccessible"
-                >
-                  <div class="flow-icon">
-                  <!-- <svg width="96" height="96" xml:space="preserve" overflow="hidden"><defs><linearGradient x1="52.5" y1="231.5" x2="112.061" y2="171.939" gradientUnits="userSpaceOnUse" spreadMethod="pad" id="fill0"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs><g transform="translate(-42 -146)"><path d="M66 191 81 191 81 194 66 194 66 191ZM66 203 81 203 81 200 66 200 66 203ZM66 212 81 212 81 209 66 209 66 212ZM66 221 81 221 81 218 66 218 66 221ZM87 212 90 212 90 194 99.4125 194 101.513 191 87 191 87 212ZM120 218 120 233 110.587 233 108.487 236 123 236 123 218 120 218ZM99.4125 236 57 236 57 152 92.1211 152 117 176.879 117 191 123 191 123 212 120 212 120 194 108.487 194 110.587 191 114 191 114 179 90 179 90 155 60 155 60 233 87 233 87 218 90 218 90 233 101.513 233 99.4125 236ZM93 176 111.879 176 93 157.121 93 176ZM114 200 96 200 96 203 114 203 114 200ZM114 209 96 209 96 212 114 212 114 209ZM96 221 114 221 114 218 96 218 96 221Z" fill="url(#fill0)"/></g></svg> -->
-                  <svg width="96.000000pt" height="96.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"> <defs><linearGradient x1="52.5" y1="231.5" x2="112.061" y2="171.939" gradientUnits="userSpaceOnUse" spreadMethod="pad" id="fill0"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs><g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0)" stroke="none"> <path d="M150 480 l0 -420 214 0 c178 0 216 3 226 15 11 13 5 15 -49 15 l-61 0 0 75 c0 60 -3 75 -15 75 -12 0 -15 -15 -15 -75 l0 -75 -135 0 -135 0 0 390 0 390 150 0 150 0 0 -120 0 -120 120 0 120 0 0 -59 c0 -54 -2 -60 -22 -63 -12 -2 -23 -9 -26 -15 -3 -9 12 -13 52 -13 l56 0 0 -90 c0 -73 3 -90 15 -90 12 0 15 18 15 105 l0 105 -30 0 -30 0 0 72 0 72 -123 123 -122 123 -177 0 -178 0 0 -420z m502 225 l50 -45 -96 0 -96 0 0 96 0 96 45 -50 c26 -28 69 -71 97 -97z"/> <path d="M240 495 c0 -12 15 -15 75 -15 60 0 75 3 75 15 0 12 -15 15 -75 15 -60 0 -75 -3 -75 -15z"/> <path d="M450 405 c0 -87 3 -105 15 -105 12 0 15 17 15 90 l0 90 49 0 c31 0 53 5 61 15 11 13 3 15 -64 15 l-76 0 0 -105z"/> <path d="M240 405 c0 -12 15 -15 75 -15 60 0 75 3 75 15 0 12 -15 15 -75 15 -60 0 -75 -3 -75 -15z"/> <path d="M540 405 c0 -12 17 -15 90 -15 73 0 90 3 90 15 0 12 -17 15 -90 15 -73 0 -90 -3 -90 -15z"/> <path d="M240 315 c0 -12 15 -15 75 -15 60 0 75 3 75 15 0 12 -15 15 -75 15 -60 0 -75 -3 -75 -15z"/> <path d="M540 315 c0 -12 17 -15 90 -15 73 0 90 3 90 15 0 12 -17 15 -90 15 -73 0 -90 -3 -90 -15z"/> <path d="M240 225 c0 -12 15 -15 75 -15 60 0 75 3 75 15 0 12 -15 15 -75 15 -60 0 -75 -3 -75 -15z"/> <path d="M540 225 c0 -12 17 -15 90 -15 73 0 90 3 90 15 0 12 -17 15 -90 15 -73 0 -90 -3 -90 -15z"/> <path d="M780 166 l0 -75 -52 -3 c-30 -2 -53 -8 -56 -15 -3 -10 15 -13 67 -13 l71 0 0 90 c0 73 -3 90 -15 90 -12 0 -15 -15 -15 -74z"/> </g> </svg>
-                  </div>
-                  <h2>Doc studio</h2>
-                  <p>PwC quality PowerPoint presentations at the speed of thought</p>
-                </button>
-
-                <button
-                  class="landing-flow-btn mi-flow-btn"
-                  (click)="selectFlow('market-intelligence')"
-                  type="button"
-                  *ngIf="marketIntelligenceAccessible"
-                >
-                  <div class="flow-icon">
-                  <svg width="96.000000pt" height="96.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"> <defs><linearGradient x1="246.432" y1="246.937" x2="321.973" y2="171.397" gradientUnits="userSpaceOnUse" spreadMethod="pad" id="fill0"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0)" stroke="none"> <path d="M750 836 c0 -8 9 -16 20 -18 15 -2 -13 -31 -117 -123 -203 -178 -174 -164 -231 -111 -27 25 -52 46 -55 46 -4 0 -70 -45 -147 -101 -124 -89 -152 -116 -128 -122 3 -1 67 41 141 94 l135 97 48 -49 c27 -27 51 -49 54 -49 3 0 80 65 170 145 133 116 166 140 168 125 4 -25 32 -26 32 -1 0 10 3 33 6 50 l7 31 -52 0 c-38 0 -51 -4 -51 -14z"/> <path d="M705 380 l0 -271 84 3 c57 2 86 7 89 16 3 9 -15 12 -70 12 l-73 0 0 240 0 240 63 0 63 0 -2 -217 c-1 -178 1 -218 12 -218 11 0 15 44 17 233 l2 232 -92 0 -93 0 0 -270z"/> <path d="M284 275 l1 -166 84 3 c57 2 86 7 89 16 3 9 -15 12 -70 12 l-73 0 0 135 0 135 62 0 62 0 -2 -112 c-2 -89 1 -113 11 -113 11 0 14 28 15 128 l2 127 -91 0 -91 0 1 -165z"/> <path d="M495 260 l0 -150 90 0 90 0 0 150 0 150 -90 0 -90 0 0 -150z m155 0 l0 -120 -62 0 -63 0 0 120 0 120 63 0 62 0 0 -120z"/> <path d="M70 215 l0 -105 93 0 92 0 0 105 0 105 -92 0 -93 0 0 -105z m155 0 l0 -75 -62 0 -63 0 0 75 0 75 63 0 62 0 0 -75z"/> </g> </svg>
-                  </div>
-                  <h2>Market intelligence and insights</h2>
-                  <p>Structured preparation for confident client interactions</p>
-                </button>
-
-                <button
-                  class="landing-flow-btn tl-flow-btn"
-                  (click)="selectFlow('thought-leadership')"
-                  type="button"
-                  *ngIf="isProfilePresent(profile) && cortexAccessible"
-                >
-                  <div class="flow-icon">
-                    <svg width="96.000000pt" height="96.000000pt" viewBox="0 0 96.000000 96.000000" preserveAspectRatio="xMidYMid meet"> <defs><linearGradient x1="596.87" y1="385.798" x2="655.621" y2="327.047" gradientUnits="userSpaceOnUse" spreadMethod="pad" id="fill0"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0)" stroke="none"> <path d="M363 912 c-117 -42 -174 -118 -181 -241 -5 -84 1 -100 74 -222 32 -53 34 -62 34 -148 l0 -91 162 2 c118 2 162 6 166 16 3 9 -31 12 -147 12 l-151 0 0 79 c0 77 -1 81 -52 168 -45 76 -53 97 -56 151 -7 105 37 185 131 235 35 18 58 22 137 22 80 0 103 -4 143 -24 58 -28 97 -83 105 -146 5 -50 32 -65 32 -17 0 128 -99 211 -260 219 -65 3 -97 -1 -137 -15z"/> <path d="M350 650 c-15 -28 -4 -57 27 -73 l25 -14 -1 -156 c-2 -134 0 -157 13 -157 13 0 16 25 18 158 l3 157 30 0 c34 0 32 16 34 -187 1 -111 3 -128 17 -128 15 0 16 17 12 159 -4 159 -4 160 19 166 32 8 48 41 34 72 -9 20 -17 24 -44 21 -29 -3 -32 -6 -35 -40 -3 -36 -5 -38 -37 -38 -32 0 -34 2 -37 38 -3 34 -6 37 -35 40 -24 2 -34 -2 -43 -18z m60 -30 c0 -23 -10 -26 -28 -8 -18 18 -15 28 8 28 13 0 20 -7 20 -20z m143 14 c9 -10 -4 -34 -19 -34 -8 0 -14 9 -14 20 0 19 19 27 33 14z"/> <path d="M747 638 c-2 -7 14 -41 35 -76 21 -34 38 -66 38 -70 0 -4 -13 -16 -30 -25 -27 -16 -30 -23 -30 -68 l0 -49 -85 0 -85 0 0 -35 c0 -24 5 -35 15 -35 8 0 15 9 15 20 0 18 7 20 73 20 43 0 78 5 85 12 7 7 12 33 12 58 0 42 3 47 35 64 19 11 35 22 35 26 0 13 -94 170 -102 170 -3 0 -8 -6 -11 -12z"/> <path d="M300 165 c-11 -13 6 -15 143 -15 125 0 157 3 167 15 11 13 -6 15 -143 15 -125 0 -157 -3 -167 -15z"/> <path d="M300 105 c-11 -13 6 -15 143 -15 125 0 157 3 167 15 11 13 -6 15 -143 15 -125 0 -157 -3 -167 -15z"/> <path d="M360 45 c-11 -13 -1 -15 83 -15 72 0 98 4 107 15 11 13 1 15 -83 15 -72 0 -98 -4 -107 -15z"/> </g> </svg>
-                  </div>
-                  <h2>Cortex content studio</h2>
-                  <p>Where firm intelligence is created, curated, and deployed</p>
-                </button>
-              </div>
-
-              <div class="landing-page-description">
-                <p>A unified space to develop ideas, produce content in Doc studio, and power decisions with market intelligence</p>
-              </div>
-
-              <button class="explore-whats-next-box explore-entry-btn" type="button" (click)="onExploreWhatsNextClick()">
-                <div class="explore-box-content">
-                  <div class="explore-icon">
-                    <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M24 4L28 14H38L30 20L33 30L24 24L15 30L18 20L10 14H20L24 4Z" fill="url(#exploreGradient)" stroke="url(#exploreGradient)" stroke-width="1.5"/>
-                      <defs>
-                        <linearGradient id="exploreGradient" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox">
-                          <stop offset="0" stop-color="#FF9F00"/>
-                          <stop offset="1" stop-color="#FD5108"/>
-                        </linearGradient>
-                      </defs>
-                    </svg>
-                  </div>
-                  <div class="explore-text">
-                    <h3 class="explore-title">Explore What's Next</h3>
-                    <p class="explore-subtitle">Explore the next wave of AI-powered capabilities for strategy, delivery, and client impact</p>
-                  </div>
-                </div>
-              </button>
-
-            </div>
-          </div>
-        }
-
-        <!-- Welcome/Quick Start Area -->
-        @if (!showLandingPage && messages.length === 0 && !showDraftForm && !showMyRequestsPanelParent) {
-          <div
-            class="content-area welcome-screen"
-            >
-            <!-- Centered Conversation Starter -->
-            <div class="welcome-center">
-              <!-- Quick Start and Guided Journey buttons -->
-              <div class="top-action-buttons">
-                <button
-                  #quickStartBtn
-                  class="top-action-btn primary"
-                  (click)="quickStart()"
-                  type="button"
-                  aria-label="Start quick conversation - Begin chatting immediately with AI assistance"
-                  >
-                  <div class="btn-icon-badge">
-                    <!-- <svg
-                      width="24"
-                      height="24"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      >
-                      <polygon
-                        points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"
-                      ></polygon>
-                    </svg> -->
-                    <svg width="96.000000pt" height="96.000000pt" viewBox="0 0 96.000000 96.000000" preserveAspectRatio="xMidYMid meet"> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="#000" stroke="none"> <path d="M559 868 c-71 -104 -286 -397 -306 -419 -12 -14 -23 -29 -23 -33 0 -4 41 -6 90 -4 78 3 90 1 90 -13 0 -12 -19 -203 -32 -318 -2 -24 6 -19 30 20 16 24 79 114 142 199 62 85 128 177 147 203 l35 48 -98 -3 c-67 -2 -99 -7 -102 -15 -3 -10 15 -13 68 -13 70 0 72 -1 59 -19 -8 -11 -57 -79 -110 -153 -53 -73 -103 -143 -110 -155 -21 -35 -27 -28 -19 20 8 41 24 218 21 226 0 2 -35 3 -77 2 -42 -1 -75 1 -73 6 2 4 37 52 78 107 40 54 96 130 123 170 l50 71 -6 -70 c-4 -38 -10 -85 -13 -102 -4 -26 -2 -33 10 -33 18 0 22 15 37 173 6 59 13 114 17 122 9 25 -5 16 -28 -17z"/> </g> </svg>
-                  </div>
-                  <div class="btn-content">
-                    <h3 class="btn-heading">Quick request</h3>
-                    <p class="btn-description">
-                      Engage with AI assistant
-                    </p>
-                  </div>
-                </button>
-                <button
-                  class="top-action-btn guided"
-                  (click)="openGuidedDialog()"
-                  type="button"
-                  aria-label="Guided Journey - Step-by-step form for structured workflows"
-                  >
-                  <div class="btn-icon-badge">
-                    <!-- <svg
-                      width="24"
-                      height="24"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      >
-                      <path
-                        d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"
-                      ></path>
-                      <circle cx="12" cy="10" r="3"></circle>
-                    </svg> -->
-                    <!-- <svg width="140.000000pt" height="140.000000pt" viewBox="0 0 96.000000 96.000000" preserveAspectRatio="xMidYMid meet"> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="#FE7C39" stroke="none"> <path d="M262 830 c-3 -8 -50 -90 -104 -182 l-98 -167 92 -161 c70 -122 94 -157 101 -145 6 12 -14 54 -72 155 -45 76 -81 144 -81 150 0 6 31 64 68 128 38 64 79 136 92 160 13 23 28 42 34 42 6 1 80 1 164 0 144 -1 182 5 182 29 0 3 -84 6 -186 6 -155 0 -187 -2 -192 -15z"/> <path d="M677 827 c-2 -6 39 -88 93 -181 l98 -168 -89 -151 c-49 -84 -92 -158 -96 -166 -7 -11 -48 -13 -203 -12 -187 1 -209 -2 -210 -29 0 -3 95 -4 212 -3 l212 2 44 78 c24 43 53 93 63 110 11 18 28 50 40 71 12 20 30 51 40 69 l20 32 -103 180 c-57 99 -106 181 -109 181 -4 0 -9 -6 -12 -13z"/> <path d="M388 761 c-166 -53 -247 -250 -167 -409 87 -174 318 -216 457 -82 58 56 84 112 89 190 9 119 -57 234 -162 285 -44 21 -171 30 -217 16z m80 -53 c-2 -24 1 -33 12 -33 11 0 15 10 14 33 -2 29 1 32 25 32 45 0 130 -49 163 -94 34 -46 44 -69 53 -118 l7 -34 -36 4 c-28 3 -36 1 -36 -12 0 -12 9 -16 35 -16 30 0 35 -3 35 -22 -1 -35 -38 -109 -73 -146 -37 -39 -88 -68 -139 -77 -36 -7 -36 -7 -35 27 2 23 -2 33 -13 33 -11 0 -14 -9 -12 -33 3 -28 1 -32 -21 -32 -14 0 -53 15 -87 32 -72 38 -117 92 -135 165 l-12 48 38 3 c27 2 39 8 39 18 0 12 -9 15 -37 12 -35 -2 -38 -1 -35 22 5 38 36 101 66 137 32 38 118 83 159 83 26 0 28 -3 25 -32z"/> <path d="M604 621 c-5 -5 -43 -27 -84 -49 -73 -39 -76 -43 -128 -133 -58 -102 -58 -129 1 -94 17 11 58 34 91 51 54 29 62 38 107 122 38 72 46 92 35 101 -7 6 -16 7 -22 2z m-1 -39 c-6 -4 -27 -33 -46 -64 l-34 -57 -22 23 c-11 12 -21 25 -21 29 0 4 22 18 49 32 27 13 52 29 56 35 3 5 12 10 18 10 9 0 9 -2 0 -8z m-104 -145 c-11 -10 -102 -57 -104 -55 -2 2 11 27 28 56 l30 54 25 -26 c14 -14 24 -27 21 -29z"/> </g> </svg> -->
-                    <svg width="48px" height="48px" viewBox="0 0 96 96" preserveAspectRatio="xMidYMid meet"> <defs><linearGradient x1="0" y1="1" x2="1" y2="0" gradientUnits="objectBoundingBox" id="fill0"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0)" stroke="none"> <path d="M262 830 c-3 -8 -50 -90 -104 -182 l-98 -167 92 -161 c70 -122 94 -157 101 -145 6 12 -14 54 -72 155 -45 76 -81 144 -81 150 0 6 31 64 68 128 38 64 79 136 92 160 13 23 28 42 34 42 6 1 80 1 164 0 144 -1 182 5 182 29 0 3 -84 6 -186 6 -155 0 -187 -2 -192 -15z"/> <path d="M677 827 c-2 -6 39 -88 93 -181 l98 -168 -89 -151 c-49 -84 -92 -158 -96 -166 -7 -11 -48 -13 -203 -12 -187 1 -209 -2 -210 -29 0 -3 95 -4 212 -3 l212 2 44 78 c24 43 53 93 63 110 11 18 28 50 40 71 12 20 30 51 40 69 l20 32 -103 180 c-57 99 -106 181 -109 181 -4 0 -9 -6 -12 -13z"/> <path d="M388 761 c-166 -53 -247 -250 -167 -409 87 -174 318 -216 457 -82 58 56 84 112 89 190 9 119 -57 234 -162 285 -44 21 -171 30 -217 16z m80 -53 c-2 -24 1 -33 12 -33 11 0 15 10 14 33 -2 29 1 32 25 32 45 0 130 -49 163 -94 34 -46 44 -69 53 -118 l7 -34 -36 4 c-28 3 -36 1 -36 -12 0 -12 9 -16 35 -16 30 0 35 -3 35 -22 -1 -35 -38 -109 -73 -146 -37 -39 -88 -68 -139 -77 -36 -7 -36 -7 -35 27 2 23 -2 33 -13 33 -11 0 -14 -9 -12 -33 3 -28 1 -32 -21 -32 -14 0 -53 15 -87 32 -72 38 -117 92 -135 165 l-12 48 38 3 c27 2 39 8 39 18 0 12 -9 15 -37 12 -35 -2 -38 -1 -35 22 5 38 36 101 66 137 32 38 118 83 159 83 26 0 28 -3 25 -32z"/> <path d="M604 621 c-5 -5 -43 -27 -84 -49 -73 -39 -76 -43 -128 -133 -58 -102 -58 -129 1 -94 17 11 58 34 91 51 54 29 62 38 107 122 38 72 46 92 35 101 -7 6 -16 7 -22 2z m-1 -39 c-6 -4 -27 -33 -46 -64 l-34 -57 -22 23 c-11 12 -21 25 -21 29 0 4 22 18 49 32 27 13 52 29 56 35 3 5 12 10 18 10 9 0 9 -2 0 -8z m-104 -145 c-11 -10 -102 -57 -104 -55 -2 2 11 27 28 56 l30 54 25 -26 c14 -14 24 -27 21 -29z"/> </g> </svg>
-                  </div>
-                  <div class="btn-content">
-                    <h3 class="btn-heading">Guided journey</h3>
-                    <p class="btn-description">
-                      Launch step-by-step wizard
-                    </p>
-                  </div>
-                </button>
-              </div>
-              <div class="welcome-message">
-                <h2>How can I help you today?</h2>
-                <p>
-                  @if (selectedFlow === 'thought-leadership') {
-                    <span>Start chatting or choose from the services below</span>
-                  }
-                  @if (selectedFlow === 'ppt') {
-                    <span>Start chatting or choose from the services below</span>
-                  }
-                  @if (selectedFlow === 'market-intelligence') {
-                    <span>Start chatting or choose from the services below</span>
-                  }
-                </p>
-              </div>
-            </div>
-            <!-- Quick Action Dropdown Buttons - DDC Feature -->
-            @if (selectedFlow === 'ppt') {
-              <div class="quick-action-dropdowns ddc-actions">
-                <!-- First Row: 2 Buttons -->
-                <div class="quick-action-row">
-                  <div class="button-wrapper">
-                    <button class="dropdown-btn" (click)="openDdcWorkflow('slide-creation-prompt')" type="button">
-                      <div class="btn-icon">
-                        <svg width="12pt" height="12pt" viewBox="0 0 96.000000 96.000000" preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="1" x2="1" y2="0" gradientUnits="objectBoundingBox" id="fill0"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs><g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0)" stroke="none"><path d="M90 785 c0 -102 2 -117 20 -135 11 -11 25 -20 30 -20 6 0 10 -27 10 -61 l0 -60 56 60 56 61 148 0 c122 0 149 3 154 15 5 13 -16 15 -151 15 l-157 0 -38 -37 -38 -37 0 36 c0 33 -3 37 -27 40 l-28 3 -3 103 -3 102 205 0 c234 0 216 8 216 -101 0 -55 3 -69 15 -69 12 0 15 16 15 80 0 124 8 120 -260 120 l-220 0 0 -115z"/><path d="M150 805 c0 -13 27 -15 180 -15 153 0 180 2 180 15 0 13 -27 15 -180 15 -153 0 -180 -2 -180 -15z"/><path d="M150 725 c0 -12 20 -15 120 -15 100 0 120 3 120 15 0 13 -20 15 -120 15 -100 0 -120 -2 -120 -15z"/><path d="M470 582 c-43 -14 -50 -32 -50 -137 l0 -103 219 2 c274 1 261 -6 261 143 l0 104 -207 -2 c-115 -1 -215 -4 -223 -7z m400 -107 c0 -57 -4 -86 -13 -94 -9 -7 -78 -10 -210 -8 l-197 2 0 82 c0 67 3 84 18 92 10 7 92 10 210 10 l192 -1 0 -83z"/><path d="M480 503 c0 -17 15 -18 180 -18 165 0 180 1 180 18 0 16 -15 17 -180 17 -165 0 -180 -1 -180 -17z"/><path d="M600 425 c0 -12 20 -15 120 -15 100 0 120 3 120 15 0 13 -20 15 -120 15 -100 0 -120 -2 -120 -15z"/><path d="M60 200 c0 -147 -12 -140 254 -140 181 0 215 2 220 15 5 13 -23 15 -213 15 -190 0 -220 2 -225 16 -3 9 -6 49 -6 90 l0 74 208 -2 207 -3 3 -67 c2 -52 6 -68 17 -68 12 0 15 15 15 65 0 106 3 105 -260 105 l-220 0 0 -100z"/><path d="M120 215 c0 -13 27 -15 180 -15 153 0 180 2 180 15 0 13 -27 15 -180 15 -153 0 -180 -2 -180 -15z"/><path d="M120 146 c0 -12 24 -15 120 -18 109 -3 120 -1 120 15 0 15 -12 17 -120 17 -98 0 -120 -3 -120 -14z"/></g></svg>
-                      </div>
-                      <span class="btn-label">Prompt starter decks</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper">
-                    <button class="dropdown-btn" (click)="openDdcWorkflow('slide-creation')" type="button">
-                      <div class="btn-icon">
-                        <svg width="48pt" height="48pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="1" x2="1" y2="0" gradientUnits="objectBoundingBox" id="fill0"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0)" stroke="none"> <path d="M250 815 l0 -55 -57 0 -58 0 0 -335 0 -335 281 0 c241 0 283 2 288 15 5 13 -29 15 -267 15 l-272 0 0 305 0 305 43 0 42 0 0 -265 0 -265 215 0 c208 0 215 -1 215 -20 0 -12 7 -20 16 -20 11 0 15 6 11 20 -5 18 0 20 48 20 34 0 57 5 65 15 11 13 -19 15 -264 15 l-276 0 0 305 0 305 258 0 257 0 0 -282 c0 -229 3 -283 13 -283 11 0 14 57 15 297 l2 298 -287 0 -288 0 0 -55z"/> <path d="M360 680 l0 -110 85 0 85 0 0 110 0 110 -85 0 -85 0 0 -110z m140 0 l0 -80 -55 0 -55 0 0 80 0 80 55 0 55 0 0 -80z"/> <path d="M560 775 c0 -12 15 -15 78 -15 63 0 79 3 79 15 0 12 -16 15 -79 15 -63 0 -78 -3 -78 -15z"/> <path d="M560 680 c0 -19 5 -20 78 -18 61 2 77 6 77 18 0 12 -16 16 -77 18 -73 2 -78 1 -78 -18z"/> <path d="M560 585 c0 -12 15 -15 78 -15 63 0 79 3 79 15 0 12 -16 15 -79 15 -63 0 -78 -3 -78 -15z"/> <path d="M360 485 c0 -13 24 -15 177 -13 130 2 177 6 181 16 3 9 -37 12 -177 12 -155 0 -181 -2 -181 -15z"/> <path d="M360 395 c0 -12 16 -15 80 -15 64 0 80 3 80 15 0 12 -16 15 -80 15 -64 0 -80 -3 -80 -15z"/> <path d="M550 350 l0 -60 75 0 c41 0 78 0 81 0 3 0 7 27 8 60 l1 60 -82 0 -83 0 0 -60z m134 0 c0 -17 -4 -30 -7 -30 -4 0 -27 0 -52 0 -43 0 -45 1 -45 30 0 30 1 30 53 30 51 0 52 0 51 -30z"/> <path d="M364 311 c-2 -2 -4 -10 -4 -18 0 -10 20 -13 80 -13 70 0 80 2 80 18 0 15 -10 17 -76 17 -41 0 -77 -2 -80 -4z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Draft presentations</span>
-                    </button>
-                  </div>
-                </div>
-                <!-- Second Row: 3 Buttons -->
-                <div class="quick-action-row">
-                  <div class="button-wrapper">
-                    <button class="dropdown-btn" (click)="openDdcWorkflow('sanitization')" type="button">
-                      <div class="btn-icon">
-                        <!-- simple filled broom icon (uses currentColor) -->
-                        <svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="1" x2="1" y2="0" gradientUnits="objectBoundingBox" id="fill0"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0)" stroke="none"> <path d="M361 790 c-17 -28 -31 -52 -31 -55 0 -3 14 -27 31 -55 l31 -50 61 0 62 0 28 54 28 54 -31 51 -32 51 -58 0 -58 0 -31 -50z m155 -18 l22 -37 -22 -37 c-19 -35 -24 -38 -67 -38 -44 0 -47 2 -64 40 -18 39 -17 41 1 75 17 32 22 35 64 35 41 0 47 -3 66 -38z"/> <path d="M780 765 c0 -60 3 -75 15 -75 12 0 15 15 15 75 0 60 -3 75 -15 75 -12 0 -15 -15 -15 -75z"/> <path d="M60 735 c0 -13 17 -15 117 -13 82 2 118 7 121 16 3 9 -25 12 -117 12 -102 0 -121 -2 -121 -15z"/> <path d="M703 607 l-29 -54 29 -51 29 -52 62 0 62 0 30 53 30 52 -30 53 -30 52 -62 0 -62 0 -29 -53z m157 -14 l22 -37 -21 -35 c-18 -33 -24 -36 -66 -36 -43 0 -49 3 -68 36 l-21 36 23 36 c20 33 27 37 66 37 39 0 45 -3 65 -37z"/> <path d="M60 555 c0 -23 561 -23 580 0 11 13 -22 15 -284 15 -256 0 -296 -2 -296 -15z"/> <path d="M478 428 l-28 -52 29 -50 28 -51 60 -3 59 -3 33 53 33 52 -29 53 -28 53 -65 0 -65 0 -27 -52z m158 -15 l21 -36 -21 -38 c-19 -36 -25 -39 -63 -39 -38 0 -45 4 -67 38 l-24 37 21 38 c19 34 24 37 66 37 42 0 48 -3 67 -37z"/> <path d="M780 270 c0 -127 2 -150 15 -150 13 0 15 23 15 150 0 127 -2 150 -15 150 -13 0 -15 -23 -15 -150z"/> <path d="M60 378 c0 -16 15 -18 174 -18 143 0 175 3 179 15 5 12 -21 15 -173 17 -166 3 -180 2 -180 -14z"/> <path d="M263 288 c-5 -7 -20 -31 -32 -54 l-23 -40 29 -50 29 -49 65 -3 64 -3 28 54 29 53 -29 49 -29 50 -61 3 c-40 2 -63 -1 -70 -10z m133 -57 l21 -38 -21 -36 c-19 -34 -25 -37 -66 -37 -42 0 -47 3 -64 35 -18 34 -19 36 -1 75 17 38 20 40 64 40 43 0 47 -3 67 -39z"/> <path d="M60 195 c0 -13 11 -15 57 -13 81 4 85 28 4 28 -48 0 -61 -3 -61 -15z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Sanitize presentations</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper">
-                    <button class="dropdown-btn disabled" (click)="openDdcWorkflow('brand-format')" type="button" disabled>
-                      <div class="btn-icon">
-                        <svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="1" x2="1" y2="0" gradientUnits="objectBoundingBox" id="fill0"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0)" stroke="none"> <path d="M50 648 l0 -243 130 3 130 3 0 -30 c0 -31 -1 -31 -53 -31 -52 0 -54 -1 -72 -37 -11 -21 -21 -41 -23 -44 -1 -3 55 -6 124 -5 l128 1 -3 -68 -2 -68 27 3 c29 3 47 28 20 28 -15 0 -16 29 -14 276 l3 276 103 1 102 2 0 -87 0 -88 85 0 c69 0 85 -3 85 -15 0 -8 7 -15 15 -15 10 0 15 10 15 28 0 21 -15 43 -60 87 l-60 59 0 103 0 103 -302 -2 c-230 -2 -302 -6 -306 -15 -3 -10 59 -13 286 -13 l290 0 4 -75 c2 -41 1 -75 -1 -75 -2 0 -9 7 -15 15 -9 11 -40 15 -141 16 l-130 1 0 -196 0 -196 -42 0 c-40 0 -43 2 -41 27 2 15 10 28 20 31 10 2 18 11 18 18 0 11 -28 14 -145 14 l-145 0 0 40 0 40 145 0 c122 0 145 2 145 15 0 13 -23 15 -145 15 l-145 0 0 170 c0 144 -2 170 -15 170 -13 0 -15 -34 -15 -242z m721 -50 l33 -28 -62 0 -62 0 0 63 1 62 29 -35 c15 -19 43 -47 61 -62z m-353 -290 c-5 -15 -208 -24 -208 -10 0 19 17 22 113 22 74 0 98 -3 95 -12z"/> <path d="M480 445 c0 -12 13 -15 60 -15 47 0 60 3 60 15 0 12 -13 15 -60 15 -47 0 -60 -3 -60 -15z"/> <path d="M640 295 l0 -165 129 0 c105 0 130 3 135 15 5 13 -12 15 -114 15 l-120 0 0 135 0 135 105 0 105 0 0 -115 c0 -96 3 -115 15 -115 13 0 15 21 15 130 l0 130 -135 0 -135 0 0 -165z"/> <path d="M480 385 c0 -12 13 -15 60 -15 47 0 60 3 60 15 0 12 -13 15 -60 15 -47 0 -60 -3 -60 -15z"/> <path d="M710 385 c0 -12 14 -15 65 -15 51 0 65 3 65 15 0 12 -14 15 -65 15 -51 0 -65 -3 -65 -15z"/> <path d="M773 333 c-47 -3 -63 -8 -63 -18 0 -12 15 -15 65 -15 58 0 65 2 65 20 0 11 -1 19 -2 18 -2 -1 -31 -3 -65 -5z"/> <path d="M480 315 c0 -12 13 -15 60 -15 47 0 60 3 60 15 0 12 -13 15 -60 15 -47 0 -60 -3 -60 -15z"/> <path d="M710 255 c0 -12 14 -15 65 -15 51 0 65 3 65 15 0 12 -14 15 -65 15 -51 0 -65 -3 -65 -15z"/> <path d="M530 225 c-19 -7 -37 -21 -39 -30 -2 -13 1 -16 13 -11 9 3 24 9 33 13 17 7 10 -7 -44 -93 -12 -18 -12 -22 1 -27 10 -4 23 9 40 38 14 24 26 48 26 54 0 6 5 11 10 11 6 0 10 -11 10 -25 0 -16 6 -25 16 -25 13 0 15 7 10 38 -15 80 -14 79 -76 57z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Refine drafts</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper">
-                    <button class="dropdown-btn" (click)="openDdcWorkflow('event-branding')" type="button">
-                      <div class="btn-icon">
-                        <svg width="96.000000pt" height="96.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="1" x2="1" y2="0" gradientUnits="objectBoundingBox" id="fill0"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.0509" stop-color="#FE9900"/><stop offset="0.4663" stop-color="#FD7204"/><stop offset="0.7971" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0)" stroke="none"> <path d="M450 690 l0 -210 -195 0 c-167 0 -195 -2 -195 -15 0 -13 28 -15 195 -15 l195 0 0 -195 c0 -167 2 -195 15 -195 13 0 15 28 15 195 l0 195 210 0 c180 0 210 2 210 15 0 13 -30 15 -210 15 l-210 0 0 210 c0 180 -2 210 -15 210 -13 0 -15 -30 -15 -210z"/> <path d="M710 880 c-11 -11 -20 -29 -20 -40 0 -11 9 -29 20 -40 11 -11 29 -20 40 -20 11 0 29 9 40 20 11 11 20 29 20 40 0 11 -9 29 -20 40 -11 11 -29 20 -40 20 -11 0 -29 -9 -40 -20z m65 -40 c0 -18 -6 -26 -23 -28 -24 -4 -38 18 -28 44 3 9 15 14 28 12 17 -2 23 -10 23 -28z"/> <path d="M150 825 c0 -12 20 -15 120 -15 100 0 120 3 120 15 0 13 -20 15 -120 15 -100 0 -120 -2 -120 -15z"/> <path d="M602 734 c-17 -27 -47 -74 -66 -104 -28 -43 -32 -56 -20 -58 9 -2 17 -2 18 0 2 1 28 43 59 91 43 66 55 92 48 104 -7 14 -14 8 -39 -33z"/> <path d="M150 705 c0 -12 20 -15 120 -15 100 0 120 3 120 15 0 13 -20 15 -120 15 -100 0 -120 -2 -120 -15z"/> <path d="M658 698 c-7 -20 65 -127 85 -128 15 0 16 3 7 20 -8 16 -7 26 7 45 10 13 20 25 23 25 3 0 18 -20 33 -45 18 -28 36 -45 48 -45 16 0 12 11 -27 70 -26 39 -50 70 -54 70 -5 0 -17 -16 -29 -35 -11 -19 -24 -35 -28 -35 -5 0 -17 16 -27 35 -20 37 -32 43 -38 23z"/> <path d="M150 585 c0 -12 20 -15 120 -15 100 0 120 3 120 15 0 13 -20 15 -120 15 -100 0 -120 -2 -120 -15z"/> <path d="M692 369 c-7 -29 -20 -78 -29 -108 l-17 -56 -21 89 -21 88 -21 -53 c-17 -45 -25 -55 -47 -57 -41 -5 -33 -32 9 -32 28 0 37 5 44 22 7 18 13 3 30 -75 13 -53 24 -97 26 -97 1 0 13 42 25 92 13 51 26 97 30 101 5 5 16 -36 26 -92 17 -94 33 -131 34 -78 1 12 9 56 19 97 15 59 21 70 26 53 6 -19 14 -23 51 -23 32 0 44 4 44 15 0 10 -10 15 -33 15 -33 0 -35 2 -52 61 -21 70 -27 64 -46 -39 -7 -40 -15 -69 -19 -65 -4 4 -13 42 -20 83 -19 113 -24 120 -38 59z"/> <path d="M150 257 l0 -136 63 38 c34 21 86 50 116 65 60 31 63 27 -41 84 -43 24 -59 28 -66 19 -8 -9 3 -20 44 -41 47 -25 63 -46 34 -46 -5 0 -32 -13 -60 -30 -28 -17 -53 -30 -55 -30 -3 0 -5 42 -5 94 0 71 -4 97 -15 106 -13 11 -15 -4 -15 -123z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Customize event templates</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            }
-            <!-- Quick Action Dropdown Buttons - Thought Leadership Feature -->
-            @if (selectedFlow === 'thought-leadership') {
-              <div
-                class="quick-action-dropdowns tl-actions"
-                >
-                <!-- First Row: 3 Buttons -->
-                <div class="quick-action-row">
-                  <div class="button-wrapper-tl">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onTLActionCardClick('draft-content')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-draft-content"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-draft-content)" stroke="none"> <path d="M60 480 l0 -360 420 0 420 0 0 360 0 360 -420 0 -420 0 0 -360z m810 285 l0 -45 -390 0 -390 0 0 45 0 45 390 0 390 0 0 -45z m0 -345 l0 -270 -390 0 -390 0 0 270 0 270 390 0 390 0 0 -270z"/> <path d="M120 765 c0 -8 7 -15 15 -15 8 0 15 7 15 15 0 8 -7 15 -15 15 -8 0 -15 -7 -15 -15z"/> <path d="M180 765 c0 -8 7 -15 15 -15 8 0 15 7 15 15 0 8 -7 15 -15 15 -8 0 -15 -7 -15 -15z"/> <path d="M240 765 c0 -8 7 -15 15 -15 8 0 15 7 15 15 0 8 -7 15 -15 15 -8 0 -15 -7 -15 -15z"/> <path d="M235 611 c-99 -46 -141 -158 -96 -256 70 -152 282 -152 352 0 22 48 24 65 5 65 -7 0 -21 -20 -31 -45 -14 -38 -67 -95 -88 -95 -3 0 5 19 18 43 14 23 25 54 25 70 0 20 5 27 19 27 10 0 24 7 31 15 7 8 19 15 27 15 21 0 9 44 -25 95 -52 76 -153 105 -237 66z m0 -64 c-14 -24 -25 -56 -25 -70 0 -23 -4 -27 -31 -27 -27 0 -30 3 -23 23 13 43 34 75 61 96 42 31 46 25 18 -22z m216 -22 c9 -17 20 -40 24 -52 6 -20 3 -23 -24 -23 -27 0 -31 4 -31 27 0 14 -12 47 -26 71 l-27 46 34 -20 c18 -11 41 -33 50 -49z m-151 -10 l0 -65 -34 0 -34 0 10 38 c9 34 43 92 54 92 2 0 4 -29 4 -65z m73 12 c33 -71 32 -77 -7 -77 l-36 0 0 66 c0 56 2 65 14 55 8 -7 21 -26 29 -44z m-163 -134 c0 -14 12 -47 26 -71 l27 -46 -34 20 c-33 19 -60 57 -74 102 -6 19 -3 22 24 22 27 0 31 -4 31 -27z m90 -40 l-1 -68 -24 29 c-13 16 -28 47 -33 68 l-10 38 34 0 34 0 0 -67z m94 45 c-14 -49 -32 -84 -47 -97 -16 -12 -17 -8 -17 53 l0 66 36 0 c32 0 35 -2 28 -22z"/> <path d="M570 585 c0 -13 22 -15 135 -15 113 0 135 2 135 15 0 13 -22 15 -135 15 -113 0 -135 -2 -135 -15z"/> <path d="M570 495 c0 -12 15 -15 79 -15 58 0 82 4 91 15 11 13 1 15 -79 15 -74 0 -91 -3 -91 -15z"/> <path d="M570 330 l0 -90 135 0 135 0 0 90 c0 73 -3 90 -15 90 -12 0 -15 -15 -15 -75 l0 -75 -105 0 -105 0 0 60 0 60 74 0 c53 0 77 4 86 15 11 13 0 15 -89 15 l-101 0 0 -90z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Draft content</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper-tl">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onTLActionCardClick('conduct-research')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="48pt" height="48pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-tl-research"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-tl-research)" stroke="none"> <path d="M90 480 l0 -390 415 0 c362 0 415 2 415 15 0 13 -51 15 -400 15 l-400 0 0 375 c0 327 -2 375 -15 375 -13 0 -15 -50 -15 -390z"/> <path d="M446 805 c-49 -17 -113 -78 -137 -130 -22 -48 -25 -151 -5 -199 7 -18 28 -49 46 -69 l33 -38 -43 -62 c-24 -34 -51 -71 -60 -82 -30 -35 -32 -45 -12 -45 13 0 38 28 77 85 32 47 60 85 61 85 1 0 19 -7 39 -16 52 -21 145 -20 197 4 122 54 184 206 134 327 -31 73 -130 154 -188 155 -34 0 -18 -27 22 -39 121 -36 186 -184 132 -302 -98 -219 -423 -148 -422 93 1 97 62 183 150 209 50 15 74 39 39 39 -13 -1 -41 -7 -63 -15z"/> <path d="M480 565 c0 -158 2 -185 15 -185 13 0 15 27 15 185 0 158 -2 185 -15 185 -13 0 -15 -27 -15 -185z"/> <path d="M540 559 c0 -148 3 -190 13 -187 9 4 13 53 15 191 2 162 0 187 -13 187 -13 0 -15 -27 -15 -191z"/> <path d="M420 536 c0 -101 3 -125 15 -130 13 -5 15 13 15 124 0 109 -2 130 -15 130 -13 0 -15 -20 -15 -124z"/> <path d="M600 475 c0 -80 2 -93 15 -89 12 5 15 25 15 95 0 72 -3 89 -15 89 -12 0 -15 -17 -15 -95z"/> <path d="M360 512 c0 -16 7 -37 15 -48 13 -18 14 -15 15 29 0 35 -4 47 -15 47 -10 0 -15 -10 -15 -28z"/> <path d="M660 479 c0 -54 2 -60 15 -49 10 8 15 30 15 61 0 37 -4 49 -15 49 -12 0 -15 -13 -15 -61z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Conduct research</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper-tl">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onTLActionCardClick('edit-content')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-edit-content"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-edit-content)" stroke="none"> <path d="M559 838 c-23 -40 -54 -93 -69 -118 -15 -25 -82 -140 -149 -257 l-121 -212 0 -105 0 -105 33 22 c18 13 58 36 88 51 61 32 46 11 237 341 185 320 205 356 201 359 -10 9 -167 96 -172 96 -3 0 -25 -33 -48 -72z m120 0 c31 -17 57 -32 59 -33 5 -4 -31 -75 -39 -75 -16 0 -124 72 -121 81 4 15 33 59 39 59 3 0 31 -14 62 -32z m-55 -100 c54 -31 67 -50 46 -63 -11 -7 -130 61 -130 74 0 10 11 21 21 21 4 0 32 -14 63 -32z m-15 -71 c20 -11 38 -22 40 -23 1 -2 -19 -40 -47 -86 -88 -148 -202 -350 -202 -359 0 -20 -17 -7 -33 26 -15 32 -20 35 -62 35 -25 0 -45 1 -45 3 0 2 31 55 68 118 38 63 97 165 132 227 l63 112 25 -16 c14 -9 41 -26 61 -37z m-301 -436 c14 -1 30 -13 42 -33 l19 -32 -31 -20 c-28 -18 -31 -18 -43 -3 -7 9 -20 17 -29 17 -12 0 -16 10 -16 39 0 32 3 39 18 36 9 -2 27 -4 40 -4z"/> <path d="M270 831 c0 -4 -43 -82 -95 -172 l-95 -163 24 -41 c13 -22 38 -66 56 -98 24 -42 36 -55 44 -47 8 8 3 25 -19 63 -16 29 -38 68 -48 87 l-20 35 89 157 89 157 96 1 c73 0 100 4 109 15 11 13 -2 15 -109 15 -66 0 -121 -4 -121 -9z"/> <path d="M754 676 c-3 -8 15 -50 40 -94 25 -43 46 -82 46 -86 0 -4 -39 -77 -87 -162 l-87 -154 -97 0 c-74 0 -100 -4 -109 -15 -11 -13 2 -15 106 -15 l119 0 65 117 c36 64 80 141 98 171 l32 55 -55 99 c-31 54 -58 98 -61 98 -2 0 -7 -6 -10 -14z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Edit content</span>
-                    </button>
-                  </div>
-                </div>
-                <!-- Second Row: 2 Buttons -->
-                <div class="quick-action-row">
-                  <div class="button-wrapper-tl">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onTLActionCardClick('refine-content')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-refine-content"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-refine-content)" stroke="none"> <path d="M164 668 c-54 -95 -102 -180 -107 -189 -7 -11 15 -58 88 -185 54 -93 103 -177 109 -186 10 -16 32 -18 227 -18 l216 0 108 186 c81 141 105 190 99 203 -27 54 -120 211 -125 211 -22 0 -10 -38 41 -125 32 -54 57 -102 56 -105 -2 -3 -47 -80 -100 -173 l-98 -167 -145 0 -144 0 21 30 21 30 108 0 107 0 24 43 c29 53 86 151 117 200 l23 37 -37 70 c-21 38 -42 70 -46 70 -20 0 -15 -32 12 -76 17 -26 31 -52 31 -57 0 -6 -32 -65 -71 -133 l-71 -124 -109 0 -109 0 -22 -45 c-21 -43 -24 -45 -64 -45 l-42 0 -82 143 c-46 78 -91 156 -101 172 l-17 30 98 170 98 170 200 3 200 2 22 -34 c20 -34 20 -36 4 -68 l-17 -32 -21 37 -21 37 -165 0 -165 0 -83 -144 -82 -143 53 -89 c29 -49 66 -112 82 -141 26 -48 45 -61 45 -29 0 7 -31 68 -70 134 -38 66 -70 124 -70 128 0 4 32 62 71 130 l71 124 148 0 148 0 20 -35 21 -34 -94 -163 c-52 -90 -98 -169 -103 -177 -6 -11 -19 6 -50 62 -30 54 -48 77 -61 77 -16 0 -11 -13 31 -85 70 -118 78 -117 161 28 36 61 95 163 131 226 36 62 66 117 66 121 0 4 -12 28 -26 54 l-26 46 -218 0 -218 0 -98 -172z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Refine drafts</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper-tl">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onTLActionCardClick('format-translator')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-format-translator"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-format-translator)" stroke="none"> <path d="M60 480 l0 -420 414 0 c359 0 415 2 420 15 5 13 -44 15 -399 15 l-405 0 0 390 0 390 390 0 390 0 0 -370 c0 -322 2 -370 15 -370 13 0 15 49 15 385 l0 385 -420 0 -420 0 0 -420z"/> <path d="M150 825 c0 -8 7 -15 15 -15 8 0 15 7 15 15 0 8 -7 15 -15 15 -8 0 -15 -7 -15 -15z"/> <path d="M210 825 c0 -8 7 -15 15 -15 8 0 15 7 15 15 0 8 -7 15 -15 15 -8 0 -15 -7 -15 -15z"/> <path d="M270 825 c0 -8 7 -15 15 -15 8 0 15 7 15 15 0 8 -7 15 -15 15 -8 0 -15 -7 -15 -15z"/> <path d="M450 690 c0 -127 2 -150 15 -150 13 0 15 23 15 150 0 127 -2 150 -15 150 -13 0 -15 -23 -15 -150z"/> <path d="M700 732 c0 -4 -24 -43 -53 -87 -29 -44 -56 -86 -61 -92 -6 -10 21 -13 123 -13 l130 0 -40 65 c-23 36 -45 62 -50 59 -14 -8 -10 -27 11 -54 11 -14 20 -28 20 -32 0 -5 -31 -8 -70 -8 -38 0 -70 2 -70 5 0 3 20 35 44 72 25 36 42 72 39 79 -5 15 -23 19 -23 6z"/> <path d="M330 635 c0 -78 3 -95 15 -95 12 0 15 17 15 95 0 78 -3 95 -15 95 -12 0 -15 -17 -15 -95z"/> <path d="M210 620 c0 -64 3 -80 15 -80 12 0 15 16 15 80 0 64 -3 80 -15 80 -12 0 -15 -16 -15 -80z"/> <path d="M270 620 c0 -64 3 -80 15 -80 12 0 15 16 15 80 0 64 -3 80 -15 80 -12 0 -15 -16 -15 -80z"/> <path d="M390 605 c0 -51 3 -65 15 -65 12 0 15 14 15 65 0 51 -3 65 -15 65 -12 0 -15 -14 -15 -65z"/> <path d="M150 580 c0 -29 4 -40 15 -40 11 0 15 11 15 40 0 29 -4 40 -15 40 -11 0 -15 -11 -15 -40z"/> <path d="M120 481 c0 -14 41 -16 360 -16 319 0 360 2 360 16 0 13 -41 15 -360 15 -319 0 -360 -2 -360 -15z"/> <path d="M350 405 c0 -12 -14 -15 -64 -15 l-65 0 -36 -60 -36 -60 34 -57 33 -58 70 -3 71 -3 36 61 c32 54 39 90 18 90 -4 0 -20 -27 -36 -60 l-30 -60 -55 0 c-55 0 -55 0 -80 45 l-25 45 25 45 c24 44 25 45 77 45 42 0 54 -4 63 -20 15 -29 32 -14 25 21 l-7 29 221 0 c190 0 221 2 221 15 0 13 -32 15 -230 15 -198 0 -230 -2 -230 -15z"/> <path d="M480 225 l0 -75 165 0 165 0 0 75 0 75 -165 0 -165 0 0 -75z m300 0 l0 -45 -135 0 -135 0 0 45 0 45 135 0 135 0 0 -45z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Adapt content</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            }
-            <!-- Quick Action Dropdown Buttons - Market Intelligence Feature -->
-            @if (selectedFlow === 'market-intelligence') {
-              <div
-                class="quick-action-dropdowns mi-actions"
-                >
-                <!-- First Row: 3 Buttons -->
-                <div class="quick-action-row">
-                  <div class="button-wrapper-mi">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onMIActionCardClick('conduct-research')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="48pt" height="48pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-mi-research"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-mi-research)" stroke="none"> <path d="M90 480 l0 -390 415 0 c362 0 415 2 415 15 0 13 -51 15 -400 15 l-400 0 0 375 c0 327 -2 375 -15 375 -13 0 -15 -50 -15 -390z"/> <path d="M446 805 c-49 -17 -113 -78 -137 -130 -22 -48 -25 -151 -5 -199 7 -18 28 -49 46 -69 l33 -38 -43 -62 c-24 -34 -51 -71 -60 -82 -30 -35 -32 -45 -12 -45 13 0 38 28 77 85 32 47 60 85 61 85 1 0 19 -7 39 -16 52 -21 145 -20 197 4 122 54 184 206 134 327 -31 73 -130 154 -188 155 -34 0 -18 -27 22 -39 121 -36 186 -184 132 -302 -98 -219 -423 -148 -422 93 1 97 62 183 150 209 50 15 74 39 39 39 -13 -1 -41 -7 -63 -15z"/> <path d="M480 565 c0 -158 2 -185 15 -185 13 0 15 27 15 185 0 158 -2 185 -15 185 -13 0 -15 -27 -15 -185z"/> <path d="M540 559 c0 -148 3 -190 13 -187 9 4 13 53 15 191 2 162 0 187 -13 187 -13 0 -15 -27 -15 -191z"/> <path d="M420 536 c0 -101 3 -125 15 -130 13 -5 15 13 15 124 0 109 -2 130 -15 130 -13 0 -15 -20 -15 -124z"/> <path d="M600 475 c0 -80 2 -93 15 -89 12 5 15 25 15 95 0 72 -3 89 -15 89 -12 0 -15 -17 -15 -95z"/> <path d="M360 512 c0 -16 7 -37 15 -48 13 -18 14 -15 15 29 0 35 -4 47 -15 47 -10 0 -15 -10 -15 -28z"/> <path d="M660 479 c0 -54 2 -60 15 -49 10 8 15 30 15 61 0 37 -4 49 -15 49 -12 0 -15 -13 -15 -61z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Conduct research</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper-mi">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onMIActionCardClick('target-industry-insights')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-industry"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-industry)" stroke="none"> <path d="M75 786 c-27 -20 -26 -55 2 -73 22 -15 26 -14 54 6 l31 23 27 -26 c19 -18 38 -26 64 -26 41 0 45 -9 21 -45 -11 -17 -26 -25 -45 -25 -16 0 -29 3 -29 8 0 4 -9 13 -21 20 -28 18 -69 -8 -69 -43 0 -37 40 -54 74 -31 37 23 71 20 90 -9 22 -33 21 -35 -14 -35 -24 0 -35 -8 -56 -40 -24 -36 -54 -54 -54 -32 0 17 -44 29 -67 19 -32 -14 -32 -64 1 -78 25 -12 66 2 66 22 0 5 10 7 23 4 18 -5 27 3 50 40 23 36 34 45 58 45 23 0 32 -7 49 -39 22 -44 36 -56 45 -41 3 5 -16 47 -43 93 l-49 82 46 82 46 83 100 0 100 0 19 -33 c10 -17 31 -55 47 -82 l28 -50 -29 -47 c-17 -27 -30 -52 -30 -58 0 -16 27 -12 34 5 10 27 69 18 106 -15 19 -17 38 -29 44 -28 6 1 23 -6 37 -15 37 -24 79 -7 75 31 -4 35 -38 57 -65 42 -12 -6 -21 -15 -21 -20 0 -18 -25 -10 -52 15 -18 17 -39 25 -63 25 -38 0 -40 2 -25 31 13 23 52 25 86 3 21 -14 29 -15 49 -4 52 28 12 102 -41 78 -13 -6 -24 -15 -24 -20 0 -4 -13 -8 -28 -8 -20 0 -32 8 -45 29 -23 40 -22 43 16 36 27 -5 37 -1 61 24 29 30 56 41 56 21 0 -5 10 -14 21 -21 31 -16 69 6 69 41 0 35 -38 57 -69 41 -11 -7 -21 -16 -21 -22 0 -6 -8 -8 -18 -5 -12 4 -28 -4 -47 -24 -22 -23 -38 -30 -66 -30 -33 0 -40 4 -63 45 l-27 45 -113 0 -114 0 -26 -45 c-25 -41 -30 -45 -66 -45 -30 0 -43 6 -64 31 -14 17 -30 27 -36 24 -6 -3 -22 3 -36 14 -31 25 -35 25 -59 7z m41 -27 c10 -17 -13 -36 -27 -22 -12 12 -4 33 11 33 5 0 12 -5 16 -11z m750 0 c10 -17 -13 -36 -27 -22 -12 12 -4 33 11 33 5 0 12 -5 16 -11z m-56 -155 c0 -8 -7 -14 -15 -14 -15 0 -21 21 -9 33 10 9 24 -2 24 -19z m-632 4 c-3 -7 -11 -13 -18 -13 -7 0 -15 6 -17 13 -3 7 4 12 17 12 13 0 20 -5 18 -12z m694 -140 c-9 -9 -15 -9 -24 0 -10 10 -10 15 2 22 20 12 38 -6 22 -22z m-752 -34 c0 -8 -7 -14 -15 -14 -15 0 -21 21 -9 33 10 9 24 -2 24 -19z"/> <path d="M381 665 c-35 -61 -36 -70 -17 -104 15 -28 31 -13 21 20 -4 13 2 37 17 65 23 43 24 44 75 44 50 0 52 -1 78 -45 l26 -46 -20 -33 c-25 -39 -26 -46 -7 -46 8 0 24 17 36 38 l23 37 -34 63 -33 62 -67 0 -67 0 -31 -55z"/> <path d="M425 573 c-14 -14 -17 -31 -13 -100 4 -82 4 -82 -19 -77 -25 7 -53 -10 -53 -31 0 -7 23 -47 50 -89 28 -42 50 -85 50 -96 0 -19 7 -20 95 -20 79 0 95 3 95 16 0 13 -13 15 -82 13 -75 -2 -83 0 -87 17 -2 10 -23 50 -48 87 -42 63 -50 89 -23 72 6 -4 20 -21 31 -39 10 -17 19 -26 20 -21 0 6 0 65 -1 133 -1 114 0 123 17 120 16 -3 18 -14 18 -86 0 -66 3 -82 15 -82 12 0 14 10 11 46 -2 36 0 45 10 42 9 -3 15 -24 17 -57 2 -34 7 -51 15 -48 7 2 10 20 8 45 -2 33 1 42 13 42 12 0 16 -11 16 -45 0 -33 4 -45 15 -45 11 0 15 11 15 36 0 24 4 34 13 31 16 -5 17 -132 1 -175 -12 -29 -11 -32 5 -32 24 0 30 24 32 129 1 72 -1 86 -17 98 -10 7 -23 12 -29 10 -5 -2 -16 3 -24 10 -7 8 -19 12 -27 9 -7 -3 -18 2 -24 10 -7 8 -19 14 -26 14 -9 0 -14 11 -14 28 0 49 -42 69 -75 35z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Generate industry insights</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper-mi">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onMIActionCardClick('prepare-client-meeting')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="48pt" height="48pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-client-meeting"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-client-meeting)" stroke="none"> <path d="M60 554 l0 -324 173 2 c220 4 229 22 12 26 l-155 3 0 292 0 292 390 0 390 0 0 -285 0 -285 -41 73 -40 73 -117 -3 -117 -3 -53 -92 -54 -92 43 -76 c34 -59 48 -75 66 -75 23 0 23 2 23 110 0 90 -3 110 -15 110 -11 0 -15 -19 -17 -90 l-3 -91 -31 58 -32 58 47 78 46 77 99 -2 99 -3 43 -70 c24 -38 43 -75 44 -81 0 -6 -15 -37 -32 -70 l-33 -59 -3 98 c-2 77 -6 97 -17 97 -12 0 -15 -20 -15 -110 l0 -110 28 0 c23 1 33 11 70 75 l42 75 0 324 0 325 -420 0 -420 0 0 -325z"/> <path d="M208 765 c-31 -17 -63 -67 -73 -112 -9 -44 24 -117 65 -142 52 -31 94 -35 145 -12 107 47 118 197 19 262 -35 23 -117 25 -156 4z m62 -72 c0 -62 -35 -166 -54 -160 -6 1 -22 24 -35 50 -28 57 -23 87 24 134 50 50 65 45 65 -24z m96 23 c50 -50 46 -66 -16 -66 l-50 0 0 50 c0 62 16 66 66 16z m34 -107 c0 -24 -35 -68 -67 -83 -35 -16 -87 -22 -81 -8 2 4 11 28 22 55 l19 47 53 0 c33 0 54 -4 54 -11z"/> <path d="M603 700 c-110 -67 -64 -240 64 -242 104 -1 170 96 127 187 -33 71 -123 97 -191 55z m140 -36 c63 -62 36 -149 -56 -178 -44 -14 -117 46 -117 96 0 63 44 107 106 108 31 0 48 -6 67 -26z"/> <path d="M150 441 c0 -13 15 -16 95 -16 78 0 95 3 95 15 0 12 -18 15 -95 16 -80 0 -95 -2 -95 -15z"/> <path d="M150 378 c0 -16 13 -18 130 -18 117 0 130 2 130 18 0 15 -13 17 -130 17 -117 0 -130 -2 -130 -17z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Prepare for client meeting</span>
-                    </button>
-                  </div>
-                </div>
-                <!-- Second Row: 2 Buttons -->
-                <div class="quick-action-row">
-                  <div class="button-wrapper-mi">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onMIActionCardClick('create-pov')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="48pt" height="48pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-pov"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-pov)" stroke="none"> <path d="M40 865 c-4 0 0 -769 4 -772 19 -19 27 74 25 306 l-1 256 216 3 c119 1 216 -1 216 -6 0 -4 -6 -17 -14 -27 -13 -18 -11 -26 16 -75 l31 -55 -26 -43 c-31 -48 -32 -52 -12 -52 8 0 28 21 44 47 l30 47 -31 56 -30 55 47 83 47 82 97 0 96 0 48 -85 48 -84 -47 -81 -47 -80 -107 0 c-89 0 -109 -3 -114 -16 -3 -9 -6 -16 -6 -17 0 -1 49 -1 110 1 l110 3 0 -120 c0 -101 2 -121 15 -121 13 0 15 21 15 126 l0 125 50 85 c28 47 50 89 50 95 0 6 -22 49 -50 96 -38 65 -50 95 -50 126 l0 42 -390 0 c-214 0 -390 0 -390 0z m750 -47 c0 -16 -12 -18 -103 -18 l-103 0 -29 -55 -30 -55 -222 0 c-123 0 -226 1 -230 3 -5 1 -8 142 -3 142 0 0 162 0 360 0 336 0 360 -1 360 -17z"/> <path d="M384 785 c-15 -23 -15 -27 0 -50 28 -42 96 -24 96 25 0 49 -68 67 -96 25z m64 -28 c2 -11 -3 -17 -17 -17 -23 0 -35 15 -26 31 10 15 39 6 43 -14z"/> <path d="M600 665 c0 -12 18 -15 100 -15 82 0 100 3 100 15 0 12 -18 15 -100 15 -82 0 -100 -3 -100 -15z"/> <path d="M600 605 c0 -12 18 -15 100 -15 82 0 100 3 100 15 0 12 -18 15 -100 15 -82 0 -100 -3 -100 -15z"/> <path d="M283 553 c-35 -7 -80 -58 -87 -98 -22 -114 123 -188 205 -106 37 37 46 75 28 124 -22 62 -81 94 -146 80z m93 -57 c19 -19 34 -44 34 -55 0 -53 -49 -101 -101 -101 -12 0 -37 16 -56 35 -30 30 -35 40 -29 67 10 50 51 86 100 87 10 1 33 -14 52 -33z"/> <path d="M600 545 c0 -12 18 -15 100 -15 82 0 100 3 100 15 0 12 -18 15 -100 15 -82 0 -100 -3 -100 -15z"/> <path d="M174 223 c-21 -37 -46 -80 -56 -95 -10 -14 -18 -28 -18 -30 0 -1 157 -4 350 -5 346 -3 350 -3 361 18 11 21 11 21 -143 18 l-154 -4 -46 80 -45 80 -106 3 -106 3 -37 -68z m266 -26 c19 -34 37 -66 39 -70 2 -5 -10 -7 -25 -5 -23 2 -29 8 -29 28 0 15 -6 25 -15 25 -9 0 -15 -10 -15 -24 0 -24 -2 -25 -77 -26 l-78 -2 0 29 c0 18 -5 28 -15 28 -9 0 -15 -9 -15 -25 0 -26 -17 -39 -44 -33 -11 2 -5 19 25 71 l40 67 87 0 87 0 35 -63z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Create point of view</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper-mi">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onMIActionCardClick('gather-proposal-insights')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg  width="48pt" height="48pt" viewBox="0 0 96.000000 96.000000" preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-proposal"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-proposal)" stroke="none"> <path d="M138 825 c-23 -38 -49 -83 -60 -98 l-19 -28 59 -102 60 -102 114 0 113 0 58 97 c58 100 64 113 48 122 -5 3 -33 -37 -63 -89 -29 -52 -55 -95 -58 -95 -3 0 -18 23 -33 50 l-28 50 -80 0 c-62 0 -79 -3 -79 -14 0 -33 -17 -22 -44 28 l-28 53 46 80 47 81 97 4 c98 4 111 1 126 -36 3 -7 8 -6 15 4 7 10 5 22 -5 40 -15 24 -18 25 -131 25 l-115 0 -40 -70z m193 -255 c10 -19 18 -38 19 -42 0 -5 -35 -8 -78 -8 -73 0 -80 2 -90 24 -18 41 5 61 73 61 55 0 58 -1 76 -35z"/> <path d="M480 829 c-12 -22 -29 -54 -39 -70 l-18 -30 -27 45 c-15 26 -34 46 -42 46 -18 0 -18 2 20 -68 18 -32 36 -52 47 -52 11 0 34 27 63 75 50 82 54 95 31 95 -8 0 -24 -18 -35 -41z"/> <path d="M221 809 c-35 -14 -50 -39 -51 -80 0 -73 92 -108 145 -54 63 62 -12 168 -94 134z m69 -39 c25 -25 25 -55 0 -80 -24 -24 -38 -25 -68 -4 -26 18 -29 60 -5 86 21 24 48 23 73 -2z"/> <path d="M490 580 c-30 -54 -54 -102 -53 -107 1 -4 25 -50 54 -101 l53 -93 119 3 119 3 55 94 c40 70 52 100 46 113 -7 15 -19 -1 -63 -81 -30 -55 -57 -101 -60 -101 -3 0 -19 24 -35 54 l-29 53 -72 -1 c-60 -1 -76 -5 -87 -20 -13 -18 -16 -17 -41 26 -14 24 -26 50 -26 57 0 6 17 40 38 74 21 35 41 71 45 80 5 14 21 17 106 17 99 0 101 0 115 -27 13 -25 15 -26 22 -10 3 10 1 29 -6 43 -13 23 -17 24 -129 24 l-116 -1 -55 -99z m209 -230 l22 -40 -80 0 c-89 0 -109 12 -88 57 9 20 17 23 67 23 55 0 57 -1 79 -40z"/> <path d="M837 592 c-19 -36 -39 -68 -43 -69 -5 -2 -19 15 -32 37 -12 22 -29 40 -37 40 -20 0 -18 -7 14 -60 43 -71 67 -67 116 21 50 88 49 85 32 92 -10 4 -26 -16 -50 -61z"/> <path d="M577 589 c-24 -14 -49 -73 -40 -96 13 -38 46 -63 82 -63 83 1 116 85 59 148 -23 24 -70 29 -101 11z m89 -44 c20 -31 12 -68 -18 -82 -48 -21 -97 23 -79 70 17 44 72 50 97 12z"/> <path d="M156 430 c-12 -19 -39 -65 -59 -101 l-37 -67 58 -98 59 -99 113 0 112 0 32 50 c69 108 91 154 79 166 -8 8 -25 -14 -64 -85 -30 -52 -57 -96 -60 -96 -3 0 -18 22 -33 49 l-26 49 -76 4 c-71 3 -77 2 -88 -20 -12 -23 -13 -23 -41 31 l-29 54 48 85 48 85 101 -1 c93 -1 101 -3 110 -24 12 -27 27 -29 27 -4 0 46 -20 53 -138 55 l-113 2 -23 -35z m172 -291 c12 -21 22 -40 22 -42 0 -2 -36 -3 -79 -3 -66 1 -81 4 -91 19 -9 15 -8 24 4 42 13 19 23 23 69 22 51 -1 55 -3 75 -38z"/> <path d="M209 375 c-29 -16 -52 -66 -42 -93 13 -38 46 -62 84 -62 54 0 84 28 84 80 0 34 -6 47 -28 66 -32 27 -60 30 -98 9z m81 -35 c25 -25 25 -55 0 -80 -23 -23 -33 -24 -60 -10 -31 17 -43 46 -29 73 23 42 57 49 89 17z"/> <path d="M340 385 c0 -3 14 -30 31 -60 23 -41 36 -54 50 -52 22 4 63 63 54 78 -11 16 -21 10 -37 -23 l-15 -32 -27 47 c-15 26 -34 47 -42 47 -8 0 -14 -2 -14 -5z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Gather proposal inputs</span>
-                    </button>
-                  </div>
-                  <div class="button-wrapper-mi">
-                    <button
-                      class="dropdown-btn"
-                      (click)="onMIActionCardClick('create-rfp-response')"
-                      type="button"
-                      >
-                      <div class="btn-icon">
-                        <svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-rfp"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-rfp)" stroke="none"> <path d="M770 793 c0 -4 -21 -19 -46 -32 -34 -19 -44 -29 -41 -43 4 -15 1 -18 -13 -13 -10 3 -48 14 -84 24 l-66 18 -48 -33 c-43 -31 -53 -34 -118 -34 -76 0 -90 5 -72 27 6 7 9 15 7 16 -22 14 -111 67 -114 67 -2 0 -21 -30 -41 -67 -21 -38 -55 -96 -77 -131 -22 -35 -37 -66 -34 -69 15 -14 37 12 96 116 l63 112 31 -18 c16 -10 30 -22 30 -26 0 -5 -26 -53 -58 -108 -47 -81 -62 -98 -77 -94 -25 9 -23 -17 3 -33 18 -11 23 -11 33 4 11 15 15 13 39 -17 14 -18 22 -36 18 -39 -4 -3 -14 -16 -20 -29 -12 -22 -8 -28 62 -97 42 -41 81 -74 87 -74 7 0 21 -12 33 -26 16 -20 26 -25 48 -20 16 3 31 1 34 -4 10 -17 44 -11 62 10 10 11 29 20 44 20 14 0 34 9 44 20 10 11 26 20 34 18 36 -5 69 12 76 39 3 15 17 37 31 50 25 23 32 57 14 68 -6 4 -3 17 10 33 49 66 50 67 59 54 6 -10 13 -11 34 -1 28 13 26 43 -3 34 -13 -4 -30 17 -78 99 -63 109 -63 110 -16 134 20 11 26 4 85 -99 58 -101 81 -130 94 -117 7 7 -141 262 -154 266 -6 2 -11 0 -11 -5z m-148 -104 l88 -21 41 -74 c43 -78 43 -79 -4 -133 l-27 -33 -105 91 -106 90 -63 -31 c-51 -25 -70 -29 -99 -24 -21 4 -37 10 -37 14 0 8 201 140 215 141 6 1 49 -9 97 -20z m-263 -45 c2 -2 -20 -18 -48 -35 -56 -35 -56 -46 0 -75 40 -20 74 -17 140 12 l58 26 78 -68 c43 -38 93 -81 111 -96 24 -20 32 -33 27 -47 -11 -34 -33 -31 -81 12 -26 23 -52 42 -57 42 -26 0 -12 -24 39 -65 56 -46 62 -58 42 -78 -19 -19 -30 -14 -81 33 -27 25 -52 45 -57 45 -24 0 -16 -22 20 -52 44 -36 47 -68 8 -68 -34 0 -103 70 -103 103 0 17 -7 32 -18 38 -12 7 -15 17 -11 34 8 31 -29 69 -59 61 -12 -3 -30 3 -45 15 -31 24 -34 24 -69 -5 l-29 -25 -27 34 -26 33 40 71 41 70 51 -6 c29 -3 54 -7 56 -9z m-79 -249 c-47 -48 -64 -55 -74 -29 -4 11 9 31 39 62 43 42 47 44 63 29 15 -16 13 -20 -28 -62z m117 29 c7 -19 -93 -124 -119 -124 -32 0 -19 33 34 87 54 55 74 64 85 37z m30 -80 c4 -11 -10 -31 -41 -62 -45 -45 -48 -46 -62 -27 -13 17 -11 23 28 62 45 46 65 53 75 27z m30 -80 c7 -19 -34 -64 -59 -64 -25 0 -23 29 4 57 25 27 46 30 55 7z m43 -49 c0 -14 -37 -31 -47 -21 -9 8 28 47 38 40 5 -3 9 -11 9 -19z"/> </g> </svg>
-                      </div>
-                      <span class="btn-label">Create RFP response</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            }
-          </div>
-        }
-
-        <!-- My Requests Panel - Using Separate Component -->
-        @if (showMyRequestsPanelParent) {
-          <div class="content-area">
-            <app-my-requests-table #myRequestsTableRef></app-my-requests-table>
-          </div>
-        }
-        <!-- Chat Messages Area -->
-        @if ((messages.length > 0 || showDraftForm) && !showMyRequestsPanelParent) {
-          <div
-            class="content-area chat-area"
-            >
-            <div class="messages-wrapper" #messagesContainer>
-              @for (message of messages; track message; let i = $index) {
-                <div
-                  class="message"
-                  [class.user-message]="message.role === 'user'"
-                  [class.assistant-message]="message.role === 'assistant'"
-                  >
-                  <div class="message-content">
-                    @if (message.role === 'assistant') {
-                      <div class="message-avatar">
-                        <svg width="72.000000pt" height="72.000000pt" viewBox="0 0 72.000000 75.000000" preserveAspectRatio="xMidYMid meet"> <g transform="translate(0.000000,75.000000) scale(0.100000,-0.100000)" fill="#fd5108" stroke="none"> <path d="M350 540 c0 -100 4 -112 34 -123 12 -5 17 -14 13 -27 -7 -26 1 -25 45 5 31 21 48 25 111 25 61 0 77 3 92 20 18 20 17 20 -79 20 -98 0 -138 -10 -132 -33 1 -6 1 -9 -1 -4 -3 4 -10 4 -16 0 -7 -3 -3 3 7 15 19 22 19 22 -7 22 -14 0 -27 -6 -30 -12 -2 -7 -3 -4 -1 7 2 11 4 46 4 78 l0 57 110 0 110 0 0 -45 c0 -40 2 -45 23 -45 21 0 22 4 20 56 -1 31 -6 61 -11 66 -5 5 -72 10 -150 11 l-142 2 0 -95z m31 57 c-10 -9 -11 -8 -5 6 3 10 9 15 12 12 3 -3 0 -11 -7 -18z"/> <path d="M410 553 c0 -16 11 -18 90 -18 79 0 90 2 90 18 0 15 -11 17 -90 17 -79 0 -90 -2 -90 -17z"/> <path d="M413 501 c-1 -17 5 -19 57 -20 52 0 59 2 57 20 -1 16 -9 19 -57 19 -48 0 -56 -3 -57 -19z"/> <path d="M225 492 c-5 -4 -16 -17 -22 -29 -11 -19 -10 -29 3 -57 9 -19 27 -40 40 -47 24 -13 32 -29 14 -29 -5 0 -10 5 -10 10 0 11 -130 14 -167 4 -32 -9 -43 -53 -43 -170 l0 -104 208 0 c196 0 208 1 220 20 12 20 10 20 -183 20 l-195 0 0 99 0 100 173 -2 172 -2 3 -77 c3 -70 5 -78 22 -78 18 0 20 7 20 83 0 67 -3 87 -17 100 -21 18 -13 17 -108 17 -59 0 -75 3 -75 15 0 8 6 12 13 9 7 -2 19 10 29 32 15 33 15 38 0 65 -14 23 -24 29 -52 29 -19 0 -39 -4 -45 -8z m39 -37 c26 0 32 -21 9 -33 -15 -9 -22 -5 -36 19 -9 17 -11 27 -4 22 6 -4 21 -7 31 -8z m9 -72 c-4 -10 -9 -11 -19 -2 -18 15 -18 15 5 15 11 0 17 -5 14 -13z"/> <path d="M146 244 c-21 -20 -20 -46 2 -71 31 -36 92 -11 92 37 0 42 -64 65 -94 34z m61 -30 c9 -23 -19 -38 -34 -17 -7 9 -10 20 -7 24 9 15 34 10 41 -7z"/> <path d="M298 238 c-29 -48 4 -95 58 -82 60 15 42 103 -22 104 -12 0 -28 -10 -36 -22z m59 -24 c7 -18 -17 -38 -31 -24 -11 11 -1 40 14 40 6 0 13 -7 17 -16z"/> </g> </svg>
-                      </div>
-                    }
-                    <div class="message-bubble">
-                      <!-- Action in Progress Indicator -->
-                      @if (message.actionInProgress) {
-                        <div class="action-progress">
-                          <div class="progress-icon">
-                            <svg
-                              class="spinner"
-                              width="16"
-                              height="16"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                              >
-                              <path
-                                d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"
-                                />
-                              </svg>
-                            </div>
-                            <span>{{ message.actionInProgress }}</span>
-                          </div>
-                        }
-                        <!-- Edit Content Workflow: Editor Progress Indicator -->
-                        @if (message.editWorkflow?.editorProgressList && message.editWorkflow?.step === 'processing') {
-                          <app-editor-progress
-                            [editors]="message.editWorkflow?.editorProgressList || []"
-                            [currentEditor]="message.editWorkflow?.editorProgress?.currentEditor || ''"
-                            [currentIndex]="message.editWorkflow?.editorProgress?.current || 0"
-                            [totalEditors]="message.editWorkflow?.editorProgress?.total || (message.editWorkflow?.editorProgressList?.length ?? 0)">
-                          </app-editor-progress>
-                          
-                        }
-                        <!-- Edit Content Workflow: Paragraph Edits Component -->
-                        @if ((message.editWorkflow?.paragraphEdits?.length ?? 0) > 0) {
-                          <app-paragraph-edits
-                            [paragraphEdits]="message.editWorkflow!.paragraphEdits!"
-                            [showFinalOutput]="hasFinalOutputBeenGenerated(message, i)"
-                            [isGeneratingFinal]="getParagraphEditsGeneratingState(message)"
-                            [threadId]="message.editWorkflow?.threadId"
-                            [currentEditor]="message.editWorkflow?.currentEditor"
-                            [editorOrder]="$any(message.editWorkflow).editorOrder"
-                            [isSequentialMode]="message.editWorkflow?.isSequentialMode"
-                            [isLastEditor]="message.editWorkflow?.isLastEditor"
-                            [currentEditorIndex]="message.editWorkflow?.currentEditorIndex"
-                            [totalEditors]="message.editWorkflow?.totalEditors"
-                            [isGenerating]="getParagraphEditsNextEditorGeneratingState(message)"
-                            (paragraphApproved)="onParagraphApproved(message, $event)"
-                            (paragraphDeclined)="onParagraphDeclined(message, $event)"
-                            (generateFinal)="onGenerateFinalArticle(message)"
-                            (nextEditor)="onNextEditor(message)">
-                          </app-paragraph-edits>
-                        }
-                        <!-- Typing dots indicator - positioned above message text -->
-                        @if (message.isStreaming || (message.role === 'assistant' && !message.content && !message.editWorkflow)) {
-                          <div class="processing-container">
-                            <div class="processing-lines">
-                              <div class="processing-line last-line">
-                                <span class="processing-text">Processing</span>
-                                <div class="typing-dots" aria-hidden="true">
-                                  <span></span>
-                                  <span></span>
-                                  <span></span>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        }
-                        @if ((message.thoughtLeadership?.topic === 'Editorial Feedback' || ((!message.editWorkflow?.editorProgressList || message.editWorkflow?.step !== 'processing') && (!message.editWorkflow?.paragraphEdits || message.editWorkflow?.paragraphEdits?.length === 0))) && !shouldHideEditorialFeedback(message, i)) {
-                          <div
-                            class="message-text"
-                            [class.revised-content-formatted]="message.thoughtLeadership?.contentType === 'edit-article' || message.thoughtLeadership?.topic === 'Final Revised Article'"
-                            [innerHTML]="message.role === 'assistant' && message.sources ? (message.content | sourceCitation:message.sources) : getFormattedContent(message)"
-                          ></div>
-                        }
-                        <!-- Edit Content Workflow: Editor Selection -->
-                        @if (message.editWorkflow?.showEditorSelection && message.editWorkflow?.editorOptions && message.editWorkflow?.step === 'awaiting_editors') {
-                          <app-editor-selection
-                            [editors]="message.editWorkflow?.editorOptions || []"
-                            (selectionChanged)="onWorkflowEditorsSelectionChanged(message, $event)"
-                            (submitted)="onWorkflowEditorsSubmitted($event)"
-                            (cancelled)="onWorkflowCancelled()">
-                          </app-editor-selection>
-                        }
-                        <!-- Edit Content Workflow: File Upload (Step 2 - awaiting_content) -->
-                        @if (message.editWorkflow?.showFileUpload && editWorkflowService.isActive) {
-                          <div class="workflow-file-upload-wrapper">
-                            <app-file-upload
-                              accept=".docx,.pdf,.txt,.md"
-                              label="Upload Documents"
-                              [uploadedFile]="getUploadedFileForMessage(message)"
-                              (fileSelected)="onWorkflowFileSelected($event)"
-                              (fileRemoved)="onWorkflowFileRemoved()"
-                              class="workflow-file-upload">
-                            </app-file-upload>
-                            
-                            <!-- Error message display -->
-                            <!-- @if (editDocumentUploadError) {
-                              <div class="upload-error-message">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                  <circle cx="12" cy="12" r="10"></circle>
-                                  <line x1="12" y1="8" x2="12" y2="12"></line>
-                                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                                </svg>
-                                <span>{{ editDocumentUploadError }}</span>
-                                <button 
-                                  class="error-close-btn" 
-                                  (click)="editDocumentUploadError = ''"
-                                  type="button"
-                                  aria-label="Close error message">
-                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                                  </svg>
-                                </button>
-                              </div>
-                            } -->
-                          </div>
-                        }
-
-                        <!-- Edit Content Workflow: Simple Cancel Button (Step 2 - awaiting_content) -->
-                        @if (message.editWorkflow?.showSimpleCancelButton && editWorkflowService.isActive) {
-                          <div class="workflow-cancel-container">
-                            <button
-                              class="workflow-cancel-btn simple-cancel-btn"
-                              (click)="onWorkflowCancelled()"
-                              type="button">
-                              Cancel
-                            </button>
-                          </div>
-                        }
-                        <!-- Edit Content Workflow: Cancel Workflow Button (Step 3+ - processing, disabled) -->
-                        @if (message.editWorkflow?.showCancelButton && !message.editWorkflow?.showEditorSelection && !message.editWorkflow?.showSimpleCancelButton && editWorkflowService.isActive) {
-                          <div class="workflow-cancel-container">
-                            <button
-                              class="workflow-cancel-btn"
-                              (click)="onWorkflowCancelled()"
-                              [disabled]="message.editWorkflow?.cancelButtonDisabled"
-                              type="button">
-                              Cancel workflow
-                            </button>
-                          </div>
-                        }
-                        <!-- Thought Leadership Action Buttons (Only for results: Editorial Feedback and Revised Article in Quick Start Edit) -->
-                        @if (shouldShowTLActions(message) && isEditWorkflowResult(message)) {
-                          @if (getTLMetadata(message); as metadata) {
-                            <app-tl-action-buttons
-                              [metadata]="metadata"
-                              [messageId]="'msg_' + i"
-                              [selectedFlow]="selectedFlow"
-                              (exportRequested)="onExportRequested($event)"
-                              (copyRequested)="onCopyRequested($event)"
-                              #tlActionButtons>
-                              
-                            </app-tl-action-buttons>
-                          }
-                          <!-- Quick Start Edit Content: Run Final Output button (visible and accessible) -->
-                          @if ((message.editWorkflow?.paragraphEdits?.length ?? 0) > 0) {
-                            <div class="tl-final-output-container">
-                              <button
-                                class="tl-final-output-btn"
-                                type="button"
-                                [disabled]="getParagraphEditsGeneratingState(message)"
-                                (click)="onGenerateFinalArticle(message)">
-                                @if (getParagraphEditsGeneratingState(message)) {
-                                  <span class="spinner small"></span>
-                                }
-                                {{ getParagraphEditsGeneratingState(message) ? 'Generating...' : 'Run Final Output' }}
-                              </button>
-                            </div>
-                          }
-                        }
-                        <!-- Action Buttons (for interactive options like content type selection) -->
-                        @if (message.actionButtons && message.actionButtons.length > 0) {
-                          <div class="action-buttons-container">
-                            @for (button of message.actionButtons; track button) {
-                              <button
-                                class="action-option-btn"
-                                (click)="onActionButtonClick(button.action)"
-                                type="button">
-                                {{ button.label }}
-                              </button>
-                            }
-                          </div>
-                        }
-                        <!-- Download and Preview Actions (for non-TL messages) -->
-                        @if (
-                          !shouldShowTLActions(message) && (
-                          message.downloadUrl ||
-                          message.previewUrl ||
-                          (message.role === 'assistant' && message.content && !draftWorkflowService.isActive) ||
-                          (draftWorkflowService.isActive && isDraftWorkflowFileUploadVisible())
-                          )
-                          ) {
-                          <div
-                            class="message-actions"
-                            >
-                            <!-- Copy to Clipboard Button (for all assistant messages, but not for edit workflow steps) -->
-                            @if (message.role === 'assistant' && message.content && !message.editWorkflow) {
-                              <button
-                                class="action-btn copy-btn"
-                                [class.copied]="copiedButtonId === 'copy-' + $index"
-                                (click)="selectedFlow === 'thought-leadership' ? showCortexReminderForCopy(message.content, 'copy-' + $index) : copyToClipboard(message.content, 'copy-' + $index)"
-                                [title]="copiedButtonId === 'copy-' + $index ? 'Copied!' : 'Copy to clipboard'"
-                                >
-                                @if (copiedButtonId === 'copy-' + $index) {
-                                  <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    class="check-icon"
-                                    >
-                                    <polyline points="20 6 9 17 4 12"></polyline>
-                                  </svg>
-                                } @else {
-                                  <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    >
-                                    <rect
-                                      x="9"
-                                      y="9"
-                                      width="13"
-                                      height="13"
-                                      rx="2"
-                                      ry="2"
-                                    ></rect>
-                                    <path
-                                      d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
-                                    ></path>
-                                  </svg>
-                                }
-                              </button>
-                            }
-                            <!-- Draft Workflow Upload Button (appears when outline/supporting doc steps are active) -->
-                            @if (draftWorkflowService.isActive && isDraftWorkflowFileUploadVisible(message)) {
-                              <input
-                                #draftUploadInput
-                                type="file"
-                                accept=".pdf,.doc,.docx,.txt,.md"
-                                style="display: none"
-                                (change)="onDraftUploadSelected(draftUploadInput.files)"
-                                />
-                                <button
-                                  class="action-btn upload-btn"
-                                  type="button"
-                                  (click)="draftUploadInput.click()"
-                                  title="Upload document"
-                                  >
-                                  Upload
-                                </button>
-                              }
-                              <!-- Regenerate Button (for all assistant messages, but not for edit workflow steps). Hidden when TL/MI metadata contentType === 'Phoenix_Request' -->
-                              <!-- @if (message.role === 'assistant' && selectedFlow !== 'ppt' && message.content && !message.editWorkflow && (getTLMetadata(message)?.contentType !== 'Phoenix_Request')) {
-                                <button
-                                  class="action-btn regenerate-btn"
-                                  (click)="regenerateMessage(i)"
-                                  title="Regenerate response"
-                                  >
-                                  <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    >
-                                    <path d="M23 4v6h-6"></path>
-                                    <path d="M1 20v-6h6"></path>
-                                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36M20.49 15a9 9 0 0 1-14.85 3.36"></path>
-                                  </svg>
-                                </button>
-                              } -->
-                              
-                              <!-- Export Dropdown (for all assistant messages, but not for edit workflow steps) -->
-                              @if (message.role === 'assistant' && selectedFlow !== 'ppt' && message.content && !message.editWorkflow && (getTLMetadata(message)?.contentType !== 'Phoenix_Request')  && (!message.content.toLowerCase().includes('placemat'))) {
-                                <div class="export-dropdown">
-                                  <button 
-                                    class="action-btn btn-export"
-                                    [class.exporting]="isExporting[i]"
-                                    [class.exported]="isExported[i]"
-                                    (click)="toggleExportDropdown(i)"
-                                    title="Export"
-                                  >
-                                    @if (isExporting[i]) {
-                                      <div class="export-spinner">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                          <circle cx="12" cy="12" r="10" opacity="0.25"></circle>
-                                          <path d="M12 2a10 10 0 0 1 10 10" opacity="0.75"></path>
-                                        </svg>
-                                        <span>{{ exportFormat[i] }}</span>
-                                      </div>
-                                    } @else if (isExported[i]) {
-                                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                        <polyline points="20 6 9 17 4 12"></polyline>
-                                      </svg>
-                                      <span>{{ exportFormat[i] }}</span>
-                                    } @else {
-                                      <span>Export</span>
-                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                        <polyline points="6 9 12 15 18 9"></polyline>
-                                      </svg>
-                                    }
-                                  </button>
-                                  
-                                  @if (showExportDropdown[i]) {
-                                    <div class="dropdown-menu">
-                                      <button class="dropdown-item" (click)="exportSelected(i, 'word')">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                                          <polyline points="14 2 14 8 20 8"></polyline>
-                                        </svg>
-                                        <span>Word (.docx)</span>
-                                      </button>
-                                      <button class="dropdown-item" (click)="exportSelected(i, 'pdf')">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                                          <polyline points="14 2 14 8 20 8"></polyline>
-                                        </svg>
-                                        <span>PDF (.pdf)</span>
-                                      </button>
-                                      <button class="dropdown-item" (click)="exportSelected(i, 'ppt')">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                                          <polyline points="14 2 14 8 20 8"></polyline>
-                                        </svg>
-                                        <span>PPT (.ppt)</span>
-                                      </button>
-                                    </div>
-                                  }
-                                </div>
-                              }
-                              <!-- Ready to Publish Button (for Cortex Content Studio quick start responses) -->
-                              @if (message.role === 'assistant' && selectedFlow === 'thought-leadership' && message.content && !message.editWorkflow && (getTLMetadata(message)?.contentType !== 'Phoenix_Request')) {
-                                <button
-                                  class="action-btn btn-canvas"
-                                  (click)="onCortexQuickStartReadyToPublish(message)"
-                                  title="Ready to publish"
-                                  [class.preparing]="isPreparingDocument[messages.indexOf(message)]"
-                                  [class.prepared]="isDocumentPrepared[messages.indexOf(message)]"
-                                  [disabled]="isPreparingDocument[messages.indexOf(message)]">
-                                  @if (isPreparingDocument[messages.indexOf(message)]) {
-                                    <span class="prepare-spinner">
-                                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                        <circle cx="12" cy="12" r="9"></circle>
-                                        <path d="M12 7v5l3 3"></path>
-                                      </svg>
-                                    </span>
-                                  }
-                                  @if (!isPreparingDocument[messages.indexOf(message)] && !isDocumentPrepared[messages.indexOf(message)]) {
-                                    <svg width="16" height="16" viewBox="0 0 96.000000 96.000000" preserveAspectRatio="xMidYMid meet" style="margin-right:6px;"> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="currentColor" stroke="none"> <path d="M60 554 l0 -324 173 2 c220 4 229 22 12 26 l-155 3 0 292 0 292 390 0 390 0 0 -285 0 -285 -41 73 -40 73 -117 -3 -117 -3 -53 -92 -54 -92 43 -76 c34 -59 48 -75 66 -75 23 0 23 2 23 110 0 90 -3 110 -15 110 -11 0 -15 -19 -17 -90 l-3 -91 -31 58 -32 58 47 78 46 77 99 -2 99 -3 43 -70 c24 -38 43 -75 44 -81 0 -6 -15 -37 -32 -70 l-33 -59 -3 98 c-2 77 -6 97 -17 97 -12 0 -15 -20 -15 -110 l0 -110 28 0 c23 1 33 11 70 75 l42 75 0 324 0 325 -420 0 -420 0 0 -325z"/> <path d="M208 765 c-31 -17 -63 -67 -73 -112 -9 -44 24 -117 65 -142 52 -31 94 -35 145 -12 107 47 118 197 19 262 -35 23 -117 25 -156 4z m62 -72 c0 -62 -35 -166 -54 -160 -6 1 -22 24 -35 50 -28 57 -23 87 24 134 50 50 65 45 65 -24z m96 23 c50 -50 46 -66 -16 -66 l-50 0 0 50 c0 62 16 66 66 16z m34 -107 c0 -24 -35 -68 -67 -83 -35 -16 -87 -22 -81 -8 2 4 11 28 22 55 l19 47 53 0 c33 0 54 -4 54 -11z"/> <path d="M603 700 c-110 -67 -64 -240 64 -242 104 -1 170 96 127 187 -33 71 -123 97 -191 55z m140 -36 c63 -62 36 -149 -56 -178 -44 -14 -117 46 -117 96 0 63 44 107 106 108 31 0 48 -6 67 -26z"/> <path d="M150 441 c0 -13 15 -16 95 -16 78 0 95 3 95 15 0 12 -18 15 -95 16 -80 0 -95 -2 -95 -15z"/> <path d="M150 378 c0 -16 13 -18 130 -18 117 0 130 2 130 18 0 15 -13 17 -130 17 -117 0 -130 -2 -130 -17z"/> </g> </svg>
-                                  }
-                                  @if (isDocumentPrepared[messages.indexOf(message)]) {
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                      <polyline points="20 6 9 17 4 12"></polyline>
-                                    </svg>
-                                  }
-                                  <span>{{ isPreparingDocument[messages.indexOf(message)] ? 'Preparing...' : isDocumentPrepared[messages.indexOf(message)] ? 'Ready!' : 'Ready to publish' }}</span>
-                                </button>
-                              }
-                              <!-- Webpage Ready Button (appears when webpage is ready to open) -->
-                              @if (message.webpageReadyCompleted) {
-                                <button
-                                  class="action-btn btn-export"
-                                  (click)="openWebpageReady(message)"
-                                  title="Webpage Ready"
-                                  >
-                                  <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    >
-                                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                                    <polyline points="15 3 21 3 21 9"></polyline>
-                                    <line x1="10" y1="14" x2="21" y2="3"></line>
-                                  </svg>
-                                  <span>Webpage ready</span>
-                                </button>
-                              }
-                              <!-- Word Export Button (for all assistant messages, but not for edit workflow steps) -->
-                              <!-- Commenting out Word button, To use for your particular feature put conditional checks in place -->
-                              <!-- <button
-                              class="action-btn word-btn"
-                              *ngIf="message.role === 'assistant' && message.content && !message.editWorkflow"
-                              (click)="downloadAsWord(message.content)"
-                              title="Download as Word document"
-                              >
-                              <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                >
-                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                                <polyline points="14 2 14 8 20 8"></polyline>
-                                <line x1="16" y1="13" x2="8" y2="13"></line>
-                                <line x1="16" y1="17" x2="8" y2="17"></line>
-                                <polyline points="10 9 9 9 8 9"></polyline>
-                              </svg>
-                              Word
-                            </button> -->
-                            <!-- PDF Export Button (for all assistant messages, but not for edit workflow steps) -->
-                            <!-- Commenting out pdf button, To use for your particular feature put conditional checks in place -->
-                            <!-- <button
-                            class="action-btn pdf-btn"
-                            *ngIf="message.role === 'assistant' && message.content && !message.editWorkflow"
-                            (click)="downloadAsPDF(message.content)"
-                            title="Download as PDF"
-                            >
-                            <svg
-                              width="16"
-                              height="16"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                              >
-                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                              <polyline points="14 2 14 8 20 8"></polyline>
-                              <line x1="16" y1="13" x2="8" y2="13"></line>
-                              <line x1="16" y1="17" x2="8" y2="17"></line>
-                              <polyline points="10 9 9 9 8 9"></polyline>
-                            </svg>
-                            PDF
-                          </button> -->
-                          <!-- PPTX Downloads (Doc Studio Quick Start only) -->
-                          @if (
-                            selectedFlow === 'ppt' &&
-                            message.downloadUrl &&
-                            message.downloadFilename?.endsWith('.pptx')
-                            ) {
-                            <button
-                              class="action-btn download-btn"
-                  (click)="
-                    downloadFile(
-                      message.downloadUrl!,
-                      message.downloadFilename!
-                    )
-                  "
-                              >
-                              <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                >
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                <polyline points="7 10 12 15 17 10"></polyline>
-                                <line x1="12" y1="15" x2="12" y2="3"></line>
-                              </svg>
-                              Download PPTX
-                            </button>
-                            <button
-                class="action-btn btn-canvas raise-btn"
-                (click)="openRequestForm()"
-                title="Request DDC Support">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" 
-                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <!-- Headband -->
-                  <path d="M4 12a8 8 0 0 1 16 0" />
-                  <!-- Left earcup -->
-                  <rect x="2" y="12" width="4" height="6" rx="1" />
-                  <!-- Right earcup -->
-                  <rect x="18" y="12" width="4" height="6" rx="1" />
-                  <!-- Mic boom -->
-                <path d="M18 18v2a2 2 0 0 1-2 2h-4" />
-              </svg>
-                <span>Request DDC support</span>
-              </button>
-                          }
-                          <!-- Download Placemat (Cortex Quick Start) -->
-                          @if (
-                            message.downloadUrl &&
-                            message.content &&
-                            message.content.toLowerCase().includes('placemat')
-                            ) {
-                            <button
-                              class="action-btn download-btn"
-                  (click)="
-                    downloadFile(
-                      message.downloadUrl!,
-                      message.downloadFilename!
-                    )
-                  "
-                              >
-                              <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                >
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                <polyline points="7 10 12 15 17 10"></polyline>
-                                <line x1="12" y1="15" x2="12" y2="3"></line>
-                              </svg>
-                              Download placemat
-                            </button>
-                          }
-                          <!-- Request DDC Support for Doc Studio Quickstart -->
-                          @if (
-                            message.role === 'assistant' && 
-                            selectedFlow === 'ppt' && 
-                            message.content && 
-                            !message.downloadUrl &&
-                            message.content.toLowerCase().includes('download')
-                            ) {
-                            <button
-                class="action-btn btn-canvas raise-btn"
-                (click)="openRequestForm()"
-                title="Request DDC Support">
-                <!-- style="opacity: 0.5; cursor: not-allowed"
-                [disabled] = 'true'-->
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" 
-                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <!-- Headband -->
-                  <path d="M4 12a8 8 0 0 1 16 0" />
-                  <!-- Left earcup -->
-                  <rect x="2" y="12" width="4" height="6" rx="1" />
-                  <!-- Right earcup -->
-                  <rect x="18" y="12" width="4" height="6" rx="1" />
-                  <!-- Mic boom -->
-                <path d="M18 18v2a2 2 0 0 1-2 2h-4" />
-              </svg>
-                <span>Request DDC support</span>
-              </button>
-                          }
-                          <!-- Podcast Download - Half Width Buttons -->
-                          @if (
-                            message.downloadUrl &&
-                            message.downloadFilename?.endsWith('.mp3')
-                            ) {
-                            <div
-                              class="podcast-download-container"
-                              >
-                              <button
-                                class="action-btn copy-btn half-width"
-                                [class.copied]="copiedButtonId === 'copy-podcast-' + $index"
-                                (click)="copyToClipboard(message.content, 'copy-podcast-' + $index)"
-                                [title]="copiedButtonId === 'copy-podcast-' + $index ? 'Copied!' : 'Copy podcast script'"
-                                >
-                                @if (copiedButtonId === 'copy-podcast-' + $index) {
-                                  <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    class="check-icon"
-                                    >
-                                    <polyline points="20 6 9 17 4 12"></polyline>
-                                  </svg>
-                                } @else {
-                                  <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    >
-                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                                  </svg>
-                                }
-                                Copy script
-                              </button>
-                              <button
-                                class="action-btn download-btn half-width"
-                    (click)="
-                      downloadFile(
-                        message.downloadUrl!,
-                        message.downloadFilename!
-                      )
-                    "
-                                title="Download podcast audio"
-                                >
-                                <svg
-                                  width="16"
-                                  height="16"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  stroke-width="2"
-                                  >
-                                  <path
-                                    d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
-                                  ></path>
-                                  <polyline points="7 10 12 15 17 10"></polyline>
-                                  <line x1="12" y1="15" x2="12" y2="3"></line>
-                                </svg>
-                                Download MP3
-                              </button>
-                            </div>
-                          }
-                          <!-- Podcast Download from Blob URL (when contentType is podcast) -->
-                          @if (message.thoughtLeadership?.contentType === 'podcast' && message.thoughtLeadership?.podcastAudioUrl) {
-                            <button
-                              class="action-btn btn-icon"
-                              (click)="downloadPodcastFromBlob(message)"
-                              title="Download podcast MP3">
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                <polyline points="7 10 12 15 17 10"></polyline>
-                                <line x1="12" y1="15" x2="12" y2="3"></line>
-                              </svg>
-                              <span>Download MP3</span>
-                            </button>
-                          }
-                          <!-- Generated Content Downloads with Format Options -->
-                          @if (
-                            message.downloadUrl &&
-                            !message.downloadFilename?.endsWith('.pptx') &&
-                            !message.downloadFilename?.endsWith('.mp3')
-                            ) {
-                            <div
-                              class="download-format-group"
-                              >
-                              <span class="download-label">Download as:</span>
-                              <button
-                                class="format-btn"
-                    (click)="
-                      downloadGeneratedDocument(
-                        'word',
-                        message.content,
-                        'document'
-                      )
-                    "
-                                title="Download as Word document"
-                                >
-                                <svg
-                                  width="14"
-                                  height="14"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  stroke-width="2"
-                                  >
-                                  <path
-                                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-                                  ></path>
-                                  <polyline points="14 2 14 8 20 8"></polyline>
-                                </svg>
-                                Word
-                              </button>
-                              <button
-                                class="format-btn"
-                    (click)="
-                      downloadGeneratedDocument(
-                        'txt',
-                        message.content,
-                        'document'
-                      )
-                    "
-                                title="Download as Text file"
-                                >
-                                <svg
-                                  width="14"
-                                  height="14"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  stroke-width="2"
-                                  >
-                                  <path
-                                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-                                  ></path>
-                                </svg>
-                                Text
-                              </button>
-                              <button
-                                class="format-btn"
-                    (click)="
-                      downloadGeneratedDocument(
-                        'pdf',
-                        message.content,
-                        'document'
-                      )
-                    "
-                                title="Download as PDF"
-                                >
-                                <svg
-                                  width="14"
-                                  height="14"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  stroke-width="2"
-                                  >
-                                  <path
-                                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-                                  ></path>
-                                  <polyline points="14 2 14 8 20 8"></polyline>
-                                  <line x1="9" y1="15" x2="15" y2="15"></line>
-                                </svg>
-                                PDF
-                              </button>
-                            </div>
-                          }
-                          @if (message.previewUrl) {
-                            <button
-                              class="action-btn preview-btn"
-                              (click)="previewFile(message.previewUrl!)"
-                              >
-                              <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                >
-                                <path
-                                  d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"
-                                ></path>
-                                <circle cx="12" cy="12" r="3"></circle>
-                              </svg>
-                              Preview
-                            </button>
-                          }
-                        </div>
-                      }
-                    </div>
-                  </div>
-                </div>
-              }
-            </div>
-            <!-- Loading Indicator -->
-            @if (isLoading) {
-              <div
-                class="loading-indicator"
-                role="status"
-                aria-live="polite"
-                >
-                @if (currentAction) {
-                  <span class="loading-text">{{
-                    currentAction
-                  }}</span>
-                }
-                @if (!currentAction) {
-                  <span class="sr-only">Loading response...</span>
-                }
-              </div>
-            }
-            <!-- Canvas Editor (side-by-side within chat area) -->
-            <app-canvas-editor></app-canvas-editor>
-          </div>
-        }
-
-        <!-- Chat Input - Claude.ai Inspired (Always Visible except on landing page) -->
-        @if (!showLandingPage && !showMyRequestsPanelParent) {
-          <div class="chat-composer" [class.expanded]="isComposerExpanded">
-            <div class="composer-input-wrapper">
-            <div class="composer-tools">
-              <!-- Edit Content Document Upload (Thought Leadership mode) -->
-              @if (selectedFlow === 'thought-leadership' || selectedFlow === 'market-intelligence') {
-                <button
-                  class="tool-btn"
-                  (click)="editWorkflowService.isActive ? triggerEditDocumentUpload() : triggerDocumentAnalysisUpload()"
-                  title="Upload documents(Word, PDF, Text)"
-                  type="button"
-                  [disabled]="isLoading || isExtractingText"
-                  >
-                  <!-- <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                    <polyline points="17 8 12 3 7 8"></polyline>
-                    <line x1="12" y1="3" x2="12" y2="15"></line>
-                  </svg> -->
-                  <svg width="18" height="18" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg" fill="currentColor">
-                    <path d="M10.6875 35.625 L7.125 35.625 L7.125 49.875 L47.3805 49.875 L49.875 46.3125 L10.6875 46.3125 L10.6875 35.625Z" />
-                    <path d="M46.3125 35.625 L49.875 35.625 L49.875 42.75 L46.3125 42.75Z" />
-                    <path d="M26.7188 13.8248 L26.7188 42.75 L30.2812 42.75 L30.2812 13.8248 L43.2892 26.4717 L45.7733 23.9181 L28.5 7.125 L11.2267 23.9181 L13.7108 26.4717 L26.7188 13.8248Z" />
-                  </svg>
-                </button>
-              }
-              <!-- PPT Upload (DDC mode) -->
-              @if (selectedFlow === 'ppt') {
-                <button
-                  class="tool-btn"
-                  (click)="triggerReferenceUpload()"
-                  title="Upload documents(PPT,Word, PDF, Text, Images)"
-                  type="button"
-                  >
-                  <!-- <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                    <polyline points="17 8 12 3 7 8"></polyline>
-                    <line x1="12" y1="3" x2="12" y2="15"></line>
-                  </svg> -->
-                  <svg width="18" height="18" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg" fill="currentColor">
-                    <path d="M10.6875 35.625 L7.125 35.625 L7.125 49.875 L47.3805 49.875 L49.875 46.3125 L10.6875 46.3125 L10.6875 35.625Z" />
-                    <path d="M46.3125 35.625 L49.875 35.625 L49.875 42.75 L46.3125 42.75Z" />
-                    <path d="M26.7188 13.8248 L26.7188 42.75 L30.2812 42.75 L30.2812 13.8248 L43.2892 26.4717 L45.7733 23.9181 L28.5 7.125 L11.2267 23.9181 L13.7108 26.4717 L26.7188 13.8248Z" />
-                  </svg>
-                </button>
-              }
-              <button
-                class="tool-btn mic-btn"
-                (click)="startVoiceInput()"
-                title="Voice input"
-                type="button"
-                [disabled]="isLoading"
-                >
-                <!-- <svg
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  >
-                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-                  <line x1="12" y1="19" x2="12" y2="23"></line>
-                  <line x1="8" y1="23" x2="16" y2="23"></line>
-                </svg> -->
-                <svg width="18" height="18" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg" fill="currentColor">
-                  <g>
-                    <path d="M32.0625 37.4062C35.9912 37.4062 39.1875 34.2109 39.1875 30.2812L39.1875 10.6875C39.1875 6.75788 35.9912 3.5625 32.0625 3.5625L24.9375 3.5625C21.0088 3.5625 17.8125 6.75788 17.8125 10.6875L17.8125 30.2812C17.8125 34.2109 21.0088 37.4062 24.9375 37.4062L32.0625 37.4062ZM21.375 30.2812 L21.375 17.8125 L29.9838 17.8125 L32.4782 14.25 L21.375 14.25 L21.375 10.6875C21.375 8.72367 22.9728 7.125 24.9375 7.125L32.0625 7.125C34.0272 7.125 35.625 8.72367 35.625 10.6875L35.625 30.2812C35.625 32.2451 34.0272 33.8438 32.0625 33.8438L24.9375 33.8438C22.9728 33.8438 21.375 32.2451 21.375 30.2812ZM42.75 26.7188 L46.3125 26.7188 L46.3125 32.0625C46.3125 38.9371 40.7192 44.5312 33.8438 44.5312L30.2812 44.5312 L30.2812 49.875 L39.1875 49.875 L39.1875 53.4375 L17.8125 53.4375 L17.8125 49.875 L26.7188 49.875 L26.7188 44.5312 L23.1562 44.5312C16.2808 44.5312 10.6875 38.9371 10.6875 32.0625L10.6875 26.7188 L14.25 26.7188 L14.25 32.0625C14.25 36.973 18.2457 40.9688 23.1562 40.9688L33.8438 40.9688C38.7543 40.9688 42.75 36.973 42.75 32.0625L42.75 26.7188Z"/>
-                  </g>
-                </svg>
-              </button>
-              @if (false) {
-                <button class="tool-btn" title="Add link" type="button">
-                  <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <path
-                      d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
-                    ></path>
-                    <path
-                      d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
-                    ></path>
-                  </svg>
-                </button>
-              }
-              <!-- Collapse Button (visible when expanded) -->
-              @if (isComposerExpanded) {
-                <button
-                  class="tool-btn collapse-btn"
-                  (click)="collapseComposer()"
-                  title="Collapse input"
-                  type="button"
-                  >
-                  <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <polyline points="18 15 12 9 6 15"></polyline>
-                  </svg>
-                </button>
-              }
-            </div>
-            <textarea
-              #composerTextarea
-              [(ngModel)]="userInput"
-              (keydown.enter)="onEnterPress($event)"
-              (input)="onComposerInput($event)"
-              (focus)="onComposerFocus()"
-              placeholder="How can I help you today?"
-              rows="1"
-              class="composer-textarea"
-              aria-label="Message input"
-              [attr.aria-disabled]="isLoading || isAwaitingContent || isExtractingText"
-              [disabled]="isAwaitingContent || isExtractingText"
-              [readonly]="isAwaitingContent || isExtractingText"
-              >
-            </textarea>
-            <button
-              class="send-btn-composer"
-              (click)="sendMessage()"
-              [disabled]="!isSendButtonEnabled"
-              type="button"
-              aria-label="Send message"
-              [attr.aria-busy]="isLoading"
-              >
-              <svg
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                >
-                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
-              </svg>
-            </button>
-          </div>
-
-          <!-- Extraction Loading Indicator -->
-          @if (isExtractingText) {
-            <div class="extraction-loading">
-              <svg class="spinner" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
-              </svg>
-              <span>{{ currentAction }}</span>
-            </div>
-          }
-
-          <!-- Uploaded Edit Document Display (Thought Leadership & Market Intelligence) -->
-          @if ((extractedDocuments && extractedDocuments.length > 0) && (selectedFlow === 'thought-leadership' || selectedFlow === 'market-intelligence')) {
-            @for (doc of extractedDocuments; track doc.fileName) {
-              <div class="reference-doc-preview ppt-attachment">
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="#ffffff"
-                  stroke-width="2"
-                  >
-                  <path
-                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-                  ></path>
-                  <polyline points="14 2 14 8 20 8"></polyline>
-                </svg>
-                <span>{{ doc.fileName }}</span>
-                <button class="remove-ref" (click)="removeExtractedDocument(doc.fileName)" type="button" aria-label="Remove document">
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                </button>
-              </div>
-            }
-          } @else if (uploadedEditDocumentFile && (selectedFlow === 'thought-leadership' || selectedFlow === 'market-intelligence')) {
-            <div class="reference-doc-preview ppt-attachment">
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                >
-                <path
-                  d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-                ></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-              </svg>
-              <span>{{ uploadedEditDocumentFile.name }}</span>
-              <button class="remove-ref" (click)="removeUploadedEditDocument()" type="button" aria-label="Remove document">
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  >
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-            </div>
-          }
-
-          <!-- Uploaded PPT Display -->
-          @if (uploadedPPTFile && selectedFlow === 'ppt') {
-            <div class="reference-doc-preview ppt-attachment">
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                >
-                <path
-                  d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"
-                ></path>
-                <polyline points="13 2 13 9 20 9"></polyline>
-              </svg>
-              <span>{{ uploadedPPTFile.name }}</span>
-              <button class="remove-ref" (click)="removeUploadedPPT()" type="button">
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  >
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-            </div>
-          }
-
-          <!-- Extracted Documents Display (Word, PDF, TXT) -->
-          @if (extractedDocuments && extractedDocuments.length > 0 && selectedFlow === 'ppt') {
-            @for (doc of extractedDocuments; track doc.fileName) {
-              <div class="reference-doc-preview ppt-attachment">
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  >
-                  <path
-                    d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"
-                  ></path>
-                  <polyline points="13 2 13 9 20 9"></polyline>
-                </svg>
-                <span>{{ doc.fileName }}</span>
-                <button class="remove-ref" (click)="removeExtractedDocument(doc.fileName)" type="button">
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    >
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                </button>
-              </div>
-            }
-          }
-
-          <!-- Inline Error Message (for document upload validation) -->
-          @if (editDocumentUploadError) {
-            <div class="upload-error-message composer-error">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="8" x2="12" y2="12"></line>
-                <line x1="12" y1="16" x2="12.01" y2="16"></line>
-              </svg>
-              <span>{{ editDocumentUploadError }}</span>
-              <button 
-                class="error-close-btn" 
-                (click)="editDocumentUploadError = ''"
-                type="button"
-                aria-label="Close error message">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-            </div>
-          }
-        </div>
-
-        <!-- AI Disclaimer Message -->
-        @if (!showLandingPage) {
-          <div class="ai-disclaimer">
-            <p>This response is AI‑generated and may require human validation.</p>
-          </div>
-        }
-      
-
-      <!-- Guided Journey Dialog -->
-      @if (showGuidedDialog) {
-        <div
-          class="dialog-overlay"
-          >
-          <div class="dialog-container" (click)="$event.stopPropagation()">
-            <div class="dialog-header">
-              <div>
-                <h2>
-                  {{
-                  selectedFlow === "ppt" ? 'Create Presentation'
-                  :selectedFlow === 'market-intelligence' ? 'Market intelligence and insights'
-                  : "Cortex content studio"
-                  }}
-                </h2>
-                <!-- @if (selectedFlow === 'ppt') {
-                  <p class="mi-intro-text">Where all firm intelligence is created, curated, and deployed</p>
-                } -->
-                @if (selectedFlow === 'market-intelligence') {
-                  <p class="mi-intro-text">Structured preparation for confident client interactions</p>
-                }
-                @if (selectedFlow !== 'ppt' && selectedFlow !== 'market-intelligence') {
-                  <p class="mi-intro-text">Where all firm intelligence is created, curated, and deployed</p>
-                }
-              </div>
-              <button
-                class="close-dialog-btn"
-                (click)="closeGuidedDialog()"
-                type="button"
-                >
-                <svg
-                  width="20"
-                  height="20"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  >
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-            </div>
-            <div class="dialog-content">
-              <!-- PPT Forms -->
-              @if (selectedFlow === 'ppt') {
-                <div>
-                  <div class="form-tabs">
-                    <button
-                      class="tab-btn"
-                      [class.active]="selectedPPTOperation === 'draft'"
-                      (click)="selectedPPTOperation = 'draft'"
-                      >
-                      Draft
-                    </button>
-                    <button
-                      class="tab-btn"
-                      [class.active]="selectedPPTOperation === 'improve'"
-                      (click)="selectedPPTOperation = 'improve'"
-                      >
-                      Improve
-                    </button>
-                    <button
-                      class="tab-btn"
-                      [class.active]="selectedPPTOperation === 'sanitize'"
-                      (click)="selectedPPTOperation = 'sanitize'"
-                      >
-                      Sanitize
-                    </button>
-                    <button
-                      class="tab-btn"
-                      [class.active]="selectedPPTOperation === 'bestPractices'"
-                      (click)="selectedPPTOperation = 'bestPractices'"
-                      >
-                      Best practices
-                    </button>
-                  </div>
-                  @if (selectedPPTOperation === 'draft') {
-                    <div class="form-content">
-                      <div class="form-field">
-                        <label>Topic *</label>
-                        <input
-                          type="text"
-                          [(ngModel)]="draftData.topic"
-                          placeholder="e.g., Digital Transformation Strategy"
-                          aria-required="true"
-                          [class.error]="!draftData.topic && draftData.topic !== ''"
-                          />
-                          @if (!draftData.topic && draftData.topic !== '') {
-                            <small
-                              class="error-text"
-                              >Topic is required</small
-                              >
-                          }
-                        </div>
-                        <div class="form-field">
-                          <label>Objective *</label>
-                          <input
-                            type="text"
-                            [(ngModel)]="draftData.objective"
-                            placeholder="e.g., Secure board approval"
-                            aria-required="true"
-                [class.error]="
-                  !draftData.objective && draftData.objective !== ''
-                "
-                            />
-                            @if (!draftData.objective && draftData.objective !== '') {
-                              <small
-                                class="error-text"
-                                >Objective is required</small
-                                >
-                            }
-                          </div>
-                          <div class="form-field">
-                            <label>Target audience *</label>
-                            <input
-                              type="text"
-                              [(ngModel)]="draftData.audience"
-                              placeholder="e.g., C-Suite executives"
-                              aria-required="true"
-                              [class.error]="!draftData.audience && draftData.audience !== ''"
-                              />
-                              @if (!draftData.audience && draftData.audience !== '') {
-                                <small
-                                  class="error-text"
-                                  >Target audience is required</small
-                                  >
-                              }
-                            </div>
-                            <div class="form-field">
-                              <label>Additional context</label>
-                              <textarea
-                                [(ngModel)]="draftData.additional_context"
-                                rows="3"
-                                placeholder="Any specific requirements..."
-                              ></textarea>
-                            </div>
-                            <div class="form-field">
-                              <label>Reference document (optional)</label>
-                              <input
-                                type="file"
-                                accept=".pdf,.docx,.pptx,.txt"
-                                (change)="onReferenceDocumentSelected($event)"
-                                class="file-input"
-                                />
-                                <small class="help-text"
-                                  >Upload a reference document to include its content in the final
-                                  output</small
-                                  >
-                                </div>
-                                <div class="form-field">
-                                  <label>Reference link (optional)</label>
-                                  <input
-                                    type="url"
-                                    [(ngModel)]="draftData.reference_link"
-                                    placeholder="https://example.com/reference"
-                                    />
-                                    <small class="help-text"
-                                      >Provide a link to reference content</small
-                                      >
-                                    </div>
-                                    <button
-                                      class="submit-btn"
-                                      (click)="createDraft(); closeGuidedDialog()"
-              [disabled]="
-                !draftData.topic ||
-                !draftData.objective ||
-                !draftData.audience ||
-                isLoading
-              "
-                                      >
-                                      Generate presentation
-                                    </button>
-                                  </div>
-                                }
-                                @if (selectedPPTOperation === 'improve') {
-                                  <div class="form-content">
-                                    <div class="form-field">
-                                      <label>Original powerPoint *</label>
-                                      <div class="file-upload-area">
-                                        <input
-                                          type="file"
-                                          accept=".pptx"
-                                          (change)="onOriginalFileSelected($event)"
-                                          id="original-file"
-                                          class="file-input-hidden"
-                                          />
-                                          <label for="original-file" class="file-upload-label">
-                                            <svg
-                                              width="24"
-                                              height="24"
-                                              viewBox="0 0 24 24"
-                                              fill="none"
-                                              stroke="currentColor"
-                                              stroke-width="2"
-                                              >
-                                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                              <polyline points="17 8 12 3 7 8"></polyline>
-                                              <line x1="12" y1="3" x2="12" y2="15"></line>
-                                            </svg>
-                                            @if (!originalPPTFile) {
-                                              <span>Upload file</span>
-                                            }
-                                            @if (originalPPTFile) {
-                                              <span class="file-name"
-                                                >✓ {{ originalPPTFile.name }}</span
-                                                >
-                                            }
-                                          </label>
-                                        </div>
-                                      </div>
-                                      <div class="form-field">
-                                        <label>Reference powerPoint (optional)</label>
-                                        <div class="file-upload-area">
-                                          <input
-                                            type="file"
-                                            accept=".pptx"
-                                            (change)="onReferenceFileSelected($event)"
-                                            id="reference-file"
-                                            class="file-input-hidden"
-                                            />
-                                            <label for="reference-file" class="file-upload-label">
-                                              <svg
-                                                width="24"
-                                                height="24"
-                                                viewBox="0 0 24 24"
-                                                fill="none"
-                                                stroke="currentColor"
-                                                stroke-width="2"
-                                                >
-                                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                                <polyline points="17 8 12 3 7 8"></polyline>
-                                                <line x1="12" y1="3" x2="12" y2="15"></line>
-                                              </svg>
-                                              @if (!referencePPTFile) {
-                                                <span>Upload file</span>
-                                              }
-                                              @if (referencePPTFile) {
-                                                <span class="file-name"
-                                                  >✓ {{ referencePPTFile.name }}</span
-                                                  >
-                                              }
-                                            </label>
-                                          </div>
-                                        </div>
-                                        <button
-                                          class="submit-btn"
-                                          (click)="improvePPT(); closeGuidedDialog()"
-                                          [disabled]="!originalPPTFile || isLoading"
-                                          >
-                                          Improve presentation
-                                        </button>
-                                      </div>
-                                    }
-                                    @if (selectedPPTOperation === 'sanitize') {
-                                      <div class="form-content">
-                                        <div class="form-field">
-                                          <label>PowerPoint file *</label>
-                                          <div class="file-upload-area">
-                                            <input
-                                              type="file"
-                                              accept=".pptx"
-                                              (change)="onSanitizeFileSelected($event)"
-                                              id="sanitize-file"
-                                              class="file-input-hidden"
-                                              />
-                                              <label for="sanitize-file" class="file-upload-label">
-                                                <svg
-                                                  width="24"
-                                                  height="24"
-                                                  viewBox="0 0 24 24"
-                                                  fill="none"
-                                                  stroke="currentColor"
-                                                  stroke-width="2"
-                                                  >
-                                                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                                  <polyline points="17 8 12 3 7 8"></polyline>
-                                                  <line x1="12" y1="3" x2="12" y2="15"></line>
-                                                </svg>
-                                                @if (!sanitizePPTFile) {
-                                                  <span>Upload file</span>
-                                                }
-                                                @if (sanitizePPTFile) {
-                                                  <span class="file-name"
-                                                    >✓ {{ sanitizePPTFile.name }}</span
-                                                    >
-                                                }
-                                              </label>
-                                            </div>
-                                          </div>
-                                          <div class="form-field">
-                                            <label>Client name (optional)</label>
-                                            <input
-                                              type="text"
-                                              [(ngModel)]="sanitizeData.clientName"
-                                              placeholder="e.g., Adobe Inc"
-                                              />
-                                            </div>
-                                            <div class="form-field">
-                                              <label>Product names (optional)</label>
-                                              <input
-                                                type="text"
-                                                [(ngModel)]="sanitizeData.products"
-                                                placeholder="e.g., Photoshop, Creative Cloud"
-                                                />
-                                              </div>
-                                              <div class="form-field">
-                                                <label style="margin-bottom: 12px; display: block"
-                                                  >Sanitization options</label
-                                                  >
-                                                  <div class="checkbox-group">
-                                                    <label class="checkbox-label">
-                                                      <input
-                                                        type="checkbox"
-                                                        [(ngModel)]="sanitizeData.options.numericData"
-                                                        />
-                                                        <span>Numeric data (currency, percentages, FTEs)</span>
-                                                      </label>
-                                                      <label class="checkbox-label">
-                                                        <input
-                                                          type="checkbox"
-                                                          [(ngModel)]="sanitizeData.options.personalInfo"
-                                                          />
-                                                          <span
-                                                            >Personal information (emails, phones, SSN, IP
-                                                            addresses)</span
-                                                            >
-                                                          </label>
-                                                          <label class="checkbox-label">
-                                                            <input
-                                                              type="checkbox"
-                                                              [(ngModel)]="sanitizeData.options.financialData"
-                                                              />
-                                                              <span
-                                                                >Financial data (credit cards, bank accounts, tax IDs)</span
-                                                                >
-                                                              </label>
-                                                              <label class="checkbox-label">
-                                                                <input
-                                                                  type="checkbox"
-                                                                  [(ngModel)]="sanitizeData.options.locations"
-                                                                  />
-                                                                  <span>Locations (addresses, cities, states, zip codes)</span>
-                                                                </label>
-                                                                <label class="checkbox-label">
-                                                                  <input
-                                                                    type="checkbox"
-                                                                    [(ngModel)]="sanitizeData.options.identifiers"
-                                                                    />
-                                                                    <span
-                                                                      >Business identifiers (project IDs, deal codes,
-                                                                      invoices)</span
-                                                                      >
-                                                                    </label>
-                                                                    <label class="checkbox-label">
-                                                                      <input
-                                                                        type="checkbox"
-                                                                        [(ngModel)]="sanitizeData.options.names"
-                                                                        />
-                                                                        <span>Client & product names</span>
-                                                                      </label>
-                                                                      <label class="checkbox-label">
-                                                                        <input
-                                                                          type="checkbox"
-                                                                          [(ngModel)]="sanitizeData.options.logos"
-                                                                          />
-                                                                          <span>Logos & watermarks</span>
-                                                                        </label>
-                                                                        <label class="checkbox-label">
-                                                                          <input
-                                                                            type="checkbox"
-                                                                            [(ngModel)]="sanitizeData.options.metadata"
-                                                                            />
-                                                                            <span>Metadata & speaker notes</span>
-                                                                          </label>
-                                                                          <label class="checkbox-label">
-                                                                            <input
-                                                                              type="checkbox"
-                                                                              [(ngModel)]="sanitizeData.options.llmDetection"
-                                                                              />
-                                                                              <span
-                                                                                >AI-Powered detection (company names, person names,
-                                                                                cities)</span
-                                                                                >
-                                                                              </label>
-                                                                              <label class="checkbox-label">
-                                                                                <input
-                                                                                  type="checkbox"
-                                                                                  [(ngModel)]="sanitizeData.options.hyperlinks"
-                                                                                  />
-                                                                                  <span>Hyperlinks (remove all hyperlinks from shapes)</span>
-                                                                                </label>
-                                                                                <label class="checkbox-label">
-                                                                                  <input
-                                                                                    type="checkbox"
-                                                                                    [(ngModel)]="sanitizeData.options.embeddedObjects"
-                                                                                    />
-                                                                                    <span>Embedded objects (Excel, Word, PDF files)</span>
-                                                                                  </label>
-                                                                                </div>
-                                                                              </div>
-                                                                              <button
-                                                                                class="submit-btn"
-                                                                                (click)="sanitizePPT(); closeGuidedDialog()"
-                                                                                [disabled]="!sanitizePPTFile || isLoading"
-                                                                                >
-                                                                                Sanitize presentation
-                                                                              </button>
-                                                                            </div>
-                                                                          }
-                                                                          @if (selectedPPTOperation === 'bestPractices') {
-                                                                            <div
-                                                                              class="form-content"
-                                                                              >
-                                                                              <div class="form-field">
-                                                                                <label>PowerPoint file *</label>
-                                                                                <div class="file-upload-area">
-                                                                                  <input
-                                                                                    type="file"
-                                                                                    accept=".pptx"
-                                                                                    (change)="onBestPracticesFileSelected($event)"
-                                                                                    id="best-practices-file"
-                                                                                    class="file-input-hidden"
-                                                                                    />
-                                                                                    <label for="best-practices-file" class="file-upload-label">
-                                                                                      <svg
-                                                                                        width="24"
-                                                                                        height="24"
-                                                                                        viewBox="0 0 24 24"
-                                                                                        fill="none"
-                                                                                        stroke="currentColor"
-                                                                                        stroke-width="2"
-                                                                                        >
-                                                                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                                                                        <polyline points="17 8 12 3 7 8"></polyline>
-                                                                                        <line x1="12" y1="3" x2="12" y2="15"></line>
-                                                                                      </svg>
-                                                                                      @if (!bestPracticesPPTFile) {
-                                                                                        <span>Upload file</span>
-                                                                                      }
-                                                                                      @if (bestPracticesPPTFile) {
-                                                                                        <span class="file-name"
-                                                                                          >✓ {{ bestPracticesPPTFile.name }}</span
-                                                                                          >
-                                                                                      }
-                                                                                    </label>
-                                                                                  </div>
-                                                                                </div>
-                                                                                <div class="form-field">
-                                                                                  <label style="margin-bottom: 12px; display: block"
-                                                                                    >Validation categories</label
-                                                                                    >
-                                                                                    <div class="checkbox-group">
-                                                                                      <label class="checkbox-label">
-                                                                                        <input
-                                                                                          type="checkbox"
-                                                                                          [(ngModel)]="bestPracticesData.categories.structure"
-                                                                                          />
-                                                                                          <span>Structure (MECE framework, logical flow)</span>
-                                                                                        </label>
-                                                                                        <label class="checkbox-label">
-                                                                                          <input
-                                                                                            type="checkbox"
-                                                                                            [(ngModel)]="bestPracticesData.categories.visuals"
-                                                                                            />
-                                                                                            <span>Visuals (image quality, relevance, placement)</span>
-                                                                                          </label>
-                                                                                          <label class="checkbox-label">
-                                                                                            <input
-                                                                                              type="checkbox"
-                                                                                              [(ngModel)]="bestPracticesData.categories.design"
-                                                                                              />
-                                                                                              <span>Design (color scheme, fonts, spacing)</span>
-                                                                                            </label>
-                                                                                            <label class="checkbox-label">
-                                                                                              <input
-                                                                                                type="checkbox"
-                                                                                                [(ngModel)]="bestPracticesData.categories.charts"
-                                                                                                />
-                                                                                                <span>Charts (data visualization, clarity, labels)</span>
-                                                                                              </label>
-                                                                                              <label class="checkbox-label">
-                                                                                                <input
-                                                                                                  type="checkbox"
-                                                                                                  [(ngModel)]="bestPracticesData.categories.formatting"
-                                                                                                  />
-                                                                                                  <span>Formatting (consistency, alignment, text size)</span>
-                                                                                                </label>
-                                                                                                <label class="checkbox-label">
-                                                                                                  <input
-                                                                                                    type="checkbox"
-                                                                                                    [(ngModel)]="bestPracticesData.categories.content"
-                                                                                                    />
-                                                                                                    <span>Content (clarity, conciseness, grammar)</span>
-                                                                                                  </label>
-                                                                                                </div>
-                                                                                              </div>
-                                                                                              <button
-                                                                                                class="submit-btn"
-                                                                                                (click)="submitBestPracticesForm()"
-                                                                                                [disabled]="!bestPracticesPPTFile || isLoading"
-                                                                                                >
-                                                                                                Validate best practices
-                                                                                              </button>
-                                                                                            </div>
-                                                                                          }
-                                                                                        </div>
-                                                                                      }
-                                                                                      <!-- Thought Leadership Action Cards -->
-                                                                                      @if (selectedFlow === 'thought-leadership') {
-                                                                                        <div>
-                                                                                          <!-- <p class="tl-intro-text">Where all firm intelligence is created, curated, and deployed</p> -->
-                                                                                          <div class="tl-action-cards-grid">
-                                                                                            <button class="tl-action-card" (click)="onTLActionCardClick('draft-content')">
-                                                                                              <div class="tl-card-icon"><svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-draft-content-card"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-draft-content-card)" stroke="none"> <path d="M60 480 l0 -360 420 0 420 0 0 360 0 360 -420 0 -420 0 0 -360z m810 285 l0 -45 -390 0 -390 0 0 45 0 45 390 0 390 0 0 -45z m0 -345 l0 -270 -390 0 -390 0 0 270 0 270 390 0 390 0 0 -270z"/> <path d="M120 765 c0 -8 7 -15 15 -15 8 0 15 7 15 15 0 8 -7 15 -15 15 -8 0 -15 -7 -15 -15z"/> <path d="M180 765 c0 -8 7 -15 15 -15 8 0 15 7 15 15 0 8 -7 15 -15 15 -8 0 -15 -7 -15 -15z"/> <path d="M240 765 c0 -8 7 -15 15 -15 8 0 15 7 15 15 0 8 -7 15 -15 15 -8 0 -15 -7 -15 -15z"/> <path d="M235 611 c-99 -46 -141 -158 -96 -256 70 -152 282 -152 352 0 22 48 24 65 5 65 -7 0 -21 -20 -31 -45 -14 -38 -67 -95 -88 -95 -3 0 5 19 18 43 14 23 25 54 25 70 0 20 5 27 19 27 10 0 24 7 31 15 7 8 19 15 27 15 21 0 9 44 -25 95 -52 76 -153 105 -237 66z m0 -64 c-14 -24 -25 -56 -25 -70 0 -23 -4 -27 -31 -27 -27 0 -30 3 -23 23 13 43 34 75 61 96 42 31 46 25 18 -22z m216 -22 c9 -17 20 -40 24 -52 6 -20 3 -23 -24 -23 -27 0 -31 4 -31 27 0 14 -12 47 -26 71 l-27 46 34 -20 c18 -11 41 -33 50 -49z m-151 -10 l0 -65 -34 0 -34 0 10 38 c9 34 43 92 54 92 2 0 4 -29 4 -65z m73 12 c33 -71 32 -77 -7 -77 l-36 0 0 66 c0 56 2 65 14 55 8 -7 21 -26 29 -44z m-163 -134 c0 -14 12 -47 26 -71 l27 -46 -34 20 c-33 19 -60 57 -74 102 -6 19 -3 22 24 22 27 0 31 -4 31 -27z m90 -40 l-1 -68 -24 29 c-13 16 -28 47 -33 68 l-10 38 34 0 34 0 0 -67z m94 45 c-14 -49 -32 -84 -47 -97 -16 -12 -17 -8 -17 53 l0 66 36 0 c32 0 35 -2 28 -22z"/> <path d="M570 585 c0 -13 22 -15 135 -15 113 0 135 2 135 15 0 13 -22 15 -135 15 -113 0 -135 -2 -135 -15z"/> <path d="M570 495 c0 -12 15 -15 79 -15 58 0 82 4 91 15 11 13 1 15 -79 15 -74 0 -91 -3 -91 -15z"/> <path d="M570 330 l0 -90 135 0 135 0 0 90 c0 73 -3 90 -15 90 -12 0 -15 -15 -15 -75 l0 -75 -105 0 -105 0 0 60 0 60 74 0 c53 0 77 4 86 15 11 13 0 15 -89 15 l-101 0 0 -90z"/> </g> </svg></div>
-                                                                                              <h3>Draft content</h3>
-                                                                                              <p>Turn preliminary outlines into well researched drafts​</p>
-                                                                                            </button>
-                                                                                            <button class="tl-action-card" (click)="onTLActionCardClick('conduct-research')">
-                                                                                              <div class="tl-card-icon"><svg width="48pt" height="48pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-tl-research-card"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-tl-research-card)" stroke="none"> <path d="M90 480 l0 -390 415 0 c362 0 415 2 415 15 0 13 -51 15 -400 15 l-400 0 0 375 c0 327 -2 375 -15 375 -13 0 -15 -50 -15 -390z"/> <path d="M446 805 c-49 -17 -113 -78 -137 -130 -22 -48 -25 -151 -5 -199 7 -18 28 -49 46 -69 l33 -38 -43 -62 c-24 -34 -51 -71 -60 -82 -30 -35 -32 -45 -12 -45 13 0 38 28 77 85 32 47 60 85 61 85 1 0 19 -7 39 -16 52 -21 145 -20 197 4 122 54 184 206 134 327 -31 73 -130 154 -188 155 -34 0 -18 -27 22 -39 121 -36 186 -184 132 -302 -98 -219 -423 -148 -422 93 1 97 62 183 150 209 50 15 74 39 39 39 -13 -1 -41 -7 -63 -15z"/> <path d="M480 565 c0 -158 2 -185 15 -185 13 0 15 27 15 185 0 158 -2 185 -15 185 -13 0 -15 -27 -15 -185z"/> <path d="M540 559 c0 -148 3 -190 13 -187 9 4 13 53 15 191 2 162 0 187 -13 187 -13 0 -15 -27 -15 -191z"/> <path d="M420 536 c0 -101 3 -125 15 -130 13 -5 15 13 15 124 0 109 -2 130 -15 130 -13 0 -15 -20 -15 -124z"/> <path d="M600 475 c0 -80 2 -93 15 -89 12 5 15 25 15 95 0 72 -3 89 -15 89 -12 0 -15 -17 -15 -95z"/> <path d="M360 512 c0 -16 7 -37 15 -48 13 -18 14 -15 15 29 0 35 -4 47 -15 47 -10 0 -15 -10 -15 -28z"/> <path d="M660 479 c0 -54 2 -60 15 -49 10 8 15 30 15 61 0 37 -4 49 -15 49 -12 0 -15 -13 -15 -61z"/> </g> </svg></div>
-                                                                                              <h3>Conduct research</h3>
-                                                                                              <p>Tap into PwC’s knowledge bank and third-party sources to execute targeted research in minutes​</p>
-                                                                                            </button>
-                                                                                            <button class="tl-action-card" (click)="onTLActionCardClick('edit-content')">
-                                                                                              <div class="tl-card-icon"><svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-edit-content-card"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-edit-content-card)" stroke="none"> <path d="M559 838 c-23 -40 -54 -93 -69 -118 -15 -25 -82 -140 -149 -257 l-121 -212 0 -105 0 -105 33 22 c18 13 58 36 88 51 61 32 46 11 237 341 185 320 205 356 201 359 -10 9 -167 96 -172 96 -3 0 -25 -33 -48 -72z m120 0 c31 -17 57 -32 59 -33 5 -4 -31 -75 -39 -75 -16 0 -124 72 -121 81 4 15 33 59 39 59 3 0 31 -14 62 -32z m-55 -100 c54 -31 67 -50 46 -63 -11 -7 -130 61 -130 74 0 10 11 21 21 21 4 0 32 -14 63 -32z m-15 -71 c20 -11 38 -22 40 -23 1 -2 -19 -40 -47 -86 -88 -148 -202 -350 -202 -359 0 -20 -17 -7 -33 26 -15 32 -20 35 -62 35 -25 0 -45 1 -45 3 0 2 31 55 68 118 38 63 97 165 132 227 l63 112 25 -16 c14 -9 41 -26 61 -37z m-301 -436 c14 -1 30 -13 42 -33 l19 -32 -31 -20 c-28 -18 -31 -18 -43 -3 -7 9 -20 17 -29 17 -12 0 -16 10 -16 39 0 32 3 39 18 36 9 -2 27 -4 40 -4z"/> <path d="M270 831 c0 -4 -43 -82 -95 -172 l-95 -163 24 -41 c13 -22 38 -66 56 -98 24 -42 36 -55 44 -47 8 8 3 25 -19 63 -16 29 -38 68 -48 87 l-20 35 89 157 89 157 96 1 c73 0 100 4 109 15 11 13 -2 15 -109 15 -66 0 -121 -4 -121 -9z"/> <path d="M754 676 c-3 -8 15 -50 40 -94 25 -43 46 -82 46 -86 0 -4 -39 -77 -87 -162 l-87 -154 -97 0 c-74 0 -100 -4 -109 -15 -11 -13 2 -15 106 -15 l119 0 65 117 c36 64 80 141 98 171 l32 55 -55 99 c-31 54 -58 98 -61 98 -2 0 -7 -6 -10 -14z"/> </g> </svg></div>
-                                                                                              <h3>Edit content</h3>
-                                                                                              <p>Deploy content, copy, and brand alignment editors</p>
-                                                                                            </button>
-                                                                                            <button class="tl-action-card" (click)="onTLActionCardClick('refine-content')">
-                                                                                              <div class="tl-card-icon"><svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-refine-content-card"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-refine-content-card)" stroke="none"> <path d="M164 668 c-54 -95 -102 -180 -107 -189 -7 -11 15 -58 88 -185 54 -93 103 -177 109 -186 10 -16 32 -18 227 -18 l216 0 108 186 c81 141 105 190 99 203 -27 54 -120 211 -125 211 -22 0 -10 -38 41 -125 32 -54 57 -102 56 -105 -2 -3 -47 -80 -100 -173 l-98 -167 -145 0 -144 0 21 30 21 30 108 0 107 0 24 43 c29 53 86 151 117 200 l23 37 -37 70 c-21 38 -42 70 -46 70 -20 0 -15 -32 12 -76 17 -26 31 -52 31 -57 0 -6 -32 -65 -71 -133 l-71 -124 -109 0 -109 0 -22 -45 c-21 -43 -24 -45 -64 -45 l-42 0 -82 143 c-46 78 -91 156 -101 172 l-17 30 98 170 98 170 200 3 200 2 22 -34 c20 -34 20 -36 4 -68 l-17 -32 -21 37 -21 37 -165 0 -165 0 -83 -144 -82 -143 53 -89 c29 -49 66 -112 82 -141 26 -48 45 -61 45 -29 0 7 -31 68 -70 134 -38 66 -70 124 -70 128 0 4 32 62 71 130 l71 124 148 0 148 0 20 -35 21 -34 -94 -163 c-52 -90 -98 -169 -103 -177 -6 -11 -19 6 -50 62 -30 54 -48 77 -61 77 -16 0 -11 -13 31 -85 70 -118 78 -117 161 28 36 61 95 163 131 226 36 62 66 117 66 121 0 4 -12 28 -26 54 l-26 46 -218 0 -218 0 -98 -172z"/> </g> </svg></div>
-                                                                                              <h3>Refine drafts</h3>
-                                                                                              <p>Change length or tone of content, or enhance with targeted research and insights​</p>
-                                                                                            </button>
-                                                                                            <button class="tl-action-card" (click)="onTLActionCardClick('format-translator')">
-                                                                                              <div class="tl-card-icon"><svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-format-translator-card"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-format-translator-card)" stroke="none"> <path d="M60 480 l0 -420 414 0 c359 0 415 2 420 15 5 13 -44 15 -399 15 l-405 0 0 390 0 390 390 0 390 0 0 -370 c0 -322 2 -370 15 -370 13 0 15 49 15 385 l0 385 -420 0 -420 0 0 -420z"/> <path d="M150 825 c0 -8 7 -15 15 -15 8 0 15 7 15 15 0 8 -7 15 -15 15 -8 0 -15 -7 -15 -15z"/> <path d="M210 825 c0 -8 7 -15 15 -15 8 0 15 7 15 15 0 8 -7 15 -15 15 -8 0 -15 -7 -15 -15z"/> <path d="M270 825 c0 -8 7 -15 15 -15 8 0 15 7 15 15 0 8 -7 15 -15 15 -8 0 -15 -7 -15 -15z"/> <path d="M450 690 c0 -127 2 -150 15 -150 13 0 15 23 15 150 0 127 -2 150 -15 150 -13 0 -15 -23 -15 -150z"/> <path d="M700 732 c0 -4 -24 -43 -53 -87 -29 -44 -56 -86 -61 -92 -6 -10 21 -13 123 -13 l130 0 -40 65 c-23 36 -45 62 -50 59 -14 -8 -10 -27 11 -54 11 -14 20 -28 20 -32 0 -5 -31 -8 -70 -8 -38 0 -70 2 -70 5 0 3 20 35 44 72 25 36 42 72 39 79 -5 15 -23 19 -23 6z"/> <path d="M330 635 c0 -78 3 -95 15 -95 12 0 15 17 15 95 0 78 -3 95 -15 95 -12 0 -15 -17 -15 -95z"/> <path d="M210 620 c0 -64 3 -80 15 -80 12 0 15 16 15 80 0 64 -3 80 -15 80 -12 0 -15 -16 -15 -80z"/> <path d="M270 620 c0 -64 3 -80 15 -80 12 0 15 16 15 80 0 64 -3 80 -15 80 -12 0 -15 -16 -15 -80z"/> <path d="M390 605 c0 -51 3 -65 15 -65 12 0 15 14 15 65 0 51 -3 65 -15 65 -12 0 -15 -14 -15 -65z"/> <path d="M150 580 c0 -29 4 -40 15 -40 11 0 15 11 15 40 0 29 -4 40 -15 40 -11 0 -15 -11 -15 -40z"/> <path d="M120 481 c0 -14 41 -16 360 -16 319 0 360 2 360 16 0 13 -41 15 -360 15 -319 0 -360 -2 -360 -15z"/> <path d="M350 405 c0 -12 -14 -15 -64 -15 l-65 0 -36 -60 -36 -60 34 -57 33 -58 70 -3 71 -3 36 61 c32 54 39 90 18 90 -4 0 -20 -27 -36 -60 l-30 -60 -55 0 c-55 0 -55 0 -80 45 l-25 45 25 45 c24 44 25 45 77 45 42 0 54 -4 63 -20 15 -29 32 -14 25 21 l-7 29 221 0 c190 0 221 2 221 15 0 13 -32 15 -230 15 -198 0 -230 -2 -230 -15z"/> <path d="M480 225 l0 -75 165 0 165 0 0 75 0 75 -165 0 -165 0 0 -75z m300 0 l0 -45 -135 0 -135 0 0 45 0 45 135 0 135 0 0 -45z"/> </g> </svg></div>
-                                                                                              <h3>Adapt content</h3>
-                                                                                              <p>Repurpose final outputs into podcasts, social media posts or placemats</p>
-                                                                                            </button>
-                                                                                          </div>
-                                                                                        </div>
-                                                                                      }
-                                                                                      <!-- Market Intelligence Action Cards -->
-                                                                                      @if (selectedFlow === 'market-intelligence') {
-                                                                                        <div>
-                                                                                          <!-- <p class="mi-intro-text">Where data and research are transformed into decision-ready analysis and action​</p> -->
-                                                                                          <div class="mi-action-cards-grid">
-                                                                                            <!-- <button class="mi-action-card" (click)="onMIActionCardClick('draft-content')">
-                                                                                              <div class="mi-card-icon">📝</div>
-                                                                                              <h3>Draft Content</h3>
-                                                                                              <p>Generate market research articles, reports, and briefs powered by AI strategic analysis.</p>
-                                                                                            </button> -->
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('conduct-research')">
-                                                                                              <div class="mi-card-icon"><svg width="48pt" height="48pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-mi-research-card"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-mi-research-card)" stroke="none"> <path d="M90 480 l0 -390 415 0 c362 0 415 2 415 15 0 13 -51 15 -400 15 l-400 0 0 375 c0 327 -2 375 -15 375 -13 0 -15 -50 -15 -390z"/> <path d="M446 805 c-49 -17 -113 -78 -137 -130 -22 -48 -25 -151 -5 -199 7 -18 28 -49 46 -69 l33 -38 -43 -62 c-24 -34 -51 -71 -60 -82 -30 -35 -32 -45 -12 -45 13 0 38 28 77 85 32 47 60 85 61 85 1 0 19 -7 39 -16 52 -21 145 -20 197 4 122 54 184 206 134 327 -31 73 -130 154 -188 155 -34 0 -18 -27 22 -39 121 -36 186 -184 132 -302 -98 -219 -423 -148 -422 93 1 97 62 183 150 209 50 15 74 39 39 39 -13 -1 -41 -7 -63 -15z"/> <path d="M480 565 c0 -158 2 -185 15 -185 13 0 15 27 15 185 0 158 -2 185 -15 185 -13 0 -15 -27 -15 -185z"/> <path d="M540 559 c0 -148 3 -190 13 -187 9 4 13 53 15 191 2 162 0 187 -13 187 -13 0 -15 -27 -15 -191z"/> <path d="M420 536 c0 -101 3 -125 15 -130 13 -5 15 13 15 124 0 109 -2 130 -15 130 -13 0 -15 -20 -15 -124z"/> <path d="M600 475 c0 -80 2 -93 15 -89 12 5 15 25 15 95 0 72 -3 89 -15 89 -12 0 -15 -17 -15 -95z"/> <path d="M360 512 c0 -16 7 -37 15 -48 13 -18 14 -15 15 29 0 35 -4 47 -15 47 -10 0 -15 -10 -15 -28z"/> <path d="M660 479 c0 -54 2 -60 15 -49 10 8 15 30 15 61 0 37 -4 49 -15 49 -12 0 -15 -13 -15 -61z"/> </g> </svg></div>
-                                                                                              <h3>Conduct research</h3>
-                                                                                              <p>Tap into PwC’s knowledge bank and third-party sources to execute targeted research in minutes ​</p>
-                                                                                            </button>
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('target-industry-insights')">
-                                                                                              <div class="mi-card-icon"><svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-industry-card"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-industry-card)" stroke="none"> <path d="M75 786 c-27 -20 -26 -55 2 -73 22 -15 26 -14 54 6 l31 23 27 -26 c19 -18 38 -26 64 -26 41 0 45 -9 21 -45 -11 -17 -26 -25 -45 -25 -16 0 -29 3 -29 8 0 4 -9 13 -21 20 -28 18 -69 -8 -69 -43 0 -37 40 -54 74 -31 37 23 71 20 90 -9 22 -33 21 -35 -14 -35 -24 0 -35 -8 -56 -40 -24 -36 -54 -54 -54 -32 0 17 -44 29 -67 19 -32 -14 -32 -64 1 -78 25 -12 66 2 66 22 0 5 10 7 23 4 18 -5 27 3 50 40 23 36 34 45 58 45 23 0 32 -7 49 -39 22 -44 36 -56 45 -41 3 5 -16 47 -43 93 l-49 82 46 82 46 83 100 0 100 0 19 -33 c10 -17 31 -55 47 -82 l28 -50 -29 -47 c-17 -27 -30 -52 -30 -58 0 -16 27 -12 34 5 10 27 69 18 106 -15 19 -17 38 -29 44 -28 6 1 23 -6 37 -15 37 -24 79 -7 75 31 -4 35 -38 57 -65 42 -12 -6 -21 -15 -21 -20 0 -18 -25 -10 -52 15 -18 17 -39 25 -63 25 -38 0 -40 2 -25 31 13 23 52 25 86 3 21 -14 29 -15 49 -4 52 28 12 102 -41 78 -13 -6 -24 -15 -24 -20 0 -4 -13 -8 -28 -8 -20 0 -32 8 -45 29 -23 40 -22 43 16 36 27 -5 37 -1 61 24 29 30 56 41 56 21 0 -5 10 -14 21 -21 31 -16 69 6 69 41 0 35 -38 57 -69 41 -11 -7 -21 -16 -21 -22 0 -6 -8 -8 -18 -5 -12 4 -28 -4 -47 -24 -22 -23 -38 -30 -66 -30 -33 0 -40 4 -63 45 l-27 45 -113 0 -114 0 -26 -45 c-25 -41 -30 -45 -66 -45 -30 0 -43 6 -64 31 -14 17 -30 27 -36 24 -6 -3 -22 3 -36 14 -31 25 -35 25 -59 7z m41 -27 c10 -17 -13 -36 -27 -22 -12 12 -4 33 11 33 5 0 12 -5 16 -11z m750 0 c10 -17 -13 -36 -27 -22 -12 12 -4 33 11 33 5 0 12 -5 16 -11z m-56 -155 c0 -8 -7 -14 -15 -14 -15 0 -21 21 -9 33 10 9 24 -2 24 -19z m-632 4 c-3 -7 -11 -13 -18 -13 -7 0 -15 6 -17 13 -3 7 4 12 17 12 13 0 20 -5 18 -12z m694 -140 c-9 -9 -15 -9 -24 0 -10 10 -10 15 2 22 20 12 38 -6 22 -22z m-752 -34 c0 -8 -7 -14 -15 -14 -15 0 -21 21 -9 33 10 9 24 -2 24 -19z"/> <path d="M381 665 c-35 -61 -36 -70 -17 -104 15 -28 31 -13 21 20 -4 13 2 37 17 65 23 43 24 44 75 44 50 0 52 -1 78 -45 l26 -46 -20 -33 c-25 -39 -26 -46 -7 -46 8 0 24 17 36 38 l23 37 -34 63 -33 62 -67 0 -67 0 -31 -55z"/> <path d="M425 573 c-14 -14 -17 -31 -13 -100 4 -82 4 -82 -19 -77 -25 7 -53 -10 -53 -31 0 -7 23 -47 50 -89 28 -42 50 -85 50 -96 0 -19 7 -20 95 -20 79 0 95 3 95 16 0 13 -13 15 -82 13 -75 -2 -83 0 -87 17 -2 10 -23 50 -48 87 -42 63 -50 89 -23 72 6 -4 20 -21 31 -39 10 -17 19 -26 20 -21 0 6 0 65 -1 133 -1 114 0 123 17 120 16 -3 18 -14 18 -86 0 -66 3 -82 15 -82 12 0 14 10 11 46 -2 36 0 45 10 42 9 -3 15 -24 17 -57 2 -34 7 -51 15 -48 7 2 10 20 8 45 -2 33 1 42 13 42 12 0 16 -11 16 -45 0 -33 4 -45 15 -45 11 0 15 11 15 36 0 24 4 34 13 31 16 -5 17 -132 1 -175 -12 -29 -11 -32 5 -32 24 0 30 24 32 129 1 72 -1 86 -17 98 -10 7 -23 12 -29 10 -5 -2 -16 3 -24 10 -7 8 -19 12 -27 9 -7 -3 -18 2 -24 10 -7 8 -19 14 -26 14 -9 0 -14 11 -14 28 0 49 -42 69 -75 35z"/> </g> </svg></div>
-                                                                                              <h3>Generate industry insights</h3>
-                                                                                              <p>Synthesize PwC experience and market data to deliver structured industry intelligence​</p>
-                                                                                            </button>
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('prepare-client-meeting')">
-                                                                                              <div class="mi-card-icon"><svg width="48pt" height="48pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-client-meeting-card"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-client-meeting-card)" stroke="none"> <path d="M60 554 l0 -324 173 2 c220 4 229 22 12 26 l-155 3 0 292 0 292 390 0 390 0 0 -285 0 -285 -41 73 -40 73 -117 -3 -117 -3 -53 -92 -54 -92 43 -76 c34 -59 48 -75 66 -75 23 0 23 2 23 110 0 90 -3 110 -15 110 -11 0 -15 -19 -17 -90 l-3 -91 -31 58 -32 58 47 78 46 77 99 -2 99 -3 43 -70 c24 -38 43 -75 44 -81 0 -6 -15 -37 -32 -70 l-33 -59 -3 98 c-2 77 -6 97 -17 97 -12 0 -15 -20 -15 -110 l0 -110 28 0 c23 1 33 11 70 75 l42 75 0 324 0 325 -420 0 -420 0 0 -325z"/> <path d="M208 765 c-31 -17 -63 -67 -73 -112 -9 -44 24 -117 65 -142 52 -31 94 -35 145 -12 107 47 118 197 19 262 -35 23 -117 25 -156 4z m62 -72 c0 -62 -35 -166 -54 -160 -6 1 -22 24 -35 50 -28 57 -23 87 24 134 50 50 65 45 65 -24z m96 23 c50 -50 46 -66 -16 -66 l-50 0 0 50 c0 62 16 66 66 16z m34 -107 c0 -24 -35 -68 -67 -83 -35 -16 -87 -22 -81 -8 2 4 11 28 22 55 l19 47 53 0 c33 0 54 -4 54 -11z"/> <path d="M603 700 c-110 -67 -64 -240 64 -242 104 -1 170 96 127 187 -33 71 -123 97 -191 55z m140 -36 c63 -62 36 -149 -56 -178 -44 -14 -117 46 -117 96 0 63 44 107 106 108 31 0 48 -6 67 -26z"/> <path d="M150 441 c0 -13 15 -16 95 -16 78 0 95 3 95 15 0 12 -18 15 -95 16 -80 0 -95 -2 -95 -15z"/> <path d="M150 378 c0 -16 13 -18 130 -18 117 0 130 2 130 18 0 15 -13 17 -130 17 -117 0 -130 -2 -130 -17z"/> </g> </svg></div>
-                                                                                              <h3>Prepare for client meeting</h3>
-                                                                                              <p>Rapidly ramp-up for client discussions with insights and research​</p>
-                                                                                            </button>
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('create-pov')">
-                                                                                              <div class="mi-card-icon"><svg width="48pt" height="48pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-pov-card"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-pov-card)" stroke="none"> <path d="M40 865 c-4 0 0 -769 4 -772 19 -19 27 74 25 306 l-1 256 216 3 c119 1 216 -1 216 -6 0 -4 -6 -17 -14 -27 -13 -18 -11 -26 16 -75 l31 -55 -26 -43 c-31 -48 -32 -52 -12 -52 8 0 28 21 44 47 l30 47 -31 56 -30 55 47 83 47 82 97 0 96 0 48 -85 48 -84 -47 -81 -47 -80 -107 0 c-89 0 -109 -3 -114 -16 -3 -9 -6 -16 -6 -17 0 -1 49 -1 110 1 l110 3 0 -120 c0 -101 2 -121 15 -121 13 0 15 21 15 126 l0 125 50 85 c28 47 50 89 50 95 0 6 -22 49 -50 96 -38 65 -50 95 -50 126 l0 42 -390 0 c-214 0 -390 0 -390 0z m750 -47 c0 -16 -12 -18 -103 -18 l-103 0 -29 -55 -30 -55 -222 0 c-123 0 -226 1 -230 3 -5 1 -8 142 -3 142 0 0 162 0 360 0 336 0 360 -1 360 -17z"/> <path d="M384 785 c-15 -23 -15 -27 0 -50 28 -42 96 -24 96 25 0 49 -68 67 -96 25z m64 -28 c2 -11 -3 -17 -17 -17 -23 0 -35 15 -26 31 10 15 39 6 43 -14z"/> <path d="M600 665 c0 -12 18 -15 100 -15 82 0 100 3 100 15 0 12 -18 15 -100 15 -82 0 -100 -3 -100 -15z"/> <path d="M600 605 c0 -12 18 -15 100 -15 82 0 100 3 100 15 0 12 -18 15 -100 15 -82 0 -100 -3 -100 -15z"/> <path d="M283 553 c-35 -7 -80 -58 -87 -98 -22 -114 123 -188 205 -106 37 37 46 75 28 124 -22 62 -81 94 -146 80z m93 -57 c19 -19 34 -44 34 -55 0 -53 -49 -101 -101 -101 -12 0 -37 16 -56 35 -30 30 -35 40 -29 67 10 50 51 86 100 87 10 1 33 -14 52 -33z"/> <path d="M600 545 c0 -12 18 -15 100 -15 82 0 100 3 100 15 0 12 -18 15 -100 15 -82 0 -100 -3 -100 -15z"/> <path d="M174 223 c-21 -37 -46 -80 -56 -95 -10 -14 -18 -28 -18 -30 0 -1 157 -4 350 -5 346 -3 350 -3 361 18 11 21 11 21 -143 18 l-154 -4 -46 80 -45 80 -106 3 -106 3 -37 -68z m266 -26 c19 -34 37 -66 39 -70 2 -5 -10 -7 -25 -5 -23 2 -29 8 -29 28 0 15 -6 25 -15 25 -9 0 -15 -10 -15 -24 0 -24 -2 -25 -77 -26 l-78 -2 0 29 c0 18 -5 28 -15 28 -9 0 -15 -9 -15 -25 0 -26 -17 -39 -44 -33 -11 2 -5 19 25 71 l40 67 87 0 87 0 35 -63z"/> </g> </svg></div>
-                                                                                              <h3>Create point of view</h3>
-                                                                                              <p>Turn research into draft perspectives​</p>
-                                                                                            </button>
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('gather-proposal-insights')">
-                                                                                              <div class="mi-card-icon"><svg  width="48pt" height="48pt" viewBox="0 0 96.000000 96.000000" preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-proposal-card"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-proposal-card)" stroke="none"> <path d="M138 825 c-23 -38 -49 -83 -60 -98 l-19 -28 59 -102 60 -102 114 0 113 0 58 97 c58 100 64 113 48 122 -5 3 -33 -37 -63 -89 -29 -52 -55 -95 -58 -95 -3 0 -18 23 -33 50 l-28 50 -80 0 c-62 0 -79 -3 -79 -14 0 -33 -17 -22 -44 28 l-28 53 46 80 47 81 97 4 c98 4 111 1 126 -36 3 -7 8 -6 15 4 7 10 5 22 -5 40 -15 24 -18 25 -131 25 l-115 0 -40 -70z m193 -255 c10 -19 18 -38 19 -42 0 -5 -35 -8 -78 -8 -73 0 -80 2 -90 24 -18 41 5 61 73 61 55 0 58 -1 76 -35z"/> <path d="M480 829 c-12 -22 -29 -54 -39 -70 l-18 -30 -27 45 c-15 26 -34 46 -42 46 -18 0 -18 2 20 -68 18 -32 36 -52 47 -52 11 0 34 27 63 75 50 82 54 95 31 95 -8 0 -24 -18 -35 -41z"/> <path d="M221 809 c-35 -14 -50 -39 -51 -80 0 -73 92 -108 145 -54 63 62 -12 168 -94 134z m69 -39 c25 -25 25 -55 0 -80 -24 -24 -38 -25 -68 -4 -26 18 -29 60 -5 86 21 24 48 23 73 -2z"/> <path d="M490 580 c-30 -54 -54 -102 -53 -107 1 -4 25 -50 54 -101 l53 -93 119 3 119 3 55 94 c40 70 52 100 46 113 -7 15 -19 -1 -63 -81 -30 -55 -57 -101 -60 -101 -3 0 -19 24 -35 54 l-29 53 -72 -1 c-60 -1 -76 -5 -87 -20 -13 -18 -16 -17 -41 26 -14 24 -26 50 -26 57 0 6 17 40 38 74 21 35 41 71 45 80 5 14 21 17 106 17 99 0 101 0 115 -27 13 -25 15 -26 22 -10 3 10 1 29 -6 43 -13 23 -17 24 -129 24 l-116 -1 -55 -99z m209 -230 l22 -40 -80 0 c-89 0 -109 12 -88 57 9 20 17 23 67 23 55 0 57 -1 79 -40z"/> <path d="M837 592 c-19 -36 -39 -68 -43 -69 -5 -2 -19 15 -32 37 -12 22 -29 40 -37 40 -20 0 -18 -7 14 -60 43 -71 67 -67 116 21 50 88 49 85 32 92 -10 4 -26 -16 -50 -61z"/> <path d="M577 589 c-24 -14 -49 -73 -40 -96 13 -38 46 -63 82 -63 83 1 116 85 59 148 -23 24 -70 29 -101 11z m89 -44 c20 -31 12 -68 -18 -82 -48 -21 -97 23 -79 70 17 44 72 50 97 12z"/> <path d="M156 430 c-12 -19 -39 -65 -59 -101 l-37 -67 58 -98 59 -99 113 0 112 0 32 50 c69 108 91 154 79 166 -8 8 -25 -14 -64 -85 -30 -52 -57 -96 -60 -96 -3 0 -18 22 -33 49 l-26 49 -76 4 c-71 3 -77 2 -88 -20 -12 -23 -13 -23 -41 31 l-29 54 48 85 48 85 101 -1 c93 -1 101 -3 110 -24 12 -27 27 -29 27 -4 0 46 -20 53 -138 55 l-113 2 -23 -35z m172 -291 c12 -21 22 -40 22 -42 0 -2 -36 -3 -79 -3 -66 1 -81 4 -91 19 -9 15 -8 24 4 42 13 19 23 23 69 22 51 -1 55 -3 75 -38z"/> <path d="M209 375 c-29 -16 -52 -66 -42 -93 13 -38 46 -62 84 -62 54 0 84 28 84 80 0 34 -6 47 -28 66 -32 27 -60 30 -98 9z m81 -35 c25 -25 25 -55 0 -80 -23 -23 -33 -24 -60 -10 -31 17 -43 46 -29 73 23 42 57 49 89 17z"/> <path d="M340 385 c0 -3 14 -30 31 -60 23 -41 36 -54 50 -52 22 4 63 63 54 78 -11 16 -21 10 -37 -23 l-15 -32 -27 47 c-15 26 -34 47 -42 47 -8 0 -14 -2 -14 -5z"/> </g> </svg></div>
-                                                                                              <h3>Gather proposal inputs</h3>
-                                                                                              <p>Develop a proposal outline and pull sample frameworks, approaches, and quals​</p>
-                                                                                            </button>
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('create-rfp-response')">
-                                                                                              <div class="mi-card-icon"><svg width="48.000000pt" height="48.000000pt" viewBox="0 0 96.000000 96.000000"  preserveAspectRatio="xMidYMid meet"><defs><linearGradient x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" id="fill0-rfp-card"><stop offset="0" stop-color="#FF9F00"/><stop offset="0.05089" stop-color="#FE9900"/><stop offset="0.466323" stop-color="#FD7204"/><stop offset="0.797112" stop-color="#FD5907"/><stop offset="1" stop-color="#FD5108"/></linearGradient></defs> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="url(#fill0-rfp-card)" stroke="none"> <path d="M770 793 c0 -4 -21 -19 -46 -32 -34 -19 -44 -29 -41 -43 4 -15 1 -18 -13 -13 -10 3 -48 14 -84 24 l-66 18 -48 -33 c-43 -31 -53 -34 -118 -34 -76 0 -90 5 -72 27 6 7 9 15 7 16 -22 14 -111 67 -114 67 -2 0 -21 -30 -41 -67 -21 -38 -55 -96 -77 -131 -22 -35 -37 -66 -34 -69 15 -14 37 12 96 116 l63 112 31 -18 c16 -10 30 -22 30 -26 0 -5 -26 -53 -58 -108 -47 -81 -62 -98 -77 -94 -25 9 -23 -17 3 -33 18 -11 23 -11 33 4 11 15 15 13 39 -17 14 -18 22 -36 18 -39 -4 -3 -14 -16 -20 -29 -12 -22 -8 -28 62 -97 42 -41 81 -74 87 -74 7 0 21 -12 33 -26 16 -20 26 -25 48 -20 16 3 31 1 34 -4 10 -17 44 -11 62 10 10 11 29 20 44 20 14 0 34 9 44 20 10 11 26 20 34 18 36 -5 69 12 76 39 3 15 17 37 31 50 25 23 32 57 14 68 -6 4 -3 17 10 33 49 66 50 67 59 54 6 -10 13 -11 34 -1 28 13 26 43 -3 34 -13 -4 -30 17 -78 99 -63 109 -63 110 -16 134 20 11 26 4 85 -99 58 -101 81 -130 94 -117 7 7 -141 262 -154 266 -6 2 -11 0 -11 -5z m-148 -104 l88 -21 41 -74 c43 -78 43 -79 -4 -133 l-27 -33 -105 91 -106 90 -63 -31 c-51 -25 -70 -29 -99 -24 -21 4 -37 10 -37 14 0 8 201 140 215 141 6 1 49 -9 97 -20z m-263 -45 c2 -2 -20 -18 -48 -35 -56 -35 -56 -46 0 -75 40 -20 74 -17 140 12 l58 26 78 -68 c43 -38 93 -81 111 -96 24 -20 32 -33 27 -47 -11 -34 -33 -31 -81 12 -26 23 -52 42 -57 42 -26 0 -12 -24 39 -65 56 -46 62 -58 42 -78 -19 -19 -30 -14 -81 33 -27 25 -52 45 -57 45 -24 0 -16 -22 20 -52 44 -36 47 -68 8 -68 -34 0 -103 70 -103 103 0 17 -7 32 -18 38 -12 7 -15 17 -11 34 8 31 -29 69 -59 61 -12 -3 -30 3 -45 15 -31 24 -34 24 -69 -5 l-29 -25 -27 34 -26 33 40 71 41 70 51 -6 c29 -3 54 -7 56 -9z m-79 -249 c-47 -48 -64 -55 -74 -29 -4 11 9 31 39 62 43 42 47 44 63 29 15 -16 13 -20 -28 -62z m117 29 c7 -19 -93 -124 -119 -124 -32 0 -19 33 34 87 54 55 74 64 85 37z m30 -80 c4 -11 -10 -31 -41 -62 -45 -45 -48 -46 -62 -27 -13 17 -11 23 28 62 45 46 65 53 75 27z m30 -80 c7 -19 -34 -64 -59 -64 -25 0 -23 29 4 57 25 27 46 30 55 7z m43 -49 c0 -14 -37 -31 -47 -21 -9 8 28 47 38 40 5 -3 9 -11 9 -19z"/> </g> </svg></div>
-                                                                                              <h3>Create RFP response</h3>
-                                                                                              <p>Gather inputs to jumpstart your RFP response ​</p>
-                                                                                            </button>
-                                                                                            
-                                                                                            <!-- <button class="mi-action-card" (click)="onMIActionCardClick('generate-podcast')">
-                                                                                              <div class="mi-card-icon">🎙️</div>
-                                                                                              <h3>Generate Podcast</h3>
-                                                                                              <p>Transform market research into engaging podcast scripts for audio distribution.</p>
-                                                                                            </button>
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('brand-format')">
-                                                                                              <div class="mi-card-icon">🎨</div>
-                                                                                              <h3>Brand Format</h3>
-                                                                                              <p>Apply PwC branding standards and visual formatting to your market analysis.</p>
-                                                                                            </button>
-                                                                                            <button class="mi-action-card" (click)="onMIActionCardClick('professional-polish')">
-                                                                                              <div class="mi-card-icon">⭐</div>
-                                                                                              <h3>Professional Polish</h3>
-                                                                                              <p>Apply premium editing and refinement for executive-level market intelligence.</p>
-                                                                                            </button>  -->
-                                                                                          </div>
-                                                                                        </div>
-                                                                                      }
-                                                                                    </div>
-                                                                                  </div>
-                                                                                </div>
-                                                                              }
-                                                                            
-
-                                                                            <!-- Thought Leadership Guided Flow Components -->
-                                                                            <app-draft-content-flow></app-draft-content-flow>
-                                                                            <app-conduct-research-flow></app-conduct-research-flow>
-                                                                            <app-edit-content-flow></app-edit-content-flow>
-                                                                            <app-refine-content-flow
-                                                                              (contentGenerated)="onRefinedContentGenerated($event)"
-                                                                              (streamToChat)="onRefineContentStreamToChat($event)">
-                                                                            </app-refine-content-flow>
-                                                                            <app-format-translator-flow></app-format-translator-flow>
-                                                                            <app-ready-to-publish-flow></app-ready-to-publish-flow>
-
-                                                                            <!-- Market Intelligence Guided Flow Components -->
-                                                                            <app-mi-draft-content-flow></app-mi-draft-content-flow>
-                                                                            <app-mi-conduct-research-flow></app-mi-conduct-research-flow>
-                                                                            <app-mi-edit-content-flow></app-mi-edit-content-flow>
-                                                                            <app-mi-refine-content-flow></app-mi-refine-content-flow>
-                                                                            <app-mi-format-translator-flow></app-mi-format-translator-flow>
-                                                                            <app-mi-generate-podcast-flow></app-mi-generate-podcast-flow>
-                                                                            <app-mi-brand-format-flow></app-mi-brand-format-flow>
-                                                                            <app-mi-professional-polish-flow></app-mi-professional-polish-flow>
-                                                                            <app-mi-create-pov-flow></app-mi-create-pov-flow>
-                                                                            <app-mi-prepare-client-meeting-flow></app-mi-prepare-client-meeting-flow>
-                                                                            <app-mi-gather-proposal-insights-flow></app-mi-gather-proposal-insights-flow>
-                                                                            <app-mi-target-industry-insights-flow></app-mi-target-industry-insights-flow>
-                                                                            <app-mi-create-rfp-response-flow></app-mi-create-rfp-response-flow>
-
-                                                                            <!-- DDC Guided Dialog and Flow Components -->
-                                                                            <app-guided-dialog
-                                                                              [isOpen]="showDdcGuidedDialog"
-                                                                              journeyType="ddc"
-                                                                              [title]="'Doc studio'"
-                                                                              [introText]="ddcIntroText"
-                                                                              [subIntroText]="ddcSubIntroText"
-                                                                              [workflows]="ddcWorkflows"
-                                                                              (workflowSelected)="onWorkflowSelected($event)"
-                                                                              (close)="closeDdcGuidedDialog()">
-                                                                            </app-guided-dialog>
-
-                                                                            <!-- MI Guided Dialog and Flow Components -->
-                                                                            <app-guided-dialog
-                                                                              [isOpen]="showMiGuidedDialog"
-                                                                              journeyType="market-intelligence"
-                                                                              [workflows]="miWorkflows"
-                                                                              (workflowSelected)="onWorkflowSelected($event)"
-                                                                              (close)="closeGuidedDialog()">
-                                                                            </app-guided-dialog>
-
-                                                                            <!-- Quick Draft Dialog -->
-                                                                            <app-quick-draft-dialog
-                                                                              [isOpen]="showQuickDraftDialog"
-                                                                              [topic]="quickDraftTopic"
-                                                                              [contentType]="quickDraftContentType"
-                                                                              (close)="closeQuickDraftDialog()"
-                                                                              (submit)="onQuickDraftSubmit($event)">
-                                                                            </app-quick-draft-dialog>
-
-                                                                            <app-brand-format-flow></app-brand-format-flow>
-                                                                            <app-professional-polish-flow></app-professional-polish-flow>
-                                                                            <app-sanitization-flow
-                                                                              [hideBackButton]="workflowOpenedFrom === 'quick-action'"
-                                                                              [openedFrom]="workflowOpenedFrom">
-                                                                            </app-sanitization-flow>
-                                                                            <app-event-branding-flow
-                                                                              [hideBackButton]="workflowOpenedFrom === 'quick-action'"
-                                                                              [openedFrom]="workflowOpenedFrom">
-                                                                            </app-event-branding-flow>
-                                                                            <app-client-customization-flow></app-client-customization-flow>
-                                                                            <app-rfp-response-flow></app-rfp-response-flow>
-                                                                            <app-ddc-format-translator-flow></app-ddc-format-translator-flow>
-                                                                            <app-slide-creation-flow
-                                                                              [hideBackButton]="workflowOpenedFrom === 'quick-action'"
-                                                                              [openedFrom]="workflowOpenedFrom">
-                                                                            </app-slide-creation-flow>
-                                                                            <app-slide-creation-prompt-flow
-                                                                              [hideBackButton]="workflowOpenedFrom === 'quick-action'"
-                                                                              [openedFrom]="workflowOpenedFrom">
-                                                                            </app-slide-creation-prompt-flow>
-
-                                                                            <!-- Voice Input Modal -->
-                                                                            <app-voice-input
-                                                                              (transcriptChange)="onVoiceTranscriptChange($event)"
-                                                                              (listeningChange)="onVoiceListeningChange($event)"
-                                                                            ></app-voice-input>
-                                                                          }
-
-        <!-- Copyright Footer -->
-        <div class="copyright-footer">
-          <p>© 2026 PwC. All rights reserved. PwC refers to the PwC network and/or one or more of its member firms, each of which is a separate legal entity. Please see <a href="https://www.pwc.com/structure" target="_blank" rel="noopener noreferrer">www.pwc.com/structure</a> for further details.</p>
-        </div>
-      </main>
-                                                                     
-  <!-- DDC Request Form (Modal) - Root Level for Accessibility from Home Page -->
-  @if (showRequestForm) {
-    <app-ddc-request-form
-      (ticketCreated)="onTicketCreated($event)"
-      (close)="showRequestForm = false">
-    </app-ddc-request-form>
+  //user details
+  private currentUserService = inject(CurrentUserService);
+  // expose user observable to template
+  user$ = this.currentUserService.user$;
+  // Profile data
+  userProfile: any = null;
+  profileImageUrl: string = '';
+  displayName: string = '';
+  
+  // Module access control properties
+  docStudioAccessible: boolean = true;
+  marketIntelligenceAccessible: boolean = true;
+  cortexAccessible: boolean = true;
+  
+  /**
+   * Get count of accessible modules
+   * Used to determine grid layout (1 col, 2 cols, or 3 cols)
+   */
+  get accessibleModuleCount(): number {
+    let count = 0;
+    if (this.docStudioAccessible) count++;
+    if (this.marketIntelligenceAccessible) count++;
+    if (this.cortexAccessible && this.isProfilePresent(this.profile)) count++;
+    return count;
   }
   
-  <!-- TL Request Form (Modal) - Root Level for Accessibility from Home Page -->
-  @if (showTLRequestForm) {
-    <app-tl-request-form
-      (ticketCreated)="onTicketCreated($event)"
-      (close)="showTLRequestForm = false">
-    </app-tl-request-form>
+  // Dropdown state
+  openDropdown: string | null = null;
+  
+  // LLM Service Provider and Model Selection
+  selectedServiceProvider: 'openai' | 'anthropic' = 'openai';
+  selectedModel: string = 'gpt-5.2';
+  
+  // LLM models by service provider
+  llmModelsByProvider: { [key: string]: string[] } = {
+    openai: ['gpt-5.2', 'gpt-5.1', 'gpt-5'],
+    anthropic: ['claude-3-5-sonnet', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku', 'claude-2.1']
+  };
+  
+  get availableModels(): string[] {
+    return this.llmModelsByProvider[this.selectedServiceProvider] || [];
   }
 
-  <!-- Cortex Reminder Dialog -->
-  @if (showCortexReminder) {
-    <div class="reminder-overlay">
-      <div class="reminder-dialog">
-        <div class="reminder-header">
-          <h2>Reminder</h2>
-          <button 
-            class="close-btn" 
-            (click)="closeCortexReminderWithoutAction()" 
-            type="button"
-            aria-label="Close reminder"
-            title="Close">
-            ✕
-          </button>
-        </div>
-        <div class="reminder-content">
-          <p>Remember to complete the <a href="javascript:void(0)" (click)="onTLActionCardClick('ready-to-publish'); closeCortexReminder()" class="reminder-link">Ready to Publish Review Process</a> once your content is complete.</p>
-          <div class="reminder-checkbox">
-            <input 
-              type="checkbox" 
-              id="cortex-reminder-confirm" 
-              [(ngModel)]="cortexReminderConfirmed"
-              class="checkbox-input">
-            <label for="cortex-reminder-confirm" class="checkbox-label">Yes, I confirm</label>
-          </div>
-        </div>
-        <div class="reminder-footer">
-          <button 
-            class="confirm-btn" 
-            (click)="closeCortexReminder()" 
-            type="button"
-            [disabled]="!cortexReminderConfirmed">Confirm</button>
-        </div>
-      </div>
-    </div>
+  /**
+   * Determine if send button should be enabled
+   * Enabled when user has text input OR has uploaded files OR has extracted documents
+   */
+  get isSendButtonEnabled(): boolean {
+    //const hasUserInput = this.userInput.trim().length > 0;
+    //const hasUploadedFile = !!this.uploadedPPTFile || !!this.uploadedEditDocumentFile;
+    //const hasExtractedDocuments = this.extractedDocuments.length > 0;
+    const isBusy = this.isLoading || this.isExtractingText;
+    
+    //return (hasUserInput || hasUploadedFile || hasExtractedDocuments) && !isBusy;
+    return !isBusy;
+  }
+  
+  // Chat history persistence
+  currentSessionId: string | null = null;
+  savedSessions: ChatSession[] = [];
+  private readonly STORAGE_KEY = 'pwc_chat_sessions';
+  private readonly MAX_SESSIONS = 20;
+  
+  // Database-driven chat history (new approach)
+  dbChatSessions: ChatSession[] = [];
+  isLoadingDbSessions: boolean = false;
+  isLoadingDbConversation: boolean = false;
+  selectedSourceFilter: string = '';
+  
+  // Search functionality
+  searchQuery: string = '';
+  offeringVisibility = {
+    'ppt': true,
+    'thought-leadership': true,
+    'market-intelligence': true
+  };
+  
+
+  // Mobile menu state
+  mobileMenuOpen: boolean = false;
+  
+  // Processing messages collection - static 'Processing' only
+  // Rotation mechanism commented out below
+  processingMessages: string[] = ['Processing'];
+  
+  // Rotation mechanism commented out - no longer needed
+  // private readonly MAX_PROCESSING_LINES = 2;
+  // private readonly PROCESSING_MESSAGE_INTERVALS = [2000, 12000, 10000, 7000 , 10000];
+  // private processingMessageLines: Map<number, string[]> = new Map();
+  // private processingMessageIntervals: Map<number, any> = new Map();
+  // private currentProcessingIndex: Map<number, number> = new Map();
+  // private completedProcessingMessages: Map<number, Set<number>> = new Map();
+  // private usedProcessingIndices: Map<number, Set<number>> = new Map();
+  // private linesAnimatingOut: Map<number, Set<number>> = new Map();
+  // private processingMessageMap: Map<number, string> = new Map();
+  
+  // Pending draft topic (for when user needs to select content type)
+  private pendingDraftTopic: string | null = null;
+
+  // Export dropdown state (per message)
+  showExportDropdown: { [messageIndex: number]: boolean } = {};
+  isExporting: { [messageIndex: number]: boolean } = {};
+  isExported: { [messageIndex: number]: boolean } = {};
+  exportFormat: { [messageIndex: number]: string } = {};
+  
+  // Ready to publish state (per message)
+  isPreparingDocument: { [messageIndex: number]: boolean } = {};
+  isDocumentPrepared: { [messageIndex: number]: boolean } = {};
+  
+  // Sidebar collapse state (expanded by default)
+  sidebarExpanded: boolean = true;
+  
+  // Theme dropdown state
+  showThemeDropdown: boolean = false;
+  prefersDark: boolean = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  
+  // History panel state
+  showHistoryPanel: boolean = false;
+
+  
+  // PPT Quick Actions
+  pptQuickActions: string[] = ['Doc Studio', 'Fix Formatting', 'Sanitize Documents', 'Validate Best Practices'];
+  
+  // NEW: Thought Leadership Quick Actions (5 Sections)
+  tlQuickActions: string[] = ['Draft Content', 'Conduct Research', 'Edit Content', 'Refine Content', 'Format Translator'];
+  
+  // Dynamic quick actions based on selected flow
+  get quickActions(): string[] {
+    return this.selectedFlow === 'ppt' ? this.pptQuickActions : this.tlQuickActions;
   }
 
-  @if (isProfilePresent(profile) && cortexAccessible && showExploreShowcase) {
-    <div class="reminder-overlay" (click)="closeExploreShowcase()">
-      <div class="reminder-dialog explore-showcase-dialog" (click)="$event.stopPropagation()">
-        <div class="reminder-header">
-          <h2>Cortex content studio</h2>
-          <button
-            class="close-btn"
-            (click)="closeExploreShowcase()"
-            type="button"
-            aria-label="Close explore showcase"
-            title="Close">
-            ✕
-          </button>
-        </div>
-        <div class="reminder-content explore-showcase-content">
-          <p class="explore-showcase-subtitle">Where firm intelligence is created, curated, and deployed</p>
-          <div class="explore-showcase-grid">
-            <div class="explore-showcase-card top-left">
-              <div class="explore-showcase-title">Draft content</div>
-              <p class="explore-showcase-body">
-                Turn preliminary outlines into well-researched drafts.
-              </p>
-            </div>
-            <div class="explore-showcase-card top-center">
-              <div class="explore-showcase-title">Conduct research</div>
-              <p class="explore-showcase-body">
-                Tap into PwC's knowledge base and third-party sources to accelerate targeted research.
-              </p>
-            </div>
-            <div class="explore-showcase-card top-right">
-              <div class="explore-showcase-title">Edit content</div>
-              <p class="explore-showcase-body">
-                Deploy custom workflows and brand-aligned language patterns.
-              </p>
-            </div>
-            <div class="explore-showcase-card bottom-left">
-              <div class="explore-showcase-title">Refine drafts</div>
-              <p class="explore-showcase-body">
-                Change tone, simplify language, and enhance with grounded research and insights.
-              </p>
-            </div>
-            <div class="explore-showcase-card bottom-right">
-              <div class="explore-showcase-title">Adapt content</div>
-              <p class="explore-showcase-body">
-                Repurpose final outputs into podcasts, social posts, or documents.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+  /**
+   * Filter chat sessions based on search query
+   * Searches through title and message content
+   */
+  get filteredChatSessions(): ChatSession[] {
+    if (!this.searchQuery.trim()) {
+      return this.dbChatSessions;
+    }
+
+    const query = this.searchQuery.toLowerCase();
+    
+    return this.dbChatSessions.filter(session => {
+      // Search in session title
+      if (session.title.toLowerCase().includes(query)) {
+        return true;
+      }
+
+      // Search in message content
+      if (session.messages && Array.isArray(session.messages)) {
+        return session.messages.some(message => {
+          const content = message.content ? message.content.toLowerCase() : '';
+          return content.includes(query);
+        });
+      }
+
+      return false;
+    });
   }
+  
+  promptCategories: any = {
+    // PPT Categories
+    draft: {
+      title: 'Create Draft',
+      prompts: [
+        'Create a presentation on digital transformation strategy',
+        'Draft slides about cloud migration benefits',
+        'Build a deck on AI implementation roadmap',
+        'Create an executive summary presentation'
+      ]
+    },
+    improve: {
+      title: 'Fix Formatting',
+      prompts: [
+        'Fix spelling and grammar in my presentation',
+        'Align all shapes and text boxes',
+        'Rebrand my deck with new colors',
+        'Clean up slide formatting'
+      ]
+    },
+    sanitize: {
+      title: 'Sanitize Documents',
+      prompts: [
+        'Remove all client-specific data from my deck',
+        'Sanitize numbers and metrics',
+        'Clear all metadata and notes',
+        'Remove logos and branding'
+      ]
+    },
+    bestPractices: {
+      title: 'Validate Best Practices',
+      prompts: [
+        'Validate my presentation against PwC best practices',
+        'Check slide design and formatting standards',
+        'Review chart and visual guidelines',
+        'Ensure MECE framework compliance'
+      ]
+    },
+    
+    // NEW: Thought Leadership Categories (5 Sections)
+    draftContent: {
+      title: 'Draft Content',
+      prompts: [
+        'Draft an article on digital transformation trends',
+        'Create a white paper on AI in business',
+        'Write an executive brief on market insights',
+        'Draft a blog post about future of work'
+      ]
+    },
+    conductResearch: {
+      title: 'Conduct Research',
+      prompts: [
+        'Research industry trends with multiple sources',
+        'Analyze competitive landscape with citations',
+        'Gather insights from PwC resources and external data',
+        'Synthesize findings across documents and web sources'
+      ]
+    },
+    editContent: {
+      title: 'Edit Content',
+      prompts: [
+        'Apply brand alignment review to my article',
+        'Perform copy editing on my white paper',
+        'Get line editing suggestions for clarity',
+        'Request content editor feedback on structure'
+      ]
+    },
+    refineContent: {
+      title: 'Refine Content',
+      prompts: [
+        'Expand my article to 2500 words with research',
+        'Compress my white paper to executive brief format',
+        'Adjust tone for C-suite audience',
+        'Get suggestions to improve my content'
+      ]
+    },
+    formatTranslator: {
+      title: 'Format Translator',
+      prompts: [
+        'Convert my article to a blog post',
+        'Transform this white paper into an executive brief',
+        'Translate blog content to formal article',
+        'Convert executive brief to comprehensive white paper'
+      ]
+    },
+    generatePodcast: {
+      title: 'Generate Podcast',
+      prompts: [
+        'Create a podcast episode about digital transformation',
+        'Generate a podcast discussing industry trends',
+        'Convert my article into a podcast script',
+        'Create an audio version of my thought leadership content'
+      ]
+    },
+    
+    // Legacy TL Categories (kept for compatibility)
+    generate: {
+      title: 'Generate Article',
+      prompts: [
+        'Write an article on future of work',
+        'Create thought leadership on sustainability',
+        'Draft insights on digital innovation',
+        'Generate content on industry trends'
+      ]
+    },
+    research: {
+      title: 'Research Assistant',
+      prompts: [
+        'Research trends in digital transformation',
+        'Find competitive insights in my industry',
+        'Analyze market opportunities and challenges',
+        'Gather data on innovation best practices'
+      ]
+    },
+    draftArticle: {
+      title: 'Draft Article',
+      prompts: [
+        'Draft a case study on successful transformation',
+        'Create an executive brief on industry trends',
+        'Write a blog post about innovation',
+        'Generate a white paper on technology adoption'
+      ]
+    },
+    editorial: {
+      title: 'Editorial Support',
+      prompts: [
+        'Review and improve my article structure',
+        'Enhance clarity and readability',
+        'Add professional touches to my draft',
+        'Provide editorial feedback'
+      ]
+    }
+  };
+
+  draftData = {
+    topic: '',
+    objective: '',
+    audience: '',
+    additional_context: '',
+    reference_document: '',
+    reference_link: ''
+  };
+
+  sanitizeData = {
+    clientName: '',
+    products: '',
+    options: {
+      numericData: true,
+      personalInfo: true,
+      financialData: true,
+      locations: true,
+      identifiers: true,
+      names: true,
+      logos: true,
+      metadata: true,
+      llmDetection: true,
+      hyperlinks: true,
+      embeddedObjects: true
+    }
+  };
+
+  thoughtLeadershipData = {
+    topic: '',
+    perspective: '',
+    target_audience: '',
+    document_text: '',
+    target_format: '',
+    additional_context: '',
+    reference_document: '',
+    reference_link: ''
+  };
+
+  researchData = {
+    query: '',
+    focus_areas: '',
+    additional_context: '',
+    links: ['']
+  };
+  researchFiles: File[] = [];
+
+  articleData = {
+    topic: '',
+    content_type: 'Article',
+    desired_length: 1000,
+    tone: 'Professional',
+    outline_text: '',
+    additional_context: ''
+  };
+
+  bestPracticesData = {
+    categories: {
+      structure: true,
+      visuals: true,
+      design: true,
+      charts: true,
+      formatting: true,
+      content: true
+    }
+  };
+
+  outlineFile: File | null = null;
+  supportingDocFiles: File[] = [];
+  bestPracticesPPTFile: File | null = null;
+
+  podcastData = {
+    contentText: '',
+    customization: '',
+    podcastStyle: 'dialogue'
+  };
+  podcastFiles: File[] = [];
+
+  // DDC Guided Journey support
+  ddcWorkflows = DDC_WORKFLOWS;
+  ddcIntroText = DDC_INTRO_TEXT;
+  ddcSubIntroText = DDC_SUB_INTRO_TEXT;
+  showDdcGuidedDialog: boolean = false;
+
+   // MI Guided Journey support
+  miWorkflows = MI_WORKFLOWS;
+  showMiGuidedDialog: boolean = false;
+
+  // Track where the workflow was opened from (quick-action or guided-dialog)
+  workflowOpenedFrom: 'quick-action' | 'guided-dialog' | null = null;
+  
+  // Database chat history tracking
+  private userId: string = '';
+  private dbThreadId: string | null = null;
+  private currentDdcConversationId: string | null = null;
+
+  constructor(
+    private chatService: ChatService,
+    public themeService: ThemeService,
+    private cdr: ChangeDetectorRef,
+    public tlFlowService: TlFlowService,
+    public ddcFlowService: DdcFlowService,
+    public miFlowService: MiFlowService,
+    private tlChatBridge: TlChatBridgeService,
+    private miChatBridge: MiChatBridgeService,
+    private canvasStateService: CanvasStateService,
+    public editWorkflowService: ChatEditWorkflowService,
+    public draftWorkflowService: ChatDraftWorkflowService,
+    private authService: AuthService,
+    private authFetchService: AuthFetchService,
+    private toastService: ToastService
+  ) {}
+
+  /**
+   * Sanitize SVG content to prevent XSS attacks via SVG script elements
+   * Uses DOMPurify to remove dangerous attributes and protocols
+   * @param content SVG content string to sanitize
+   * @returns Sanitized SVG string
+   */
+  sanitizeSvgContent(content: string): string {
+    if (!content) return '';
+    
+    // DOMPurify is already configured globally in main.ts
+    // This function provides an additional layer of sanitization
+    import('dompurify').then((module) => {
+      const DOMPurify = module.default;
+      const config = {
+        ALLOWED_TAGS: ['svg', 'path', 'circle', 'rect', 'line', 'g', 'polyline', 'polygon', 'ellipse', 'text', 'tspan', 'use', 'defs', 'clipPath'],
+        ALLOWED_ATTR: [
+          'viewBox', 'width', 'height', 'd', 'cx', 'cy', 'r', 'x', 'y', 'x1', 'y1', 'x2', 'y2',
+          'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'class',
+          'transform', 'points', 'rx', 'ry', 'text-anchor', 'font-size', 'font-family',
+          'font-weight', 'opacity', 'href', 'id', 'clip-path', 'preserveAspectRatio'
+        ],
+        KEEP_CONTENT: true,
+        RETURN_DOM: false
+      };
+      return DOMPurify.sanitize(content, config);
+    });
+
+    // Synchronous fallback: remove dangerous protocols and event handlers
+    let sanitized = content
+      .replace(/on\w+\s*=/gi, '') // Remove event handlers (onclick, onload, etc.)
+      .replace(/javascript:/gi, '') // Remove javascript: protocol
+      .replace(/xlink:href\s*=\s*["']javascript:/gi, ''); // Remove javascript in xlink:href
+
+    return sanitized;
+  }
+
+  /**
+   * Get safe HTML for rendering dynamic SVG content
+   * Use this when displaying SVG from external or user sources
+   * @param svgContent SVG content to render safely
+   * @returns SafeHtml that can be used with [innerHTML]
+   */
+  getSafeSvg(svgContent: string): SafeHtml {
+    const sanitized = this.sanitizeSvgContent(svgContent);
+    return this.sanitizer.sanitize(4, sanitized) || ''; // SecurityContext.HTML = 4
+  }
+
+  
+  onRaisePhoenix(): void {
+    this.showTLRequestForm = true;
+    this.raisePhoenix.emit();
+  }
+
+  openRequestForm() {
+    this.showRequestForm = true;
+  }
+
+  toggleNotificationDropdown() {
+    this.showNotificationDropdown = !this.showNotificationDropdown;
+  }
+
+  closeNotificationDropdown() {
+    this.showNotificationDropdown = false;
+  }
+
+  phoenixRdpLink = '';
+  ticketNumber = '';
+  translatedContent = '';
+
+  onTicketCreated(event: {
+    requestNumber: string;
+    phoenixRdpLink: string;
+  }): void {
+    // Validate and escape untrusted data before using in HTTP response
+    try {
+      this.validateAndEscapeUrl(event.phoenixRdpLink);
+      const escapedRequestNumber = this.escapeHtmlSpecialChars(event.requestNumber);
+      const escapedLink = this.escapeHtmlAttribute(event.phoenixRdpLink);
+      this.phoenixRdpLink = event.phoenixRdpLink;
+      this.ticketNumber = event.requestNumber;
+      console.log('[ChatComponent] Ticket created');
+      this.translatedContent = `Request created successfully! Your request number is: <a href="${escapedLink}" target="_blank" rel="noopener noreferrer">${escapedRequestNumber}</a>`.trim();
+    } catch (error) {
+      console.error('[ChatComponent] Invalid ticket data');
+      this.translatedContent = 'Error processing request. Please try again.';
+    }
+    this.showRequestForm = false;
+    this.showTLRequestForm = false;
+    this.showLandingPage =false;
+    this.sendPhoenixRequestToChat();
+  }
+
+  sendPhoenixRequestToChat(): void {
+    const topic = `Phoenix Request - ${this.ticketNumber}`;
+    
+    // Create metadata for the message
+    const metadata: ThoughtLeadershipMetadata = {
+      contentType: 'Phoenix_Request',
+      topic: topic,
+      fullContent: this.translatedContent,
+      showActions: false
+    };
+    const chatMessage = this.translatedContent;
+    
+    // Send to chat via bridge
+    console.log('[ChatComponent] Sending Phoenix request to chat with metadata:', metadata);
+    this.tlChatBridge.sendToChat(chatMessage, metadata);
+  }
+  ngOnInit(): void {
+    console.log('[ChatComponent-OLD] ngOnInit() called');
+    
+    // ✅ Wait for Azure AD authentication to complete before loading user
+    console.log('[ChatComponent-OLD] Subscribing to authService.getLoginStatus()...');
+    
+    this.authService.getLoginStatus()
+      .pipe(
+        takeUntil(this.destroy$)
+      )
+      .subscribe(
+        (status: any) => {
+          console.log('[ChatComponent-OLD] ✅ LOGIN STATUS EMITTED:', status, 'Type:', typeof status);
+          
+          // When not in the middle of interaction, try to get user info
+          // InteractionStatus can be 'startup', 'none', or other values (case-sensitive!)
+          const isAuthComplete = status === 'none' || status === 'None' || !status;
+          console.log('[ChatComponent-OLD] Is auth complete (status === "none" || status === "None" || !status)?', isAuthComplete, '| Condition check:', { status, isNone: status === 'none', isNoneCapital: status === 'None', isFalsy: !status });
+          
+          if (isAuthComplete) {
+            console.log('[ChatComponent-OLD] Auth complete, calling getUserInfo()...');
+            const userInfo = this.authService.getUserInfo();
+            console.log('[ChatComponent-OLD] getUserInfo() returned:', userInfo);
+            
+            if (userInfo && userInfo.email) {
+              this.userId = userInfo.email;
+              console.log('✅ [ChatComponent-OLD] Set userId from AuthService:', this.userId);
+              
+              // Set display name
+              this.displayName = userInfo.name || '';
+              
+              // Initialize module access control
+              this.initializeModuleAccess(this.userId);
+              
+              // Preload chat history cache immediately after login (fire and forget)
+              console.log('[ChatComponent-OLD] 🔄 Preloading chat history cache for user:', this.userId);
+              this.chatService.preloadChatHistoryCache(this.userId).subscribe({
+                next: (response) => {
+                  console.log('[ChatComponent-OLD] ✅ Cache preload successful:', response);
+                },
+                error: (error) => {
+                  console.warn('[ChatComponent-OLD] ⚠️ Cache preload failed (degraded mode - DB fallback will be used):', error);
+                }
+              });
+              
+              // Load user profile
+              this.loadUserProfile(userInfo.email);
+              
+            } else {
+              this.userId = 'anonymous@example.com';
+              console.warn('⚠️ [ChatComponent-OLD] No user logged in from AuthService, using anonymous');
+              this.loadSavedSessions(); // Fall back to localStorage
+            }
+          } else {
+            console.log('[ChatComponent-OLD] Auth NOT complete yet, status:', status, '- waiting for next emission...');
+          }
+        },
+        (error) => {
+          console.error('[ChatComponent-OLD] ❌ Error in authService.getLoginStatus():', error);
+        },
+        () => {
+          console.log('[ChatComponent-OLD] authService.getLoginStatus() completed');
+        }
+      );
+    
+    // Keep existing subscriptions for other features
+    this.subscribeToThoughtLeadership();
+    this.subscribeToMarketIntelligence();
+    this.subscribeToCanvasUpdates();
+    this.subscribeToEditWorkflow();
+    this.subscribeToDdcGuidedDialog();
+    this.subscribeToMiGuidedDialog();
+    this.subscribeToTLGuidedDialog();
+    this.subscribeToDraftWorkflow();
+    let welcomeMessage = '';
+    // this.messages.push({
+    //   role: 'assistant',
+    //   content: "Welcome to PwC Presentation Assistant!",
+    //   timestamp: new Date()
+    // });
+
+    // Initialize sidebar / mobile menu state based on current viewport
+    try {
+      const w = window.innerWidth || 0;
+      // On desktop widths keep sidebar expanded; on mobile (<=768px) keep it closed
+      this.sidebarExpanded = w >= 769;
+      this.mobileMenuOpen = false;
+      console.log('[ChatComponent] Initial sidebarExpanded=', this.sidebarExpanded, 'mobileMenuOpen=', this.mobileMenuOpen);
+    } catch (e) {
+      // ignore in non-browser environments
+    }
+
+    // Focus quick start button after view init
+    setTimeout(() => {
+      this.quickStartBtn?.nativeElement?.focus();
+    }, 100);
+  }
+  
+  closeCortexReminder(): void {
+    if (this.pendingClipboardContent) {
+      // User confirmed - now copy to clipboard
+      this.copyToClipboard(this.pendingClipboardContent, this.pendingClipboardButtonId || undefined);
+      this.pendingClipboardContent = '';
+      this.pendingClipboardButtonId = null;
+    } else if (this.pendingCopyComponent) {
+      // User confirmed - now proceed with copy from guided journey
+      this.pendingCopyComponent.proceedWithCopy(this.pendingCopyComponent.metadata.fullContent);
+      this.pendingCopyComponent = null;
+    } else if (this.pendingExportFormat && this.pendingExportComponent) {
+      // User confirmed - now proceed with export (Cortex guided journey)
+      this.pendingExportComponent.proceedWithExport(this.pendingExportFormat);
+      this.pendingExportFormat = null;
+      this.pendingExportComponent = null;
+    } else if (this.pendingExportFormat && this.pendingExportMessageIndex !== null) {
+      // User confirmed - now proceed with export (Quick request)
+      this.proceedWithQuickRequestExport(this.pendingExportMessageIndex, this.pendingExportFormat);
+      this.pendingExportFormat = null;
+      this.pendingExportMessageIndex = null;
+    }
+    this.showCortexReminder = false;
+    this.cortexReminderConfirmed = false;
+  }
+
+  closeCortexReminderWithoutAction(): void {
+    // Close reminder without executing any action - just clear pending states
+    this.pendingClipboardContent = '';
+    this.pendingClipboardButtonId = null;
+    this.pendingCopyComponent = null;
+    this.pendingExportFormat = null;
+    this.pendingExportComponent = null;
+    this.pendingExportMessageIndex = null;
+    this.showCortexReminder = false;
+    this.cortexReminderConfirmed = false;
+  }
+
+  showCortexReminderForCopy(content: string, buttonId: string): void {
+    this.pendingClipboardContent = content;
+    this.pendingClipboardButtonId = buttonId;
+    this.showCortexReminder = true;
+  }
+
+  onExportRequested(event: { format: 'word' | 'pdf' | 'ppt', component: any }): void {
+    if (this.selectedFlow === 'thought-leadership') {
+      this.pendingExportFormat = event.format;
+      this.pendingExportComponent = event.component;
+      this.showCortexReminder = true;
+    } else {
+      // For non-cortex flows, export directly without reminder
+      event.component.proceedWithExport(event.format);
+    }
+  }
+
+  onCopyRequested(event: { content: string, component: any }): void {
+    // Show cortex reminder before copying in guided journey
+    this.pendingCopyComponent = event.component;
+    this.showCortexReminder = true;
+  }
+
+  /**
+   * Add a message to the chat messages array
+   * Centralized method for message addition to enable consistent handling
+   * Maintains a maximum of 14 messages (indices 0-13)
+   * When the 15th message is added, the oldest message is removed
+   * @param message The message to add
+   */
+  addMessage(message: Message): void {
+    this.messages.push(message);
+    // Keep only the last 14 messages (indices 0-13)
+    if (this.messages.length > 14) {
+      this.messages.shift();
+    }
+  }
+
+  ngOnDestroy(): void {
+    // Cleanup processing message rotations - commented out
+    // this.cleanupProcessingMessages();
+    this.destroy$.next();
+    this.destroy$.complete();
+  }
+
+  ngAfterViewChecked(): void {
+    if (this.shouldScrollToBottom) {
+      this.scrollToBottom();
+      this.shouldScrollToBottom = false;
+    }
+  }
+  
+  /**
+   * Load user profile from backend
+   */
+  private loadUserProfile(email: string): void {
+    let cleanEmail = email.replace('@dev365.', '@');
+    cleanEmail = cleanEmail.replace('@testenv.', '@');
+    console.log('[ChatComponent] Loading profile for email:', cleanEmail);
+    
+    this.chatService.getUserProfile(cleanEmail).subscribe({
+      next: (response: any) => {
+        this.userProfile = response;
+        console.log('[ChatComponent] User Profile loaded:', this.userProfile);
+        
+        // Set profile image URL if available
+        if (this.userProfile?.imageURL) {
+          this.profileImageUrl = this.userProfile.imageURL;
+        }
+        // Store jobTitle in profile variable
+        if (this.userProfile?.jobTitle) {
+          this.profile = this.userProfile.jobTitle;
+        }
+      },
+      error: (error) => {
+        console.error('[ChatComponent] Error loading user profile');
+      }
+    });
+  }
+
+  /**
+   * Initialize module access control based on user email and environment settings
+   * Checks if user is in the allowed list for each module
+   */
+  private initializeModuleAccess(userEmail: string): void {
+    // Normalize user email for comparison (trim and lowercase)
+    const userEmailLowerCase = String(userEmail ?? '').trim().toLowerCase();
+
+    // DocStudio module access control
+    if (environment.enableDocStudioAccessControl) {
+      // Filter array to ensure all items are strings
+      const docStudioUsers = Array.isArray(environment.docStudioAllowedUsers)
+        ? (environment.docStudioAllowedUsers as string[]).filter((email): email is string => typeof email === 'string')
+        : [];
+      // Compare using normalized (lowercase and trimmed) emails
+      this.docStudioAccessible = docStudioUsers.some(email => email.trim().toLowerCase() === userEmailLowerCase);
+      console.log(`[ChatComponent] DocStudio access for ${userEmailLowerCase}:`, this.docStudioAccessible);
+    } else {
+      this.docStudioAccessible = true; // Allow all users if control is disabled
+      console.log('[ChatComponent] DocStudio access control is disabled - all users have access');
+    }
+
+    // Market Intelligence module access control
+    if (environment.enableMarketIntelligenceAccessControl) {
+      // Filter array to ensure all items are strings
+      const miUsers = Array.isArray(environment.marketIntelligenceAllowedUsers)
+        ? (environment.marketIntelligenceAllowedUsers as string[]).filter((email): email is string => typeof email === 'string')
+        : [];
+      // Compare using normalized (lowercase and trimmed) emails
+      this.marketIntelligenceAccessible = miUsers.some(email => email.trim().toLowerCase() === userEmailLowerCase);
+      console.log(`[ChatComponent] Market Intelligence access for ${userEmailLowerCase}:`, this.marketIntelligenceAccessible);
+    } else {
+      this.marketIntelligenceAccessible = true; // Allow all users if control is disabled
+      console.log('[ChatComponent] Market Intelligence access control is disabled - all users have access');
+    }
+
+    // Cortex module access control
+    if (environment.enableCortexAccessControl) {
+      // Filter array to ensure all items are strings
+      const cortexUsers = Array.isArray(environment.cortexAllowedUsers)
+        ? (environment.cortexAllowedUsers as string[]).filter((email): email is string => typeof email === 'string')
+        : [];
+      // Compare using normalized (lowercase and trimmed) emails
+      this.cortexAccessible = cortexUsers.some(email => email.trim().toLowerCase() === userEmailLowerCase);
+      console.log(`[ChatComponent] Cortex access for ${userEmailLowerCase}:`, this.cortexAccessible);
+    } else {
+      this.cortexAccessible = true; // Allow all users if control is disabled
+      console.log('[ChatComponent] Cortex access control is disabled - all users have access');
+    }
+  }
+  
+  private subscribeToThoughtLeadership(): void {
+    this.tlChatBridge.message$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (message) => {
+          console.log('[ChatComponent] Received message from TL bridge:', message);
+          console.log('[ChatComponent] Message has thoughtLeadership metadata:', !!message.thoughtLeadership);
+          if (message.thoughtLeadership) {
+            console.log('[ChatComponent] TL metadata:', message.thoughtLeadership);
+            console.log('[ChatComponent] Content type:', message.thoughtLeadership.contentType);
+            console.log('[ChatComponent] Has podcast audio URL:', !!message.thoughtLeadership.podcastAudioUrl);
+          }
+          console.log('Pushing message to chat');
+          this.addMessage(message);
+          this.saveCurrentSession();
+          this.triggerScrollToBottom();
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in TL subscription:', err);
+        }
+      });
+  }
+
+  private subscribeToMarketIntelligence(): void {
+    console.log('[ChatComponent] Subscribing to Market Intelligence messages');
+    
+    this.miChatBridge.messageToChat$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (data) => {
+          if (data) {
+            console.log('[ChatComponent] Received message from MI bridge:', data);
+            
+            const assistantMessage: Message = {
+              role: 'assistant',
+              content: data.content,
+              timestamp: new Date(),
+              sources: undefined,
+              flowType: 'market-intelligence',
+              marketIntelligence: data.metadata  // Store MI metadata on the message
+            };
+
+            this.addMessage(assistantMessage);
+            this.saveCurrentSession();
+            this.triggerScrollToBottom();
+          }
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in MI subscription:', err);
+        }
+      });
+  }
+  
+  private subscribeToEditWorkflow(): void {
+    console.log('[ChatComponent] Subscribing to Edit Workflow messages');
+    
+    this.editWorkflowService.message$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (workflowMessage) => {
+          console.log('[ChatComponent] Received Edit Workflow message:', workflowMessage);
+          
+          // Handle message updates (e.g., paragraph approval state changes, loading states, next editor content)
+          if (workflowMessage.type === 'update') {
+            // Find existing paragraph edit message to update
+            // Look for message with awaiting_approval step (with or without paragraph edits)
+            const existingIndex = this.messages.findIndex(m => 
+              m.editWorkflow?.step === 'awaiting_approval' && 
+              m.editWorkflow?.threadId === workflowMessage.message.editWorkflow?.threadId
+            );
+            
+            if (existingIndex !== -1) {
+              // Update existing paragraph edit message with new state (create new array reference for change detection)
+              const existingMessage = this.messages[existingIndex];
+              if (workflowMessage.message.editWorkflow && existingMessage.editWorkflow) {
+                // Check if this is a next editor update (new paragraph edits from next editor)
+                const hasNewParagraphEdits = workflowMessage.message.editWorkflow.paragraphEdits && 
+                  workflowMessage.message.editWorkflow.paragraphEdits.length > 0;
+                
+                existingMessage.editWorkflow = {
+                  ...existingMessage.editWorkflow,
+                  ...workflowMessage.message.editWorkflow,
+                  threadId: workflowMessage.message.editWorkflow.threadId ?? existingMessage.editWorkflow.threadId,
+                  currentEditor: workflowMessage.message.editWorkflow.currentEditor ?? existingMessage.editWorkflow.currentEditor,
+                  isSequentialMode: workflowMessage.message.editWorkflow.isSequentialMode ?? existingMessage.editWorkflow.isSequentialMode,
+                  isLastEditor: workflowMessage.message.editWorkflow.isLastEditor ?? existingMessage.editWorkflow.isLastEditor,
+                  currentEditorIndex: workflowMessage.message.editWorkflow.currentEditorIndex ?? existingMessage.editWorkflow.currentEditorIndex,
+                  totalEditors: workflowMessage.message.editWorkflow.totalEditors ?? existingMessage.editWorkflow.totalEditors,
+                  paragraphEdits: workflowMessage.message.editWorkflow.paragraphEdits 
+                    ? [...workflowMessage.message.editWorkflow.paragraphEdits]
+                    : existingMessage.editWorkflow.paragraphEdits
+                };
+                
+                this.saveCurrentSession();
+                this.cdr.detectChanges();
+                
+                // Scroll to paragraph edits after update (especially when next editor content arrives)
+                // Use longer timeout for next editor to ensure DOM is fully updated
+                if (hasNewParagraphEdits && !workflowMessage.message.editWorkflow?.finalOutputGenerated) {
+                  setTimeout(() => {
+                    this.scrollToParagraphEdits(existingIndex);
+                  }, 300); // Longer timeout for next editor to ensure DOM is fully updated
+                }
+              } else {
+                this.saveCurrentSession();
+                this.cdr.detectChanges();
+              }
+              return;
+            }
+          }
+          
+          // If this is a progress message, update the existing one instead of creating new ones
+          if (workflowMessage.message.editWorkflow?.step === 'processing' && 
+              workflowMessage.message.editWorkflow?.editorProgress) {
+            // Find and update existing progress message
+            const existingIndex = this.messages.findIndex(m => 
+              m.editWorkflow?.step === 'processing' && 
+              m.editWorkflow?.editorProgress &&
+              m.content === '' // Progress messages have empty content
+            );
+            
+            if (existingIndex !== -1) {
+              // Update existing progress message
+              this.messages[existingIndex] = workflowMessage.message;
+            } else {
+              // First progress message, add it
+              console.log('[ChatComponent] Adding first progress message');
+              this.addMessage(workflowMessage.message);
+              this.isLoading=false;
+            }
+          } else {
+            // Regular message, add it
+            console.log('[ChatComponent] Adding regular workflow message');
+            this.addMessage(workflowMessage.message);
+            this.isLoading= false;
+            
+            // If this message has paragraph edits, scroll to top of paragraph edits section (instructions area)
+            if (workflowMessage.message.editWorkflow?.paragraphEdits && 
+                workflowMessage.message.editWorkflow.paragraphEdits.length > 0) {
+              this.saveCurrentSession();
+              this.cdr.detectChanges();
+              // Use longer timeout to ensure DOM is fully rendered, then scroll to top of paragraph edits
+              setTimeout(() => {
+                const messageIndex = this.messages.length - 1;
+                this.scrollToParagraphEdits(messageIndex);
+              }, 200);
+              return;
+            }
+            
+            // If this is a final output message (has thoughtLeadership with topic 'Final Revised Article'),
+            // don't scroll - keep user at paragraph edits section
+            if (workflowMessage.message.thoughtLeadership?.topic === 'Final Revised Article') {
+              this.saveCurrentSession();
+              this.cdr.detectChanges();
+              // Don't scroll - keep user's current position at paragraph edits
+              return;
+            }
+          }
+          
+          this.saveCurrentSession();
+          setTimeout(() => {
+            this.triggerScrollToBottom();
+          }, 100);
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in Edit Workflow subscription:', err);
+        }
+      });
+    
+    // Subscribe to workflow completion to clear state
+    this.editWorkflowService.workflowCompleted$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          console.log('[ChatComponent] Workflow completed - clearing state');
+          this.clearWorkflowState();
+        }
+      });
+    
+    // Subscribe to workflow started to clear previous state when new workflow begins
+    this.editWorkflowService.workflowStarted$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          console.log('[ChatComponent] Workflow started - clearing previous state');
+          this.clearWorkflowState();
+        }
+      });
+  }
+
+  private subscribeToDraftWorkflow(): void {
+    console.log('[ChatComponent] Subscribing to Draft Workflow messages');
+
+    this.draftWorkflowService.message$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (workflowMessage) => {
+          console.log('[ChatComponent] Received Draft Workflow message:', workflowMessage);
+          this.addMessage(workflowMessage.message);
+          this.saveCurrentSession();
+          setTimeout(() => {
+            this.scrollToBottom();
+          }, 100);
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in Draft Workflow subscription:', err);
+        }
+      });
+
+    this.draftWorkflowService.workflowCompleted$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          console.log('[ChatComponent] Draft Workflow completed - clearing state');
+          this.userInput = '';
+        }
+      });
+  }
+  
+  private subscribeToCanvasUpdates(): void {
+    this.canvasStateService.contentUpdate$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (update) => {
+          // Find the message by extracting index from messageId
+          const messageIndex = parseInt(update.messageId.replace('msg_', ''));
+          if (messageIndex >= 0 && messageIndex < this.messages.length) {
+            const message = this.messages[messageIndex];
+            // Update message content
+            message.content = update.updatedContent;
+            // Update thoughtLeadership metadata if it exists
+            if (message.thoughtLeadership) {
+              message.thoughtLeadership.fullContent = update.updatedContent;
+            }
+            this.saveCurrentSession();
+            this.cdr.detectChanges();
+          }
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in Canvas update subscription:', err);
+        }
+      });
+  }
+  
+
+  private subscribeToDdcGuidedDialog(): void {
+    this.ddcFlowService.guidedDialog$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (isOpen) => {
+          this.showDdcGuidedDialog = isOpen;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in DDC Guided Dialog subscription:', err);
+        }
+      });
+  }
+
+    private subscribeToMiGuidedDialog(): void {
+    this.miFlowService.guidedDialog$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (isOpen) => {
+          this.showGuidedDialog = isOpen;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in MI Guided Dialog subscription:', err);
+        }
+      });
+  }
+
+  private subscribeToTLGuidedDialog(): void {
+    this.tlFlowService.guidedDialog$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (isOpen) => {
+          this.showGuidedDialog = isOpen;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('[ChatComponent] Error in TL Guided Dialog subscription:', err);
+        }
+      });
+  }
+
+  private scrollToBottom(): void {
+    try {
+      if (this.messagesContainer) {
+        const element = this.messagesContainer.nativeElement;
+        element.scrollTop = element.scrollHeight;
+      }
+    } catch (err) {
+      console.error('Error scrolling to bottom:', err);
+    }
+  }
+
+  private scrollToParagraphEdits(messageIndex: number): void {
+    // Scroll to paragraph edits instructions section (top of paragraph edits, not bottom buttons)
+    // Use requestAnimationFrame to ensure DOM is fully rendered
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        try {
+          const element = this.messagesContainer?.nativeElement;
+          if (element && messageIndex >= 0 && messageIndex < this.messages.length) {
+            // Find the paragraph edits component in the message
+            const messageElements = element.querySelectorAll('.message');
+            if (messageElements[messageIndex]) {
+              const messageElement = messageElements[messageIndex];
+              const paragraphEditsElement = messageElement.querySelector('app-paragraph-edits');
+              if (paragraphEditsElement) {
+                // Prioritize finding result-title first (topmost element), then paragraph-instructions
+                // This ensures we scroll to the very top of paragraph edits section
+                const titleElement = paragraphEditsElement.querySelector('.result-title');
+                const instructionsElement = paragraphEditsElement.querySelector('.paragraph-instructions');
+                const sectionElement = paragraphEditsElement.querySelector('.result-section');
+                
+                // Use title element if available (topmost), otherwise instructions, then section
+                const targetElement = titleElement || instructionsElement || sectionElement || paragraphEditsElement;
+                
+                // Calculate position relative to scroll container
+                const containerRect = element.getBoundingClientRect();
+                const elementRect = targetElement.getBoundingClientRect();
+                const relativeTop = elementRect.top - containerRect.top + element.scrollTop;
+                
+                // Scroll container to show the top of paragraph edits with small offset
+                // This ensures the title/instructions are visible at the top
+                element.scrollTo({
+                  top: Math.max(0, relativeTop), // Small offset from top
+                  behavior: 'smooth'
+                });
+              } else {
+                // Fallback to scrolling to the message top
+                const containerRect = element.getBoundingClientRect();
+                const elementRect = messageElement.getBoundingClientRect();
+                const relativeTop = elementRect.top - containerRect.top + element.scrollTop;
+                
+                element.scrollTo({
+                  top: Math.max(0, relativeTop - 20),
+                  behavior: 'smooth'
+                });
+              }
+            }
+          }
+        } catch (err) {
+          console.error('Error scrolling to paragraph edits:', err);
+        }
+      }, 150); // Slightly longer delay to ensure DOM is fully ready
+    });
+  }
+  
+  private triggerScrollToBottom(): void {
+    this.shouldScrollToBottom = true;
+    this.cdr.detectChanges();
+  }
+  
+  /** Scroll to the top of a specific message (used for final output to stay at top) */
+  private scrollToMessageTop(messageIndex: number): void {
+    // Scroll to message element (stay at top of the message)
+    // Use requestAnimationFrame to ensure DOM is fully rendered
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        try {
+          const element = this.messagesContainer?.nativeElement;
+          if (element && messageIndex >= 0 && messageIndex < this.messages.length) {
+            // Find the message element
+            const messageElements = element.querySelectorAll('.message');
+            if (messageElements[messageIndex]) {
+              const messageElement = messageElements[messageIndex];
+              
+              // Scroll to the message element (top of message)
+              const containerRect = element.getBoundingClientRect();
+              const elementRect = messageElement.getBoundingClientRect();
+              const relativeTop = elementRect.top - containerRect.top + element.scrollTop;
+              
+              // Scroll container to show the top of message
+              element.scrollTo({
+                top: relativeTop - 20, // Add small offset from top
+                behavior: 'smooth'
+              });
+            }
+          }
+        } catch (err) {
+          console.error('Error scrolling to message top:', err);
+        }
+      }, 100); // Delay to ensure DOM is fully ready
+    });
+  }
+  
+  @HostListener('document:click', ['$event'])
+  onDocumentClick(event: Event): void {
+    // Close dropdown if click is outside
+    const target = event.target as HTMLElement;
+    if (!target.closest('.dropdown-wrapper')) {
+      this.openDropdown = null;
+    }
+    // Close export dropdown if click is outside
+    if (!target.closest('.export-dropdown')) {
+      Object.keys(this.showExportDropdown).forEach(key => {
+        this.showExportDropdown[parseInt(key)] = false;
+      });
+    }
+    // Close notification dropdown if click is outside
+    if (!target.closest('.notification-dropdown-wrapper')) {
+      this.showNotificationDropdown = false;
+    }
+  }
+  
+  @HostListener('document:keydown', ['$event'])
+  onKeyDown(event: KeyboardEvent): void {
+    // Keyboard shortcuts
+    if (event.metaKey || event.ctrlKey) {
+      switch (event.key) {
+        case 'k':
+          event.preventDefault();
+          this.focusInput();
+          break;
+        case 'n':
+          event.preventDefault();
+          this.goHome();
+          break;
+      }
+    }
+    
+    // Escape to close dialogs
+    if (event.key === 'Escape') {
+      if (this.showExploreShowcase) {
+        this.closeExploreShowcase();
+      }
+      if (this.showGuidedDialog) {
+        this.closeGuidedDialog();
+      }
+      if (this.openDropdown) {
+        this.openDropdown = null;
+      }
+    }
+
+    
+  }
+  
+  private focusInput(): void {
+    setTimeout(() => {
+      const inputElement = document.querySelector('.composer-textarea') as HTMLTextAreaElement;
+      if (inputElement) {
+        inputElement.focus();
+      }
+    }, 50);
+  }
+
+  private handleEditWorkflowFlow(trimmedInput: string): void {
+    // Add user message to chat
+    const messageContent = trimmedInput || (this.uploadedEditDocumentFile ? `Uploaded document: ${this.uploadedEditDocumentFile.name}` : '');
+    if (messageContent) {
+      const workflowUserMessage: Message = {
+        role: 'user',
+        content: messageContent,
+        timestamp: new Date()
+      };
+      this.addMessage(workflowUserMessage);
+      this.triggerScrollToBottom();
+    }
+
+    const fileToUpload = this.uploadedEditDocumentFile || undefined;
+    
+    // Let handleChatInput manage the workflow - it will detect intent and start workflow if needed
+    // This prevents double-triggering and ensures proper flow
+    this.editWorkflowService.handleChatInput(trimmedInput, fileToUpload).catch(error => {
+      console.error('[ChatComponent] Error in edit workflow');
+    });
+
+    this.userInput = '';
+    // Collapse composer after clearing input when delegating to edit workflow
+    this.resetComposerHeight();
+    if (fileToUpload) {
+      this.uploadedEditDocumentFile = null;
+    }
+    this.saveCurrentSession();
+  }
+
+  async sendMessage(): Promise<void> {
+    const trimmedInput = this.userInput.trim();
+
+    if ((!trimmedInput && !this.uploadedPPTFile && !this.uploadedEditDocumentFile && this.extractedDocuments.length === 0) || this.isLoading) {
+      return;
+    }
+
+    // // ====== HIGHEST PRIORITY: CHECK IF USER IS RESPONDING TO DRAFT SATISFACTION QUESTION ======
+    // const isAwaitingFeedback = this.tlChatBridge.isAwaitingDraftFeedback();
+    // const draftContext = this.tlChatBridge.getDraftContext();
+    // console.log('[ChatComponent] PRIORITY CHECK - isAwaitingDraftFeedback:', isAwaitingFeedback);
+    // console.log('[ChatComponent] PRIORITY CHECK - draftContext:', draftContext);
+    // console.log('[ChatComponent] PRIORITY CHECK - User input:', trimmedInput);
+    
+    // // Check if quick start draft workflow is awaiting satisfaction feedback
+    // const quickStartAwaitingFeedback = this.draftWorkflowService.isAwaitingSatisfactionFeedback;
+    // if (quickStartAwaitingFeedback) {
+    //   console.log('[ChatComponent] *** HANDLING QUICK START DRAFT SATISFACTION FEEDBACK ***');
+      
+    //   // Add user message first
+    //   const userMessage: Message = {
+    //     role: 'user',
+    //     content: trimmedInput,
+    //     timestamp: new Date()
+    //   };
+    //   this.messages.push(userMessage);
+    //   this.userInput = '';
+    //   this.resetComposerHeight();
+    //   this.triggerScrollToBottom();
+    //   this.saveCurrentSession();
+    //   console.log("Transferring to handle satisfaction flow");
+    //   // Route to draft workflow service for satisfaction handling (now async with LLM)
+    //   await this.draftWorkflowService.handleDraftSatisfaction(trimmedInput);
+    //   return;
+    // }
+    
+    // if (isAwaitingFeedback) {
+    //   console.log('[ChatComponent] *** HANDLING DRAFT FEEDBACK - Input: "' + trimmedInput + '" ***');
+    //   const satisfactionResult = await this.analyzeDraftSatisfactionWithLLM(trimmedInput, draftContext);
+    //   console.log('[ChatComponent] Satisfaction analysis result:', satisfactionResult);
+      
+    //   // Add user message first
+    //   const userMessage: Message = {
+    //     role: 'user',
+    //     content: trimmedInput,
+    //     timestamp: new Date()
+    //   };
+    //   this.messages.push(userMessage);
+    //   this.userInput = '';
+    //   this.resetComposerHeight();
+    //   this.triggerScrollToBottom();
+      
+    //   if (satisfactionResult.isPositive) {
+    //     // User is satisfied with the draft
+    //     console.log('[ChatComponent] ✓ User SATISFIED with draft - ending draft flow');
+    //     const acknowledgment: Message = {
+    //       role: 'assistant',
+    //       content: 'Great! I\'m glad you\'re satisfied with the content. You can now use it in your documents or make further edits as needed.',
+    //       timestamp: new Date()
+    //     };
+    //     this.messages.push(acknowledgment);
+    //     this.tlChatBridge.clearDraftContext();
+    //     console.log('[ChatComponent] Context cleared after satisfaction');
+    //     this.saveCurrentSession();
+    //     this.triggerScrollToBottom();
+    //     return;
+    //   } else if (satisfactionResult.hasImprovementRequest) {
+    //     // User wants improvements
+    //     console.log('[ChatComponent] ✗ User wants IMPROVEMENTS - Input:', satisfactionResult.improvementText);
+        
+    //     if (draftContext) {
+    //       console.log('[ChatComponent] Processing improvement request with context');
+    //       this.isLoading = true;
+          
+    //       const assistantMessage: Message = {
+    //         role: 'assistant',
+    //         content: '',
+    //         timestamp: new Date(),
+    //         isStreaming: true
+    //       };
+    //       this.messages.push(assistantMessage);
+          
+    //       // Prepare improvement message for backend
+    //       const improvementMessage = satisfactionResult.improvementText;
+          
+    //       // Send to backend with all preserved parameters
+    //       const draftParams = {
+    //         contentType: draftContext.contentType,
+    //         topic: draftContext.topic,
+    //         wordLimit: draftContext.wordLimit,
+    //         audienceTone: draftContext.audienceTone,
+    //         outlineDoc: draftContext.outlineDoc,
+    //         supportingDoc: draftContext.supportingDoc,
+    //         useFactivaResearch: draftContext.useFactivaResearch
+    //       };
+
+    //       const messages: Message[] = [{
+    //         role: 'user' as const,
+    //         content: improvementMessage,
+    //         timestamp: new Date()
+    //       }];
+          
+    //       this.chatService.streamDraftContent(messages, improvementMessage, draftParams).subscribe({
+    //         next: (chunk: any) => {
+    //           if (typeof chunk === 'string') {
+    //             assistantMessage.content += chunk;
+    //           } else if (chunk && chunk.type === 'content' && chunk.content) {
+    //             assistantMessage.content += chunk.content;
+    //           }
+    //           this.triggerScrollToBottom();
+    //         },
+    //         error: (error) => {
+    //           console.error('[ChatComponent] Error processing draft improvement:', error);
+    //           assistantMessage.isStreaming = false;
+    //           assistantMessage.content = 'I apologize, but I encountered an error while processing your improvement request. Please try again.';
+    //           this.isLoading = false;
+    //           this.tlChatBridge.clearDraftContext();
+    //           this.saveCurrentSession();
+    //         },
+    //         complete: () => {
+    //           console.log('[ChatComponent] Improvement streaming complete');
+    //           assistantMessage.isStreaming = false;
+    //           this.isLoading = false;
+              
+    //           // Ask for satisfaction again
+    //           if (assistantMessage.content && assistantMessage.content.trim()) {
+    //             const newSatisfactionMessage: Message = {
+    //               role: 'system',
+    //               content: 'Are you satisfied with this revised content? If not, let me know what else needs to be improved.',
+    //               timestamp: new Date()
+    //             };
+    //             this.messages.push(newSatisfactionMessage);
+                
+    //             // Update draft context with new content
+    //             draftContext.generatedContent = assistantMessage.content;
+    //             this.tlChatBridge.setDraftContext(draftContext);
+    //             console.log('[ChatComponent] Context updated with new content, still awaiting feedback');
+    //           }
+              
+    //           this.saveCurrentSession();
+    //           this.triggerScrollToBottom();
+    //         }
+    //       });
+          
+    //       this.saveCurrentSession();
+    //       return;
+    //     } else {
+    //       console.warn('[ChatComponent] Draft context not found, clearing and continuing');
+    //       this.tlChatBridge.clearDraftContext();
+    //       return;
+    //     }
+    //   }
+      
+    //   // If we get here, unclear response, just continue
+    //   console.log('[ChatComponent] Unclear satisfaction response, clearing draft context');
+    //   this.tlChatBridge.clearDraftContext();
+    //   this.saveCurrentSession();
+    //   return;
+    // }
+
+    // // ====== END OF DRAFT FEEDBACK HANDLING ======
+
+    // If user is replying to an earlier draft satisfaction prompt (quick-start or guided journey),
+    // continue as a normal chat message but include the draft content so the chat LLM has full context.
+    const quickStartAwaitingFeedback = this.draftWorkflowService.isAwaitingSatisfactionFeedback;
+    const draftContext = this.tlChatBridge?.getDraftContext?.();
+
+    if (quickStartAwaitingFeedback || (draftContext && draftContext.generatedContent)) {
+      console.log('[ChatComponent] Satisfaction reply detected - continuing as normal chat');
+      
+      // Add the user's reply to UI
+      const userMessage: Message = {
+        role: 'user',
+        content: trimmedInput,
+        timestamp: new Date()
+      };
+      this.addMessage(userMessage);
+      this.userInput = '';
+      this.resetComposerHeight();
+      this.triggerScrollToBottom();
+      this.saveCurrentSession();
+
+      // Clear draft workflow state BEFORE proceeding to normal chat
+      // This prevents the workflow from intercepting the message again
+      this.draftWorkflowService.cancelWorkflow();
+      
+      // Send via normal chat flow with just the user's reply (no extra context message)
+      await this.proceedWithNormalChat(trimmedInput);
+
+      // Clear draft context now that we've handled the satisfaction response
+      try { this.tlChatBridge.clearDraftContext?.(); } catch (e) { /* noop */ }
+      return;
+    }
+
+    // If draft workflow already active, route input directly and avoid duplicate user messages
+    if (this.draftWorkflowService.isActive) {
+      const userMessage: Message = {
+        role: 'user',
+        content: trimmedInput,
+        timestamp: new Date()
+      };
+      this.addMessage(userMessage);
+      this.userInput = '';
+      this.triggerScrollToBottom();
+      this.saveCurrentSession();
+      this.draftWorkflowService.handleChatInput(trimmedInput);
+      return;
+    }
+
+    const isThoughtLeadershipFlow = this.selectedFlow === 'thought-leadership';
+
+    // Quick Start Thought Leadership - Edit Content workflow
+    const workflowActive = this.editWorkflowService.isActive;
+    const hasEditWorkflowFile = !!this.uploadedEditDocumentFile;
+    const hasExtractedDocuments = this.extractedDocuments.length > 0; // Document analysis mode
+
+    // If there are extracted documents, skip edit workflow and go to normal chat
+    if (hasExtractedDocuments) {
+      console.log('[ChatComponent] Has extracted documents, proceeding with normal chat (document analysis)');
+      await this.proceedWithNormalChat(trimmedInput);
+      return;
+    }
+
+    // Check for edit intent asynchronously (hybrid approach: keyword + LLM)
+    if (isThoughtLeadershipFlow && (workflowActive || hasEditWorkflowFile)) {
+      // Workflow already active or file uploaded - proceed
+      this.editWorkflowService.handleChatInput(trimmedInput);
+      return;
+    }
+
+    // Check for edit intent if not already in workflow
+    if (isThoughtLeadershipFlow && !workflowActive && trimmedInput) {
+      // Quick check for draft intent keywords to avoid unnecessary edit detection
+      // const tlDraftKeywords = ['create', 'draft', 'write', 'generate content', 'draft content', 'create content', 'article', 'whitepaper', 'white paper', 'blog', 'executive brief'];
+      // const draftExclusionKeywords = ['refine', 'edit'];
+      // const userInputLower = trimmedInput.toLowerCase();
+      // const isExclusionPresent = draftExclusionKeywords.some(keyword => userInputLower.includes(keyword));
+      // const isDraftRequest = tlDraftKeywords.some(keyword => userInputLower.includes(keyword));
+      
+      // // If it's clearly a draft request, skip edit detection and go to draft flow
+      // if (isDraftRequest && !isExclusionPresent) {
+      //   console.log('[ChatComponent] Draft keywords detected, skipping edit intent check');
+      //   await this.proceedWithNormalChat(trimmedInput);
+      //   return;
+      // }
+      
+      // Add user message first
+      const userMessage: Message = {
+        role: 'user',
+        content: trimmedInput,
+        timestamp: new Date()
+      };
+      console.log(`[ChatComponent] Adding user message for edit intent detection ${userMessage.content}`);
+      this.addMessage(userMessage);
+      this.userInput = '';
+      this.resetComposerHeight();
+      this.triggerScrollToBottom();
+
+      // Show typing-dots while analyzing request
+      // const loadingMessage: Message = {
+      //   role: 'assistant',
+      //   content: '',
+      //   timestamp: new Date(),
+      //   isStreaming: true
+      // };
+      // console.log(`[ChatComponent] Showing typing-dots for intent detection`);
+      // this.messages.push(loadingMessage);
+      // this.triggerScrollToBottom();
+
+      // Use async intent detection (LLM-based)
+      // try {
+      //   const intentResult = await this.editWorkflowService.detectEditIntent(trimmedInput);
+      //   // Remove loading message
+      //   const loadingIndex = this.messages.indexOf(loadingMessage);
+      //   if (loadingIndex !== -1) {
+      //     this.messages.splice(loadingIndex, 1);
+      //   }
+
+      //   if (intentResult.hasEditIntent) {
+      //     // Start workflow - workflow service handles Path 1 (direct editor) vs Path 2 (selection)
+      //     this.editWorkflowService.handleChatInput(trimmedInput);
+      //   } else {
+      //     // No edit intent - continue with normal chat flow
+      //     await this.proceedWithNormalChat(trimmedInput);
+      //   }
+      // } catch (error) {
+      //   console.error('Error detecting edit intent:', error);
+      //   // Remove loading message
+      //   const loadingIndex = this.messages.indexOf(loadingMessage);
+      //   if (loadingIndex !== -1) {
+      //     this.messages.splice(loadingIndex, 1);
+      //   }
+      //   // Fallback to normal chat flow on error
+      //   await this.proceedWithNormalChat(trimmedInput);
+      // }
+      //return;
+    }
+
+    // No edit intent detected or not in TL flow - continue with normal chat
+    await this.proceedWithNormalChat(trimmedInput);
+  }
+
+  private async proceedWithNormalChat(trimmedInput: string): Promise<void> {
+    const userInputLower = trimmedInput.toLowerCase();
+    const isThoughtLeadershipFlow = this.selectedFlow === 'thought-leadership';
+    
+    // If draft workflow is active, route input to workflow service
+    // if (this.draftWorkflowService.isActive) {
+    //   // Add user message to chat first
+    //   const userMessage: Message = {
+    //     role: 'user',
+    //     content: trimmedInput,
+    //     timestamp: new Date()
+    //   };
+    //   this.messages.push(userMessage);
+    //   this.userInput = '';
+    //   this.triggerScrollToBottom();
+    //   this.saveCurrentSession();
+      
+    //   // Handle the input in the workflow
+    //   this.draftWorkflowService.handleChatInput(trimmedInput);
+    //   return;
+    // }
+    
+    // Check if user is requesting sanitization
+    const sanitizationKeywords = ['sanitize', 'sanitise', 'sanitization', 'sanitation', 'remove sensitive', 'clean up', 'strip data', 'anonymize', 'anonymise'];
+    const isSanitizationRequest = sanitizationKeywords.some(keyword => userInputLower.includes(keyword));
+
+    // Check if user is requesting draft/create presentation
+    //const draftKeywords = ['create presentation', 'draft presentation', 'create a deck', 'draft a deck', 'build presentation', 'make presentation', 'new presentation', 'create slides'];
+    
+    //const isDraftRequest = draftKeywords.some(keyword => userInputLower.includes(keyword));
+    
+    // Check if user is requesting podcast generation (ONLY in TL mode)
+    // const podcastKeywords = ['podcast', 'generate podcast', 'create podcast', 'make podcast', 'convert to podcast', 'audio version', 'turn into podcast', 'audio narration'];
+    // const isPodcastRequest = isThoughtLeadershipFlow && podcastKeywords.some(keyword => userInputLower.includes(keyword));
+
+    // Check for Rewrite Intent first (before checking draft keywords)
+    // if (this.isRewriteIntent(trimmedInput)) {
+    //   console.log('[ChatComponent-Old] Rewrite intent detected, delegating to draft workflow service');
+    //   // Add user message to chat first
+    //   const userMessage: Message = {
+    //     role: 'user',
+    //     content: trimmedInput,
+    //     timestamp: new Date()
+    //   };
+    //   this.messages.push(userMessage);
+    //   this.userInput = '';
+    //   this.triggerScrollToBottom();
+    //   this.saveCurrentSession();
+      
+    //   this.draftWorkflowService.handleChatInput(trimmedInput);
+    //   return;
+    // }
+
+    // Check if user is requesting draft content creation in TL mode
+    //const tlDraftKeywords = ['draft', 'write', 'generate content', 'draft content', 'create content', 'article', 'whitepaper', 'white paper', 'blog', 'executive brief'];
+    //const isTLDraftRequest = isThoughtLeadershipFlow && tlDraftKeywords.some(keyword => userInputLower.includes(keyword));
+
+    //console.log('[ChatComponent-Old] selectedFlow:', this.selectedFlow, 'isThoughtLeadershipFlow:', isThoughtLeadershipFlow, 'isTLDraftRequest:', isTLDraftRequest);
+    //console.log('[ChatComponent-Old] Input contains draft keywords:', tlDraftKeywords.some(keyword => userInputLower.includes(keyword)));
+
+    // If there's an uploaded PPT file and NOT a sanitization request, process it
+    // if (this.uploadedPPTFile && !isSanitizationRequest) {
+    //   this.processPPTUpload();
+    //   return;
+    // }
+    
+    // If user asks to create/draft content in TL mode, use LLM to detect topic and content type
+    // if (isTLDraftRequest && !this.isDraftFallback) {
+    //   // Add user message to chat immediately
+    //   const userMessage: Message = {
+    //     role: 'user',
+    //     content: trimmedInput,
+    //     timestamp: new Date()
+    //   };
+    //   this.messages.push(userMessage);
+    //   this.userInput = '';
+    //   this.triggerScrollToBottom();
+    //   this.saveCurrentSession();
+      
+    //   try {
+    //     const draftIntent = await this.draftWorkflowService.detectDraftIntent(trimmedInput);
+    //     console.log('[ChatComponent-Old] Draft intent detected:', draftIntent);
+    //     console.log('[ChatComponent-Old] Content type array:', draftIntent.detectedContentType, 'Length:', draftIntent.detectedContentType?.length);
+        
+    //     if (draftIntent.hasDraftIntent) {
+    //       console.log('[ChatComponent-Old] Starting conversational quick draft with topic:', draftIntent.detectedTopic, 'contentType:', draftIntent.detectedContentType?.[0]);
+          
+    //       // If content type is missing, use beginWorkflow to start full input flow
+    //       if (!draftIntent.detectedContentType || draftIntent.detectedContentType.length === 0) {
+    //         console.log('[ChatComponent-Old] Content type missing, starting full workflow with topic:', draftIntent.detectedTopic);
+    //         this.draftWorkflowService.beginWorkflow(draftIntent.detectedTopic || '', '', draftIntent.wordLimit, draftIntent.audienceTone);
+    //       } else {
+    //         console.log('[ChatComponent-Old] Content type found, using startQuickDraftConversation');
+    //         // Start conversational flow with detected content type
+    //         const topic = draftIntent.detectedTopic || '';
+    //         const contentType = this.formatContentType(draftIntent.detectedContentType?.[0] || 'article');
+    //         const wordLimit = draftIntent.wordLimit || undefined;
+    //         const audienceTone = draftIntent.audienceTone || undefined;
+    //         this.draftWorkflowService.startQuickDraftConversation(topic, contentType, trimmedInput, wordLimit, audienceTone);
+    //       }
+    //       return;
+    //     }
+    //   } catch (error) {
+    //     console.error('[ChatComponent-Old] Error detecting draft intent:', error);
+    //   }
+    //   // Fallback: show options without topic if detection fails
+    //   this.isDraftFallback= true;
+    //   await this.proceedWithNormalChat(trimmedInput);
+    //   //this.showDraftContentTypeOptions(trimmedInput);
+    //   return;
+    // }
+    // this.isDraftFallback= false;
+    // If user asks for podcast generation in TL mode, open podcast flow
+    // if (isPodcastRequest) {
+    //   this.openPodcastFlow(trimmedInput);
+    //   return;
+    // }
+
+    // If user asks to sanitize, start conversational workflow
+    // if (isSanitizationRequest) {
+    //   this.startSanitizationConversation();
+    //   return;
+    // }
+
+    // If user asks to create/draft presentation
+    // if (isDraftRequest) {
+    //   const userMessage: Message = {
+    //     role: 'user',
+    //     content: trimmedInput,
+    //     timestamp: new Date()
+    //   };
+    //   console.log(`[ChatComponent] Adding user message for draft request ${userMessage.content}`);
+    //   this.messages.push(userMessage);
+
+    //   const assistantMessage: Message = {
+    //     role: 'assistant',
+    //     content: '📝 I\'d be happy to help you create a presentation! To provide the best draft, please tell me:\n\n1. **Topic**: What is the main subject?\n2. **Objective**: What do you want to achieve?\n3. **Audience**: Who will view this presentation?\n\nYou can describe these in your next message, or click the "Guided Journey" button above for a structured form.',
+    //     timestamp: new Date()
+    //   };
+    //   this.messages.push(assistantMessage);
+    //   this.userInput = '';
+    //   // Collapse composer immediately after clearing input for draft request path
+    //   this.resetComposerHeight();
+    //   this.saveCurrentSession();
+    //   return;
+    // }
+
+    // Prepare user message content with multiple documents support
+    const hasExtractedDocuments = this.extractedDocuments.length > 0;
+    
+    let userMessageContent = this.userInput.trim();
+    
+    // Store extracted text from all documents permanently in message content for context preservation
+    // This ensures follow-up questions maintain document context
+    if (hasExtractedDocuments) {
+      // Build document summary for UI display with word counts - each document on a new line
+      const documentSummaries = this.extractedDocuments.map(doc => {
+        const wordCount = this.countWords(doc.extractedText);
+        return `\n[${doc.fileName}   (${wordCount} words)]`;
+      }).join(' , \n');
+      userMessageContent += `\n\n${this.extractedDocuments.length} document(s) uploaded: ${documentSummaries}`;
+      
+      // Append all extracted texts with word counts
+      for (const doc of this.extractedDocuments) {
+        const wordCount = this.countWords(doc.extractedText);
+        userMessageContent += `\n\nExtracted Text From Document (${doc.fileName} - ${wordCount} words):\n${doc.extractedText}`;
+      }
+    }
+    
+    // If no user input but file uploaded, generate default message
+    if (!userMessageContent && (this.uploadedEditDocumentFile || this.uploadedPPTFile)) {
+      const fileName = this.uploadedEditDocumentFile?.name || this.uploadedPPTFile?.name || 'document';
+      userMessageContent = `Uploaded document: ${fileName}`;
+    }
+    
+    const userMessage: Message = {
+      role: 'user',
+      content: userMessageContent || this.userInput,
+      timestamp: new Date()
+    };
+    
+    const totalExtractedLength = this.extractedDocuments.reduce((sum, doc) => sum + doc.extractedText.length, 0);
+    const estimatedTokens = hasExtractedDocuments ? this.estimateTotalTokens() : 0;
+    console.log(`[ChatComponent] Adding user message with ${hasExtractedDocuments ? `${this.extractedDocuments.length} document(s), total chars: ${totalExtractedLength}, estimated tokens: ${estimatedTokens}` : 'regular input'}`);
+    
+    if (userMessage.content) {
+      this.addMessage(userMessage);
+    }
+    this.triggerScrollToBottom();
+    
+    this.userInput = '';
+    this.resetComposerHeight();
+    this.isLoading = true;
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date()
+    };
+    this.addMessage(assistantMessage);
+    // this.selectProcessingMessageForMessage(this.messages.length - 1);
+    this.triggerScrollToBottom();
+
+    const messagesToSend = this.messages
+      .filter(m => m.role !== 'system')
+      .map(m => ({ role: m.role, content: m.content }));
+
+    // Ensure we have a session ID before sending
+    if (!this.currentSessionId) {
+      this.currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      console.log('[ChatComponent] Generated new session ID:', this.currentSessionId);
+    }
+    if (this.selectedFlow === 'ppt') {
+      console.log("step 1:",this.extractedDocuments);
+      const appendedText = this.extractedDocuments?.map(d => d.extractedText).join("\n\n") || '';
+      let ddcMessage = trimmedInput + (appendedText ? `\n\nSupporting docs:\n${appendedText}` : '');
+      
+      // If user submitted file without message, provide a default message
+      if (!trimmedInput && (this.uploadedPPTFile || this.extractedDocuments.length > 0)) {
+        ddcMessage = `User uploaded a document`;
+        if (appendedText) {
+          ddcMessage += `\n\nSupporting docs:\n${appendedText}`;
+        }
+      }
+
+      // Build FormData path: include PPT file when available
+      const pptFile = this.uploadedPPTFile || undefined;
+      this.uploadedPPTFile = null; // consume file so it isn't reused
+      
+      // Generate session_id if not exists (for chat history persistence only)
+      if (!this.currentSessionId) {
+        this.currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      }
+      
+      // First message should have blank conversation_id, subsequent messages use the one from backend
+      const conversationIdToSend = this.currentDdcConversationId || '';
+
+      this.chatService.ddcChatAgent(
+        ddcMessage, 
+        conversationIdToSend,  // blank string on first message, backend ID on subsequent messages
+        pptFile,
+        this.userId,
+        this.currentSessionId   // Use session_id for chat history persistence
+      ).subscribe({
+        next: (result: any) => {
+          // result may be { blob, conversation_id, summary } or JSON { message, conversation_id }
+          let downloadGenerated = false; // Track if download was generated in this response
+          
+          if (result && result.blob) {
+            assistantMessage.content = `I've processed your presentation${pptFile ? ` "${pptFile.name}"` : ''}. You can download it below.\nIf you’d like to sanitize another PowerPoint file, please upload the new file to continue.`;
+            const url = window.URL.createObjectURL(result.blob);
+            const filename = (pptFile && pptFile.name) ? pptFile.name.replace(/\.pptx?$/, '_ddc_processed.pptx') : 'ddc_processed.pptx';
+            assistantMessage.downloadUrl = url;
+            assistantMessage.downloadFilename = filename;
+            downloadGenerated = true; // Mark that download was generated
+            // Reset conversation_id for next message to start fresh conversation
+            this.currentDdcConversationId = null;
+            if (result.summary) {
+              try {
+                assistantMessage.content += `\n\nSanitization Summary:\n${JSON.stringify(result.summary, null, 2)}`;
+              } catch (e) {
+                assistantMessage.content += `\n\nSanitization Summary: ${result.summary}`;
+              }
+            }
+          } else if (result && result.message) {
+            // Extract download URL from message if present
+            const urlMatch = result.message.match(/href=["']([^"']+)["']/);
+            if (urlMatch && urlMatch[1]) {
+              const downloadUrl = urlMatch[1];
+              assistantMessage.downloadUrl = downloadUrl;
+              assistantMessage.downloadFilename = 'presentation.pptx';
+              downloadGenerated = true; // Mark that download was generated
+              // Reset conversation_id for next message to start fresh conversation
+              this.currentDdcConversationId = null;
+              
+              // Clean the message to show user-friendly text
+              assistantMessage.content += result.message.replace(
+                /Please click <a[^>]*>here<\/a>/gi,
+                'Click below'
+              ).replace(/<[^>]+>/g, ''); // Remove any remaining HTML tags
+            } else {
+              assistantMessage.content += result.message;
+            }
+          } else if (typeof result === 'string') {
+            assistantMessage.content += result;
+          } else if (result && result.content) {
+            assistantMessage.content += result.content;
+          } else {
+            assistantMessage.content += 'The DDC service responded.';
+          }
+
+          // Only update conversation_id from response if download was not generated in this response
+          if (result && result.conversation_id && !downloadGenerated) {
+            this.currentDdcConversationId = result.conversation_id;
+            console.log('[ChatComponent] DDC conversation_id:', result.conversation_id);
+          }
+
+          this.triggerScrollToBottom();
+        },
+        error: (error: any) => {
+          console.error('[ChatComponent] DDC Chat Agent Error');
+          assistantMessage.content = 'Sorry — we ran into an issue while processing your request.<br>Please try submitting it again.<br>Still having trouble? Reach out to us via the <b>Support</b> option for assistance.';
+          assistantMessage.isHtml = true;
+          this.isLoading = false;
+          this.currentAction = '';
+          this.triggerScrollToBottom();
+        },
+        complete: () => {
+          this.isLoading = false;
+          this.extractedDocuments = [];
+          this.uploadedEditDocumentFile = null;
+          this.saveCurrentSession();
+          this.triggerScrollToBottom();
+        }
+      });
+
+      // Prevent falling through to the generic chat path
+      return;
+    }
+
+    // For Thought Leadership flow, use the new tl_chat_agent API
+    // which handles both edit intent detection and normal streaming
+    if (isThoughtLeadershipFlow) {
+      this.handleTlChatAgentResponse(
+        messagesToSend,
+        assistantMessage,
+        trimmedInput
+      );
+      return;
+    }
+
+    this.chatService.streamChat(
+      messagesToSend,
+      this.userId,
+      this.currentSessionId,
+      this.dbThreadId || undefined,
+      this.getSourceFromFlow()
+    ).subscribe({
+      next: (content: string) => {
+        assistantMessage.content += content;
+        this.triggerScrollToBottom();
+      },
+      error: (error: any) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Sorry — we ran into an issue while processing your request.<br>Please try submitting it again.<br>Still having trouble? Reach out to us via the <b>Support</b> option for assistance.';
+        assistantMessage.isHtml = true;
+        this.isLoading = false;
+        
+        // Clear extracted documents and file on error
+        this.extractedDocuments = [];
+        this.uploadedEditDocumentFile = null;
+        
+        this.triggerScrollToBottom();
+      },
+      complete: () => {
+        this.isLoading = false;
+        
+        // Clear extracted documents and file after successful send
+        this.extractedDocuments = [];
+        this.uploadedEditDocumentFile = null;
+        
+        this.saveCurrentSession();
+        this.triggerScrollToBottom();
+      }
+    });
+  }
+
+  /**
+   * Handle tl_chat_agent API response which can return:
+   * 1. JSON response with edit intent workflow data -> trigger edit workflow
+   * 2. JSON response with placemat generation -> display message and continue chat
+   * 3. Streaming response for normal chat -> stream content
+   */
+  private handleTlChatAgentResponse(
+    messagesToSend: Array<{role: string, content: string}>,
+    assistantMessage: Message,
+    trimmedInput: string
+  ): void {
+    try {
+      // Track if we received actual content (not just metadata) and if metadata was in the stream
+      let receivedActualContent = false;
+      let receivedMetadata = false;
+      
+      const subscription = this.chatService.streamTlChatAgent(
+        messagesToSend,
+        this.userId,
+        this.currentSessionId || undefined,
+        this.dbThreadId || undefined,
+        this.getSourceFromFlow()
+      ).subscribe({
+        next: (response: any) => {
+          console.log('[ChatComponent] Received response from tl_chat_agent:', response);
+
+          // Check if response is a JSON object with special metadata (not a string chunk)
+          // Edit intent workflow and placemat responses come as complete JSON objects with isStreamChunk === false
+          if (response && typeof response === 'object' && response.isStreamChunk === false) {
+            
+            // ===== CASE 1: EDIT INTENT WORKFLOW =====
+            if (response.is_edit_intent && response.confidence >= 0.7) {
+              console.log('[ChatComponent] Detected edit intent workflow response:', response);
+
+              // Remove the loading assistant message since workflow will handle its own messaging
+              const messageIndex = this.messages.indexOf(assistantMessage);
+              if (messageIndex !== -1) {
+                this.messages.splice(messageIndex, 1);
+              }
+
+              this.isLoading = false;
+
+              // Trigger edit workflow with the detected data
+              console.log('[ChatComponent] Starting edit workflow with response data');
+              
+              const file = this.uploadedEditDocumentFile ?? undefined;
+              if (response.detected_editors && response.detected_editors.length > 0) {
+                this.editWorkflowService.beginWorkflowWithEditors(response.detected_editors, file);
+              } else {
+                this.editWorkflowService.beginWorkflow(file);
+              }
+              
+              // Store the response for potential later use by workflow
+              (window as any)._editIntentResponse = response;
+
+              this.saveCurrentSession();
+              this.extractedDocuments = [];
+              this.uploadedEditDocumentFile = null;
+              return;
+            }
+            // ===== CASE 2: PLACEMAT FEATURE =====
+            if (response.target_format === 'placemat' && response.status === 'success') {
+              console.log('[ChatComponent] Detected placemat generation response:', response);
+
+              // Extract HTTPS URL ending with .pptx from the message
+              const httpsUrlMatch = response.message.match(/https:\/\/[^\s<>"']+\.pptx/i);
+              if (httpsUrlMatch) {
+                const downloadUrl = httpsUrlMatch[0];
+                assistantMessage.downloadUrl = downloadUrl;
+                assistantMessage.downloadFilename = 'placemat.pptx';
+              }
+              
+              // Keep the full message content as is, just remove HTML tags
+              assistantMessage.content = response.message.replace(/<[^>]+>/g, '').trim();
+              
+              // Mark as HTML so it renders properly if there are any HTML elements
+              assistantMessage.isHtml = true;
+
+              this.isLoading = false;
+              this.saveCurrentSession();
+              this.extractedDocuments = [];
+              this.uploadedEditDocumentFile = null;
+              this.triggerScrollToBottom();
+              return;
+            }
+            // ===== CASE 3: Podcast FEATURE =====
+            if (response.is_podcast_intent) {
+              console.log('[ChatComponent] Detected podcast intent response:', response);
+  
+                // Remove the loading assistant message
+                const messageIndex = this.messages.indexOf(assistantMessage);
+                if (messageIndex !== -1) {
+                  this.messages.splice(messageIndex, 1);
+                }
+                
+                // Clear all messages to start fresh (like opening a new flow)
+                this.messages = [];
+                
+                // Reset chat state completely
+                this.isLoading = false;
+                this.userInput = '';
+                this.resetComposerHeight();
+                this.extractedDocuments = [];
+                this.uploadedEditDocumentFile = null;
+                this.uploadedPPTFile = null;
+                this.editDocumentUploadError = '';
+                
+                // Clear any active workflows
+                if (this.editWorkflowService.isActive) {
+                  this.editWorkflowService.cancelWorkflow();
+                }
+                if (this.draftWorkflowService.isActive) {
+                  this.draftWorkflowService.cancelWorkflow();
+                }
+                
+                // Save empty session (clean slate)
+                this.saveCurrentSession();
+                
+                // Force UI update
+                this.cdr.detectChanges();
+                
+                // Small delay to ensure DOM is cleared before opening flow
+                setTimeout(() => {
+                  // Open format translator guided journey (like starting fresh)
+                  this.tlFlowService.openFlow('format-translator');
+                  console.log('[ChatComponent] Opened format translator flow with clean slate');
+                }, 100);
+                
+                return;
+            }
+
+            // ===== CASE 4: OTHER JSON RESPONSES (future features) =====
+            // Log unhandled JSON responses for debugging
+            console.warn('[ChatComponent] Received JSON response but no matching handler:', response);
+          }
+
+          // Otherwise, treat as streaming content for normal chat
+          // Response is a string chunk from the streaming data
+          if (typeof response === 'string') {
+            receivedActualContent = true; // Mark that we received actual content (not metadata)
+            assistantMessage.content += response;
+            this.triggerScrollToBottom();
+          }
+          // Handle metadata signal - indicates workflow interaction
+          else if (response && typeof response === 'object' && response.type === 'metadata' && response.isMetadata) {
+            console.log('[ChatComponent] Received metadata signal - workflow interaction:', response.workflow);
+            receivedMetadata = true; // Mark that metadata was present
+          }
+          // Handle webpage_ready signal
+          else if (response && typeof response === 'object' && response.type === 'webpage_ready' && response.isWebpageReady) {
+            console.log('[ChatComponent] Received webpage_ready signal:', response);
+            assistantMessage.webpageReadyCompleted = true;
+            // If backend provides a URL, store it for direct opening
+            if (response.url) {
+              assistantMessage.webpageReadyUrl = response.url;
+            }
+            this.triggerScrollToBottom();
+          }
+        },
+        error: (error: any) => {
+          console.error('[ChatComponent] Error in tl_chat_agent');
+          assistantMessage.content = 'Sorry — we ran into an issue while processing your request.<br>Please try submitting it again.<br>Still having trouble? Reach out to us via the <b>Support</b> option for assistance.';
+          assistantMessage.isHtml = true;
+          this.isLoading = false;
+          this.extractedDocuments = [];
+          this.uploadedEditDocumentFile = null;
+          this.triggerScrollToBottom();
+        },
+        complete: () => {
+          console.log('[ChatComponent] tl_chat_agent streaming complete');
+          
+          // Append disclaimer to Cortex AI-generated content only if:
+          // 1. Actual content was received (not just metadata)
+          // 2. No metadata was present (metadata indicates workflow interaction, not final output)
+          // 3. Content exists and is not an error message or fallback message
+          const isFallbackMessage = assistantMessage.content && assistantMessage.content.includes('I am ready to help. What would you like to do?');
+          
+          if (receivedActualContent && 
+              !receivedMetadata &&
+              assistantMessage.content && 
+              !assistantMessage.content.includes('Sorry — we ran into an issue') &&
+              !isFallbackMessage &&
+              assistantMessage.content.trim().length > 0) {
+            const disclaimer = '\n\n---\n\n*This content was generated with the assistance of artificial intelligence and is intended as an initial draft. It may incorporate references to broader industry or third-party sources that may not be exhaustive or fully aligned at a granular level. PwC professionals must review and validate the content to ensure accuracy, appropriate attribution, and suitability for internal or client-facing use, and remain fully responsible for the final version.*';
+            assistantMessage.content += disclaimer;
+            console.log('[ChatComponent] Disclaimer appended to Cortex response');
+          } else if (!receivedActualContent) {
+            console.log('[ChatComponent] No actual content received - skipping disclaimer');
+          } else if (receivedMetadata) {
+            console.log('[ChatComponent] Metadata detected in stream - skipping disclaimer (workflow interaction)');
+          } else if (isFallbackMessage) {
+            console.log('[ChatComponent] Fallback message detected - skipping disclaimer');
+          }
+          
+          this.isLoading = false;
+          this.extractedDocuments = [];
+          this.uploadedEditDocumentFile = null;
+          this.saveCurrentSession();
+          this.triggerScrollToBottom();
+        }
+      });
+    } catch (error) {
+      console.error('[ChatComponent] Error handling tl_chat_agent response');
+      assistantMessage.content = 'Sorry — we ran into an issue while processing your request.<br>Please try submitting it again.<br>Still having trouble? Reach out to us via the <b>Support</b> option for assistance.';
+      assistantMessage.isHtml = true;
+      this.isLoading = false;
+      this.extractedDocuments = [];
+      this.uploadedEditDocumentFile = null;
+    }
+  }
+  
+  processPPTUpload(): void {
+    if (!this.uploadedPPTFile) return;
+    
+    const userPrompt = this.userInput.trim() || 'Improve my presentation';
+    const userMessage: Message = {
+      role: 'user',
+      content: `${userPrompt}: ${this.uploadedPPTFile.name}`,
+      timestamp: new Date()
+    };
+    this.addMessage(userMessage);
+    this.triggerScrollToBottom();
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Improving presentation...'
+    };
+    this.addMessage(assistantMessage);
+    this.triggerScrollToBottom();
+  this.userInput = '';
+  // Collapse composer after sending PPT upload prompt
+  this.resetComposerHeight();
+  this.isLoading = true;
+    this.currentAction = 'Improving presentation...';
+
+    const pptFile = this.uploadedPPTFile;
+    this.uploadedPPTFile = null;
+
+    this.chatService.improvePPT(pptFile, null).subscribe({
+      next: (blob) => {
+        assistantMessage.actionInProgress = undefined;
+        assistantMessage.content = `I've successfully improved your presentation "${pptFile.name}". Here's what was done:\n\n• Fixed spelling and grammar errors\n• Aligned text and shapes\n• Applied consistent formatting\n\nYou can download the improved version below.`;
+        
+        // Create download URL from blob
+        const url = window.URL.createObjectURL(blob);
+        const filename = pptFile.name.replace('.pptx', '_improved.pptx');
+        assistantMessage.downloadUrl = url;
+        assistantMessage.downloadFilename = filename;
+        // Reset conversation_id for next message to start fresh conversation
+        this.currentDdcConversationId = null;
+      },
+      error: (error) => {
+        console.error('[ChatComponent] Error improving PPT');
+        assistantMessage.actionInProgress = undefined;
+        assistantMessage.content = 'Sorry, I encountered an error while improving the presentation. Please try again.';
+        this.isLoading = false;
+        this.currentAction = '';
+      },
+      complete: () => {
+        this.isLoading = false;
+        this.currentAction = '';
+        this.saveCurrentSession();
+        this.triggerScrollToBottom();
+      }
+    });
+  }
+
+  startSanitizationConversation(): void {
+    const userMessage: Message = {
+      role: 'user',
+      content: this.userInput,
+      timestamp: new Date()
+    };
+    this.addMessage(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      isStreaming: true
+    };
+    this.addMessage(assistantMessage);
+    this.selectProcessingMessageForMessage(this.messages.length - 1);
+
+  this.userInput = '';
+  // Collapse composer after starting sanitization conversation
+  this.resetComposerHeight();
+  this.isLoading = true;
+  this.triggerScrollToBottom();
+
+    // Include file name if uploaded
+    const fileName = this.uploadedPPTFile ? this.uploadedPPTFile.name : undefined;
+
+    this.chatService.streamSanitizationConversation(
+      this.messages.filter(m => !m.isStreaming),
+      fileName
+    ).subscribe({
+      next: (chunk: string) => {
+        assistantMessage.content += chunk;
+        this.triggerScrollToBottom();
+      },
+      error: (error: any) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Something did not go as expected while sanitizing your presentation.<br>Check that you are uploading a valid PowerPoint file (.pptx) and try again.<br>Still having trouble? Reach out to us via the <b>Support</b> option for assistance.';
+        assistantMessage.isHtml = true;
+        assistantMessage.isStreaming = false;
+        this.isLoading = false;
+      },
+      complete: () => {
+        assistantMessage.isStreaming = false;
+        this.isLoading = false;
+        this.saveCurrentSession();
+      }
+    });
+  }
+
+  processSanitizePPT(): void {
+    if (!this.uploadedPPTFile) return;
+    
+    const userPrompt = this.userInput.trim() || 'Sanitize my presentation';
+    const userMessage: Message = {
+      role: 'user',
+      content: `${userPrompt}: ${this.uploadedPPTFile.name}`,
+      timestamp: new Date()
+    };
+    this.addMessage(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Sanitizing presentation...'
+    };
+    this.addMessage(assistantMessage);
+  this.addMessage(assistantMessage);
+
+  this.userInput = '';
+  // Collapse composer after initiating PPT sanitization
+  this.resetComposerHeight();
+  this.isLoading = true;
+    this.currentAction = 'Sanitizing presentation: removing sensitive data, client names, numbers, and metadata...';
+
+    const pptFile = this.uploadedPPTFile;
+    this.uploadedPPTFile = null;
+
+    // Use empty strings for client name and products since we're in free text mode
+    this.chatService.sanitizePPT(pptFile, '', '').subscribe({
+      next: (response) => {
+        const url = window.URL.createObjectURL(response.blob);
+
+        let statsMessage = '';
+        if (response.stats) {
+          statsMessage = `\n\nSanitization Statistics:\n• Numeric replacements: ${response.stats.numeric_replacements}\n• Name replacements: ${response.stats.name_replacements}\n• Hyperlinks removed: ${response.stats.hyperlinks_removed}\n• Notes removed: ${response.stats.notes_removed}\n• Logos removed: ${response.stats.logos_removed}\n• Slides processed: ${response.stats.slides_processed}`;
+          
+          if (response.stats.llm_replacements) {
+            statsMessage += `\n• LLM-detected items: ${response.stats.llm_replacements}`;
+          }
+        }
+
+        assistantMessage.content = `Your presentation has been sanitized!\n\nSanitization complete:\n• All numeric data replaced with X patterns\n• Personal information removed\n• Client/product names replaced with placeholders\n• Logos and watermarks removed\n• Speaker notes cleared\n• Metadata sanitized` + statsMessage + '\n\nYou can download your sanitized presentation below.';
+        assistantMessage.downloadUrl = url;
+        assistantMessage.downloadFilename = 'sanitized_presentation.pptx';
+        assistantMessage.previewUrl = url;
+        assistantMessage.actionInProgress = undefined;
+        // Reset conversation_id for next message to start fresh conversation
+        this.currentDdcConversationId = null;
+        this.isLoading = false;
+        this.currentAction = '';
+      },
+      error: (error: any) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Something did not go as expected while sanitizing your presentation.<br>Check that you are uploading a valid PowerPoint file (.pptx) and try again.<br>Still having trouble? Reach out to us via the <b>Support</b> option for assistance.';
+        assistantMessage.isHtml = true;
+        assistantMessage.actionInProgress = undefined;
+        this.isLoading = false;
+        this.currentAction = '';
+      },
+      complete: () => {
+        this.saveCurrentSession();
+      }
+    });
+  }
+
+  toggleDraftForm(): void {
+    this.showDraftForm = !this.showDraftForm;
+  }
+
+  onExploreWhatsNextClick(): void {
+    if (!this.isProfilePresent(this.profile) || !this.cortexAccessible) {
+      return;
+    }
+
+    this.showExploreShowcase = true;
+  }
+
+  closeExploreShowcase(): void {
+    this.showExploreShowcase = false;
+  }
+
+  selectFlow(flow: 'ppt' | 'thought-leadership' | 'market-intelligence'): void {
+    // Close My Requests panel when switching flows
+    this.closeMyRequestsPanel();
+
+    // Save current session before switching flows to prevent data loss
+    this.saveCurrentSession();
+    
+    // Clean up processing messages when switching flows
+    this.cleanupProcessingMessages();
+    
+    this.selectedFlow = flow;
+    
+    // Trigger fade-out animation if on landing page
+    if (this.showLandingPage) {
+      this.landingPageFadingOut = true;
+      // Hide landing page after animation completes (500ms)
+      setTimeout(() => {
+        this.showLandingPage = false;
+        this.landingPageFadingOut = false;
+      }, 500);
+    }
+    
+    // Reset all flow states
+    this.showDraftForm = false;
+    this.showGuidedDialog = false;
+    this.showPromptSuggestions = false;
+    this.isDraftFallback = false;
+    this.closeMobileSidebar();
+    
+    // Clear uploaded files and composer input when switching flows
+    this.uploadedEditDocumentFile = null;
+    this.uploadedPPTFile = null;
+    this.extractedDocuments = []; // Clear extracted documents from triggerDocumentAnalysisUpload
+    this.editDocumentUploadError = ''; // Clear any upload error messages
+    this.userInput = ''; // Clear composer textarea text
+    this.messages = [];
+    
+    // Reset session ID for new flow to ensure fresh session tracking
+    this.currentSessionId = null;
+    this.currentDdcConversationId = null; // Reset DDC conversation_id when switching flows
+    
+    // Update visibility flags based on selected flow
+    this.showMIFlow = flow === 'market-intelligence';
+    this.showTLFlow = flow === 'thought-leadership';
+    this.showDDCFlow = flow === 'ppt';
+    
+    // Reset edit workflow if active
+    if (this.editWorkflowService.isActive) {
+      this.editWorkflowService.cancelWorkflow();
+    }
+    
+    // Reset to initial state - just show welcome with only the initial assistant message
+    if (this.messages.length > 1) {
+      this.messages = this.messages.slice(0, 1);
+    }
+    
+    console.log('[ChatComponent] Flow changed to:', flow);
+  }
+  
+  goHome(): void {
+    // Close My Requests panel when going home
+    this.closeMyRequestsPanel();
+
+    // Clean up processing messages when going home
+    this.cleanupProcessingMessages();
+    
+    // Reset to home state (landing page)
+    this.showLandingPage = true;
+    this.selectedFlow = undefined;
+    this.showDraftForm = false;
+    this.showGuidedDialog = false;
+    this.showPromptSuggestions = false;
+    this.showAttachmentArea = false;
+    this.isDraftFallback = false;
+    this.userInput = '';
+    this.resetComposerHeight();
+    this.referenceDocument = null;
+    this.closeMobileSidebar();
+    
+    // Completely clear all chat messages when going home
+    this.messages = [];
+    
+    // Reset all form data
+    this.draftData = {
+      topic: '',
+      objective: '',
+      audience: '',
+      additional_context: '',
+      reference_document: '',
+      reference_link: ''
+    };
+    
+    this.thoughtLeadershipData = {
+      topic: '',
+      perspective: '',
+      target_audience: '',
+      document_text: '',
+      target_format: '',
+      additional_context: '',
+      reference_document: '',
+      reference_link: ''
+    };
+    
+    this.originalPPTFile = null;
+    this.referencePPTFile = null;
+    this.sanitizePPTFile = null;
+    this.uploadedPPTFile = null;
+    this.uploadedEditDocumentFile = null;
+    this.editorialDocumentFile = null;
+    this.extractedDocuments = []; // Clear extracted documents when going home
+    this.editDocumentUploadError = ''; // Clear any upload error messages
+    // Reset edit workflow if active
+    if (this.editWorkflowService.isActive) {
+      this.editWorkflowService.cancelWorkflow();
+    }
+    this.currentSessionId = null;
+    this.isLoading = false;
+  }
+
+  private getSourceFromFlow(): string {
+    switch (this.selectedFlow) {
+      case 'ppt':
+        return 'DDDC';
+      case 'thought-leadership':
+        return 'Cortex';
+      case 'market-intelligence':
+        return 'Market_Intelligence';
+      default:
+        // Default to Cortex for regular chat (not Chat source)
+        return 'Cortex';
+    }
+  }
+  openSupport(): void {
+    // Open support form in new tab with security safeguards
+    const supportUrl = 'https://forms.office.com/r/SyRYeBArVj';
+    
+    // Use window.open with noopener and noreferrer to prevent tabnabbing attacks
+    const newWindow = window.open(supportUrl, '_blank', 'noopener,noreferrer');
+    
+    // Additional safeguard: ensure opener is null to prevent window.opener access
+    if (newWindow) {
+      newWindow.opener = null;
+    }
+  }
+
+  startNewChat(): void {
+    // Clean up processing messages when starting a new chat
+    this.cleanupProcessingMessages();
+
+    // Close My Requests panel if open when starting new chat
+    this.closeMyRequestsPanel();
+
+    
+    // Reset chat while preserving the current flow selection
+    this.showDraftForm = false;
+    this.showGuidedDialog = false;
+    this.showPromptSuggestions = false;
+    this.showAttachmentArea = false;
+    this.isDraftFallback = false;
+    this.userInput = '';
+    this.resetComposerHeight();
+    this.referenceDocument = null;
+    this.closeMobileSidebar();
+    
+    // Clear chat history but keep the current flow
+    this.messages = [];
+    
+    // Reset all form data
+    this.draftData = {
+      topic: '',
+      objective: '',
+      audience: '',
+      additional_context: '',
+      reference_document: '',
+      reference_link: ''
+    };
+    
+    this.thoughtLeadershipData = {
+      topic: '',
+      perspective: '',
+      target_audience: '',
+      document_text: '',
+      target_format: '',
+      additional_context: '',
+      reference_document: '',
+      reference_link: ''
+    };
+    
+    this.originalPPTFile = null;
+    this.referencePPTFile = null;
+    this.sanitizePPTFile = null;
+    this.uploadedPPTFile = null;
+    this.uploadedEditDocumentFile = null;
+    this.editorialDocumentFile = null;
+    this.extractedDocuments = []; // Clear extracted documents when starting new chat
+    this.editDocumentUploadError = ''; // Clear any upload error messages
+    this.currentDdcConversationId = null; // Reset DDC conversation_id for fresh conversation in Doc Studio
+    
+    // Reset edit workflow if active
+    if (this.editWorkflowService.isActive) {
+      this.editWorkflowService.cancelWorkflow();
+    }
+    
+    this.currentSessionId = null;
+    this.isLoading = false;
+    
+    // Keep the current flow - DO NOT call selectFlow()
+  }
+  
+
+  toggleMobileMenu(): void {
+    this.mobileMenuOpen = !this.mobileMenuOpen;
+  }
+  
+  closeMobileSidebar(): void {
+    this.mobileMenuOpen = false;
+  }
+  
+  toggleSidebar(): void {
+    this.sidebarExpanded = !this.sidebarExpanded;
+  }
+  
+  toggleThemeDropdown(): void {
+    this.showThemeDropdown = !this.showThemeDropdown;
+  }
+  
+  getFeatureName(): string {
+    if (this.selectedFlow === 'ppt') {
+      return 'Doc studio';
+    } else if (this.selectedFlow === 'thought-leadership') {
+      return 'Cortex content studio';
+    } else if (this.selectedFlow === 'market-intelligence') {
+      return 'Market intelligence and insights';
+    }
+    return 'Think Space';
+
+  }
+  
+  /**
+   * Select and store a random processing message for a message by its index
+   * COMMENTED OUT - No longer used with static message only
+   * @param messageIndex The index of the message in the messages array
+   */
+  // selectProcessingMessageForMessage(messageIndex: number): void {
+  //   // Initialize if not already done
+  //   if (!this.processingMessageLines.has(messageIndex)) {
+  //     this.processingMessageLines.set(messageIndex, []);
+  //     this.currentProcessingIndex.set(messageIndex, 0);
+  //     this.startProcessingMessageRotation(messageIndex);
+  //   }
+  // }
+
+  selectProcessingMessageForMessage(messageIndex: number): void {
+    // No-op: rotation mechanism commented out
+  }
+
+  /**
+   * Start the rotation interval for processing messages
+   * COMMENTED OUT - No longer used with static message only
+   * @param messageIndex The index of the message in the messages array
+   */
+  // private startProcessingMessageRotation(messageIndex: number): void {
+  //   // ...rotation logic commented out...
+  // }
+
+  private startProcessingMessageRotation(messageIndex: number): void {
+    // No-op: rotation mechanism commented out
+  }
+
+  /**
+   * Schedule the next processing message with a random interval from the predefined list
+   * COMMENTED OUT - No longer used with static message only
+   * @param messageIndex The index of the message in the messages array
+   */
+  // private scheduleNextProcessingMessage(messageIndex: number): void {
+  //   // Get random interval from predefined list
+  //   const randomInterval = this.PROCESSING_MESSAGE_INTERVALS[
+  //     Math.floor(Math.random() * this.PROCESSING_MESSAGE_INTERVALS.length)
+  //   ];
+  //   // ...rest of rotation logic commented out...
+  // }
+
+  private scheduleNextProcessingMessage(messageIndex: number): void {
+    // No-op: rotation mechanism commented out
+  }  /**
+   * Get a random unused index from the processing messages list
+   * COMMENTED OUT - No longer used with static message only
+   * @param messageIndex The index of the message in the messages array
+   * @returns A random index that hasn't been used in the current cycle
+   */
+  // private getRandomUnusedIndex(messageIndex: number): number {
+  //   // ...rotation logic commented out...
+  // }
+
+  private getRandomUnusedIndex(messageIndex: number): number {
+    return 0; // No-op: rotation mechanism commented out
+  }
+
+  /**
+   * Check if a processing message line is completed
+   * COMMENTED OUT - No longer used with static message only
+   * @param messageIndex The index of the message
+   * @param lineIndex The index of the line within the message
+   * @returns True if the line is marked as completed
+   */
+  // isProcessingMessageCompleted(messageIndex: number, lineIndex: number): boolean {
+  //   // ...rotation logic commented out...
+  // }
+
+  isProcessingMessageCompleted(messageIndex: number, lineIndex: number): boolean {
+    return false; // No-op: rotation mechanism commented out
+  }
+
+  /**
+   * Check if a line is animating out (sliding window removal)
+   * COMMENTED OUT - No longer used with static message only
+   * @param messageIndex The index of the message
+   * @param lineIndex The index of the line within the message
+   * @returns True if the line is currently animating out
+   */
+  // isLineAnimatingOut(messageIndex: number, lineIndex: number): boolean {
+  //   // ...rotation logic commented out...
+  // }
+
+  isLineAnimatingOut(messageIndex: number, lineIndex: number): boolean {
+    return false; // No-op: rotation mechanism commented out
+  }
+
+  /**
+   * Clean up all processing message rotations (called on destroy)
+   * COMMENTED OUT - No longer used with static message only
+   */
+  // private cleanupProcessingMessages(): void {
+  //   // ...rotation logic commented out...
+  // }
+
+  private cleanupProcessingMessages(): void {
+    // No-op: rotation mechanism commented out
+  }
+  
+  /**
+   * Count the number of words in a text string
+   * @param text The text to count words in
+   * @returns The word count
+   */
+  countWords(text: string): number {
+    if (!text) return 0;
+    return text.trim().split(/\s+/).filter(word => word.length > 0).length;
+  }
+  /**
+   * Get the accumulated processing messages as an array of lines
+   * Returns single static 'Processing' message
+   * @param messageIndex The index of the message in the messages array
+   * @returns Array with single 'Processing' message
+   */
+  getProcessingMessageLines(messageIndex: number): string[] {
+    return ['Processing'];
+  }
+  
+  openGuidedDialog(): void {
+    // Context-aware: Show DDC workflows for ppt flow, TL workflows for thought-leadership flow
+    // For MI, opening Guided Journey directly opens conduct-research-flow
+    if (this.selectedFlow === 'ppt') {
+      this.showDdcGuidedDialog = true;
+    } else if (this.selectedFlow === 'thought-leadership') {
+      this.showGuidedDialog = true;
+    } else if (this.selectedFlow === 'market-intelligence') {
+      // For Market Intelligence, Guided Journey opens the conduct-research-flow directly
+      //this.miFlowService.openFlow('conduct-research');
+      this.showGuidedDialog = true;
+    }
+  }
+
+  onWorkflowSelected(workflowId: string): void {
+    console.log('[ChatComponent] DDC Workflow selected:', workflowId);
+    // Set context: opened from guided dialog
+    this.workflowOpenedFrom = 'guided-dialog';
+    this.showDdcGuidedDialog = false;
+    this.ddcFlowService.openFlow(workflowId as any);
+  }
+  
+  closeDdcGuidedDialog(): void {
+    this.showDdcGuidedDialog = false;
+    // Reset workflow context when guided dialog closes
+    this.workflowOpenedFrom = null;
+  }
+  
+  // Chat history methods
+  loadSavedSessions(): void {
+    try {
+      const stored = localStorage.getItem(this.STORAGE_KEY);
+      if (stored) {
+        const sessions = JSON.parse(stored);
+        // Convert string dates back to Date objects
+        this.savedSessions = sessions.map((s: any) => ({
+          ...s,
+          timestamp: new Date(s.timestamp),
+          lastModified: new Date(s.lastModified),
+          messages: s.messages.map((m: any) => ({
+            ...m,
+            timestamp: m.timestamp ? new Date(m.timestamp) : undefined
+          }))
+        }));
+      }
+    } catch (error) {
+      console.error('[ChatComponent] Error loading saved sessions');
+      this.savedSessions = [];
+    }
+  }
+  
+  saveCurrentSession(): void {
+    // Don't save if we only have the welcome message
+    if (this.messages.length <= 1) {
+      return;
+    }
+    
+    // Generate title from first user message or use default
+    let title = 'New Chat';
+    const firstUserMessage = this.messages.find(m => m.role === 'user');
+    if (firstUserMessage) {
+      title = firstUserMessage.content.slice(0, 50);
+      if (firstUserMessage.content.length > 50) {
+        title += '...';
+      }
+    }
+    
+    const now = new Date();
+    
+    if (this.currentSessionId) {
+      // Check if session exists in array
+      const index = this.savedSessions.findIndex(s => s.id === this.currentSessionId);
+      if (index !== -1) {
+        // Update existing session
+        this.savedSessions[index] = {
+          ...this.savedSessions[index],
+          messages: [...this.messages],
+          lastModified: now
+        };
+      } else {
+        // Session ID exists but not in array - create new session
+        const newSession: ChatSession = {
+          id: this.currentSessionId,
+          title: title,
+          messages: [...this.messages],
+          timestamp: now,
+          lastModified: now
+        };
+        
+        this.savedSessions.unshift(newSession);
+        
+        // Limit number of saved sessions
+        if (this.savedSessions.length > this.MAX_SESSIONS) {
+          this.savedSessions = this.savedSessions.slice(0, this.MAX_SESSIONS);
+        }
+      }
+    } else {
+      // Create new session when no session ID exists
+      this.currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const newSession: ChatSession = {
+        id: this.currentSessionId,
+        title: title,
+        messages: [...this.messages],
+        timestamp: now,
+        lastModified: now
+      };
+      
+      this.savedSessions.unshift(newSession);
+      
+      // Limit number of saved sessions
+      if (this.savedSessions.length > this.MAX_SESSIONS) {
+        this.savedSessions = this.savedSessions.slice(0, this.MAX_SESSIONS);
+      }
+    }
+    
+    // Save to localStorage
+    try {
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.savedSessions));
+    } catch (error) {
+      console.error('[ChatComponent] Error saving session');
+    }
+  }
+  
+  loadSession(sessionId: string): void {
+    const session = this.savedSessions.find(s => s.id === sessionId);
+    if (session) {
+      this.currentSessionId = sessionId;
+      this.messages = [...session.messages];
+      this.showGuidedDialog = false;
+      this.showDraftForm = false;
+      this.showPromptSuggestions = false;
+    }
+  }
+  
+  deleteSession(sessionId: string, event: Event): void {
+    event.stopPropagation();
+    this.savedSessions = this.savedSessions.filter(s => s.id !== sessionId);
+    
+    try {
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.savedSessions));
+    } catch (error) {
+      console.error('[ChatComponent] Error deleting session');
+    }
+    
+    // If we deleted the current session, go home
+    if (this.currentSessionId === sessionId) {
+      this.goHome();
+    }
+  }
+  
+  // ============ NEW: Database-driven chat history methods ============
+  
+  /**
+   * Toggle history panel and load sessions if opening for the first time
+   */
+  toggleHistoryPanel(): void {
+    this.showHistoryPanel = !this.showHistoryPanel;
+    
+    // Load sessions from database when opening the panel
+    if (this.showHistoryPanel && this.userId && this.userId !== 'anonymous@example.com') {
+      console.log('[ChatComponent-OLD] History panel opened - loading sessions');
+      this.loadDbSessions();
+    }
+  }
+  
+  /**
+   * Load chat sessions from database (lazy loading - titles only)
+   * Titles load instantly on login, full conversations load on-click
+   */
+  loadDbSessions(): void {
+    console.log('[ChatComponent-OLD] loadDbSessions() CALLED');
+    
+    if (!this.userId || this.userId === 'anonymous@example.com') {
+      console.warn('⚠️ [ChatComponent-OLD] Cannot load DB sessions: no valid user ID, userId:', this.userId);
+      return;
+    }
+    
+    this.isLoadingDbSessions = true;
+    console.log('⏳ [ChatComponent-OLD] Loading database sessions for user:', this.userId);
+    
+    console.log('[ChatComponent-OLD] Calling chatService.getUserSessions() with userId:', this.userId, 'and source:', this.selectedSourceFilter || 'undefined');
+    
+    this.chatService.getUserSessions(this.userId, this.selectedSourceFilter || undefined)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (sessions: any[]) => {
+          console.log('[ChatComponent-OLD] ✅ getUserSessions() returned:', sessions?.length || 0, 'sessions');
+          
+          if (!sessions || sessions.length === 0) {
+            console.log('[ChatComponent-OLD] ℹ️ No sessions found for user');
+            this.dbChatSessions = [];
+            this.isLoadingDbSessions = false;
+            return;
+          }
+          
+          // Convert API response to ChatSession format
+          this.dbChatSessions = (sessions || []).map(s => ({
+            id: s.session_id,
+            title: s.title || s.preview || 'Untitled',
+            messages: [], // Don't load full messages yet (lazy loading)
+            timestamp: new Date(s.created_at),
+            lastModified: new Date(s.updated_at),
+            source: s.source // Track source for filtering
+          }));
+          
+          console.log('✅ [ChatComponent-OLD] Successfully loaded', this.dbChatSessions.length, 'sessions from database');
+          this.isLoadingDbSessions = false;
+        },
+        error: (error) => {
+          console.error('[ChatComponent] Error loading sessions from database');
+          this.isLoadingDbSessions = false;
+          // Fall back to localStorage if database fails
+          console.log('[ChatComponent-OLD] Falling back to localStorage...');
+          this.loadSavedSessions();
+        }
+      });
+  }
+  
+  /**
+   * Load full conversation for a specific session (on-demand, lazy loading)
+   */
+  loadDbConversation(sessionId: string): void {
+    if (!sessionId) {
+      console.warn('⚠️ Cannot load conversation: no session ID provided');
+      return;
+    }
+    
+    this.isLoadingDbConversation = true;
+    console.log('⏳ Loading conversation for session:', sessionId);
+    
+    this.chatService.getSessionConversation(sessionId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (sessionDetail: any) => {
+          if (!sessionDetail) {
+            console.error('❌ No conversation data received');
+            this.isLoadingDbConversation = false;
+            return;
+          }
+          
+          console.log('📦 Raw session detail received:', sessionDetail);
+          
+          // Extract messages from the conversation data
+          let messagesArray: Message[] = [];
+          
+          // Handle different possible response formats
+          if (sessionDetail.conversation) {
+            if (Array.isArray(sessionDetail.conversation)) {
+              // Format 1: conversation is directly an array of messages
+              messagesArray = sessionDetail.conversation as Message[];
+            } else if (sessionDetail.conversation.messages && Array.isArray(sessionDetail.conversation.messages)) {
+              // Format 2: conversation is an object with messages property
+              messagesArray = sessionDetail.conversation.messages as Message[];
+            } else if (typeof sessionDetail.conversation === 'object') {
+              // Format 3: conversation is an object - try to extract messages if available
+              messagesArray = Object.values(sessionDetail.conversation).flat() as Message[];
+            }
+          }
+          
+          console.log('📨 Extracted', messagesArray.length, 'messages from conversation');
+          console.log('Messages:', messagesArray);
+          
+          // Update the messages for the session
+          const sessionIndex = this.dbChatSessions.findIndex(s => s.id === sessionId);
+          if (sessionIndex !== -1) {
+            this.dbChatSessions[sessionIndex].messages = messagesArray;
+            console.log('✅ Loaded', messagesArray.length, 'messages for session:', sessionId);
+          }
+          
+          // Load this conversation into the main messages display
+          this.currentSessionId = sessionId;
+          this.messages = messagesArray;
+          this.showGuidedDialog = false;
+          this.showDraftForm = false;
+          this.showPromptSuggestions = false;
+          this.showLandingPage = false; // Hide the landing page and show the chat window
+          
+          // Force change detection
+          this.cdr.markForCheck();
+          
+          this.isLoadingDbConversation = false;
+        },
+        error: (error) => {
+          console.error('[ChatComponent] Error loading conversation from database');
+          console.error('[ChatComponent] Error occurred');
+          this.isLoadingDbConversation = false;
+        }
+      });
+  }
+  
+  /**
+   * Delete a session from the database
+   */
+  deleteDbSession(sessionId: string, event: Event): void {
+    event.stopPropagation();
+    
+    console.log('⏳ Deleting session from database:', sessionId);
+    
+    this.chatService.deleteSession(sessionId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          // Remove from local array
+          this.dbChatSessions = this.dbChatSessions.filter(s => s.id !== sessionId);
+          console.log('✅ Session deleted successfully:', sessionId);
+          
+          // If we deleted the current session, go home
+          if (this.currentSessionId === sessionId) {
+            this.goHome();
+          }
+        },
+        error: (error) => {
+          console.error('[ChatComponent] Error deleting session from database');
+        }
+      });
+  }
+  
+  /**
+   * Filter database sessions by source (PPT, TL, MI, DDC)
+   */
+  filterDbSessionsBySource(source: string): void {
+    this.selectedSourceFilter = source;
+    console.log('🔍 Filtering sessions by source:', source);
+    this.loadDbSessions(); // Reload with filter
+  }
+  
+  // ============ END: Database-driven chat history methods ============
+  
+  
+  // Search/filter methods
+  filterOfferings(): void {
+    const query = this.searchQuery.toLowerCase().trim();
+    
+    if (!query) {
+      this.offeringVisibility['ppt'] = true;
+      this.offeringVisibility['thought-leadership'] = true;
+      return;
+    }
+    
+    // Check if "presentation drafting" or related keywords match
+    const pptKeywords = ['presentation', 'drafting', 'ppt', 'slides', 'deck', 'powerpoint', 'improve', 'sanitize', 'create'];
+    const tlKeywords = ['thought', 'leadership', 'article', 'research', 'insights', 'editorial', 'review', 'generate'];
+    
+    this.offeringVisibility['ppt'] = pptKeywords.some(keyword => keyword.includes(query) || query.includes(keyword));
+    this.offeringVisibility['thought-leadership'] = tlKeywords.some(keyword => keyword.includes(query) || query.includes(keyword));
+  }
+  
+  isOfferingVisible(offering: string): boolean {
+    return this.offeringVisibility[offering as keyof typeof this.offeringVisibility];
+  }
+  
+  getFilteredSessions(): ChatSession[] {
+    const query = this.searchQuery.toLowerCase().trim();
+    
+    if (!query) {
+      return this.savedSessions;
+    }
+    
+    return this.savedSessions.filter(session => 
+      session.title.toLowerCase().includes(query)
+    );
+  }
+  
+  closeGuidedDialog(): void {
+    this.showGuidedDialog = false;
+  }
+  
+  onTLActionCardClick(flowType: string): void {
+    //from Guided journey
+    this.closeGuidedDialog();
+    this.tlFlowService.openFlow(flowType as 'draft-content' | 'conduct-research' | 'edit-content' | 'refine-content' | 'format-translator' | 'generate-podcast' | 'ready-to-publish');
+  }
+
+  onCortexQuickStartReadyToPublish(message: Message): void {
+    // Get metadata from message
+    const metadata = this.getTLMetadata(message);
+    
+    if (!metadata || !metadata.fullContent) {
+      console.error('[ChatComponent] No content available for ready-to-publish');
+      this.toastService.error('Content is not available yet.');
+      return;
+    }
+
+    // Find message index for state tracking
+    const messageIndex = this.messages.indexOf(message);
+    if (messageIndex === -1) {
+      console.error('[ChatComponent] Message index not found');
+      return;
+    }
+
+    // Set preparing state
+    this.isPreparingDocument[messageIndex] = true;
+    this.isDocumentPrepared[messageIndex] = false;
+    this.toastService.info('Preparing document for publication...');
+    console.log('[ChatComponent] Generating document for quick start ready-to-publish');
+
+    // Clean content (same pattern as onRaisePhoenix in tl-action-buttons)
+    const cleanedText = metadata.fullContent
+      .replace(/<br>/g, '\n')
+      .replace(/<[^>]+>/g, '');
+
+    const title = metadata.topic?.trim() || 'Generated Content';
+    const plainText = cleanedText;
+    const filename = 'generated_content.docx';
+
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const endpoint = `${apiUrl}/api/v1/export/word-standalone`;
+
+    console.log('[ChatComponent] Generating DOCX document:', { 
+      title, 
+      contentType: metadata.contentType 
+    });
+
+    this.authFetchService.authenticatedFetch(endpoint, {
+      method: 'POST',
+      body: JSON.stringify({
+        content: plainText,
+        title,
+        content_type: metadata.contentType
+      })
+    })
+      .then(response => {
+        if (!response.ok) throw new Error('Failed to generate Word document');
+        return response.blob();
+      })
+      .then(blob => {
+        // Create File object from blob
+        const file = new File(
+          [blob], 
+          filename, 
+          { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }
+        );
+        
+        // Store in service for ready-to-publish-flow to access
+        this.tlFlowService.setPreGeneratedDocument(file);
+        
+        console.log('[ChatComponent] Document generated and stored in service');
+        
+        // Show prepared state
+        this.isPreparingDocument[messageIndex] = false;
+        this.isDocumentPrepared[messageIndex] = true;
+        
+        // Open the ready-to-publish flow
+        this.tlFlowService.openFlow('ready-to-publish');
+        
+        this.toastService.success('Document prepared! Opening publication window...');
+        
+        // Reset animation state after delay
+        setTimeout(() => {
+          this.isDocumentPrepared[messageIndex] = false;
+          this.cdr.detectChanges();
+        }, 2000);
+      })
+      .catch(err => {
+        console.error('[ChatComponent] Error generating DOCX document:');
+        this.toastService.error('Failed to generate document. Please try again.');
+        this.isPreparingDocument[messageIndex] = false;
+        this.isDocumentPrepared[messageIndex] = false;
+      });
+  }
+  
+  onMIActionCardClick(flowType: string): void {
+    //console.log("Inside onclickMIAction");
+    this.closeGuidedDialog();
+    this.miFlowService.openFlow(flowType as  'conduct-research' | 'create-pov' | 'prepare-client-meeting' | 'gather-proposal-insights' | 'target-industry-insights' | 'create-rfp-response');
+  }
+  
+  showActionPrompts(category: string): void {
+    this.selectedActionCategory = category;
+    this.showPromptSuggestions = true;
+  }
+  
+  usePrompt(prompt: string): void {
+    this.showPromptSuggestions = false;
+    this.userInput = prompt;
+    // Auto-send the message
+    this.sendMessage();
+  }
+  
+  triggerFileUpload(type: 'improve' | 'sanitize'): void {
+    // Create a file input element dynamically
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.pptx';
+    fileInput.onchange = (event: any) => {
+      const file = event.target.files[0];
+      if (file) {
+        if (type === 'improve') {
+          this.originalPPTFile = file;
+          this.selectedPPTOperation = 'improve';
+          this.userInput = `Improve my presentation: ${file.name}`;
+        } else {
+          this.sanitizePPTFile = file;
+          this.selectedPPTOperation = 'sanitize';
+          this.userInput = `Sanitize my presentation: ${file.name}`;
+        }
+        // Let the user review and send
+      }
+    };
+    fileInput.click();
+  }
+
+  createThoughtLeadership(): void {
+    this.isLoading = true;
+    this.showDraftForm = false;
+
+    let userMessageContent = '';
+    const tlData = this.thoughtLeadershipData;
+
+    switch (this.selectedTLOperation) {
+      case 'generate':
+        userMessageContent = `Generate thought leadership article:\n\nTopic: ${tlData.topic}\nPerspective: ${tlData.perspective}\nTarget Audience: ${tlData.target_audience}${tlData.additional_context ? '\nAdditional Context: ' + tlData.additional_context : ''}`;
+        if (this.referenceDocument) {
+          userMessageContent += `\n\nReference Document: ${this.referenceDocument.name} (Note: File content integration requires backend support)`;
+        }
+        if (tlData.reference_link) {
+          userMessageContent += `\nReference Link: ${tlData.reference_link}`;
+        }
+        break;
+      case 'research':
+        userMessageContent = `Research additional insights:\n\nTopic: ${tlData.topic}\nCurrent Perspective: ${tlData.perspective}${tlData.additional_context ? '\nAdditional Context: ' + tlData.additional_context : ''}`;
+        break;
+      case 'editorial':
+        if (this.editorialDocumentFile) {
+          userMessageContent = `Provide editorial support:\n\nDocument File: ${this.editorialDocumentFile.name} (Note: File content integration requires backend support)${tlData.additional_context ? '\n\nAdditional Instructions: ' + tlData.additional_context : ''}`;
+        } else if (tlData.document_text) {
+          userMessageContent = `Provide editorial support:\n\nDocument:\n${tlData.document_text}${tlData.additional_context ? '\n\nAdditional Instructions: ' + tlData.additional_context : ''}`;
+        }
+        break;
+      case 'improve':
+        userMessageContent = `Recommend improvements:\n\nDocument:\n${tlData.document_text}${tlData.additional_context ? '\n\nFocus Areas: ' + tlData.additional_context : ''}`;
+        break;
+      case 'translate':
+        userMessageContent = `Translate document format:\n\nOriginal Document:\n${tlData.document_text}\n\nTarget Format: ${tlData.target_format}${tlData.additional_context ? '\nAdditional Requirements: ' + tlData.additional_context : ''}`;
+        break;
+    }
+
+    const userMessage: Message = {
+      role: 'user',
+      content: userMessageContent,
+      timestamp: new Date()
+    };
+    // Only push message if it has content or attached files
+      this.addMessage(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date()
+    };
+    this.addMessage(assistantMessage);
+
+    // Convert reference_link to reference_urls array for backend
+    const requestPayload: ThoughtLeadershipRequest = {
+      operation: this.selectedTLOperation,
+      topic: tlData.topic,
+      perspective: tlData.perspective,
+      target_audience: tlData.target_audience,
+      document_text: tlData.document_text,
+      target_format: tlData.target_format,
+      additional_context: tlData.additional_context,
+      reference_urls: tlData.reference_link ? [tlData.reference_link] : undefined
+    };
+
+    this.chatService.streamThoughtLeadership(requestPayload).subscribe({
+      next: (content: string) => {
+        assistantMessage.content += content;
+      },
+      error: (error: any) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Sorry — we ran into an issue while processing your request.<br>Please try submitting it again.<br>Still having trouble? Reach out to us via the <b>Support</b> option for assistance.';
+        assistantMessage.isHtml = true;
+        this.isLoading = false;
+      },
+      complete: () => {
+        // Append disclaimer only if content contains URLs (indicating actual generated content, not prompts/metadata)
+        if (assistantMessage.content.includes('https')) {
+          const disclaimer = '\n\n---\n\n*This content was generated with the assistance of artificial intelligence and is intended as an initial draft. It may incorporate references to broader industry or third-party sources that may not be exhaustive or fully aligned at a granular level. PwC professionals must review and validate the content to ensure accuracy, appropriate attribution, and suitability for internal or client-facing use, and remain fully responsible for the final version.*';
+          assistantMessage.content += disclaimer;
+        }
+        
+        this.isLoading = false;
+        this.thoughtLeadershipData = {
+          topic: '',
+          perspective: '',
+          target_audience: '',
+          document_text: '',
+          target_format: '',
+          additional_context: '',
+          reference_document: '',
+          reference_link: ''
+        };
+        this.referenceDocument = null;
+        this.editorialDocumentFile = null;
+      }
+    });
+  }
+
+  createDraft(): void {
+    if (!this.draftData.topic || !this.draftData.objective || !this.draftData.audience) {
+      return;
+    }
+
+    this.isLoading = true;
+    this.showDraftForm = false;
+
+    // Prepare user message with reference information
+    let messageContent = `Create a presentation draft:\n\nTopic: ${this.draftData.topic}\nObjective: ${this.draftData.objective}\nAudience: ${this.draftData.audience}`;
+    if (this.draftData.additional_context) {
+      messageContent += `\nAdditional Context: ${this.draftData.additional_context}`;
+    }
+    if (this.referenceDocument) {
+      messageContent += `\n\nReference Document: ${this.referenceDocument.name} (Note: File content integration requires backend support)`;
+    }
+    if (this.draftData.reference_link) {
+      messageContent += `\nReference Link: ${this.draftData.reference_link}`;
+    }
+    
+    const userMessage: Message = {
+      role: 'user',
+      content: messageContent,
+      timestamp: new Date()
+    };
+    
+    this.addMessage(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date()
+    };
+    this.addMessage(assistantMessage);
+
+    // TODO: For file upload support, convert to FormData and update backend endpoint
+    this.chatService.streamDraft(this.draftData).subscribe({
+      next: (content: string) => {
+        assistantMessage.content += content;
+      },
+      error: (error) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Sorry — we ran into an issue while processing your request.<br>Please try submitting it again.<br>Still having trouble? Reach out to us via the <b>Support</b> option for assistance.';
+        assistantMessage.isHtml = true;
+        this.isLoading = false;
+      },
+      complete: () => {
+        // Append disclaimer only if content contains URLs (indicating actual generated content, not prompts/metadata)
+        if (assistantMessage.content.includes('https')) {
+          const disclaimer = '\n\n---\n\n*This content was generated with the assistance of artificial intelligence and is intended as an initial draft. It may incorporate references to broader industry or third-party sources that may not be exhaustive or fully aligned at a granular level. PwC professionals must review and validate the content to ensure accuracy, appropriate attribution, and suitability for internal or client-facing use, and remain fully responsible for the final version.*';
+          assistantMessage.content += disclaimer;
+        }
+        
+        this.isLoading = false;
+        this.draftData = {
+          topic: '',
+          objective: '',
+          audience: '',
+          additional_context: '',
+          reference_document: '',
+          reference_link: ''
+        };
+        this.referenceDocument = null;
+      }
+    });
+  }
+
+  handleKeyPress(event: KeyboardEvent): void {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      this.sendMessage();
+    }
+  }
+
+  onOriginalFileSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file && file.name.endsWith('.pptx')) {
+      this.originalPPTFile = file;
+    }
+  }
+
+  onReferenceFileSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file && file.name.endsWith('.pptx')) {
+      this.referencePPTFile = file;
+    }
+  }
+
+  formatFileSize(bytes: number): string {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  improvePPT(): void {
+    if (!this.originalPPTFile) {
+      return;
+    }
+
+    this.isLoading = true;
+    this.showDraftForm = false;
+    this.currentAction = 'Improving presentation: correcting spelling, aligning shapes, rebranding colors...';
+
+    const userMessage: Message = {
+      role: 'user',
+      content: `Improve PowerPoint presentation:\n\nOriginal File: ${this.originalPPTFile.name}${this.referencePPTFile ? '\nReference File: ' + this.referencePPTFile.name : ''}\n\nOperations: Correct spelling/grammar, align shapes, rebrand colors${this.referencePPTFile ? ' (using reference PPT)' : ''}`,
+      timestamp: new Date()
+    };
+    this.addMessage(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Processing your presentation...'
+    };
+    this.addMessage(assistantMessage);
+
+    this.chatService.improvePPT(this.originalPPTFile, this.referencePPTFile).subscribe({
+      next: (blob) => {
+        const url = window.URL.createObjectURL(blob);
+        
+        assistantMessage.content = 'Your presentation has been improved!\n\nChanges made:\n• Spelling and grammar corrections\n• Text and shape alignment\n' + (this.referencePPTFile ? '• Color rebranding applied\n' : '') + '\nYou can download your presentation below.';
+        assistantMessage.downloadUrl = url;
+        assistantMessage.downloadFilename = 'improved_presentation.pptx';
+        assistantMessage.previewUrl = url; // Preview will trigger download for PPTX files
+        assistantMessage.actionInProgress = undefined;
+        // Reset conversation_id for next message to start fresh conversation
+        this.currentDdcConversationId = null;
+        this.isLoading = false;
+        this.currentAction = '';
+        this.originalPPTFile = null;
+        this.referencePPTFile = null;
+      },
+      error: (error) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Sorry, I encountered an error while improving your presentation. Please make sure both files are valid PowerPoint files (.pptx).';
+        assistantMessage.actionInProgress = undefined;
+        this.isLoading = false;
+        this.currentAction = '';
+      }
+    });
+  }
+
+  onSanitizeFileSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file && file.name.endsWith('.pptx')) {
+      this.sanitizePPTFile = file;
+    }
+  }
+
+  sanitizePPT(): void {
+    if (!this.sanitizePPTFile) {
+      return;
+    }
+
+    this.isLoading = true;
+    this.showDraftForm = false;
+    this.currentAction = 'Sanitizing presentation: removing sensitive data, client names, numbers, and metadata...';
+
+    const userMessage: Message = {
+      role: 'user',
+      content: `Sanitize PowerPoint presentation:\n\nFile: ${this.sanitizePPTFile.name}${this.sanitizeData.clientName ? '\nClient Name: ' + this.sanitizeData.clientName : ''}${this.sanitizeData.products ? '\nProducts: ' + this.sanitizeData.products : ''}\n\nRemoving: All sensitive data, numbers, client names, personal info, logos, and metadata`,
+      timestamp: new Date()
+    };
+    this.addMessage(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Sanitizing your presentation...'
+    };
+    this.addMessage(assistantMessage);
+
+    this.chatService.sanitizePPT(this.sanitizePPTFile, this.sanitizeData.clientName, this.sanitizeData.products, this.sanitizeData.options).subscribe({
+      next: (response) => {
+        const url = window.URL.createObjectURL(response.blob);
+
+        let statsMessage = '';
+        if (response.stats) {
+          statsMessage = `\n\nSanitization Statistics:\n• Numeric replacements: ${response.stats.numeric_replacements}\n• Name replacements: ${response.stats.name_replacements}\n• Hyperlinks removed: ${response.stats.hyperlinks_removed}\n• Notes removed: ${response.stats.notes_removed}\n• Logos removed: ${response.stats.logos_removed}\n• Slides processed: ${response.stats.slides_processed}`;
+          if (response.stats.llm_replacements) {
+            statsMessage += `\n• LLM-detected items: ${response.stats.llm_replacements}`;
+          }
+        }
+
+        assistantMessage.content = 'Your presentation has been sanitized!\n\nSanitization complete:\n• All numeric data replaced with X patterns\n• Personal information removed\n• Client/product names replaced with placeholders\n• Logos and watermarks removed\n• Speaker notes cleared\n• Metadata sanitized' + statsMessage + '\n\nYou can download your sanitized presentation below.';
+        assistantMessage.downloadUrl = url;
+        assistantMessage.downloadFilename = 'sanitized_presentation.pptx';
+        assistantMessage.previewUrl = url; // Preview will trigger download for PPTX files
+        assistantMessage.actionInProgress = undefined;
+        // Reset conversation_id for next message to start fresh conversation
+        this.currentDdcConversationId = null;
+        this.isLoading = false;
+        this.currentAction = '';
+        this.sanitizePPTFile = null;
+        this.sanitizeData = { 
+          clientName: '', 
+          products: '',
+          options: {
+            numericData: true,
+            personalInfo: true,
+            financialData: true,
+            locations: true,
+            identifiers: true,
+            names: true,
+            logos: true,
+            metadata: true,
+            llmDetection: true,
+            hyperlinks: true,
+            embeddedObjects: true
+          }
+        };
+      },
+      error: (error: any) => {
+        console.error('Error:', error);
+        assistantMessage.content = 'Something did not go as expected while sanitizing your presentation.<br>Check that you are uploading a valid PowerPoint file (.pptx) and try again.<br>Still having trouble? Reach out to us via the <b>Support</b> option for assistance.';
+        assistantMessage.isHtml = true;
+        assistantMessage.actionInProgress = undefined;
+        this.isLoading = false;
+        this.currentAction = '';
+      }
+    });
+  }
+
+  setTheme(theme: ThemeMode): void {
+    this.themeService.setTheme(theme);
+  }
+
+  showChat(): void {
+    this.showDraftForm = false;
+  }
+
+  startQuickChat(): void {
+    // Quick Start goes directly to chat without showing the form
+    this.showDraftForm = false;
+    this.showAttachmentArea = true;
+    // Add a message from assistant to start the conversation
+    if (this.messages.length === 1) {
+      this.addMessage({
+        role: 'assistant',
+        content: 'I\'m ready to help! What would you like to create today?\n\n💡 **Tip:** Upload a PowerPoint file to improve or sanitize it, or start typing to create new content.',
+        timestamp: new Date()
+      });
+    }
+  }
+  
+
+  quickStart(): void {
+    // Check if Quick Start message has already been shown (avoid duplicates)
+    const hasQuickStartMessage = this.messages.some(msg => 
+      msg.role === 'assistant' && (
+        msg.content.includes('Here\'s what I can help you with in the Doc Studio') ||
+        msg.content.includes('Here\'s what I can help you with in Thought Leadership')
+      )
+    );
+    
+    if (hasQuickStartMessage) {
+      // Already shown, just scroll to bottom
+      this.triggerScrollToBottom();
+      return;
+    }
+    
+    // Create flow-specific welcome message
+    let welcomeMessage = '';
+    
+    if (this.selectedFlow === 'ppt') {
+      welcomeMessage = `Welcome! Here's what I can help you with in the **Doc Studio**:
+
+• **Prompt starter decks** - Quickly turn an objective or idea into a starter PowerPoint deck
+• **Draft presentations** - Transform a detailed Word/PDF outline into a PowerPoint presentation
+• **Sanitize presentations** - Remove sensitive data to create shareable PowerPoint presentations
+• **Event branding** - Tailor name tags, table tent cards, and banners`;
+    } else if(this.selectedFlow === 'thought-leadership') {
+//       welcomeMessage = `👋 Welcome! Here's what I can help you with in **Cortex**:
+
+// ✍️ **Draft Content** • Turn preliminary concepts or outlines into well-research, written, and edited drafts
+// 🔍 **Conduct Research** • Tap into PwC’s full knowledge bank and third-party sources to execute targeted research in minutes
+// ✏️ **Edit Content** • Deploy development, content, line, copy, and PwC brand alignment editors
+// 📄 **Refine Drafts** • Expand or compress content, change tone, or enhance with targeted research & insights
+// 🔄 **Adapt Content** • Transform final outputs into podcasts, social media posts or placemats
+
+
+// 💡 **Tips:** Type your request naturally, or click "Guided Journey" for a step-by-step wizard to create comprehensive content!`;
+      welcomeMessage = `Welcome! Here's what I can help you with in **Cortex content studio**:
+
+• **Draft content** - Turn preliminary outlines into well researched drafts
+• **Conduct research** - Tap into PwC’s knowledge bank and third-party sources to execute targeted research in minutes
+• **Edit content** - Deploy content, copy, and brand alignment editors
+• **Refine drafts** - Change length or tone of content, or enhance with targeted research and insights
+• **Adapt content** - Repurpose final outputs into podcasts, social media posts or placemats
+
+
+ **Tips:** Type your request naturally, or click "Guided journey" for a step-by-step wizard to create comprehensive content!`;
+    }
+    else{
+      welcomeMessage = ` Welcome! Here's what I can help you with in **Market intelligence and insights**:
+
+
+• **Conduct research** - Tap into PwC’s knowledge bank and third-party sources to execute targeted research in minutes
+• **Generate industry insights** - Synthesize PwC experience and market data to deliver structured industry intelligence
+• **Prepare for client meeting** - Rapidly ramp-up for client discussions with insights and research
+• **Create point of view** - Turn research into draft perspectives
+• **Gather proposal inputs** - Develop a proposal outline and pull sample frameworks, approaches, and quals
+• **Create RFP response** - Gather inputs to jumpstart your RFP response
+
+ **Tips:** Type your request naturally, or click "Guided journey" for a step-by-step wizard to create comprehensive content!`;
+
+    }
+    
+    // Add the welcome message to chat
+    this.addMessage({
+      role: 'assistant',
+      content: welcomeMessage,
+      timestamp: new Date()
+    });
+    
+    // Save session and scroll to bottom
+    this.saveCurrentSession();
+    this.triggerScrollToBottom();
+  }
+  
+  toggleDropdown(dropdownId: string, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.openDropdown = this.openDropdown === dropdownId ? null : dropdownId;
+  }
+
+  selectServiceProvider(provider: 'openai' | 'anthropic', event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.selectedServiceProvider = provider;
+    // Reset model selection to first available model for the new provider
+    this.selectedModel = this.availableModels[0];
+    this.openDropdown = null;
+    console.log('[ChatComponent] Service provider changed');
+    // Notify backend of the selection change (dummy endpoint)
+    this.sendLLMSelectionToBackend(this.selectedServiceProvider, this.selectedModel)
+      .catch(err => console.warn('[ChatComponent] Failed to send LLM selection to backend'));
+  }
+
+  selectModel(model: string, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.selectedModel = model;
+    this.openDropdown = null;
+    console.log(`[ChatComponent] Model changed to: ${model}`);
+    // Notify backend of the selection change (dummy endpoint)
+    this.sendLLMSelectionToBackend(this.selectedServiceProvider, this.selectedModel)
+      .catch(err => console.warn('[ChatComponent] sendLLMSelectionToBackend error', err));
+  }
+
+  /**
+   * Send a dummy POST to backend with selected LLM provider + model.
+   * This uses AuthFetchService to include auth when available.
+   */
+  private async sendLLMSelectionToBackend(provider: 'openai' | 'anthropic', model: string): Promise<void> {
+    try {
+      const apiBase = (environment && (environment as any).apiUrl) ? (environment as any).apiUrl : ''; 
+      const endpoint = `${apiBase}/api/v1/configure-llm`;
+      console.log('[ChatComponent] Sending LLM selection to backend');
+
+      const response = await this.authFetchService.authenticatedFetch(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({ serviceProvider: provider, model }),
+      });
+
+      let bodyText = '';
+      try {
+        bodyText = await response.text();
+      } catch (e) {
+        bodyText = '<no response body>';
+      }
+
+      console.log('[ChatComponent] LLM selection updated on backend');
+    } catch (e) {
+      console.warn('[ChatComponent] Failed to send LLM selection to backend');
+      throw e;
+    }
+  }
+
+  logout(): void {
+    this.openDropdown = null;
+    this.authService.logout();
+  }
+  
+  selectPrompt(prompt: string, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.userInput = prompt;
+    this.openDropdown = null;
+    // Focus the input after selection
+    setTimeout(() => {
+      const inputElement = document.querySelector('.chat-input-area textarea') as HTMLTextAreaElement;
+      if (inputElement) {
+        inputElement.focus();
+      }
+    }, 100);
+  }
+  
+  getDropdownPrompts(dropdownId: string): string[] {
+    const promptMap: {[key: string]: string[]} = {
+      // PPT prompts
+      'draft': this.promptCategories.draft.prompts,
+      'fix': this.promptCategories.improve.prompts,
+      'sanitize': this.promptCategories.sanitize.prompts,
+      'bestPractices': this.promptCategories.bestPractices.prompts,
+      // NEW: TL Section prompts
+      'draftContent': this.promptCategories.draftContent.prompts,
+      'conductResearch': this.promptCategories.conductResearch.prompts,
+      'editContent': this.promptCategories.editContent.prompts,
+      'refineContent': this.promptCategories.refineContent.prompts,
+      'formatTranslator': this.promptCategories.formatTranslator.prompts,
+      // Legacy TL prompts
+      'generate': this.promptCategories.generate.prompts,
+      'research': this.promptCategories.research.prompts,
+      'draftArticle': this.promptCategories.draftArticle.prompts,
+      'review': this.promptCategories.editorial.prompts
+    };
+    return promptMap[dropdownId] || [];
+  }
+  
+  quickActionClick(action: string): void {
+    // For PPT actions, set prompt in chat
+    if (this.selectedFlow === 'ppt') {
+      const pptPrompts: {[key: string]: string} = {
+        'Digital Document Development Center': 'Help me create a new digital document',
+        'Fix Formatting': 'I need to fix formatting in my presentation',
+        'Sanitize Documents': 'I need to sanitize sensitive data from my presentation',
+        'Validate Best Practices': 'Validate my presentation against PwC best practices'
+      };
+      this.userInput = pptPrompts[action] || action;
+    } else {
+      // For TL and MI actions, open the appropriate guided flow
+      const flowMapping: {[key: string]: any} = {
+        'Draft Content': 'draft-content',
+        'Conduct Research': 'conduct-research',
+        'Edit Content': 'edit-content',
+        'Refine Content': 'refine-content',
+        'Format Translator': 'format-translator',
+        'Create POV': 'create-pov',
+        'Prepare for Client Meeting': 'prepare-client-meeting',
+        'Gather Proposal Insights': 'gather-proposal-insights',
+        'Target Industry Insights': 'target-industry-insights',
+        'Create RFP Response': 'create-rfp-response',
+      };
+      
+      const flowType = flowMapping[action];
+      if (flowType) {
+        this.tlFlowService.openFlow(flowType);
+      }
+    }
+  }
+  
+  openDdcWorkflow(workflowId: string): void {
+    console.log('[ChatComponent] Opening DDC workflow:', workflowId);
+    // Set context: opened from quick-action button
+    this.workflowOpenedFrom = 'quick-action';
+    this.ddcFlowService.openFlow(workflowId as any);
+  }
+ 
+
+  
+  onReferenceDocumentSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file) {
+      this.referenceDocument = file;
+    }
+  }
+  
+  onEditorialDocumentSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file && (file.name.endsWith('.pdf') || file.name.endsWith('.docx') || file.name.endsWith('.doc'))) {
+      this.editorialDocumentFile = file;
+    }
+  }
+  
+  triggerReferenceUpload(): void {
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.pptx,.docx,.pdf,.txt,.jpeg,.jpg,.png,.xlsx';
+    fileInput.onchange = (event: any) => {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const fileName = file.name.toLowerCase();
+      
+      // For PPT files, store as uploadedPPTFile (binary will be sent as FormData)
+      if (fileName.endsWith('.pptx')) {
+        this.uploadedPPTFile = file;
+        console.log('[ChatComponent] PPT file selected for upload:', file.name);
+        return;
+      }
+      // if (fileName.endsWith('.xlsx1')) {
+      //   this.uploadedPPTFile = file;
+      //   console.log('[ChatComponent] Excel file selected for upload:', file.name);
+      //   return;
+      // }
+
+      // // For image files (jpeg, png), store as binary FormData (similar to PPT)
+      // if (fileName.endsWith('.jpeg') || fileName.endsWith('.png') || fileName.endsWith('.jpg')) {
+      //   this.uploadedPPTFile = file;
+      //   console.log('[ChatComponent] Image file selected for upload:', file.name);
+      //   return;
+      // }
+
+      // // For xlxs files, store as binary FormData (similar to PPT)
+      // if (fileName.endsWith('.xlsx')) {
+      //   this.uploadedPPTFile = file;
+      //   console.log('[ChatComponent] Excel file selected for upload:', file.name);
+      //   return;
+      // }
+
+      // For non-PPT files (docx, pdf, txt), extract text and store in extractedDocuments
+      if (fileName.endsWith('.docx') || fileName.endsWith('.pdf') || fileName.endsWith('.txt') || fileName.endsWith('.jpeg') || fileName.endsWith('.png') || fileName.endsWith('.jpg') || fileName.endsWith('.xlsx')) {
+        this.extractTextFromReferenceFile(file);
+        return;
+      }
+    };
+    fileInput.click();
+  }
+
+  /**
+   * Extract text from reference document (docx, pdf, txt)
+   * Stores extracted text in this.extractedDocuments for later appending to DDC message
+   */
+  private async extractTextFromReferenceFile(file: File): Promise<void> {
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const endpoint = `${apiUrl}/api/v1/export/extract-text`;
+
+    this.isExtractingText = true;
+    this.currentAction = `Extracting text/details from ${file.name}...`;
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const authHeaders = await (this.authFetchService as any).getAuthHeadersForFormData?.() || {};
+      const headers: Record<string, string> = { ...authHeaders };
+
+      const response = await this.authFetchService.authenticatedFetchFormData(endpoint, {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error(`Extract-text failed: ${response.status}`);
+      }
+
+      const result = await response.json();
+      const extractedText = result.text || result.extracted_text || '';
+
+      if (!extractedText.trim()) {
+        throw new Error('No text extracted from file');
+      }
+
+      // Check if document is already in extractedDocuments (avoid duplicates)
+      const existingIndex = this.extractedDocuments.findIndex(doc => doc.fileName === file.name);
+      
+      if (existingIndex !== -1) {
+        // Update existing document
+        this.extractedDocuments[existingIndex] = {
+          fileName: file.name,
+          extractedText: extractedText,
+          //timestamp: new Date()
+        };
+        console.log('[ChatComponent] Updated extracted text for file');
+      } else {
+        // Add new document
+        this.extractedDocuments.push({
+          fileName: file.name,
+          extractedText: extractedText,
+          //timestamp: new Date()
+        });
+        console.log('[ChatComponent] Extracted text from reference file:', file.name, 'Length:', extractedText.length);
+      }
+      
+
+      this.isExtractingText = false;
+      this.currentAction = '';
+      this.cdr.detectChanges();
+
+    } catch (error) {
+      console.error('[ChatComponent] Error extracting text from reference file');
+      this.isExtractingText = false;
+      this.currentAction = '';
+      this.showNotificationMessage(`Error extracting text from ${file.name}. Please try again.`, 'error');
+    }
+  }
+  
+  removeUploadedPPT(): void {
+    this.uploadedPPTFile = null;
+  }
+
+  removeExtractedDocument(fileName: string): void {
+    this.extractedDocuments = this.extractedDocuments.filter(doc => doc.fileName !== fileName);
+  }
+
+  onEditDocumentSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file) {
+      this.editDocumentUploadError = '';
+      // Accept Word, PDF, Text, Markdown files
+      const validExtensions = ['.doc', '.docx', '.pdf', '.txt', '.md', '.markdown'];
+      const fileName = file.name.toLowerCase();
+      // const isValid = validExtensions.some(ext => fileName.endsWith(ext));
+            const isValidFormat = validExtensions.some(ext => fileName.endsWith(ext));
+      
+      if (!isValidFormat) {
+        this.editDocumentUploadError = 'Invalid file format. Please upload a Word (.doc, .docx), PDF (.pdf), Text (.txt), or Markdown (.md, .markdown) file.';
+        console.log('[ChatComponent] Invalid format error set:', this.editDocumentUploadError);
+        this.cdr.detectChanges();
+        return;
+      }
+      
+      // Validate file size (5MB limit)
+      const fileSizeMB = file.size / (1024 * 1024);
+      if (fileSizeMB > this.MAX_FILE_SIZE_MB) {
+        this.editDocumentUploadError = `File size exceeds the maximum limit of ${this.MAX_FILE_SIZE_MB}MB. Please upload a smaller file.`;
+        console.log('[ChatComponent] File size error set:', this.editDocumentUploadError);
+        this.cdr.detectChanges();
+        return;
+      }
+
+      
+      // if (isValid) {
+      //   this.uploadedEditDocumentFile = file;
+      //   console.log('[ChatComponent] Edit document selected:', file.name);
+        
+      //   // Auto-trigger workflow if in Thought Leadership mode
+      //   if (this.selectedFlow === 'thought-leadership') {
+      //     // Small delay to ensure file is set before sendMessage processes it
+      //     setTimeout(() => {
+      //       this.sendMessage();
+      //     }, 100);
+      //   }
+      // } else {
+      //   alert('Please upload a Word (.doc, .docx), PDF (.pdf), Text (.txt), or Markdown (.md, .markdown) file.');
+      this.uploadedEditDocumentFile = file;
+      console.log('[ChatComponent] Edit document selected:', file.name);
+      
+      // Auto-trigger workflow if in Thought Leadership mode
+      if (this.selectedFlow === 'thought-leadership') {
+        // Small delay to ensure file is set before sendMessage processes it
+        setTimeout(() => {
+          this.sendMessage();
+        }, 100);
+      }
+    }
+  }
+
+  removeUploadedEditDocument(): void {
+    this.uploadedEditDocumentFile = null;
+    this.editDocumentUploadError = '';
+    // Also clear extracted documents array if present
+    this.extractedDocuments = [];
+  }
+
+  getUploadedDocumentsCount(): number {
+    return this.extractedDocuments.length;
+  }
+
+  /**
+   * Estimate total token count for all extracted documents
+   * Uses approximate calculation: 1 token ≈ 4 characters (conservative estimate for English text)
+   * This is a rough approximation; actual tokenization may vary by model
+   */
+  private estimateTotalTokens(): number {
+    const CHARS_PER_TOKEN = 4; // Conservative estimate (OpenAI typically uses ~4 chars per token)
+    
+    let totalChars = 0;
+    for (const doc of this.extractedDocuments) {
+      totalChars += doc.extractedText.length;
+    }
+    
+    return Math.ceil(totalChars / CHARS_PER_TOKEN);
+  }
+
+  triggerEditDocumentUpload(): void {
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.doc,.docx,.pdf,.txt';
+    fileInput.onchange = (event: any) => {
+      this.onEditDocumentSelected(event);
+    };
+    fileInput.click();
+  }
+
+  /**
+   * Trigger document upload for analysis (non-workflow scenario)
+   * This extracts text and continues with normal chat flow - supports multiple files
+   */
+  triggerDocumentAnalysisUpload(): void {
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.doc,.docx,.pdf,.txt,.pptx';
+    fileInput.multiple = true; // Enable multiple file selection
+    fileInput.onchange = (event: any) => {
+      this.onDocumentAnalysisSelected(event);
+    };
+    fileInput.click();
+  }
+
+  /**
+   * Handle document selection for analysis (non-workflow) - supports multiple files
+   * Extracts text from all documents and stores them for later use when user sends message
+   */
+  async onDocumentAnalysisSelected(event: any): Promise<void> {
+    const files: FileList = event.target.files;
+    if (!files || files.length === 0) return;
+
+    // Validate all file types
+    const validExtensions = ['.doc', '.docx', '.pdf', '.txt', '.md', '.markdown','.pptx'];
+    const invalidFiles: string[] = [];
+    
+    for (let i = 0; i < files.length; i++) {
+      const fileName = files[i].name.toLowerCase();
+      const isValid = validExtensions.some(ext => fileName.endsWith(ext));
+      if (!isValid) {
+        invalidFiles.push(files[i].name);
+      }
+    }
+
+    if (invalidFiles.length > 0) {
+      const msg = `Please upload only Word (.doc, .docx), PDF (.pdf), Text (.txt), PPT(.pptx) or Markdown (.md, .markdown) files.\n\nInvalid files: ${invalidFiles.join(', ')}`;
+      this.showDocumentUploadError(msg);
+      return;
+    }
+
+    // Validate total file size (50 MB limit)
+    const MAX_TOTAL_SIZE_MB = 50;
+    const MAX_TOTAL_SIZE_BYTES = MAX_TOTAL_SIZE_MB * 1024 * 1024;
+    let totalSize = 0;
+    
+    for (let i = 0; i < files.length; i++) {
+      totalSize += files[i].size;
+    }
+    
+    if (totalSize > MAX_TOTAL_SIZE_BYTES) {
+      const totalSizeMB = (totalSize / (1024 * 1024)).toFixed(2);
+      const msg = `Total file size (${totalSizeMB} MB) exceeds the maximum allowed size of ${MAX_TOTAL_SIZE_MB} MB.\n\nPlease select fewer or smaller files.`;
+      this.showDocumentUploadError(msg);
+      return;
+    }
+
+    console.log(`[ChatComponent] ${files.length} document(s) selected for analysis, total size: ${(totalSize / (1024 * 1024)).toFixed(2)} MB`);
+
+    // Show loading state with specific message
+    this.isExtractingText = true;
+    this.currentAction = files.length === 1 
+      ? `Extracting text from ${files[0].name}...`
+      : `Extracting text from ${files.length} documents...`;
+
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const endpoint = `${apiUrl}/api/v1/export/extract-text`;
+
+    try {
+      // Process all files sequentially
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        
+        // Update progress message
+        if (files.length > 1) {
+          this.currentAction = `Extracting text from ${file.name} (${i + 1}/${files.length})...`;
+        }
+
+        // Build FormData for extract-text API call
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await this.authFetchService.authenticatedFetchFormData(endpoint, {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!response.ok) {
+          console.error('[ChatComponent] Extract-text API failed');
+          console.error('[ChatComponent] Extract-text failed');
+          const msg = `Failed to extract text from "${file.name}". This file will be skipped.`;
+          this.showDocumentUploadError(msg);
+          continue; // Skip this file and continue with others
+        }
+
+        const data = await response.json();
+        const extractedText = data?.text || '';
+
+        if (!extractedText) {
+          console.warn('[ChatComponent] Extract-text returned empty text');
+          const msg = `No text could be extracted from "${file.name}". This file will be skipped.`;
+          this.showDocumentUploadError(msg);
+          continue; // Skip this file and continue with others
+        }
+
+        console.log(`[ChatComponent] Text extracted from ${file.name}, length:`, extractedText.length, 'chars');
+
+        // Store extracted text and file name
+        this.extractedDocuments.push({
+          fileName: file.name,
+          extractedText: extractedText
+        });
+
+        // Also store in uploadedEditDocumentFile for UI display (use last file)
+        this.uploadedEditDocumentFile = file;
+      }
+
+      if (this.extractedDocuments.length === 0) {
+        const msg = 'No text could be extracted from any of the uploaded documents.';
+        this.showDocumentUploadError(msg);
+        this.isExtractingText = false;
+        this.currentAction = '';
+        return;
+      }
+
+      // Validate total token count (50,000 tokens limit)
+      const MAX_TOKENS = 50000;
+      const totalTokens = this.estimateTotalTokens();
+      
+      if (totalTokens > MAX_TOKENS) {
+        const tokenCountFormatted = totalTokens.toLocaleString();
+        const msg = `The extracted text from all documents is approximately ${tokenCountFormatted} tokens, which exceeds the maximum limit of ${MAX_TOKENS.toLocaleString()} tokens.\n\nPlease upload fewer documents or documents with less content.`;
+        this.showDocumentUploadError(msg);
+
+        // Clear the extracted documents as they exceed limit
+        this.extractedDocuments = [];
+        this.uploadedEditDocumentFile = null;
+        this.isExtractingText = false;
+        this.currentAction = '';
+        return;
+      }
+
+      console.log(`[ChatComponent] Successfully extracted text from ${this.extractedDocuments.length} document(s), estimated tokens: ${totalTokens}`);
+
+      this.isExtractingText = false;
+      this.currentAction = '';
+      
+      // Focus on the text input so user can type their instruction
+      setTimeout(() => {
+        this.composerTextarea?.nativeElement?.focus();
+      }, 100);
+
+    } catch (error) {
+      console.error('[ChatComponent] Error extracting text');
+      const msg = 'An error occurred while extracting text from the documents. Please try again.';
+      this.showDocumentUploadError(msg);
+      this.isExtractingText = false;
+      this.currentAction = '';
+    }
+  }
+
+  onWorkflowEditorsSubmitted(selectedIds: string[]): void {
+    this.editWorkflowService.handleEditorSelection(selectedIds);
+  }
+
+  onWorkflowEditorsSelectionChanged(message: Message, editors: EditorOption[]): void {
+    if (message.editWorkflow?.editorOptions) {
+      message.editWorkflow.editorOptions = editors;
+    }
+  }
+
+  onWorkflowCancelled(): void {
+    this.editWorkflowService.cancelWorkflow();
+  }
+
+  /**
+   * Show a simple toast notification inside this component.
+   * Auto-hides after 4 seconds.
+   */
+  private showNotificationMessage(message: string, type: 'success' | 'error' = 'success'): void {
+    this.notificationMessage = message;
+    this.notificationType = type;
+    this.showNotification = true;
+    this.cdr.detectChanges();
+
+    // Auto-hide after timeout
+    setTimeout(() => {
+      this.showNotification = false;
+      this.cdr.detectChanges();
+    }, 4000);
+  }
+
+  /**
+   * Show inline error message for document upload validation.
+   * Auto-hides after 5 seconds.
+   */
+  private showDocumentUploadError(message: string): void {
+    console.log('[ChatComponent] Showing document upload error:', message);
+    this.editDocumentUploadError = message;
+    this.cdr.detectChanges();
+
+    // Auto-hide after 5 seconds
+    setTimeout(() => {
+      this.editDocumentUploadError = '';
+      this.cdr.detectChanges();
+    }, 5000);
+  }
+
+  onWorkflowFileSelected(file: File): void {
+        // Validate file format
+    const validExtensions = ['.doc', '.docx', '.pdf', '.txt', '.md', '.markdown'];
+    const fileName = file.name.toLowerCase();
+    const isValidFormat = validExtensions.some(ext => fileName.endsWith(ext));
+    
+    if (!isValidFormat) {
+      this.editDocumentUploadError = 'Invalid file format. Please upload a Word (.doc, .docx), PDF (.pdf), Text (.txt), or Markdown (.md, .markdown) file.';
+      return; // Stop here - don't process invalid files
+    }
+    
+    // Validate file size (5MB limit)
+    const fileSizeMB = file.size / (1024 * 1024);
+    if (fileSizeMB > this.MAX_FILE_SIZE_MB) {
+      this.editDocumentUploadError = `File size exceeds the maximum limit of ${this.MAX_FILE_SIZE_MB}MB. Please upload a smaller file.`;
+      return; // Stop here - don't process oversized files
+    }
+
+    if (this.editWorkflowService.currentState.step === 'awaiting_content') {
+      // Store the file so it can be displayed in the upload component
+      this.uploadedEditDocumentFile = file;
+      // Handle the file upload through the workflow service
+      this.editWorkflowService.handleFileUpload(file);
+    }
+    
+    // Also handle draft workflow file uploads
+    if (this.draftWorkflowService.isActive) {
+      this.draftWorkflowService.handleFileUpload(file);
+    }
+  }
+
+  onWorkflowFileRemoved(): void {
+    // File removed - clear the uploaded file
+    this.uploadedEditDocumentFile = null;
+    this.editDocumentUploadError = '';
+    // Note: Workflow continues even if file is removed - user can upload again
+  }
+
+  getUploadedFileForMessage(message: Message): File | null {
+    // Only return the uploaded file if we're in awaiting_content step AND workflow is active
+    // This prevents showing old files when workflow is idle or starting new workflow
+    if (message.editWorkflow?.step === 'awaiting_content' && 
+        this.editWorkflowService.isActive && 
+        this.uploadedEditDocumentFile) {
+      return this.uploadedEditDocumentFile;
+    }
+    return null;
+  }
+
+  onParagraphApproved(message: Message, index: number): void {
+    if (!message.editWorkflow?.paragraphEdits) {
+      return;
+    }
+    
+    const paragraph = message.editWorkflow.paragraphEdits.find(p => p.index === index);
+    if (!paragraph) {
+      return;
+    }
+    
+    // Update the paragraph directly (like Guided Journey)
+    paragraph.approved = true;
+    
+    // Also sync with service state for final article generation
+    this.editWorkflowService.syncParagraphEditsFromMessage(message.editWorkflow.paragraphEdits);
+    
+    // Save session and trigger change detection
+    this.saveCurrentSession();
+    this.cdr.detectChanges();
+  }
+
+  onParagraphDeclined(message: Message, index: number): void {
+    if (!message.editWorkflow?.paragraphEdits) {
+      return;
+    }
+    
+    const paragraph = message.editWorkflow.paragraphEdits.find(p => p.index === index);
+    if (!paragraph) {
+      return;
+    }
+    
+    // Update the paragraph directly (like Guided Journey)
+    paragraph.approved = false;
+    
+    // Also sync with service state for final article generation
+    this.editWorkflowService.syncParagraphEditsFromMessage(message.editWorkflow.paragraphEdits);
+    
+    // Save session and trigger change detection
+    this.saveCurrentSession();
+    this.cdr.detectChanges();
+  }
+
+  onGenerateFinalArticle(message: Message): void {
+    if (message.editWorkflow?.paragraphEdits && message.editWorkflow.paragraphEdits.length > 0) {
+      this.editWorkflowService.syncParagraphEditsFromMessage(message.editWorkflow.paragraphEdits);
+    }
+    
+    if (message.editWorkflow?.threadId) {
+      this.editWorkflowService.syncThreadIdFromMessage(message.editWorkflow.threadId);
+    }
+    
+    this.editWorkflowService.generateFinalArticle();
+  }
+
+  onNextEditor(message: Message): void {
+    // Sync paragraphEdits from message to service before calling next editor
+    if (message.editWorkflow?.paragraphEdits && message.editWorkflow.paragraphEdits.length > 0) {
+      this.editWorkflowService.syncParagraphEditsFromMessage(message.editWorkflow.paragraphEdits);
+    }
+    
+    // Sync threadId from message to service (same as Guided Journey stores it in component)
+    if (message.editWorkflow?.threadId) {
+      this.editWorkflowService.syncThreadIdFromMessage(message.editWorkflow.threadId);
+    }
+    
+    // Call the service to proceed to next editor
+    const paragraphEdits = message.editWorkflow?.paragraphEdits || [];
+    this.editWorkflowService.nextEditor(paragraphEdits, message.editWorkflow?.threadId);
+  }
+
+  getParagraphEditsGeneratingState(message: Message): boolean {
+    // Return only final output generating state (for Generate Final Output button)
+    return this.editWorkflowService.isGeneratingFinal;
+  }
+
+  getParagraphEditsNextEditorGeneratingState(message: Message): boolean {
+    // Return only next editor generating state (for Next Editor button)
+    return this.editWorkflowService.isGeneratingNextEditor;
+  }
+
+  hasFinalOutputBeenGenerated(message: Message, messageIndex: number): boolean {
+    if (message.editWorkflow?.finalOutputGenerated === true) {
+      return true;
+    }
+    // Check if final output has been generated by looking for a message after this one
+    // with thoughtLeadership topic 'Final Revised Article'
+    if (messageIndex < 0 || messageIndex >= this.messages.length - 1) {
+      return false;
+    }
+    
+    // Check messages after this one for final output
+    for (let i = messageIndex + 1; i < this.messages.length; i++) {
+      const nextMessage = this.messages[i];
+      if (nextMessage.thoughtLeadership?.topic === 'Final Revised Article' ||
+          (nextMessage.content && nextMessage.content.includes('Final Revised Article'))) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  private clearWorkflowState(): void {
+    this.userInput = '';
+    this.resetComposerHeight();
+    this.uploadedEditDocumentFile = null;
+    // Clear file input elements in workflow file upload components
+    setTimeout(() => {
+      const workflowFileInputs = document.querySelectorAll('.workflow-file-upload input[type="file"]');
+      workflowFileInputs.forEach((input: any) => {
+        if (input.value) {
+          input.value = '';
+        }
+      });
+      // Also clear any file inputs in chat input area
+      const chatFileInputs = document.querySelectorAll('.chat-composer input[type="file"]');
+      chatFileInputs.forEach((input: any) => {
+        if (input.value) {
+          input.value = '';
+        }
+      });
+    }, 0);
+    // Trigger change detection to update FileUploadComponent bindings
+    this.cdr.detectChanges();
+  }
+
+  // Check if we're in step 2 (awaiting_content) - now optional since we show upload component
+  get isAwaitingContent(): boolean {
+    return this.editWorkflowService.isActive && 
+           this.editWorkflowService.currentState.step === 'awaiting_content';
+  }
+
+  isEditWorkflowResult(message: Message): boolean {
+    // Show action buttons for thought leadership and market intelligence content results
+    // Check either thoughtLeadership or marketIntelligence metadata with showActions flag
+    const hasShowActions =
+      (message.thoughtLeadership && message.thoughtLeadership.showActions) ||
+      (message.marketIntelligence && message.marketIntelligence.showActions);
+   
+    console.log('[Chat Component] isEditWorkflowResult Check:', {
+      messageContent: message.content?.substring(0, 50),
+      hasTLMetadata: !!message.thoughtLeadership,
+      tlShowActions: message.thoughtLeadership?.showActions,
+      hasMIMetadata: !!message.marketIntelligence,
+      miShowActions: message.marketIntelligence?.showActions,
+      hasShowActions: hasShowActions,
+      result: hasShowActions === true,
+      timestamp: new Date().toISOString()
+    });
+    
+    if (!hasShowActions) {
+      return false;
+    }
+    
+    // Check if content indicates it's a result (Editorial Feedback, Revised Article, Draft Content, etc.)
+    const content = message.content.toLowerCase();
+    // return content.includes('editorial feedback') || 
+    //        content.includes('revised article') || 
+    //        content.includes('quick start thought leadership') ||
+    //        content.includes('generated content') || content.includes('formated content');
+    return true
+  }
+
+
+  shouldHideEditorialFeedback(message: Message, messageIndex: number): boolean {
+    // Check if this message is editorial feedback
+    const isEditorialFeedback = message.thoughtLeadership?.topic === 'Editorial Feedback' ||
+                                (message.content && message.content.toLowerCase().includes('editorial feedback'));
+    
+    if (!isEditorialFeedback) {
+      return false;
+    }
+    
+    // Only hide editorial feedback if it's in the SAME message as paragraph edits
+    // (Separate messages should both be shown - editorial feedback first, then paragraph edits)
+    if (message.editWorkflow?.paragraphEdits && message.editWorkflow.paragraphEdits.length > 0) {
+      return true;
+    }
+    
+    return false;
+  }
+  
+  downloadGeneratedDocument(format: string, content: string, filename: string): void {
+    if (format === 'txt') {
+      const blob = new Blob([content], { type: 'text/plain' });
+      const fullFilename = `${filename}.txt`;
+      this.downloadBlobWithSaveDialog(blob, fullFilename).catch(err => {
+        console.error('Error downloading file:', err);
+      });
+    } else if (format === 'pdf' || format === 'word') {
+      this.chatService.exportDocument(content, filename, format).subscribe({
+        next: (blob: Blob) => {
+          const ext = format === 'word' ? 'docx' : 'pdf';
+          const fullFilename = `${filename}.${ext}`;
+          this.downloadBlobWithSaveDialog(blob, fullFilename).catch(err => {
+            console.error('[ChatComponent] Error downloading file');
+          });
+        },
+        error: (error: any) => {
+          console.error('[ChatComponent] Error downloading document');
+          this.toastService.error(`Failed to download ${format === 'word' ? 'Word document' : 'PDF'}. Please try again.`);
+        }
+      });
+    }
+  }
+
+  copiedButtonId: string | null = null;
+
+  copyToClipboard(content: string, buttonId?: string): void {
+    // Convert markdown to plain text for better readability when pasted
+    const plainText = this.convertMarkdownToPlainText(content);
+    
+    navigator.clipboard.writeText(plainText).then(() => {
+      // Trigger animation on the button
+      if (buttonId) {
+        this.copiedButtonId = buttonId;
+        this.cdr.detectChanges();
+        
+        // Remove animation after 2 seconds
+        setTimeout(() => {
+          this.copiedButtonId = null;
+          this.cdr.detectChanges();
+        }, 2000);
+      }
+    }).catch(err => {
+      console.error('Failed to copy:', err);
+      // No animation on error - just log it
+    });
+  }
+
+  private convertMarkdownToPlainText(markdown: string): string {
+    let text = markdown;
+    
+    // Remove markdown links [text](url) -> text
+    text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
+    
+    // Remove markdown images ![alt](url) -> alt
+    text = text.replace(/!\[([^\]]*)\]\([^\)]+\)/g, '$1');
+    
+    // Convert bold **text** -> text
+    text = text.replace(/\*\*([^\*]+)\*\*/g, '$1');
+    
+    // Convert italic *text* -> text
+    text = text.replace(/\*([^\*]+)\*/g, '$1');
+    
+    // Convert italic _text_ -> text
+    text = text.replace(/_([^_]+)_/g, '$1');
+    
+    // Convert strikethrough ~~text~~ -> text
+    text = text.replace(/~~([^~]+)~~/g, '$1');
+    
+    // Convert headers # text -> text
+    text = text.replace(/^#+\s+/gm, '');
+    
+    // Convert horizontal rules
+    text = text.replace(/^[-*_]{3,}$/gm, '');
+    
+    // Convert code blocks ``` -> remove backticks
+    text = text.replace(/```[\s\S]*?```/g, (match) => {
+      return match.replace(/```/g, '').trim();
+    });
+    
+    // Convert inline code `text` -> text
+    text = text.replace(/`([^`]+)`/g, '$1');
+    
+    // Convert blockquotes > text -> text
+    text = text.replace(/^>\s+/gm, '');
+    
+    // Convert unordered lists - * text -> text
+    text = text.replace(/^[\s]*[-*+]\s+/gm, '');
+    
+    // Convert ordered lists 1. text -> text
+    text = text.replace(/^[\s]*\d+\.\s+/gm, '');
+    
+    // Remove extra blank lines (more than 2 consecutive)
+    text = text.replace(/\n\n\n+/g, '\n\n');
+    
+    // Trim leading and trailing whitespace
+    text = text.trim();
+    
+    return text;
+  }
+
+  regenerateMessage(messageIndex: number): void {
+    const message = this.messages[messageIndex];
+    if (!message || message.role !== 'assistant') {
+      return;
+    }
+
+    console.log(`[ChatComponent] Regenerating message at index ${messageIndex}`);
+    
+    // Get the previous user message
+    let userMessageIndex = messageIndex - 1;
+    while (userMessageIndex >= 0 && this.messages[userMessageIndex].role !== 'user') {
+      userMessageIndex--;
+    }
+
+    if (userMessageIndex < 0) {
+      console.error('[ChatComponent] No user message found to regenerate from');
+      this.toastService.error('Cannot regenerate: no user message found');
+      return;
+    }
+
+    const userMessage = this.messages[userMessageIndex];
+    const userInput = userMessage.content;
+
+    // Clear the assistant message and prepare for regeneration
+    message.content = '';
+    message.isStreaming = true;
+    this.isLoading = true;
+    this.triggerScrollToBottom();
+
+    // Prepare messages for API call (exclude current and subsequent messages)
+    const messagesToSend = this.messages
+      .slice(0, messageIndex)
+      .filter(m => m.role !== 'system')
+      .map(m => ({ role: m.role, content: m.content }));
+
+    console.log(`[ChatComponent] Regenerating with ${messagesToSend.length} context messages`);
+
+    // Ensure we have a session ID before sending
+    if (!this.currentSessionId) {
+      this.currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      console.log('[ChatComponent] Generated new session ID:', this.currentSessionId);
+    }
+
+    // Call the chat service to regenerate
+    this.chatService.streamChat(
+      messagesToSend,
+      this.userId,
+      this.currentSessionId,
+      this.dbThreadId || undefined,
+      this.getSourceFromFlow()
+    ).subscribe({
+      next: (content: string) => {
+        message.content += content;
+        this.triggerScrollToBottom();
+      },
+      error: (error: any) => {
+        console.error('[ChatComponent] Error regenerating message');
+        message.content = 'Sorry, I encountered an error while regenerating the response. Please try again.';
+        message.isStreaming = false;
+        this.isLoading = false;
+        this.triggerScrollToBottom();
+      },
+      complete: () => {
+        message.isStreaming = false;
+        this.isLoading = false;
+        this.saveCurrentSession();
+        this.triggerScrollToBottom();
+        console.log('[ChatComponent] Message regeneration complete');
+      }
+    });
+  }
+
+  downloadAsWord(content: string): void {
+    // Extract title from content (first line or "Refined Content")
+    const lines = content.split('\n');
+    let title = 'Refined Content';
+    
+    // Try to extract title from markdown heading or first line
+    const titleMatch = content.match(/\*\*(.+?)\*\*/);
+    if (titleMatch) {
+      title = titleMatch[1].trim();
+    } else if (lines[0] && lines[0].trim()) {
+      title = lines[0].trim().replace(/^#+\s*/, '').substring(0, 50);
+    }
+    
+    // Clean title for filename
+    const filename = title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'refined_content';
+    
+    this.downloadGeneratedDocument('word', content, filename);
+  }
+
+  downloadAsPDF(content: string): void {
+    // Extract title from content (first line or "Refined Content")
+    const lines = content.split('\n');
+    let title = 'Refined Content';
+    
+    // Try to extract title from markdown heading or first line
+    const titleMatch = content.match(/\*\*(.+?)\*\*/);
+    if (titleMatch) {
+      title = titleMatch[1].trim();
+    } else if (lines[0] && lines[0].trim()) {
+      title = lines[0].trim().replace(/^#+\s*/, '').substring(0, 50);
+    }
+    
+    // Clean title for filename
+    const filename = title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'refined_content';
+    
+    this.downloadGeneratedDocument('pdf', content, filename);
+  }
+  
+  // Helper method to get TL or MI metadata for any assistant message
+  getTLMetadata(message: Message): ThoughtLeadershipMetadata | MarketIntelligenceMetadata | undefined {
+    // If message already has TL metadata, return it
+    if (message.thoughtLeadership) {
+      // console.log('[Chat Component] getTLMetadata: Found TL metadata', {
+      //   contentType: message.thoughtLeadership.contentType,
+      //   showActions: message.thoughtLeadership.showActions,
+      //   hasPodcastUrl: !!message.thoughtLeadership.podcastAudioUrl
+      // });
+      return message.thoughtLeadership;
+    }
+   
+    // If message already has MI metadata, return it
+    if (message.marketIntelligence) {
+      // console.log('[Chat Component] getTLMetadata: Found MI metadata', {
+      //   contentType: message.marketIntelligence.contentType,
+      //   showActions: message.marketIntelligence.showActions
+      // });
+      return message.marketIntelligence;
+    }
+    
+    // If we're in TL mode and this is an assistant message with content, create default metadata
+    if (this.selectedFlow === 'thought-leadership' && message.role === 'assistant' && message.content) {
+      // console.log('[Chat Component] getTLMetadata: Creating default TL metadata');
+      return {
+        contentType: 'article', // Default type
+        topic: 'Generated Content',
+        fullContent: message.content,
+        showActions: true
+      };
+    }
+    
+    // console.log('[Chat Component] getTLMetadata: No metadata found or conditions not met', {
+    //   hasThoughtLeadership: !!message.thoughtLeadership,
+    //   hasMarketIntelligence: !!message.marketIntelligence,
+    //   selectedFlow: this.selectedFlow,
+    //   messageRole: message.role,
+    //   hasContent: !!message.content
+    // });
+    
+    return undefined;
+  }
+  
+  // Helper to detect if message is a welcome/instructional message (not actual generated content)
+  private isWelcomeMessage(message: Message): boolean {
+    if (!message.content || message.role !== 'assistant') return false;
+    
+    const content = message.content.toLowerCase();
+    const welcomePatterns = [
+      'welcome to',
+      'how can i assist',
+      'how can i help',
+      'i\'ll help you',
+      'please provide:',
+      'you can also use'
+    ];
+    
+    // Check if content starts with or contains welcome patterns
+    return welcomePatterns.some(pattern => content.includes(pattern));
+  }
+  
+  // Check if message should show TL action buttons
+  shouldShowTLActions(message: Message): boolean {
+    // Don't show action buttons for welcome/instructional messages
+    // if (this.isWelcomeMessage(message)) {
+    //   console.log('[Chat Component] shouldShowTLActions: FALSE - Is welcome message');
+    //   return false;
+    // }
+    
+    const hasTLShowActions = !!(message.thoughtLeadership && message.thoughtLeadership.showActions);
+    const hasMIShowActions = !!(message.marketIntelligence && message.marketIntelligence.showActions);
+    const shouldShow = hasTLShowActions || hasMIShowActions;
+    
+    // console.log('[Chat Component] shouldShowTLActions Check:', {
+    //   messageContent: message.content?.substring(0, 50),
+    //   hasTLMetadata: !!message.thoughtLeadership,
+    //   tlShowActions: message.thoughtLeadership?.showActions,
+    //   hasMIMetadata: !!message.marketIntelligence,
+    //   miShowActions: message.marketIntelligence?.showActions,
+    //   result: shouldShow,
+    //   timestamp: new Date().toISOString()
+    // });
+    
+    // Show action buttons for messages with thoughtLeadership OR marketIntelligence metadata with showActions flag
+    return shouldShow;
+  }
+  
+  openPodcastFlow(userQuery: string): void {
+    // Add user message
+    const userMessage: Message = {
+      role: 'user',
+      content: userQuery,
+      timestamp: new Date()
+    };
+    this.addMessage(userMessage);
+    
+    // Add assistant response suggesting podcast generation
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: `I'll help you generate a podcast! Please provide:\n\n1. **Topic or Content**: What should the podcast be about?\n2. **Style**: Dialogue (2 hosts) or Monologue (1 narrator)?\n3. **Additional Context** (optional): Any specific points or customization?\n\nYou can also use the **Guided Journey** button above to open the full podcast creation wizard, or type your requirements here and I'll generate it for you.`,
+      timestamp: new Date()
+    };
+    this.addMessage(assistantMessage);
+    
+    this.userInput = '';
+    this.resetComposerHeight();
+    this.saveCurrentSession();
+    this.triggerScrollToBottom();
+    
+    // Optionally, open the guided dialog directly to the podcast workflow
+    this.selectedTLOperation = 'generate-podcast';
+    this.showGuidedDialog = true;
+  }
+
+  showDraftContentTypeOptions(userQuery: string, detectedTopic?: string): void {
+    // Store the detected topic for later use
+    this.pendingDraftTopic = detectedTopic || null;
+    console.log('[ChatComponent] Storing pending draft topic:', this.pendingDraftTopic);
+    
+    // Add user message
+    const userMessage: Message = {
+      role: 'user',
+      content: userQuery,
+      timestamp: new Date()
+    };
+    this.addMessage(userMessage);
+    
+    // Add assistant response with four content type options
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: `Great! I can help you create thought leadership content. Please select the type of content you want to create:
+
+📄 **Article** (2,000-3,000 words)
+📝 **Blog** (800-1,500 words)
+📋 **Executive Brief** (500-1,000 words)
+📑 **White Paper** (5,000+ words)
+
+Click one of the buttons below to get started, or you can type your selection.`,
+      timestamp: new Date(),
+      actionButtons: [
+        { label: 'Article', action: 'draft-article' },
+        { label: 'Blog', action: 'draft-blog' },
+        { label: 'Executive Brief', action: 'draft-executive-brief' },
+        { label: 'White Paper', action: 'draft-white-paper' }
+      ]
+    };
+    this.addMessage(assistantMessage);
+    
+    this.userInput = '';
+    this.resetComposerHeight();
+    this.saveCurrentSession();
+    this.triggerScrollToBottom();
+  }
+
+  onActionButtonClick(action: string): void {
+    // Handle action button clicks (e.g., content type selection)
+    switch (action) {
+      case 'draft-article':
+      case 'draft-blog':
+      case 'draft-executive-brief':
+      case 'draft-white-paper':
+        this.handleDraftContentTypeSelection(action);
+        break;
+      default:
+        console.warn('Unknown action:', action);
+    }
+  }
+
+  handleDraftContentTypeSelection(action: string): void {
+    // Map action to content type
+    const contentTypeMap: { [key: string]: string } = {
+      'draft-article': 'Article',
+      'draft-blog': 'Blog',
+      'draft-executive-brief': 'Executive Brief',
+      'draft-white-paper': 'White Paper'
+    };
+
+    const contentType = contentTypeMap[action];
+    
+    // Add user message showing selection
+    const userMessage: Message = {
+      role: 'user',
+      content: contentType,
+      timestamp: new Date()
+    };
+    this.addMessage(userMessage);
+
+    // Open the draft content flow with the selected content type and pending topic
+    console.log('[ChatComponent] Opening flow with contentType:', contentType, 'topic:', this.pendingDraftTopic);
+    this.tlFlowService.openFlow('draft-content', contentType, this.pendingDraftTopic || undefined);
+    
+    // Clear the pending topic after using it
+    this.pendingDraftTopic = null;
+    
+    this.saveCurrentSession();
+    this.triggerScrollToBottom();
+  }
+
+   
+  isProfilePresent(profile: string): boolean {
+    // Check if user is in the noCortex list - if so, hide cortex features
+    // const noCortexList = Array.isArray(environment.noCortex)
+    //   ? (environment.noCortex as string[]).filter((email): email is string => typeof email === 'string')
+    //   : [];
+    // const userEmailLowerCase = String(this.userId ?? '').trim().toLowerCase();
+    // const isInNoCortexList = noCortexList.some(email => email.trim().toLowerCase() === userEmailLowerCase);
+    
+    // if (isInNoCortexList) {
+    //   return false; // User is in noCortex list, hide cortex features
+    // }
+    
+    // If enableProfileListForCortex is false, allow all profiles (don't hide cortex)
+    if (!environment.enableProfileListForCortex) {
+      return true;
+    }
+    // If enabled, check if profile is in the allowed list
+    return environment.profileList.includes(profile.toLocaleLowerCase());
+  }
+
+  startGuidedJourney(): void {
+    // Guided Journey shows the form first, then goes to chat after submission
+    this.showDraftForm = true;
+    this.selectedPPTOperation = 'draft'; // Default to draft operation
+    this.selectedTLOperation = 'generate'; // Default to generate operation
+  }
+
+  selectAction(action: string): void {
+    if (this.selectedFlow === 'ppt') {
+      this.selectedPPTOperation = action;
+    } else {
+      this.selectedTLOperation = action;
+    }
+    this.showDraftForm = true;
+  }
+
+  getFormTitle(): string {
+    if (this.selectedFlow === 'ppt') {
+      switch (this.selectedPPTOperation) {
+        case 'draft': return 'Digital Document Development Center';
+        case 'improve': return 'Improve Existing Presentation';
+        case 'sanitize': return 'Sanitize Presentation';
+        default: return 'Document Development Operations';
+      }
+    } else {
+      switch (this.selectedTLOperation) {
+        case 'generate': return 'Generate Thought Leadership Article';
+        case 'research': return 'Research Additional Insights';
+        case 'editorial': return 'Editorial Support';
+        case 'improve': return 'Improve Document';
+        case 'translate': return 'Translate Document Format';
+        default: return 'Thought Leadership Operations';
+      }
+    }
+  }
+
+  downloadFile(url: string, filename: string): void {
+    try {
+      // Validate hostname for security
+      this.validateDownloadUrl(url);
+    } catch (error) {
+      console.error('[ChatComponent] Download URL validation failed');
+      this.toastService.error('Invalid download URL. Download rejected for security reasons.');
+      return;
+    }
+
+    // Fetch the file and download with save dialog
+    fetch(url)
+      .then(response => {
+        if (!response.ok) throw new Error('Failed to download file');
+        return response.blob();
+      })
+      .then(blob => {
+        return this.downloadBlobWithSaveDialog(blob, filename);
+      })
+      .catch(error => {
+        console.error('[ChatComponent] Error downloading file');
+        this.toastService.error('Failed to download file. Please try again.');
+      });
+  }
+
+  /**
+   * Validate API URL to ensure it's from trusted configuration
+   * @param apiUrl - URL to validate against environment config
+   * @throws Error if URL doesn't match configured API URL
+   */
+  private validateApiUrl(apiUrl: string): void {
+    if (!apiUrl || apiUrl.trim() === '') {
+      throw new Error('API URL is empty or invalid');
+    }
+
+    try {
+      const urlObj = new URL(apiUrl);
+      const configuredUrl = (window as any)._env?.apiUrl || (environment as any).apiUrl || '';
+      
+      if (!configuredUrl) {
+        throw new Error('No configured API URL in environment');
+      }
+
+      const configuredUrlObj = new URL(configuredUrl);
+      
+      // Validate hostname matches
+      if (urlObj.hostname !== configuredUrlObj.hostname) {
+        throw new Error(`API hostname mismatch. Expected: ${configuredUrlObj.hostname}, Got: ${urlObj.hostname}`);
+      }
+
+      // Validate protocol matches in production
+      if ((environment as any).production && urlObj.protocol !== configuredUrlObj.protocol) {
+        throw new Error(`Protocol mismatch in production. Expected: ${configuredUrlObj.protocol}, Got: ${urlObj.protocol}`);
+      }
+
+      console.log(`✓ API URL validated: ${urlObj.hostname}`);
+    } catch (error) {
+      throw new Error(`API URL validation error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Validate download/preview URLs to prevent open redirect attacks
+   * @param urlString - URL to validate
+   * @throws Error if URL is from untrusted source
+   */
+  private validateDownloadUrl(urlString: string): void {
+    // Allow blob URLs (created locally in the app)
+    if (urlString.startsWith('blob:')) {
+      return;
+    }
+
+    // Allow data URLs
+    if (urlString.startsWith('data:')) {
+      return;
+    }
+
+    try {
+      const url = new URL(urlString);
+      
+      // Extract the API domain from environment
+      const apiUrl = (window as any)._env?.apiUrl || (environment as any).apiUrl || '';
+      if (!apiUrl) {
+        throw new Error('No configured API URL for download validation');
+      }
+      const apiHostname = new URL(apiUrl).hostname;
+
+      // Allow downloads from: API domain or any CloudFront distribution
+      const isAllowed = 
+        url.hostname === apiHostname ||  // Same domain as API
+        url.hostname.endsWith('.cloudfront.net');  // Any CloudFront domain
+      
+      if (!isAllowed) {
+        throw new Error(`Invalid download host. Got: ${url.hostname}. Allowed: ${apiHostname} or CloudFront`);
+      }
+
+      // Validate protocol is http or https only
+      if (!['http:', 'https:'].includes(url.protocol)) {
+        throw new Error(`Invalid protocol: ${url.protocol}. Only http and https are allowed`);
+      }
+
+      // Ensure HTTPS in production
+      if ((environment as any).production && url.protocol !== 'https:') {
+        throw new Error(`Insecure protocol. HTTPS required in production. Got: ${url.protocol}`);
+      }
+
+      console.log(`✓ Download URL validated for host: ${url.hostname}`);
+    } catch (error) {
+      throw new Error(`URL validation error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Safely validate and sanitize extracted URLs from API responses
+   * @param extractedUrl - URL extracted from response
+   * @returns validated URL or throws error
+   */
+  private validateExtractedUrl(extractedUrl: string): string {
+    if (!extractedUrl || extractedUrl.trim() === '') {
+      throw new Error('Extracted URL is empty');
+    }
+
+    try {
+      // Ensure it's a proper URL format
+      const url = new URL(extractedUrl);
+      
+      // Validate against allowed domains
+      this.validateDownloadUrl(extractedUrl);
+      
+      return url.toString();
+    } catch (error) {
+      throw new Error(`Invalid extracted URL: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  private async downloadBlobWithSaveDialog(blob: Blob, filename: string): Promise<void> {
+    // Check if File System Access API is available (Chrome, Edge, Firefox with flag)
+    if ('showSaveFilePicker' in window) {
+      try {
+        const ext = filename.split('.').pop()?.toLowerCase() || '';
+        let mimeType = blob.type || 'application/octet-stream';
+        
+        // Map extensions to proper MIME types if needed
+        if (!blob.type || blob.type === 'application/octet-stream') {
+          switch (ext) {
+            case 'docx':
+              mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+              break;
+            case 'pdf':
+              mimeType = 'application/pdf';
+              break;
+            case 'pptx':
+              mimeType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+              break;
+            case 'txt':
+              mimeType = 'text/plain';
+              break;
+            case 'mp3':
+              mimeType = 'audio/mpeg';
+              break;
+          }
+        }
+        
+        const handle = await (window as any).showSaveFilePicker({
+          suggestedName: filename,
+          types: [
+            {
+              description: `${ext.toUpperCase()} Files`,
+              accept: { [mimeType]: [`.${ext}`] }
+            }
+          ]
+        });
+
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+
+        console.log(`File saved: ${filename}`);
+      } catch (error: any) {
+        if (error.name !== 'AbortError') {
+          console.error('[ChatComponent] Error saving file');
+          // Fallback to default download if dialog fails
+          this.fallbackDownload(blob, filename);
+        }
+      }
+    } else {
+      // Fallback: use default download behavior for unsupported browsers
+      this.fallbackDownload(blob, filename);
+    }
+  }
+
+  private triggerDownloadNotification(blob: Blob, filename: string): void {
+    // Create blob URL and trigger download to show browser notification
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    // Clean up blob URL after a short delay
+    setTimeout(() => {
+      window.URL.revokeObjectURL(url);
+    }, 100);
+  }
+
+  private fallbackDownload(blob: Blob, filename: string): void {
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => {
+      window.URL.revokeObjectURL(url);
+    }, 100);
+  }
+
+  openWebpageReady(message: Message): void {
+    if (!message.webpageReadyUrl && !message.content) {
+      console.warn('[ChatComponent] No webpage ready content available');
+      return;
+    }
+
+    // If we have a direct URL, open it
+    if (message.webpageReadyUrl) {
+      window.open(message.webpageReadyUrl, '_blank');
+      console.log('[ChatComponent] Opened webpage ready URL in new tab:', message.webpageReadyUrl);
+      return;
+    }
+
+    // Fallback: wrap message content into an HTML blob and open
+    const htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Webpage Ready Content</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      line-height: 1.6;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 40px 20px;
+      color: #333;
+    }
+    h1, h2, h3 { color: #0066cc; margin-top: 1.5em; }
+    h1 { border-bottom: 2px solid #0066cc; padding-bottom: 0.5em; }
+    p { margin-bottom: 1em; }
+    a { color: #0066cc; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code {
+      background-color: #f5f5f5;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+    blockquote {
+      border-left: 4px solid #0066cc;
+      padding-left: 1em;
+      margin-left: 0;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+${message.content}
+</body>
+</html>`;
+
+    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    console.log('[ChatComponent] Webpage ready HTML opened in new tab (blob fallback)');
+  }
+
+  downloadPodcastFromBlob(message: Message): void {
+    if (message.thoughtLeadership?.contentType === 'podcast' && message.thoughtLeadership.podcastAudioUrl && message.thoughtLeadership.podcastFilename) {
+      const link = document.createElement('a');
+      link.href = message.thoughtLeadership.podcastAudioUrl;
+      link.download = message.thoughtLeadership.podcastFilename;
+      link.click();
+    }
+  }
+ 
+  previewFile(url: string): void {
+    // Validate URL before opening
+    try {
+      this.validateDownloadUrl(url);
+    } catch (error) {
+      console.error('[ChatComponent] Preview URL validation failed');
+      this.toastService.error('Invalid preview URL. Preview rejected for security reasons.');
+      return;
+    }
+    // For PPTX files, browsers will trigger download since they cannot preview natively
+    // For true preview, we would need to convert PPTX to PDF or images on the backend
+    window.open(url, '_blank');
+  }
+  
+  getPromptKeys(): string[] {
+    if (this.selectedFlow === 'ppt') {
+      return ['draft', 'improve', 'sanitize'];
+    } else {
+      return ['generate', 'editorial'];
+    }
+  }
+  
+  onEnterPress(event: Event): void {
+    const keyboardEvent = event as KeyboardEvent;
+    
+    // Note: Step 2 now shows file upload component, so text input can be enabled
+    // But we can still optionally prevent sending if needed
+    
+    if (!keyboardEvent.shiftKey) {
+      event.preventDefault();
+      this.sendMessage();
+    }
+  }
+
+  onComposerInput(event: Event): void {
+    // Prevent input during awaiting_content state
+    if (this.isAwaitingContent) {
+      this.userInput = '';
+      this.resetComposerHeight();
+      return;
+    }
+
+    // Auto-expand textarea based on content
+    const textarea = this.composerTextarea?.nativeElement;
+    if (textarea) {
+      // Reset height to auto to get the scrollHeight
+      textarea.style.height = 'auto';
+      // Set height to scrollHeight (content height)
+      const newHeight = Math.min(textarea.scrollHeight, 200); // Max height of 200px (~6 lines)
+      textarea.style.height = `${newHeight}px`;
+      
+      // Update expanded state and overflow class
+      this.isComposerExpanded = textarea.scrollHeight > 45; // Original max-height was 45px
+      
+      // Add/remove overflow class when content exceeds one line (min-height is 24px)
+      const minHeight = 24;
+      if (textarea.scrollHeight > minHeight) {
+        textarea.classList.add('has-overflow');
+      } else {
+        textarea.classList.remove('has-overflow');
+      }
+    }
+  }
+
+  onComposerFocus(): void {
+    // Optional: Expand on focus if already has content
+    const textarea = this.composerTextarea?.nativeElement;
+    if (textarea && this.userInput.length > 0) {
+      textarea.style.height = 'auto';
+      const newHeight = Math.min(textarea.scrollHeight, 200);
+      textarea.style.height = `${newHeight}px`;
+      this.isComposerExpanded = textarea.scrollHeight > 45;
+      
+      // Add overflow class if content exceeds one line
+      const minHeight = 24;
+      if (textarea.scrollHeight > minHeight) {
+        textarea.classList.add('has-overflow');
+      } else {
+        textarea.classList.remove('has-overflow');
+      }
+    }
+  }
+
+  collapseComposer(): void {
+    const textarea = this.composerTextarea?.nativeElement;
+    if (textarea) {
+      // Reset to default height
+      textarea.style.height = 'auto';
+      textarea.style.height = '24px'; // Match min-height
+      textarea.classList.remove('has-overflow');
+      this.isComposerExpanded = false;
+    }
+  }
+
+  private resetComposerHeight(): void {
+    const textarea = this.composerTextarea?.nativeElement;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = '24px'; // Match min-height
+      textarea.classList.remove('has-overflow');
+      this.isComposerExpanded = false;
+    }
+  }
+
+  private showStep2ErrorNotification(): void {
+    // Show error message via the workflow service
+    const errorMessage: Message = {
+      role: 'assistant',
+      content: '**Please upload a document file** (Word, PDF, Text, or Markdown). Text input is disabled in this step - only file uploads are accepted.',
+      timestamp: new Date(),
+      editWorkflow: {
+        step: 'awaiting_content',
+        showCancelButton: false,
+        showSimpleCancelButton: true
+      }
+    };
+    this.addMessage(errorMessage);
+    this.saveCurrentSession();
+    this.triggerScrollToBottom();
+  }
+
+  submitResearchForm(): void {
+    if (!this.researchData.query.trim() || this.isLoading) {
+      return;
+    }
+
+    this.isLoading = true;
+    this.showGuidedDialog = false;
+
+    const validLinks = this.researchData.links.filter(link => link.trim().length > 0);
+    const userMessage: Message = {
+      role: 'user',
+      content: `Research Assistant: ${this.researchData.query}\n${this.researchFiles.length > 0 ? 'Files: ' + this.researchFiles.map(f => f.name).join(', ') + '\n' : ''}${validLinks.length > 0 ? 'Links: ' + validLinks.join(', ') + '\n' : ''}${this.researchData.focus_areas ? 'Focus Areas: ' + this.researchData.focus_areas + '\n' : ''}${this.researchData.additional_context ? 'Additional Context: ' + this.researchData.additional_context : ''}`,
+      timestamp: new Date()
+    };
+    this.addMessage(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Analyzing materials and researching...'
+    };
+    this.addMessage(assistantMessage);
+    this.saveCurrentSession();
+
+    this.chatService.streamResearchWithMaterials(
+      this.researchFiles.length > 0 ? this.researchFiles : null,
+      validLinks.length > 0 ? validLinks : null,
+      this.researchData.query,
+      this.researchData.focus_areas ? this.researchData.focus_areas.split(',').map(a => a.trim()) : [],
+      this.researchData.additional_context
+    ).subscribe({
+      next: (data) => {
+        if (data.type === 'progress') {
+          assistantMessage.actionInProgress = data.message;
+          this.saveCurrentSession();
+        } else if (data.type === 'content') {
+          assistantMessage.content += data.content;
+          this.saveCurrentSession();
+        } else if (data.type === 'sources') {
+          // Store source metadata for rendering clickable citations
+          assistantMessage.sources = data.sources;
+          this.saveCurrentSession();
+        } else if (data.type === 'complete') {
+          assistantMessage.actionInProgress = undefined;
+          this.isLoading = false;
+          this.saveCurrentSession();
+          this.resetResearchForm();
+        } else if (data.type === 'error') {
+          assistantMessage.content = `Error: ${data.message}`;
+          assistantMessage.actionInProgress = undefined;
+          this.isLoading = false;
+          this.saveCurrentSession();
+        }
+      },
+      error: (error) => {
+        console.error('Error:', error);
+        assistantMessage.actionInProgress = undefined;
+        assistantMessage.content = 'Sorry — we ran into an issue while processing your request.<br>Please try submitting it again.<br>Still having trouble? Reach out to us via the <b>Support</b> option for assistance.';
+        assistantMessage.isHtml = true;
+        this.isLoading = false;
+        this.saveCurrentSession();
+      },
+      complete: () => {
+        assistantMessage.actionInProgress = undefined;
+        this.isLoading = false;
+        this.saveCurrentSession();
+      }
+    });
+  }
+
+  submitArticleForm(): void {
+    if (!this.articleData.topic.trim() || this.isLoading) {
+      return;
+    }
+
+    this.isLoading = true;
+    this.showGuidedDialog = false;
+
+    const userMessage: Message = {
+      role: 'user',
+      content: `Draft Article: ${this.articleData.topic}\nType: ${this.articleData.content_type}\nLength: ${this.articleData.desired_length} words\nTone: ${this.articleData.tone}${this.articleData.outline_text ? '\nOutline: ' + this.articleData.outline_text : ''}${this.outlineFile ? '\nOutline File: ' + this.outlineFile.name : ''}${this.supportingDocFiles.length > 0 ? '\nSupporting Documents: ' + this.supportingDocFiles.map(f => f.name).join(', ') : ''}${this.articleData.additional_context ? '\nAdditional Context: ' + this.articleData.additional_context : ''}`,
+      timestamp: new Date()
+    };
+    this.addMessage(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Drafting article...'
+    };
+    this.addMessage(assistantMessage);
+
+    this.chatService.draftArticle(this.articleData, this.outlineFile || undefined, this.supportingDocFiles.length > 0 ? this.supportingDocFiles : undefined).subscribe({
+      next: (content: string) => {
+        assistantMessage.content += content;
+      },
+      error: (error) => {
+        console.error('Error:', error);
+        assistantMessage.actionInProgress = undefined;
+        assistantMessage.content = 'Sorry — we ran into an issue while processing your request.<br>Please try submitting it again.<br>Still having trouble? Reach out to us via the <b>Support</b> option for assistance.';
+        assistantMessage.isHtml = true;
+        this.isLoading = false;
+      },
+      complete: () => {
+        assistantMessage.actionInProgress = undefined;
+        assistantMessage.downloadUrl = 'generated';
+        this.isLoading = false;
+        this.saveCurrentSession();
+        this.resetArticleForm();
+      }
+    });
+  }
+
+  submitBestPracticesForm(): void {
+    if (!this.bestPracticesPPTFile || this.isLoading) {
+      return;
+    }
+
+    this.isLoading = true;
+    this.showGuidedDialog = false;
+
+    const selectedCategories = Object.keys(this.bestPracticesData.categories)
+      .filter(key => this.bestPracticesData.categories[key as keyof typeof this.bestPracticesData.categories]);
+
+    const userMessage: Message = {
+      role: 'user',
+      content: `Validate Best Practices: ${this.bestPracticesPPTFile.name}\nCategories: ${selectedCategories.join(', ')}`,
+      timestamp: new Date()
+    };
+    this.addMessage(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Analyzing presentation against best practices...'
+    };
+    this.addMessage(assistantMessage);
+
+    this.chatService.streamBestPractices(this.bestPracticesPPTFile, selectedCategories).subscribe({
+      next: (content: string) => {
+        assistantMessage.content += content;
+      },
+      error: (error) => {
+        console.error('Error:', error);
+        assistantMessage.actionInProgress = undefined;
+        assistantMessage.content = 'Sorry, I encountered an error while validating best practices. Please try again.';
+        this.isLoading = false;
+      },
+      complete: () => {
+        // Append disclaimer only if content contains URLs (indicating actual generated content, not prompts/metadata)
+        if (assistantMessage.content.includes('https')) {
+          const disclaimer = '\n\n---\n\n*This content was generated with the assistance of artificial intelligence and is intended as an initial draft. It may incorporate references to broader industry or third-party sources that may not be exhaustive or fully aligned at a granular level. PwC professionals must review and validate the content to ensure accuracy, appropriate attribution, and suitability for internal or client-facing use, and remain fully responsible for the final version.*';
+          assistantMessage.content += disclaimer;
+        }
+        
+        assistantMessage.actionInProgress = undefined;
+        this.isLoading = false;
+        this.saveCurrentSession();
+        this.resetBestPracticesForm();
+      }
+    });
+  }
+
+  onOutlineFileSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file) {
+      this.outlineFile = file;
+    }
+  }
+
+  onSupportingDocsSelected(event: any): void {
+    const files = Array.from(event.target.files) as File[];
+    this.supportingDocFiles = files;
+  }
+
+  onBestPracticesFileSelected(event: any): void {
+    const file = event.target.files[0];
+    if (file && file.name.endsWith('.pptx')) {
+      this.bestPracticesPPTFile = file;
+    }
+  }
+
+  resetResearchForm(): void {
+    this.researchData = {
+      query: '',
+      focus_areas: '',
+      additional_context: '',
+      links: ['']
+    };
+    this.researchFiles = [];
+  }
+  
+  onResearchFilesSelected(event: any): void {
+    const files = Array.from(event.target.files) as File[];
+    this.researchFiles = files.filter(file => {
+      const name = file.name.toLowerCase();
+      return name.endsWith('.pdf') || name.endsWith('.docx') || name.endsWith('.txt') || name.endsWith('.md');
+    });
+  }
+  
+  addResearchLink(): void {
+    this.researchData.links.push('');
+  }
+  
+  removeResearchLink(index: number): void {
+    if (this.researchData.links.length > 1) {
+      this.researchData.links.splice(index, 1);
+    }
+  }
+
+  resetArticleForm(): void {
+    this.articleData = {
+      topic: '',
+      content_type: 'Article',
+      desired_length: 1000,
+      tone: 'Professional',
+      outline_text: '',
+      additional_context: ''
+    };
+    this.outlineFile = null;
+    this.supportingDocFiles = [];
+  }
+
+  resetBestPracticesForm(): void {
+    this.bestPracticesData = {
+      categories: {
+        structure: true,
+        visuals: true,
+        design: true,
+        charts: true,
+        formatting: true,
+        content: true
+      }
+    };
+    this.bestPracticesPPTFile = null;
+  }
+
+  submitPodcastForm(): void {
+    if ((this.podcastFiles.length === 0 && !this.podcastData.contentText.trim()) || this.isLoading) {
+      return;
+    }
+
+    this.isLoading = true;
+
+    const userMessage: Message = {
+      role: 'user',
+      content: `Generate Podcast (${this.podcastData.podcastStyle === 'dialogue' ? 'Dialogue' : 'Monologue'})\n\nFiles: ${this.podcastFiles.map(f => f.name).join(', ') || 'None'}\nContent: ${this.podcastData.contentText ? 'Provided' : 'None'}\nCustomization: ${this.podcastData.customization || 'None'}`,
+      timestamp: new Date()
+    };
+    this.addMessage(userMessage);
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      actionInProgress: 'Generating podcast...'
+    };
+    this.addMessage(assistantMessage);
+    this.saveCurrentSession();
+    
+    // Close the guided dialog
+    this.showGuidedDialog = false;
+
+    let scriptContent = '';
+    let audioBase64 = '';
+
+    this.chatService.generatePodcast(
+      this.podcastFiles.length > 0 ? this.podcastFiles : null,
+      this.podcastData.contentText || null,
+      this.podcastData.customization || null,
+      this.podcastData.podcastStyle || 'dialogue'
+    ).subscribe({
+      next: (data) => {
+        if (data.type === 'progress') {
+          assistantMessage.actionInProgress = data.message;
+          this.saveCurrentSession();
+        } else if (data.type === 'script') {
+          scriptContent = data.content;
+          assistantMessage.content = `📻 **Podcast Generated Successfully!**\n\n**Script:**\n\n${scriptContent}\n\n`;
+          this.saveCurrentSession();
+        } else if (data.type === 'complete') {
+          audioBase64 = data.audio;
+          assistantMessage.content += `\n🎧 **Audio Ready!** Listen to your podcast below or download it as an MP3 file.\n\n`;
+          
+          // Convert base64 to blob and create download URL
+          console.log('Audio base64 length:', audioBase64.length);
+          const audioBlob = this.base64ToBlob(audioBase64, 'audio/mpeg');
+          console.log('Audio blob size:', audioBlob.size, 'bytes');
+          const audioUrl = URL.createObjectURL(audioBlob);
+          console.log('Audio URL created:', audioUrl);
+          
+          assistantMessage.downloadUrl = audioUrl;
+          assistantMessage.downloadFilename = 'podcast.mp3';
+          
+          assistantMessage.actionInProgress = undefined;
+          this.isLoading = false;
+          this.saveCurrentSession();
+          this.resetPodcastForm();
+        } else if (data.type === 'error') {
+          assistantMessage.content = `Error generating podcast: ${data.message}`;
+          assistantMessage.actionInProgress = undefined;
+          this.isLoading = false;
+          this.saveCurrentSession();
+        }
+      },
+      error: (error) => {
+        console.error('[ChatComponent] Error generating podcast');
+        assistantMessage.content = `Error generating podcast: ${error.message || 'Unknown error occurred'}`;
+        assistantMessage.actionInProgress = undefined;
+        this.isLoading = false;
+        this.saveCurrentSession();
+        this.resetPodcastForm();
+      }
+    });
+  }
+
+  onPodcastFilesSelected(event: any): void {
+    const files = Array.from(event.target.files) as File[];
+    this.podcastFiles = files.filter(file => {
+      const name = file.name.toLowerCase();
+      return name.endsWith('.pdf') || name.endsWith('.docx') || name.endsWith('.txt') || name.endsWith('.md');
+    });
+  }
+
+  resetPodcastForm(): void {
+    this.podcastData = {
+      contentText: '',
+      customization: '',
+      podcastStyle: 'dialogue'
+    };
+    this.podcastFiles = [];
+  }
+
+  private base64ToBlob(base64: string, contentType: string = ''): Blob {
+    const byteCharacters = atob(base64);
+    const byteArrays = [];
+
+    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+      const slice = byteCharacters.slice(offset, offset + 512);
+      const byteNumbers = new Array(slice.length);
+      for (let i = 0; i < slice.length; i++) {
+        byteNumbers[i] = slice.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      byteArrays.push(byteArray);
+    }
+
+    return new Blob(byteArrays, { type: contentType });
+  }
+
+  // Voice input methods
+  startVoiceInput(): void {
+    setTimeout(() => {
+      this.voiceInput?.startListening();
+    }, 100);
+  }
+
+  onVoiceTranscriptChange(transcript: string): void {
+    this.userInput = transcript;
+    // Force change detection since transcript updates come from browser API callbacks
+    // outside Angular's zone, preventing automatic view updates
+    this.cdr.detectChanges();
+  }
+
+  onVoiceListeningChange(isListening: boolean): void {
+    // Optional: Handle listening state changes if needed
+  }
+
+  onRefinedContentGenerated(content: string): void {
+    // Populate the chat input textarea with the refined content
+    this.userInput = content;
+    console.log('[ChatComponent] Refined content populated in chat input');
+  }
+
+  // onRefineContentStreamToChat(event: {userMessage: string, streamObservable: any}): void {
+  //   // Add user message
+  //   const userMessage: Message = {
+  //     role: 'user',
+  //     content: event.userMessage,
+  //     timestamp: new Date()
+  //   };
+  //   this.messages.push(userMessage);
+  //   this.triggerScrollToBottom();
+
+  //   // Create assistant message for streaming
+  //   const assistantMessage: Message = {
+  //     role: 'assistant',
+  //     content: '',
+  //     timestamp: new Date(),
+  //     isStreaming: true
+  //   };
+  //   this.messages.push(assistantMessage);
+  //   this.triggerScrollToBottom();
+
+  //   this.isLoading = true;
+
+  //   // Subscribe to the stream
+  //   event.streamObservable.subscribe({
+  //     next: (chunk: string) => {
+  //       assistantMessage.content += chunk;
+  //       this.triggerScrollToBottom();
+  //     },
+  //     error: (error: any) => {
+  //       console.error('Error streaming refine content:', error);
+  //       assistantMessage.content = 'Sorry — we ran into an issue while processing your request.\nPlease try submitting it again.\nStill having trouble? Reach out to us via the Support option for assistance.';
+  //       assistantMessage.isStreaming = false;
+  //       this.isLoading = false;
+  //       this.triggerScrollToBottom();
+  //     },
+  //     complete: () => {
+  //       assistantMessage.isStreaming = false;
+  //       this.isLoading = false;
+  //       this.saveCurrentSession();
+  //       this.triggerScrollToBottom();
+  //     }
+  //   });
+  // }
+    onRefineContentStreamToChat(event: {userMessage: string, streamObservable: any, fileName?: string, hasAdjustAudienceTone?: boolean, hasProvideSuggestions?: boolean, hasExpandCompress?: boolean, hasEditContent?: boolean}): void {
+      // Add user message
+      const userMessage: Message = {
+        role: 'user',
+        content: event.userMessage,
+        timestamp: new Date()
+      };
+      this.addMessage(userMessage);
+      this.triggerScrollToBottom();
+
+      // Create assistant message for streaming
+      const assistantMessage: Message = {
+        role: 'assistant',
+        content: '',
+        timestamp: new Date(),
+        isStreaming: true
+      };
+      this.addMessage(assistantMessage);
+      // this.selectProcessingMessageForMessage(this.messages.length - 1);
+      this.triggerScrollToBottom();
+
+      this.isLoading = true;
+
+      // Subscribe to the stream
+      event.streamObservable.subscribe({
+        next: (chunk: any) => {
+          if (chunk.type === 'content') {
+            assistantMessage.content += chunk.content;
+            this.triggerScrollToBottom();
+          } else if (chunk.type === 'done' && chunk.done === true) {
+            // Stream is ending with done signal - append disclaimer if:
+            // 1. Content contains URLs, OR
+            // 2. Adjust audience tone service was used, OR
+            // 3. Provide suggestions service was used, OR
+            // 4. Expand/compress content service was used, OR
+            // 5. Edit content service was used
+            if (assistantMessage.content.includes('https://') || event.hasAdjustAudienceTone || event.hasProvideSuggestions || event.hasExpandCompress || event.hasEditContent) {
+              const disclaimer = '\n\n---\n\n*This content was generated with the assistance of artificial intelligence and is intended as an initial draft. It may incorporate references to broader industry or third-party sources that may not be exhaustive or fully aligned at a granular level. PwC professionals must review and validate the content to ensure accuracy, appropriate attribution, and suitability for internal or client-facing use, and remain fully responsible for the final version.*';
+              assistantMessage.content += disclaimer;
+            }
+          }
+        },
+        error: (error: any) => {
+          console.error('[ChatComponent] Error streaming refine content');
+          assistantMessage.content = 'Sorry — we ran into an issue while processing your request.<br>Please try submitting it again.<br>Still having trouble? Reach out to us via the <b>Support</b> option for assistance.';
+          assistantMessage.isHtml = true;
+          assistantMessage.isStreaming = false;
+          this.isLoading = false;
+          this.triggerScrollToBottom();
+        },
+        complete: () => {
+          // Append disclaimer if:
+          // 1. Content contains URLs (actual generated content with references), OR
+          // 2. Adjust audience tone service was used, OR
+          // 3. Provide suggestions service was used, OR
+          // 4. Expand/compress content service was used, OR
+          // 5. Edit content service was used
+          if (assistantMessage.content.includes('https://') || event.hasAdjustAudienceTone || event.hasProvideSuggestions || event.hasExpandCompress || event.hasEditContent) {
+            const disclaimer = '\n\n---\n\n*This content was generated with the assistance of artificial intelligence and is intended as an initial draft. It may incorporate references to broader industry or third-party sources that may not be exhaustive or fully aligned at a granular level. PwC professionals must review and validate the content to ensure accuracy, appropriate attribution, and suitability for internal or client-facing use, and remain fully responsible for the final version.*';
+            assistantMessage.content += disclaimer;
+          }
+          assistantMessage.isStreaming = false;
+          this.isLoading = false;
+          const metadata: ThoughtLeadershipMetadata = {
+            contentType: 'refine-content',
+            topic: event.fileName || 'Refined Content',
+            fullContent: assistantMessage.content,
+            showActions: true
+          };
+          assistantMessage.thoughtLeadership = metadata;
+          console.log('[ChatComponent] Added TL metadata to refined content:', metadata);
+          
+          this.saveCurrentSession();
+          this.triggerScrollToBottom();
+        }
+      });
+    }
+
+  /**
+   * Format simple text for display (convert newlines to <br> tags)
+   * Used for messages that are not already HTML formatted
+   */
+  formatSimpleText(text: string): string {
+    if (!text) return '';
+    // Escape HTML first to prevent XSS, then convert newlines to <br>
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML.replace(/\n/g, '<br>');
+  }
+
+  /**
+   * Get formatted content for display
+   * Properly sanitizes HTML content to prevent XSS attacks
+   */
+  getFormattedContent(message: Message): string | SafeHtml {
+      if (message.isHtml) {
+        // Return HTML string directly - Angular's [innerHTML] binding will sanitize it automatically
+        // This removes any dangerous elements like <script>, event handlers, etc.
+        // DO NOT use bypassSecurityTrustHtml with untrusted content - Angular's default sanitization is sufficient
+        return message.content;
+      }
+      
+      // For assistant messages, render as markdown
+      if (message.role === 'assistant') {
+        let html = marked.parse(message.content) as string;
+
+        // Fix bullet list formatting: add proper indentation and remove spacing between items
+        html = html.replace(/<ul>\n?/g, '<ul style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+        html = html.replace(/<ol>\n?/g, '<ol style="padding-left: 1.5rem; margin: 0.5rem 0;">');
+        html = html.replace(/<li>/g, '<li style="margin: 0; padding: 0; line-height: 1.4;">');
+        html = html.replace(/<\/li>\n?/g, '</li>');
+
+        // Ensure links open in a new tab and use noopener for security.
+        // We add target and rel only when they are not already present.
+        // console.log("Reached HTML Part");
+        html = html.replace(/<a\s+([^>]*?)href=(["'])(.*?)\2([^>]*)>/gi, (match: string, pre: string, quote: string, url: string, post: string) => {
+          const attrs = (pre + ' ' + post).toLowerCase();
+          if (/\btarget\s*=/.test(attrs) || /\brel\s*=/.test(attrs)) {
+            return match; // already has target or rel
+          }
+          // Preserve existing attributes order, append target and rel
+          return `<a ${pre}href=${quote}${url}${quote}${post} target="_blank" rel="noopener noreferrer">`;
+        });
+
+        // Convert ALL <sup>[ [ⁿ](URL) ]</sup>: [ⁿ] = citation link (clickable), URL shown as-is in brackets (clickable)
+        const esc = (s: string) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        html = html.replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((https?:\/\/[^)]+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, url: string) => {
+          const text = (superscriptText || '').trim();
+          const urlLink = `<a class="citation-url-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+          return `<sup><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">[${text}]</a></sup> [${urlLink}]`;
+        });
+
+        // Superscript only for inline paragraph citations — not in References list (ol/li). Process only content inside <p>...</p>.
+        html = html.replace(/<p>([\s\S]*?)<\/p>/gi, (_pMatch: string, inner: string) => {
+          let paragraphHtml = inner;
+          // Wrap citation-style links (e.g. [¹](URL) -> <a>¹</a>) in <sup> so they render as clickable superscript
+          paragraphHtml = paragraphHtml.replace(/<a\s+([^>]*?)href=(["'])([^"']*)\2([^>]*)>([^<]*)<\/a>/gi, (match: string, pre: string, quote: string, url: string, post: string, linkText: string) => {
+            const trimmed = (linkText || '').trim();
+            if (/^\[?[⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+\]?$/.test(trimmed) && /[⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(trimmed)) {
+              return `<sup><a ${pre}href=${quote}${url}${quote}${post} target="_blank" rel="noopener noreferrer" class="citation-superscript">${trimmed}</a></sup>`;
+            }
+            return match;
+          });
+          // If backend sent <sup>[ [¹](URL) ]</sup>, already converted above; citation link [ⁿ] + URL shown in brackets
+          paragraphHtml = paragraphHtml.replace(/<sup>\s*\[\s*\[([⁰¹²³⁴⁵⁶⁷⁸⁹,\s\[\]]+)\]\((https?:\/\/[^)]+)\)\s*\]\s*<\/sup>/gi, (_m: string, superscriptText: string, url: string) => {
+            const text = (superscriptText || '').trim();
+            const urlLink = `<a class="citation-url-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+            return `<sup><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="citation-superscript">[${text}]</a></sup> [${urlLink}]`;
+          });
+          return `<p>${paragraphHtml}</p>`;
+        });
+
+        // IMPORTANT: Return plain HTML string instead of SafeHtml
+        // Angular's [innerHTML] binding will sanitize it, but will preserve target="_blank"
+        // bypassSecurityTrustHtml was actually causing Angular to strip the attributes!
+        // console.log('[ChatComponent] Returning markdown HTML with target="_blank" links');
+        
+        // Debug: Check if links have target="_blank"
+        const linkMatches = html.match(/<a[^>]*>/gi);
+        if (linkMatches && linkMatches.length > 0) {
+          //console.log('[ChatComponent] Links in HTML:', linkMatches.length);
+          //console.log('[ChatComponent] First link:', linkMatches[0]);
+          const hasTargetBlank = linkMatches[0].includes('target="_blank"');
+          //console.log('[ChatComponent] Has target="_blank":', hasTargetBlank);
+        }
+        
+        return html;
+      }
+      
+      // For user messages, strip out extracted document text for display (keep for API context)
+      let displayContent = message.content;
+      
+      // Remove all "Extracted Text From Document (filename):" sections if present
+      // This regex matches both single and multiple document patterns
+      const extractedTextPattern = /\n\nExtracted Text From Document[^:]*:\n[\s\S]*$/;
+      if (extractedTextPattern.test(displayContent)) {
+        displayContent = displayContent.replace(extractedTextPattern, '');
+      }
+      
+      return this.formatSimpleText(displayContent);
+}
+  // getFormattedContent(message: Message): string | SafeHtml {
+  //   if (message.isHtml) {
+  //     // Use DomSanitizer to bypass security for trusted HTML (allows buttons and interactive elements)
+  //     return this.sanitizer.bypassSecurityTrustHtml(message.content);
+  //   }
+  //   if (message.role === 'assistant' && message.sources) {
+  //     // Use source citation pipe logic inline
+  //     return this.formatSimpleText(message.content);
+  //   }
+  //   return this.formatSimpleText(message.content);
+  // }
+  // onRefineContentStreamToChat(event: {userMessage: string, streamObservable: any}): void {
+  //   // Add user message to chat
+  //   const userMessage: Message = {
+  //     role: 'user',
+  //     content: event.userMessage,
+  //     timestamp: new Date()
+  //   };
+  //   this.messages.push(userMessage);
+
+  //   // Create assistant message for streaming
+  //   const assistantMessage: Message = {
+  //     role: 'assistant',
+  //     content: '',
+  //     timestamp: new Date(),
+  //     isStreaming: true
+  //   };
+  //   this.messages.push(assistantMessage);
+
+  //   // Set loading state
+  //   this.isLoading = true;
+  //   this.triggerScrollToBottom();
+
+  //   // Subscribe to stream and update assistant message
+  //   event.streamObservable.subscribe({
+  //     next: (data: any) => {
+  //       if (typeof data === 'string') {
+  //         assistantMessage.content += data;
+  //       } else if (data.type === 'content' && data.content) {
+  //         assistantMessage.content += data.content;
+  //       }
+  //       this.triggerScrollToBottom();
+  //     },
+  //     error: (error: Error) => {
+  //       console.error('[ChatComponent] Refine content stream error:', error);
+  //       assistantMessage.isStreaming = false;
+  //       assistantMessage.content = 'I apologize, but I encountered an error refining your content. Please try again.';
+  //       this.isLoading = false;
+  //       this.triggerScrollToBottom();
+  //     },
+  //     complete: () => {
+  //       console.log('[ChatComponent] Refine content stream complete');
+  //       assistantMessage.isStreaming = false;
+  //       this.isLoading = false;
+  //       this.saveCurrentSession();
+  //       this.triggerScrollToBottom();
+  //     }
+  //   });
+  // }
+
+  /**
+   * Close the quick draft dialog
+   */
+  closeQuickDraftDialog(): void {
+    this.showQuickDraftDialog = false;
+    this.quickDraftTopic = '';
+    this.quickDraftContentType = '';
+  }
+
+  /**
+   * Handle quick draft dialog submission
+   * NOTE: This is deprecated - now using conversational flow instead
+   */
+  async onQuickDraftSubmit(inputs: QuickDraftInputs): Promise<void> {
+    console.log('[ChatComponent] Quick draft submitted (deprecated):', inputs);
+    
+    // Close the dialog
+    this.closeQuickDraftDialog();
+
+    // Start conversational flow instead
+    this.draftWorkflowService.startQuickDraftConversation(
+      this.quickDraftTopic,
+      this.quickDraftContentType
+    );
+  }
+
+  /**
+   * Detect if user input is a rewrite/regenerate intent
+   */
+  private isRewriteIntent(input: string): boolean {
+    const lowerInput = input.toLowerCase();
+    const rewriteKeywords = ['rewrite', 'regenerate', 'again', 'try again', 'different', 'change it', 'redo', 'remake', 'rethink'];
+    return rewriteKeywords.some(keyword => lowerInput.includes(keyword));
+  }
+
+  /**
+   * Format content type to proper case (e.g., 'article' -> 'Article')
+   */
+  private formatContentType(type: string): string {
+    if (!type) return 'Article';
+    
+    // Map lowercase to proper names
+    const typeMap: { [key: string]: string } = {
+      'article': 'Article',
+      'blog': 'Blog',
+      'white paper': 'White Paper',
+      'white_paper': 'White Paper',
+      'executive brief': 'Executive Brief',
+      'executive_brief': 'Executive Brief'
+    };
+
+    return typeMap[type.toLowerCase()] || type.charAt(0).toUpperCase() + type.slice(1);
+  }
+
+  /**
+   * Show upload button during draft workflow when collecting outline/supporting docs
+   * Only show on the most recent message to avoid duplication on earlier messages
+   */
+  isDraftWorkflowFileUploadVisible(message?: Message): boolean {
+    const step = this.draftWorkflowService.currentState.step;
+    const shouldShow = step === 'awaiting_outline_doc' || step === 'awaiting_supporting_doc';
+    
+    // If message provided, only show on the most recent assistant message
+    if (message && shouldShow && this.messages.length > 0) {
+      const lastAssistantMsg = [...this.messages].reverse().find(m => m.role === 'assistant');
+      return lastAssistantMsg === message;
+    }
+    
+    return shouldShow;
+  }
+
+  /**
+   * Handle file selection from the draft upload button
+   */
+  onDraftUploadSelected(files: FileList | null): void {
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    this.onWorkflowFileSelected(file);
+  }
+
+  /**
+   * Analyze user response to draft satisfaction question
+   * Returns: { isPositive: boolean, hasImprovementRequest: boolean, improvementText: string }
+  /**
+   * Analyze user response to draft satisfaction question using LLM
+   * Returns: { isPositive: boolean, hasImprovementRequest: boolean, improvementText: string }
+   */
+  private async analyzeDraftSatisfactionWithLLM(
+    input: string,
+    draftContext: any
+  ): Promise<{ isPositive: boolean, hasImprovementRequest: boolean, improvementText: string, confidence?: number }> {
+    try {
+      // Call backend endpoint to analyze satisfaction
+      const response = await this.chatService.analyzeSatisfaction({
+        user_input: input,
+        generated_content: draftContext.generatedContent || '',
+        content_type: draftContext.contentType,
+        topic: draftContext.topic
+      }).toPromise();
+      
+      // Check if response exists
+      if (!response) {
+        console.error('[ChatComponent] LLM Response is null, using keyword fallback');
+        return this.analyzeDraftSatisfactionResponseKeywordFallback(input);
+      }
+      
+      // If confidence is high enough, trust the LLM (> 0.6)
+      if (response.confidence > 0.6) {
+        return {
+          isPositive: response.is_satisfied,
+          hasImprovementRequest: !response.is_satisfied,
+          improvementText: input,
+          confidence: response.confidence
+        };
+      }
+      
+      // If confidence is in middle range (0.3-0.6), show clarification request
+      if (response.confidence >= 0.3 && response.confidence <= 0.6) {
+        const clarification: Message = {
+          role: 'assistant',
+          content: `I want to make sure I understand correctly. You said: "${input}"\n\nAre you satisfied with the content and ready to use it, or would you like me to make improvements?`,
+          timestamp: new Date()
+        };
+        this.addMessage(clarification);
+        this.triggerScrollToBottom();
+        // Return false to indicate we're still waiting for clarity
+        return { isPositive: false, hasImprovementRequest: false, improvementText: '' };
+      }
+      
+      // Very low confidence - treat as improvement request to be safe
+      return {
+        isPositive: false,
+        hasImprovementRequest: true,
+        improvementText: input,
+        confidence: response.confidence
+      };
+      
+    } catch (error) {
+      console.error('[ChatComponent] Error calling LLM satisfaction endpoint:', (error as any)?.message);
+      const result = this.analyzeDraftSatisfactionResponseKeywordFallback(input);
+      return result;
+    }
+  }
+
+  /**
+   * Fallback keyword-based satisfaction analysis (used when LLM fails)
+   */
+  private analyzeDraftSatisfactionResponseKeywordFallback(input: string): { isPositive: boolean, hasImprovementRequest: boolean, improvementText: string } {
+    const lowerInput = input.toLowerCase().trim();
+    
+    // EXPLICIT SATISFACTION - must be confident positive responses
+    const satisfactionKeywords = [
+      'yes', 'yeah', 'yep', 'looks good', 'looks perfect', 'perfect', 'great', 'exactly', 
+      'excellent', 'love it', 'love this', 'satisfied', 'happy', 'approved', 'accepted'
+    ];
+    
+    // EXPLICIT IMPROVEMENT INDICATORS - these are clear change requests
+    const improvementIndicators = [
+      // Pattern 1: "can you X" - explicit request for action
+      /can you/i,
+      // Pattern 2: Action verbs followed by object
+      /make it/, /make them/, /make the/,
+      /add /, /remove /, /change /, /update /,
+      /shorten/, /shorter/, /concise/, /concisely/,
+      /longer/, /expand/, /expand /, /enhance /,
+      /simplify/, /simpler/, /clearer/, /clarity/,
+      /improve/, /fix/, /revise/, /rewrite/, /regenerate/,
+      /redo/, /try again/
+    ];
+    
+    // Check for explicit satisfaction
+    const hasSatisfactionKeyword = satisfactionKeywords.some(keyword => lowerInput.includes(keyword));
+    
+    // Check for improvement indicators
+    const hasImprovementIndicator = improvementIndicators.some(pattern => pattern.test(lowerInput));
+    
+    // Check for explicit negatives
+    const hasNegative = /\b(no|nope|don't|doesn't|not happy|not satisfied|hate|bad)\b/i.test(lowerInput);
+    
+    // If has improvement indicator (like "can you"), it's a clear improvement request
+    if (hasImprovementIndicator) {
+      return {
+        isPositive: false,
+        hasImprovementRequest: true,
+        improvementText: input
+      };
+    }
+    
+    // If has explicit satisfaction keyword and no negative, it's satisfied
+    if (hasSatisfactionKeyword && !hasNegative) {
+      return {
+        isPositive: true,
+        hasImprovementRequest: false,
+        improvementText: ''
+      };
+    }
+    
+    // If has negative indicator, it's an improvement request
+    if (hasNegative) {
+      return {
+        isPositive: false,
+        hasImprovementRequest: true,
+        improvementText: input
+      };
+    }
+    
+    // Ambiguous responses - treat as improvement request to be safe
+    return {
+      isPositive: false,
+      hasImprovementRequest: true,
+      improvementText: input
+    };
+  }
+
+  // Export dropdown methods
+  toggleExportDropdown(messageIndex: number): void {
+    // Close all other export dropdowns
+    Object.keys(this.showExportDropdown).forEach(key => {
+      if (parseInt(key) !== messageIndex) {
+        this.showExportDropdown[parseInt(key)] = false;
+      }
+    });
+    this.showExportDropdown[messageIndex] = !this.showExportDropdown[messageIndex];
+  }
+
+  exportSelected(messageIndex: number, format: 'word' | 'pdf' | 'ppt'): void {
+    this.showExportDropdown[messageIndex] = false;
+
+    const message = this.messages[messageIndex];
+    if (!message || !message.content) {
+      this.toastService.error('Content is not available.');
+      return;
+    }
+
+    // Show cortex reminder for thought-leadership flow before exporting
+    if (this.selectedFlow === 'thought-leadership') {
+      this.pendingExportFormat = format;
+      this.pendingExportMessageIndex = messageIndex;
+      this.showCortexReminder = true;
+      return;
+    }
+
+    // For other flows, proceed directly with export
+    this.proceedWithQuickRequestExport(messageIndex, format);
+  }
+
+  private proceedWithQuickRequestExport(messageIndex: number, format: 'word' | 'pdf' | 'ppt'): void {
+    this.isExporting[messageIndex] = true;
+    this.isExported[messageIndex] = false;
+    this.exportFormat[messageIndex] = format.toUpperCase();
+
+    const message = this.messages[messageIndex];
+    if (!message || !message.content) {
+      this.toastService.error('Content is not available.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    if (format === 'word') {
+      console.log("Word Download here");
+      this.downloadWord(messageIndex, message);
+    } else if (format === 'pdf') {
+      console.log("PDF Dwonload here");
+      this.downloadPDF(messageIndex, message);
+    } else if (format === 'ppt') {
+      this.downloadPPT(messageIndex, message);
+    }
+  }
+
+  private downloadWord(messageIndex: number, message: Message): void {
+    const metadata = this.getTLMetadata(message);
+    const contentType = metadata?.contentType;
+    console.log("meta Data:", metadata);
+
+    // Check if this is edit content first (same logic as tl-action-buttons)
+    if (contentType === 'edit-content') {
+      this.exportEditContentWord(messageIndex, message, metadata);
+      return;
+    }
+
+    console.log(">>>>>contentType>>>>>", contentType);
+
+    // If metadata explicitly flags socialMedia OR metadata missing but content looks like social media (has hashtags near the end), export via UI Word
+    if (contentType === 'socialMedia' || (this.isProbablySocialMedia(message))) {
+      this.exportUIWord(messageIndex, message, metadata);
+    } else if (this.selectedFlow === 'market-intelligence') {
+      // If message explicitly starts with POV marker, route to POV export endpoint
+      const trimmedContent = (message.content || '').trim();
+      if (trimmedContent.startsWith('Point of View on')) {
+        // Use POV-specific export endpoint
+        console.log('>>>>>POV Export>>>>>');
+        this.exportDocument(messageIndex, message, metadata, '/api/v1/export/word', 'docx');
+        return;
+      } else {
+        this.exportDocument(messageIndex, message, metadata, '/api/v1/export/word-pwc-mi-module', 'docx');
+      }
+    } else {
+      this.exportDocument(messageIndex, message, metadata, '/api/v1/export/word-pwc-mi-module', 'docx');
+    }
+  }
+
+  /**
+   * Heuristic to detect likely social-media posts when metadata.contentType is not present.
+   * Heuristic: look at the last ~80 characters for one or more hashtags (#word). Many social posts
+   * append hashtags at the end; the user sample includes hashtags in the final ~30-40 chars.
+   */
+  private isProbablySocialMedia(message: Message): boolean {
+    if (!message || !message.content) return false;
+    const content = (message.content || '').toString();
+    const trimmed = content.trim();
+    if (!trimmed) return false;
+
+    // Inspect the tail of the content (last N characters) where hashtags typically live
+    const TAIL_CHARS = 80; // user suggested 30-40; choose a slightly larger window for robustness
+    const tail = trimmed.length <= TAIL_CHARS ? trimmed : trimmed.slice(-TAIL_CHARS);
+
+    // Simple hashtag regex: # followed by letters/numbers/underscore/hyphen (common patterns)
+    const hashtagRegex = /#[A-Za-z0-9_\-]+/g;
+    const matches = tail.match(hashtagRegex);
+
+    // If we find at least one hashtag in the tail, treat it as social media
+    console.log("No of hashtags>>>>", matches?.length);
+    return !!(matches && matches.length >= 1);
+  }
+
+  private downloadPDF(messageIndex: number, message: Message): void {
+    const metadata = this.getTLMetadata(message);
+    const contentType = String(metadata?.contentType || '');
+    
+    // Check if this is edit content first (same logic as tl-action-buttons)
+    // if (contentType === 'edit-content') {
+    //   this.exportEditContentPDF(messageIndex, message, metadata);
+    //   return;
+    // }
+    
+    // Consider message as 'market module' when contentType is conduct-research or selectedFlow is market-intelligence
+    // const isMarketModule = contentType === 'conduct-research'
+    //  || this.selectedFlow === 'market-intelligence';
+    console.log("Export pdf 1 ", contentType);
+    // console.log("Is Market Module: ", isMarketModule);
+    // const endpoint = isMarketModule
+    //   ? '/api/v1/export/pdf-pwc-bullets'
+    //   : '/api/v1/export/pdf-pwc';
+    if (contentType === 'edit-article'){
+    this.exportDocument(messageIndex, message, metadata, '/api/v1/export/edit-content/pdf', 'pdf');
+  }
+  else if (this.selectedFlow === 'market-intelligence') {
+      // If message explicitly starts with POV marker, route to POV export endpoint
+      const trimmedContent = (message.content || '').trim();
+      if (trimmedContent.startsWith('Point of View on')) {
+        // Use POV-specific export endpoint
+        console.log('>>>>>POV Export>>>>>');
+        this.exportDocument(messageIndex, message, metadata, '/api/v1/export/pdf-pwc', 'pdf');
+        return;
+      } else {
+        this.exportDocument(messageIndex, message, metadata, '/api/v1/export/pdf-pwc-mi-module', 'pdf');
+      }
+    }
+    else{
+    this.exportDocument(messageIndex, message, metadata, '/api/v1/export/pdf-pwc-mi-module', 'pdf');
+  }}
+
+  private downloadPPT(messageIndex: number, message: Message): void {
+    const metadata = this.getTLMetadata(message);
+    this.exportPPT(messageIndex, message, metadata, '/api/v1/export/ppt');
+  }
+
+  private async exportWordNewLogic(messageIndex: number, message: Message, metadata: any): Promise<void> {
+    const content = metadata?.fullContent || message.content;
+    if (!content || !content.trim()) {
+      this.toastService.error('Content is not available yet.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    const plainText = content.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    const title = metadata?.topic?.trim() || 'Generated Document';
+    const filename = `${this.sanitizeFilename(title)}.docx`;
+    const wordMimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const endpoint = `${apiUrl}/api/v1/export/word-standalone`;
+
+    // Validate API URL before making request
+    try {
+      this.validateApiUrl(endpoint);
+    } catch (error) {
+      console.error('API URL validation failed:', error);
+      this.toastService.error('Invalid API endpoint. Request rejected for security reasons.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    try {
+      const response = await this.authFetchService.authenticatedFetch(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          content: plainText,
+          title,
+          content_type: metadata?.contentType
+        })
+      });
+
+      if (!response.ok) throw new Error('Failed to generate Word document');
+      
+      const blob = await response.blob();
+
+      // Only open save dialog AFTER successful API response to prevent blank files
+      let selectedFileHandle: any | null = null;
+      if ('showSaveFilePicker' in window) {
+        try {
+          selectedFileHandle = await (window as any).showSaveFilePicker({
+            suggestedName: filename,
+            types: [
+              {
+                description: 'Word Documents',
+                accept: { [wordMimeType]: ['.docx'] }
+              }
+            ]
+          });
+        } catch (error: any) {
+          if (error?.name === 'AbortError') {
+            this.isExporting[messageIndex] = false;
+            return;
+          }
+          console.error('[ChatComponent] Word save dialog unavailable');
+        }
+      }
+
+      // If user selected a save location, write directly; otherwise use save dialog
+      if (selectedFileHandle) {
+        await this.writeBlobToSelectedFile(selectedFileHandle, blob);
+      } else {
+        await this.downloadBlobWithSaveDialog(blob, filename);
+      }
+
+      this.resetExportState(messageIndex);
+    } catch (err) {
+      console.error('New Word export error:', err);
+      this.toastService.error('Failed to generate Word document. Please try again.');
+      this.isExporting[messageIndex] = false;
+    }
+  }
+
+  private exportUIWord(messageIndex: number, message: Message, metadata: any): void {
+    const content = metadata?.fullContent || message.content;
+    if (!content || !content.trim()) {
+      this.toastService.error('Content is not available yet.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const endpoint = `${apiUrl}/api/v1/export/word-ui`;
+    const title = metadata?.topic?.trim() || 'Generated Document';
+    const filename = `${this.sanitizeFilename(title)}.docx`;
+
+    // Validate API URL before making request
+    try {
+      this.validateApiUrl(endpoint);
+    } catch (error) {
+      console.error('API URL validation failed:', error);
+      this.toastService.error('Invalid API endpoint. Request rejected for security reasons.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    this.authFetchService.authenticatedFetch(endpoint, {
+      method: 'POST',
+      body: JSON.stringify({
+        content: content,
+        title
+      })
+    })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to generate Word document');
+      }
+      return response.blob();
+    })
+    .then(blob => {
+      return this.downloadBlobWithSaveDialog(blob, filename);
+    })
+    .then(() => {
+      this.resetExportState(messageIndex);
+    })
+    .catch(error => {
+      console.error('[ChatComponent] UI Word export failed');
+      this.toastService.error('Failed to generate Word file.');
+      this.isExporting[messageIndex] = false;
+    });
+  }
+
+  /**
+   * Get block types using the same logic as final article generation
+   * This ensures consistency between display and export
+   * Uses exact same logic as ChatEditWorkflowService.generateFinalArticle()
+   */
+
+  private async exportEditContentWord(messageIndex: number, message: Message, metadata: any): Promise<void> {
+    const content = metadata?.fullContent || message.content;
+    if (!content || !content.trim()) {
+      alert('Content is not available yet.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+    this.isExporting[messageIndex] = true;
+    try {
+      const exportTitle = extractDocumentTitle(content, metadata?.topic);
+      const finalTitle = exportTitle;
+      const filename = `${this.sanitizeFilename(finalTitle)}.docx`;
+      this.chatService.exportEditContentToWord({
+        content,
+        title: exportTitle,
+        block_types: [],
+        content_type: metadata?.contentType
+      }).subscribe({
+        next: (blob: Blob) => {
+          this.downloadBlobWithSaveDialog(blob, filename).then(() => {
+            this.resetExportState(messageIndex);
+          }).catch(err => {
+            console.error('Download error:', err);
+            this.isExporting[messageIndex] = false;
+          });
+        },
+        error: (error) => {
+          console.error('[ChatComponent] Edit Content Word export error');
+          alert('Failed to generate Word document. Please try again.');
+          this.isExporting[messageIndex] = false;
+        }
+      });
+    } catch (error) {
+      console.error('Edit Content Word export error:', error);
+      alert('Failed to generate Word document. Please try again.');
+      this.isExporting[messageIndex] = false;
+    }
+  }
+
+  private async exportEditContentPDF(messageIndex: number, message: Message, metadata: any): Promise<void> {
+    const content = metadata?.fullContent || message.content;
+    if (!content || !content.trim()) {
+      alert('Content is not available yet.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+    this.isExporting[messageIndex] = true;
+    try {
+      const exportTitle = extractDocumentTitle(content, metadata?.topic);
+      const finalTitle = exportTitle;
+      const filename = `${this.sanitizeFilename(finalTitle)}.pdf`;
+      this.chatService.exportEditContentToPDF({
+        content,
+        title: exportTitle,
+        block_types: [],
+        content_type: metadata?.contentType
+      }).subscribe({
+        next: (blob: Blob) => {
+          this.downloadBlobWithSaveDialog(blob, filename).then(() => {
+            this.resetExportState(messageIndex);
+          }).catch(err => {
+            console.error('Download error:', err);
+            this.isExporting[messageIndex] = false;
+          });
+        },
+        error: (error) => {
+          console.error('[ChatComponent] Edit Content PDF export error');
+          alert('Failed to generate PDF document. Please try again.');
+          this.isExporting[messageIndex] = false;
+        }
+      });
+    } catch (error) {
+      console.error('Edit Content PDF export error:', error);
+      alert('Failed to generate PDF document. Please try again.');
+      this.isExporting[messageIndex] = false;
+    }
+  }
+
+  private async exportPPT(messageIndex: number, message: Message, metadata: any, endpoint: string): Promise<void> {
+    const content = metadata?.fullContent || message.content;
+    if (!content || !content.trim()) {
+      this.toastService.error('Content is not available yet.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    const plainText = content.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    const title = metadata?.topic?.trim() || 'Generated Presentation';
+    const filename = `${this.sanitizeFilename(title)}.pptx`;
+    const pptMimeType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+
+    // Try to open save dialog directly first (same as tl-action-buttons)
+    let selectedPptFileHandle: any | null = null;
+    if ('showSaveFilePicker' in window) {
+      try {
+        selectedPptFileHandle = await (window as any).showSaveFilePicker({
+          suggestedName: filename,
+          types: [
+            {
+              description: 'PPTX Files',
+              accept: { [pptMimeType]: ['.pptx'] }
+            }
+          ]
+        });
+      } catch (error: any) {
+        if (error?.name === 'AbortError') {
+          this.isExporting[messageIndex] = false;
+          return;
+        }
+        console.error('[ChatComponent] PPT save dialog unavailable');
+      }
+    }
+
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const fullEndpoint = `${apiUrl}${endpoint}`;
+
+    // Validate API URL before making request
+    try {
+      this.validateApiUrl(fullEndpoint);
+    } catch (error) {
+      console.error('API URL validation failed:', error);
+      this.toastService.error('Invalid API endpoint. Request rejected for security reasons.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    try {
+      const response = await this.authFetchService.authenticatedFetch(fullEndpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          content: plainText,
+          title
+        })
+      });
+
+      if (!response.ok) throw new Error("Failed to start PPT generation");
+      
+      const data = await response.json();
+      const downloadUrl = data.download_url;
+      if (!downloadUrl) throw new Error("No download URL returned");
+
+      // Use plain fetch for download URL (pre-signed URLs don't accept auth headers)
+      const fileResponse = await fetch(downloadUrl, {
+        method: "GET"
+      });
+
+      if (!fileResponse.ok) throw new Error("Failed to retrieve PPT file");
+      
+      const blob = await fileResponse.blob();
+
+      // If user selected a save location, write directly; otherwise use save dialog
+      if (selectedPptFileHandle) {
+        await this.writeBlobToSelectedFile(selectedPptFileHandle, blob);
+      } else {
+        await this.downloadBlobWithSaveDialog(blob, filename);
+      }
+
+      this.resetExportState(messageIndex);
+    } catch (err) {
+      // Log generic message without full error object to prevent information leakage
+      console.error('[Chat] PPT export failed');
+      this.toastService.error("Failed to generate PPT file.");
+      this.isExporting[messageIndex] = false;
+    }
+  }
+
+  private async writeBlobToSelectedFile(fileHandle: any, blob: Blob): Promise<void> {
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  }
+
+  private async exportDocument(messageIndex: number, message: Message, metadata: any, endpoint: string, extension: string): Promise<void> {
+    const content = metadata?.fullContent || message.content;
+    if (!content || !content.trim()) {
+      this.toastService.error('Content is not available yet.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    const plainText = content.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    const lines = plainText.split('\n').filter((line: string) => line.trim());
+    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : 'Generated Document';
+    const title = subtitle;
+    const filename = `${this.sanitizeFilename(title)}.${extension}`;
+
+    // Map extension to MIME type
+    const mimeTypeMap: {[key: string]: string} = {
+      'pdf': 'application/pdf',
+      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    };
+    const mimeType = mimeTypeMap[extension] || 'application/octet-stream';
+
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const fullEndpoint = `${apiUrl}${endpoint}`;
+
+    // Validate API URL before making request
+    try {
+      this.validateApiUrl(fullEndpoint);
+    } catch (error) {
+      console.error('API URL validation failed:', error);
+      this.toastService.error('Invalid API endpoint. Request rejected for security reasons.');
+      this.isExporting[messageIndex] = false;
+      return;
+    }
+
+    try {
+      const response = await this.authFetchService.authenticatedFetch(fullEndpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          content: plainText,
+          title,
+          subtitle: '',
+          content_type: metadata?.contentType
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
+      }
+
+      const blob = await response.blob();
+
+      // Only open save dialog AFTER successful API response to prevent blank files
+      let selectedFileHandle: any | null = null;
+      if ('showSaveFilePicker' in window) {
+        try {
+          selectedFileHandle = await (window as any).showSaveFilePicker({
+            suggestedName: filename,
+            types: [
+              {
+                description: `${extension.toUpperCase()} Files`,
+                accept: { [mimeType]: [`.${extension}`] }
+              }
+            ]
+          });
+        } catch (error: any) {
+          if (error?.name === 'AbortError') {
+            this.isExporting[messageIndex] = false;
+            return;
+          }
+          console.error(`${extension.toUpperCase()} save dialog unavailable, falling back to browser download:`, error);
+        }
+      }
+
+      // If user selected a save location, write directly; otherwise use save dialog
+      if (selectedFileHandle) {
+        await this.writeBlobToSelectedFile(selectedFileHandle, blob);
+      } else {
+        await this.downloadBlobWithSaveDialog(blob, filename);
+      }
+
+      this.resetExportState(messageIndex);
+    } catch (error) {
+      console.error(`Error generating ${extension.toUpperCase()}:`, error);
+      this.toastService.error(`Failed to generate ${extension.toUpperCase()} file. Please try again.`);
+      this.isExporting[messageIndex] = false;
+    }
+  }
+
+  private resetExportState(messageIndex: number): void {
+    setTimeout(() => {
+      this.isExporting[messageIndex] = false;
+    }, 500);
+
+    this.isExported[messageIndex] = true;
+    setTimeout(() => {
+      this.isExported[messageIndex] = false;
+    }, 3000);
+  }
+
+  private sanitizeFilename(filename: string): string {
+    return filename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  }
+
+  /**
+   * Escape HTML special characters to prevent XSS attacks
+   * Used for text content that will appear in HTML
+   */
+  private escapeHtmlSpecialChars(untrustedData: string): string {
+    if (!untrustedData) return '';
+    const div = document.createElement('div');
+    div.textContent = untrustedData;
+    return div.innerHTML;
+  }
+
+  /**
+   * Escape data for use in HTML attributes
+   * Used for href, src, and other attributes
+   */
+  private escapeHtmlAttribute(untrustedData: string): string {
+    if (!untrustedData) return '';
+    return untrustedData
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#x27;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  /**
+   * Escape filename data to prevent path traversal and XSS
+   */
+  private escapeFilename(untrustedFilename: string): string {
+    if (!untrustedFilename) return 'file';
+    // Remove path traversal characters and escape special characters
+    return untrustedFilename
+      .replace(/\.\./g, '_') // Remove ..
+      .replace(/[/\\]/g, '_') // Remove path separators
+      .replace(/[<>:"|?*]/g, '_') // Remove invalid filename characters
+      .substring(0, 255); // Limit filename length
+  }
+
+  /**
+   * Validate URL to prevent open redirect attacks
+   * @throws Error if URL is not safe
+   */
+  private validateAndEscapeUrl(urlString: string): void {
+    if (!urlString) throw new Error('URL is empty');
+    
+    try {
+      const url = new URL(urlString);
+      
+      // Only allow http and https protocols
+      if (!['http:', 'https:'].includes(url.protocol)) {
+        throw new Error(`Invalid protocol: ${url.protocol}`);
+      }
+      
+      // In production, enforce HTTPS
+      if ((environment as any).production && url.protocol !== 'https:') {
+        throw new Error('HTTPS required in production');
+      }
+    } catch (error) {
+      throw new Error(`URL validation failed: ${error instanceof Error ? error.message : 'Invalid URL'}`);
+    }
+  }
+
+  // My Requests Panel Methods - Delegation to MyRequestsTableComponent
+  onMyRequestsClick(): void {
+    // Deactivate any selected flow (make My Requests button the only active nav button)
+    this.selectedFlow = undefined;
+    
+    // Set parent-level flag for visibility
+    this.showMyRequestsPanelParent = true;
+    
+    // Delegate to the My Requests Table component
+    if (this.myRequestsTableComponent) {
+      this.myRequestsTableComponent.onMyRequestsClick();
+      // Trigger parent's change detection to update the template binding
+      this.cdr.markForCheck();
+    } else {
+      console.warn('[ChatComponent] onMyRequestsClick: myRequestsTableComponent not yet initialized');
+      // Component might not be ready yet, force change detection in next tick
+      setTimeout(() => {
+        if (this.myRequestsTableComponent) {
+          this.myRequestsTableComponent.onMyRequestsClick();
+          this.cdr.markForCheck();
+        } else {
+          console.error('[ChatComponent] onMyRequestsClick: myRequestsTableComponent still not available after retry');
+        }
+      }, 0);
+    }
+  }
+
+  closeMyRequestsPanel(): void {
+    // Set parent-level flag to hide the panel
+    this.showMyRequestsPanelParent = false;
+    
+    if (this.myRequestsTableComponent) {
+      this.myRequestsTableComponent.closeMyRequestsPanel();
+      // Trigger parent's change detection to update the template binding
+      this.cdr.markForCheck();
+    } else {
+      console.warn('[ChatComponent] closeMyRequestsPanel: myRequestsTableComponent not yet initialized');
+    }
+  }
+
+  switchMyRequestsTab(tab: 'requests' | 'reviews'): void {
+    if (this.myRequestsTableComponent) {
+      this.myRequestsTableComponent.switchTab(tab);
+      // Trigger parent's change detection to update the template binding
+      this.cdr.markForCheck();
+    }
+  }
+
+}
