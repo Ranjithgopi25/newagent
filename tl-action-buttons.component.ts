@@ -5915,7 +5915,7 @@
 
 .explore-showcase-card {
   grid-column: span 2;
-  border: 1px solid #9ca3af;
+  border: 1px solid #e6e6e9;
   background-color: #fff;
   min-height: 250px;
   height: 100%;
@@ -5936,8 +5936,8 @@
   font-size: 1rem;
   font-weight: 700;
   color: var(--text-primary);
-  background-color: #f6deca;
-  border-bottom: 1px solid #9ca3af;
+  background: linear-gradient(135deg, #ffffff 0%, rgba(255, 159, 0, 0.03) 100%);
+  border-bottom: 1px solid #e6e6e9;
   padding: 0.7rem 0.9rem;
   min-height: 52px;
   display: flex;
@@ -5949,7 +5949,7 @@
 .explore-showcase-body {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 0.92rem;
+  font-size: 0.8rem;
   line-height: 1.5;
   font-weight: 500;
   padding: 0.85rem 0.9rem 0.95rem 0.9rem;
@@ -6007,6 +6007,6 @@
   }
 
   .explore-showcase-body {
-    font-size: 0.9rem;
+    font-size: 0.8rem;
   }
 }
