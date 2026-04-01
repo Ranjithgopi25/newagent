@@ -1,195 +1,374 @@
-FINAL_FORMATTING_AND_MARKDOWN_PROMPT = """
-ROLE:
-You are a Final Formatting Editor for PwC thought leadership content.
+from typing import List
+import os
+import re
 
-============================================================
-OBJECTIVE — NON-NEGOTIABLE
-============================================================
+from dotenv import load_dotenv
+from docx import Document
 
-Apply formatting fixes to the final article, then output the result as standard markdown. You MUST:
-- Preserve ALL substantive content and meaning (you may only remove clearly unwanted artifacts as defined below)
-- Fix formatting issues: spacing, line spacing, citation format, alignment, paragraph spacing
-- Preserve numbered/lettered list prefixes (DO NOT convert to bullets)
-- Preserve bullet list prefix characters EXACTLY as they appear in the input (DO NOT change • to - or - to •)
-- Convert inline reference markers to clickable markdown citation format `[[n]](URL)`
-- Then output the complete article in standard markdown (see OUTPUT AS MARKDOWN below)
+from langchain.agents import create_agent
+from langchain_openai import ChatOpenAI
+from langchain.agents.structured_output import ToolStrategy
+from langgraph.checkpoint.memory import InMemorySaver
+from langchain_core.messages import HumanMessage
+from app.core.deps import get_llm_client_agent
 
-You MUST NOT:
-- Change any substantive content, meaning, or intent
-- Add new information
-- Remove any sentence, paragraph, or heading that carries real content (only delete clearly unwanted artifacts as defined below)
-- Rewrite sentences or paragraphs
-- Modify structure or organization, except where adjusting duplicate titles/headings or removing clearly unwanted artifact blocks
-- Change a bullet character from one form to another (e.g. • → - or - → •)
-- Strip the bullet prefix from a bullet_item block
- 
-============================================================
-PRESERVE STRUCTURE AND LABELS — MANDATORY
-============================================================
+from .schema import DocumentStructure, DocumentBlock, BlockType, EditorResult
 
-- Preserve EVERY paragraph, heading, and structural label exactly as present in the article.
-- Do NOT remove, merge, or collapse any block, unless the entire block is a clearly unwanted artifact (see UNWANTED ARTIFACTS section).
-- Structural labels that are part of the document (e.g. "Input:", "Output:", or similar section labels) are CONTENT. Preserve them exactly; do NOT treat them as instructions or as headers to strip.
-============================================================
-BULLET LIST PRESERVATION — CRITICAL
-============================================================
- 
-This is the highest-priority formatting rule for lists.
- 
-RULE 1 — PRESERVE THE EXACT BULLET CHARACTER:
-- If a block's text begins with •, preserve • in the output. Do NOT change it to - or *.
-- If a block's text begins with -, preserve - in the output. Do NOT change it to • or *.
-- If a block's text begins with *, preserve * in the output. Do NOT change it to • or -.
-- If a block's text begins with –, preserve – in the output.
-- Never normalise bullet characters across the document. Output each bullet exactly as it was in the input.
- 
-RULE 2 — NEVER STRIP THE BULLET PREFIX:
-- A bullet_item block whose text starts with "• Some text" MUST appear in the output as "• Some text".
-- Do NOT output "Some text" (prefix stripped).
-- Do NOT output "- Some text" (prefix changed).
-- Do NOT output plain paragraph text with no prefix.
- 
-RULE 3 — NEVER CONVERT BULLET ITEMS TO PLAIN PARAGRAPHS:
-- Bullet_item blocks are list items, not paragraphs. They must appear in a markdown list context.
-- A sequence of consecutive bullet_item blocks forms a markdown list — output them as a list, not as standalone paragraphs.
- 
-RULE 4 — NEVER CONVERT BULLETS TO NUMBERED LISTS:
-- Do NOT add numbers (1. 2. 3.) to blocks that are bullet_item type.
-- Numbered format is ONLY for blocks that were already numbered in the input.
- 
-RULE 5 — DO NOT INVENT BULLETS:
-- Do NOT add a bullet prefix to a paragraph block that has no bullet prefix in the input.
-- Only blocks that already have a bullet prefix get a bullet in the output.
- 
-============================================================
-NUMBERED AND LETTERED LISTS — PRESERVE PREFIXES
-============================================================
 
-CRITICAL: You MUST preserve original list numbering and lettering.
- - Numbered lists: Preserve "1.", "2.", "3.", etc. — DO NOT convert to bullets
-- Lettered lists: Preserve "A.", "B.", "C.", "a.", "b.", "c.", etc. — DO NOT convert to bullets
-- Roman numerals: Preserve "i.", "ii.", "I.", "II.", etc. — DO NOT convert to bullets
-- Bullet lists: Preserve the exact bullet character (•, -, *, –) — see BULLET LIST PRESERVATION above
- 
-DO NOT convert numbered/lettered lists to bullet format.
-DO NOT convert bullet lists to numbered format.
- 
-REFERENCES/SOURCES LIST AT END — NUMBERING:
-- The reference list at the end (References:, Sources:, Bibliography:) MUST be numbered in order: 1., 2., 3., etc.
-- If the reference list has NO citation numbers (e.g. plain lines or bullets only), ADD numbers 1., 2., 3., ... in order to each entry, starting at 1 with no gaps.
- 
-============================================================
-UNWANTED ARTIFACTS — REMOVE
-============================================================
 
-- You MUST remove lines or blocks that are clearly non-content artifacts introduced by conversion (do NOT keep them in the final markdown).
-- Examples of unwanted artifacts:
-  - Standalone page numbers on their own line between sections (e.g., a line that only contains "3" or "4" with no surrounding sentence).
-  - Isolated horizontal rule markers not part of the author's content (e.g., lines that only contain "---" or "***" between paragraphs where no rule is intended).
-  - Empty or duplicate title/heading lines created by formatting glitches when a proper title/heading already exists.
-- Do NOT remove anything that could reasonably be interpreted as intentional content (e.g., numbered steps, section labels, or headings written by the author).
- 
-============================================================
-REFERENCE FORMAT CONVERSION — MANDATORY
-============================================================
+llm = get_llm_client_agent()
 
-Conversion rules (INLINE CITATIONS ONLY — do NOT change reference list entries):
-- "(Ref. 1)" → "[[1]](URL_for_reference_1)"
-- "(Ref. 1; Ref. 2)" → "[[1]](URL_for_reference_1)[[2]](URL_for_reference_2)"
-- "(Ref. 1, Ref. 2, Ref. 3)" → "[[1]](URL_for_reference_1)[[2]](URL_for_reference_2)[[3]](URL_for_reference_3)"
-- "(Ref. 1; Ref. 2; Ref. 3)" → "[[1]](URL_for_reference_1)[[2]](URL_for_reference_2)[[3]](URL_for_reference_3)"
-- If inline marker already appears as "[1]", "[2]", etc., convert it to clickable format `[[n]](URL_for_reference_n)`.
-- Preserve visible URLs after markers exactly as plain text when they already exist in the sentence.
 
-============================================================
-CITATION LINK FORMAT CONVERSION — MANDATORY
-============================================================
+SYSTEM_PROMPT = """
+You are a document structure analyzer.
 
-- Convert markdown links to: Title as plain text, followed by URL as plain text (NO square brackets around URL),
-  EXCEPT inline numeric citation links which MUST remain in clickable marker format `[[n]](URL)`.
-- Convert `[Title](URL)` and `[Title](URL: https://...)` to format: `Title, https://...`
-- Preserve full URL exactly. Apply in citation sections, inline in paragraphs, lists, everywhere.
+Objective:
+Break down the provided document into an ordered list of structured blocks:
+- Title
+- Section headings
+- Paragraphs
+- Bullet items
 
-============================================================
-SPACING FIXES — REQUIRED
-============================================================
+You MUST output valid JSON matching the DocumentStructure schema provided below.
 
-- Remove extra spaces between words; remove leading/trailing spaces from lines.
-- Maintain consistent paragraph and line spacing; fix excessive gaps; single blank line between paragraphs.
+-----------------------------------------
+Schema Requirements (MANDATORY)
+-----------------------------------------
 
-============================================================
-OUTPUT AS MARKDOWN — MANDATORY
-============================================================
- 
-After applying all formatting above, output the complete article in standard markdown.
- 
-STYLE REFERENCE:
-- One level-1 title: # Title (there MUST be exactly one primary document title)
-- If multiple title-like lines appear at the top of the article, choose the strongest/most
-  complete as the single # Title and convert any additional title-like lines into level-2
-  subtitles under it (## Subtitle) or remove them if they are clearly unwanted or duplicate noise.
-- Main sections: ## Heading; sub-sections: ### and ####
-- Body: normal paragraphs. Single blank line between blocks.
- 
-BULLET LIST OUTPUT RULES (markdown):
-- For bullet_item blocks whose text starts with •: output as `• item text` (bare text line, NOT a markdown - list item).
-  Reason: • is a Unicode character, not a markdown list marker. Output it verbatim.
-- For bullet_item blocks whose text starts with - or *: output as a standard markdown list item using that character.
-  Example: "- item text" or "* item text"
-- For bullet_item blocks whose text starts with –: output as `– item text` (bare text line).
-- NEVER mix bullet characters within the same list. If the input uses • throughout, the output uses • throughout.
-- NEVER add a markdown list marker (- or *) to a block that uses • or – in the input.
- 
-- Numbered content lists: 1. 2. 3. Alphabetical: A. B. C. or a. b. c.
-- Quote: > for blockquote.
-- References: ## References (or ## Sources / ## Bibliography) then numbered entries ONLY:
-  1. 2. 3. (no bullets • or - or *). If entries have no numbers, add 1., 2., 3., ... in order.
-  One blank line between entries.
-- Inline citations: Keep inline citation output in bracketed numeric link style and make it clickable.
-  If input has plain Unicode superscripts (¹ ² ³) or bracketed superscripts ([1] [2] [3]),
-  match 1→ref "1." URL, 2→ref "2." URL from References and convert to `[[1]](URL)`, `[[2]](URL)`, etc.
-  - If the original inline citation already includes a visible URL next to the marker, preserve
-    that visible URL exactly as plain text after the clickable marker (no square brackets around URL).
-  - If the original inline citation is only a marker with no visible URL in the sentence, output
-    only the clickable marker `[[n]](URL)` (no extra URL text added inline).
-  Extract URL from "1. Title, https://..." in References. References URLs must stay plain text.
- 
-RULES:
-- Preserve every sentence and citation; only add markdown structure; do not add or remove content.
-- Output ONLY the raw markdown document. No code fences, no preamble, no explanation.
-- Do NOT wrap in markdown code fences.
-- Do not include a "Contents" section or table of contents.
-- Same number of logical blocks as input, same order.
+DocumentStructure:
+- blocks: Array<DocumentBlock>
 
-============================================================
-VALIDATION — REQUIRED BEFORE OUTPUT
-============================================================
- 
-Before responding, verify ALL of the following:
- 
-1. All formatting fixes applied (inline citation links as `[[n]](URL)`, plain-text URLs without square brackets, spacing, list prefixes preserved).
-2. Output is valid markdown: # title, ## headings, lists, ## References with 1. 2. 3. only.
-3. Exactly one level-1 heading (# Title) is present; any extra title-like lines have been
-   converted into subtitles (## ...) or removed if clearly unnecessary.
-4. Inline citations follow the correct pattern: use clickable numeric marker `[[n]](URL)`;
-   if the sentence already has a visible URL, preserve it as plain text (no square brackets).
-5. No content or meaning changed.
-6. BULLET PRESERVATION CHECK — verify ALL of the following before producing output:
-   a. Every bullet_item block from the input appears in the output with its bullet prefix intact.
-   b. No bullet prefix character has been changed (• stays •, - stays -, * stays *).
-   c. No bullet_item block has been converted to a plain paragraph (prefix stripped).
-   d. No bullet_item block has been converted to a numbered list item.
-   e. No plain paragraph block has had a bullet prefix added to it.
-   f. Consecutive bullet_item blocks form a coherent list — none are isolated or separated
-      by blank lines unless the input had a blank line between them.
- 
-If ANY validation check fails → correct and re-run validation before producing output.
- 
-============================================================
-NOW FORMAT THE FOLLOWING ARTICLE AND OUTPUT AS MARKDOWN:
-===========================================================
+DocumentBlock:
+- id: string (b1, b2, b3, ...)
+- type: one of ["title", "heading", "paragraph", "bullet_item"]
+- level:
+    * 0 for title
+    * 1–3 for headings (1=main, 2=sub, 3=sub-sub)
+    * 0 for paragraphs and bullet items
+- text: string (exact original text including any bullet prefix character; do NOT strip • - * – from the start)
 
-{article_text}
+-----------------------------------------
+Parsing Rules (MANDATORY)
+-----------------------------------------
 
-Return ONLY the complete article in standard markdown. No code fences, no preamble, no commentary.
+- Process the document strictly top-to-bottom. Never reorder or move content.
+- Preserve all original text exactly, including leading bullet prefix characters (•, -, *, –, —, ➤, ✓).
+- If a line begins with a bullet prefix (•, -, *, –, —, ➤, ✓), classify it as type "bullet_item"
+  and preserve the prefix character at the start of the "text" field exactly as written.
+  Example: "• Reduce costs" → { "type": "bullet_item", "text": "• Reduce costs" }
+  Example: "- Improve margins" → { "type": "bullet_item", "text": "- Improve margins" }
+  Do NOT strip the bullet character from the text field.
+- Merge multi-line paragraphs.
+- A heading must appear alone on a line and look like a heading.
+- Extract bullet items one-by-one.
+- Assign IDs sequentially based on appearance.
+
+-----------------------------------------
+Special Filtering Rule (MANDATORY)
+-----------------------------------------
+
+- If a line is a generic placeholder heading such as:
+  "Content", "Contents", or "Table of Contents",
+  then IGNORE this line completely and do NOT include it as a block.
+
+- A placeholder heading is defined strictly as:
+  * A standalone line (not part of a paragraph or sentence)
+  * Contains only 1–3 words
+  * Matches exactly one of:
+      "Content"
+      "Contents"
+      "Table of Contents"
+  * May optionally end with a colon (e.g., "Contents:")
+
+- This rule applies ONLY when the line exactly matches the above patterns.
+
+- Do NOT remove or modify:
+  * Headings like "Content Strategy", "Content Overview", "Content Marketing"
+  * Any paragraph or sentence containing the word "content"
+  * Any actual document content under these headings
+
+- Only skip the placeholder heading line itself. All following content must still be processed normally.
+
+-----------------------------------------
+Output:
+Return ONLY the JSON for DocumentStructure. No explanation, no commentary.
 """
+
+
+class Context:
+    user_id: str = "1"
+
+
+checkpointer = InMemorySaver()
+
+
+agent = create_agent(
+    model=llm,
+    system_prompt=SYSTEM_PROMPT,
+    tools=[],
+    context_schema=Context,
+    response_format=ToolStrategy(DocumentStructure),
+    checkpointer=checkpointer,
+)
+
+
+# Word bullet style names — extend this set if your docx uses custom styles
+BULLET_STYLES = {
+    "List Bullet",
+    "List Bullet 2",
+    "List Bullet 3",
+    "List Bullet 4",
+    "List Bullet 5",
+    "List Paragraph",   # Word's default indented bullet when no explicit style is set
+    "List Continue",
+    "List Continue 2",
+    "List Continue 3",
+}
+
+# Characters that unambiguously mark a line as a bullet when at position 0
+BULLET_CHARS = ("•", "-", "*", "–", "—", "➤", "✓")
+
+
+def _paragraph_is_bullet(paragraph) -> bool:
+    """
+    Return True if a python-docx Paragraph is a bullet/list item.
+
+    Checks THREE independent signals (any one is sufficient):
+    1. The paragraph style name is in BULLET_STYLES.
+    2. The paragraph XML has <w:numPr> (Word automatic list, any style name).
+    3. The paragraph text starts with a known bullet character.
+       This catches manually-typed bullets in Normal-style paragraphs
+       where the author typed "• text" without using Word's list feature
+       — those have numPr=False and style='Normal' yet are visually bullets.
+    """
+    style_name = paragraph.style.name if paragraph.style else ""
+    if style_name in BULLET_STYLES:
+        return True
+
+    # Check for numPr in paragraph properties (covers custom bullet styles)
+    pPr = paragraph._element.pPr
+    if pPr is not None and pPr.numPr is not None:
+        return True
+
+    # FIX: detect manually-typed bullet chars in Normal paragraphs
+    text = paragraph.text.strip()
+    if text and text[0] in BULLET_CHARS:
+        return True
+
+    return False
+
+
+def _detect_bullet_char(paragraph) -> str:
+    """
+    Return the bullet character to prepend, or '' if the text already
+    has one (to avoid double-prefixing like '•• text').
+    """
+    text = paragraph.text.strip()
+    if text and text[0] in BULLET_CHARS:
+        return ""   # already has a bullet prefix — do not add another
+    return "•"
+
+
+def generate_title_from_content(document_text: str) -> str:
+    """
+    Generate a title based on the entire document content using LLM.
+    Used when no title is found in the segmented document.
+    """
+    title_prompt = f"""Based on the following document content, generate a concise and descriptive title (maximum 100 characters).
+
+Document Content:
+\"\"\"{document_text}\"\"\"
+
+Generate only the title text, nothing else. The title should:
+- Be clear and descriptive
+- Capture the main topic or theme
+- Be professional and appropriate
+- Not exceed 200 characters
+
+Title:"""
+    
+    try:
+        response = llm.invoke([HumanMessage(content=title_prompt)])
+        title = response.content.strip() if hasattr(response, "content") else str(response).strip()
+        # Remove quotes if LLM added them
+        title = re.sub(r'^["\']|["\']$', "", title)
+        # Limit to 200 characters
+        title = title[:200].strip()
+        return title if title else "Document"
+    except Exception as e:
+        # Fallback: use first sentence or first 50 chars
+        first_sentence = document_text.split('.')[0].strip()[:100]
+        return first_sentence if first_sentence else "Document"
+
+
+def segment_document_with_llm(document_text: str, thread_id: str = "doc-1") -> DocumentStructure:
+    response = agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"DOCUMENT:\n\"\"\"{document_text}\"\"\"",
+                }
+            ]
+        },
+        config={"configurable": {"thread_id": thread_id}},
+        context=Context(),
+    )
+
+    doc_struct: DocumentStructure = response["structured_response"]
+    
+    # Check if there's a title block
+    has_title = any(block.type == "title" for block in doc_struct.blocks)
+    
+    if not has_title:
+        # Generate title from all paragraph content
+        # Collect all text from paragraphs and headings
+        all_content = []
+        for block in doc_struct.blocks:
+            if block.type in ["paragraph", "heading"]:
+                all_content.append(block.text)
+        
+        # If no paragraphs/headings, use the original document text
+        content_for_title = "\n\n".join(all_content) if all_content else document_text
+        
+        # Generate title
+        generated_title = generate_title_from_content(content_for_title)
+        
+        # Create title block as first block
+        title_block = DocumentBlock(
+            id="b1",
+            type="title",
+            level=0,
+            text=generated_title
+        )
+        
+        # Renumber all existing blocks (b1 -> b2, b2 -> b3, etc.)
+        renumbered_blocks = [title_block]
+        for block in doc_struct.blocks:
+            # Extract number from existing id (e.g., "b1" -> 1)
+            match = re.match(r'b(\d+)', block.id)
+            if match:
+                old_num = int(match.group(1))
+                new_num = old_num + 1
+                new_id = f"b{new_num}"
+            else:
+                # Fallback: if id doesn't match pattern, use index + 2 (since title is b1)
+                new_id = f"b{len(renumbered_blocks) + 1}"
+            
+            renumbered_blocks.append(
+                DocumentBlock(
+                    id=new_id,
+                    type=block.type,
+                    level=block.level,
+                    text=block.text
+                )
+            )
+        
+        doc_struct = DocumentStructure(blocks=renumbered_blocks)
+    
+    return doc_struct
+
+
+def read_docx_text(path: str) -> str:
+    doc = Document(path)
+    lines = []
+
+    for paragraph in doc.paragraphs:
+        text = paragraph.text.strip()
+        if not text:
+            continue
+
+        if _paragraph_is_bullet(paragraph):
+            # FIX: use _detect_bullet_char so we never double-prefix
+            prefix = _detect_bullet_char(paragraph)
+            lines.append(f"{prefix} {text}" if prefix else text)
+        else:
+            lines.append(text)
+
+    return "\n\n".join(lines)
+
+
+def apply_decisions_to_document(
+    original_doc: DocumentStructure,
+    editor_result: EditorResult,
+    paragraph_edits: List[dict],
+    decisions: List[dict],
+    accept_all: bool = False,
+    reject_all: bool = False
+) -> DocumentStructure:
+    """
+    Apply user decisions (approve/reject) to update the document.
+    The updated document becomes the base for the next editor.
+    
+    Args:
+        original_doc: The original document structure
+        editor_result: The current editor's result
+        paragraph_edits: List of paragraph edit objects from frontend
+        decisions: List of decision objects with index and approved status
+        accept_all: Global flag to accept all edits
+        reject_all: Global flag to reject all edits
+    
+    Returns:
+        Updated DocumentStructure with approved/rejected changes applied
+    """
+    # Build decision map for quick lookup
+    decision_map = {
+        d["index"]: d.get("approved")
+        for d in decisions
+    }
+    
+    # Create a map of block_id to updated text from editor_result
+    # Ensure we have BlockEditResult objects with proper attributes
+    editor_block_map = {}
+    for block in editor_result.blocks:
+        # Handle both BlockEditResult objects and dicts (for safety)
+        if hasattr(block, 'id'):
+            block_id = block.id
+            suggested = getattr(block, 'suggested_text', None) or getattr(block, 'original_text', None)
+        elif isinstance(block, dict):
+            block_id = block.get('id')
+            suggested = block.get('suggested_text') or block.get('original_text')
+        else:
+            continue
+        
+        if block_id:
+            editor_block_map[block_id] = suggested
+    
+    # Update blocks based on decisions
+    updated_blocks = []
+    for i, block in enumerate(original_doc.blocks):
+        # Get decision for this block (by index)
+        approved = decision_map.get(i)
+        auto_approved = paragraph_edits[i].get("autoApproved", False) if i < len(paragraph_edits) else False
+        
+        # Determine final text based on user decisions
+        if reject_all:
+            # Reject all: use original
+            final_text = block.text
+        elif accept_all:
+            # Accept all: use edited version (fallback to original if not found)
+            final_text = editor_block_map.get(block.id, block.text)
+        elif approved is True:
+            # Explicitly approved: use edited (fallback to original if not found)
+            final_text = editor_block_map.get(block.id, block.text)
+        elif approved is False:
+            # Explicitly rejected: use original
+            final_text = block.text
+        elif approved is None and auto_approved:
+            # Auto-approved (unchanged): use edited (which should be same as original)
+            final_text = editor_block_map.get(block.id, block.text)
+        else:
+            # Default: use original
+            final_text = block.text
+        
+        # Create updated block with new text
+        updated_blocks.append(
+            DocumentBlock(
+                id=block.id,
+                type=block.type,
+                level=block.level,
+                text=final_text
+            )
+        )
+    
+    return DocumentStructure(blocks=updated_blocks)
