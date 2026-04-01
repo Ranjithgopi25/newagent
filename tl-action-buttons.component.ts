@@ -1,3 +1,4 @@
+
 from typing import List
 import os
 import re
@@ -63,33 +64,6 @@ Parsing Rules (MANDATORY)
 - Extract bullet items one-by-one.
 - Assign IDs sequentially based on appearance.
 
------------------------------------------
-Special Filtering Rule (MANDATORY)
------------------------------------------
-
-- If a line is a generic placeholder heading such as:
-  "Content", "Contents", or "Table of Contents",
-  then IGNORE this line completely and do NOT include it as a block.
-
-- A placeholder heading is defined strictly as:
-  * A standalone line (not part of a paragraph or sentence)
-  * Contains only 1–3 words
-  * Matches exactly one of:
-      "Content"
-      "Contents"
-      "Table of Contents"
-  * May optionally end with a colon (e.g., "Contents:")
-
-- This rule applies ONLY when the line exactly matches the above patterns.
-
-- Do NOT remove or modify:
-  * Headings like "Content Strategy", "Content Overview", "Content Marketing"
-  * Any paragraph or sentence containing the word "content"
-  * Any actual document content under these headings
-
-- Only skip the placeholder heading line itself. All following content must still be processed normally.
-
------------------------------------------
 FINAL OUTPUT VALIDATION (MANDATORY)
 -----------------------------------------
 
@@ -108,6 +82,10 @@ Before returning the final JSON:
   → REMOVE that block.
 
 - This validation step is REQUIRED and MUST be applied even if the block was previously included.
+- Remove ONLY that placeholder heading block.
+- Do NOT remove headings like:
+    "Content Strategy", "Content Overview", "Content Marketing"
+- Do NOT remove any paragraph/sentence that contains the word "content".
 
 -----------------------------------------
 Output:
@@ -221,6 +199,33 @@ Title:"""
         return first_sentence if first_sentence else "Document"
 
 
+PLACEHOLDER_HEADINGS = {
+    "content",
+    "contents",
+    "table of contents",
+    "content:",
+    "contents:",
+    "table of contents:",
+}
+
+
+def _normalize_placeholder_candidate(text: str) -> str:
+    return (text or "").strip().lower()
+
+
+def _remove_placeholder_headings(blocks: List[DocumentBlock]) -> List[DocumentBlock]:
+    """
+    Enforce removal of generic placeholder headings regardless of LLM behavior.
+    """
+    filtered_blocks = []
+    for block in blocks:
+        normalized_text = _normalize_placeholder_candidate(block.text)
+        if block.type == "heading" and normalized_text in PLACEHOLDER_HEADINGS:
+            continue
+        filtered_blocks.append(block)
+    return filtered_blocks
+
+
 def segment_document_with_llm(document_text: str, thread_id: str = "doc-1") -> DocumentStructure:
     response = agent.invoke(
         {
@@ -236,6 +241,9 @@ def segment_document_with_llm(document_text: str, thread_id: str = "doc-1") -> D
     )
 
     doc_struct: DocumentStructure = response["structured_response"]
+    doc_struct = DocumentStructure(
+        blocks=_remove_placeholder_headings(doc_struct.blocks)
+    )
     
     # Check if there's a title block
     has_title = any(block.type == "title" for block in doc_struct.blocks)
