@@ -83,11 +83,18 @@ Special Filtering Rule (MANDATORY)
 - This rule applies ONLY when the line exactly matches the above patterns.
 
 - Do NOT remove or modify:
+  * Numbered headings such as "1. Introduction", "2. Market Trends", "3. Conclusion"
+  * Numbered/lettered section labels such as "I. Overview", "A. Scope", "1) Summary"
   * Headings like "Content Strategy", "Content Overview", "Content Marketing"
   * Any paragraph or sentence containing the word "content"
   * Any actual document content under these headings
 
 - Only skip the placeholder heading line itself. All following content must still be processed normally.
+
+- IMPORTANT:
+  If a document does NOT contain a standalone placeholder heading that exactly matches
+  "Content", "Contents", or "Table of Contents" (optionally with ":"), then do not
+  treat any numbered heading as TOC content. Keep numbered headings exactly as written.
 
 -----------------------------------------
 Output:
