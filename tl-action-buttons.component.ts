@@ -11,7 +11,7 @@ Apply formatting fixes to the final article, then output the result as standard 
 - Fix formatting issues: spacing, line spacing, citation format, alignment, paragraph spacing
 - Preserve numbered/lettered list prefixes (DO NOT convert to bullets)
 - Preserve bullet list prefix characters EXACTLY as they appear in the input (DO NOT change • to - or - to •)
-- Convert reference markers to superscript format
+- Convert inline reference markers to clickable markdown citation format `[[n]](URL)`
 - Then output the complete article in standard markdown (see OUTPUT AS MARKDOWN below)
 
 You MUST NOT:
@@ -94,17 +94,19 @@ REFERENCE FORMAT CONVERSION — MANDATORY
 ============================================================
 
 Conversion rules (INLINE CITATIONS ONLY — do NOT change reference list entries):
-- "(Ref. 1)" → "[1]"
-- "(Ref. 1; Ref. 2)" → "[1][2]"
-- "(Ref. 1, Ref. 2, Ref. 3)" → "[1][2][3]"
-- "(Ref. 1; Ref. 2; Ref. 3)" → "[1][2][3]"
-- Preserve URLs; only convert the marker. For URL after marker: wrap URL in parentheses.
+- "(Ref. 1)" → "[[1]](URL_for_reference_1)"
+- "(Ref. 1; Ref. 2)" → "[[1]](URL_for_reference_1)[[2]](URL_for_reference_2)"
+- "(Ref. 1, Ref. 2, Ref. 3)" → "[[1]](URL_for_reference_1)[[2]](URL_for_reference_2)[[3]](URL_for_reference_3)"
+- "(Ref. 1; Ref. 2; Ref. 3)" → "[[1]](URL_for_reference_1)[[2]](URL_for_reference_2)[[3]](URL_for_reference_3)"
+- If inline marker already appears as "[1]", "[2]", etc., convert it to clickable format `[[n]](URL_for_reference_n)`.
+- Preserve visible URLs after markers exactly as plain text when they already exist in the sentence.
 
 ============================================================
 CITATION LINK FORMAT CONVERSION — MANDATORY
 ============================================================
 
-- Convert ALL markdown links to: Title as plain text, followed by URL as plain text (NO square brackets around URL).
+- Convert markdown links to: Title as plain text, followed by URL as plain text (NO square brackets around URL),
+  EXCEPT inline numeric citation links which MUST remain in clickable marker format `[[n]](URL)`.
 - Convert `[Title](URL)` and `[Title](URL: https://...)` to format: `Title, https://...`
 - Preserve full URL exactly. Apply in citation sections, inline in paragraphs, lists, everywhere.
 
@@ -145,11 +147,11 @@ BULLET LIST OUTPUT RULES (markdown):
   One blank line between entries.
 - Inline citations: Keep inline citation output in bracketed numeric link style and make it clickable.
   If input has plain Unicode superscripts (¹ ² ³) or bracketed superscripts ([1] [2] [3]),
-  match 1→ref "1." URL, 2→ref "2." URL from References and convert to `[1](URL)`, `[2](URL)`, etc.
+  match 1→ref "1." URL, 2→ref "2." URL from References and convert to `[[1]](URL)`, `[[2]](URL)`, etc.
   - If the original inline citation already includes a visible URL next to the marker, preserve
     that visible URL exactly as plain text after the clickable marker (no square brackets around URL).
   - If the original inline citation is only a marker with no visible URL in the sentence, output
-    only the clickable marker `[n](URL)` (no extra URL text added inline).
+    only the clickable marker `[[n]](URL)` (no extra URL text added inline).
   Extract URL from "1. Title, https://..." in References. References URLs must stay plain text.
  
 RULES:
@@ -165,11 +167,11 @@ VALIDATION — REQUIRED BEFORE OUTPUT
  
 Before responding, verify ALL of the following:
  
-1. All formatting fixes applied (inline citation links as `[n](URL)`, plain-text URLs without square brackets, spacing, list prefixes preserved).
+1. All formatting fixes applied (inline citation links as `[[n]](URL)`, plain-text URLs without square brackets, spacing, list prefixes preserved).
 2. Output is valid markdown: # title, ## headings, lists, ## References with 1. 2. 3. only.
 3. Exactly one level-1 heading (# Title) is present; any extra title-like lines have been
    converted into subtitles (## ...) or removed if clearly unnecessary.
-4. Inline citations follow the correct pattern: use clickable numeric marker `[n](URL)`;
+4. Inline citations follow the correct pattern: use clickable numeric marker `[[n]](URL)`;
    if the sentence already has a visible URL, preserve it as plain text (no square brackets).
 5. No content or meaning changed.
 6. BULLET PRESERVATION CHECK — verify ALL of the following before producing output:
