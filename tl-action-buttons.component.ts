@@ -79,13 +79,26 @@ Before returning the final JSON:
         "content:"
         "contents:"
         "table of contents:"
-  → REMOVE that block.
+  → mark this as TOC_START and REMOVE that block.
 
-- This validation step is REQUIRED and MUST be applied even if the block was previously included.
-- Remove ONLY that placeholder heading block.
+- Apply TOC removal ONLY to the contiguous block immediately after TOC_START.
+  This is the "contents section" and usually contains index lines like:
+    * "1. ...", "2. ...", "3. ..."
+    * "1) ...", "2) ..."
+    * "1.1 ...", "2.3 ...", "3.2.1 ..."
+    * "I. ...", "II. ...", "III. ..."
+    * Bullet list items that clearly represent section index entries
+  Remove these TOC entry blocks regardless of block type
+  (heading / paragraph / bullet_item).
+
+- Stop TOC removal immediately at the first non-TOC block.
+  Do NOT remove content beyond this contiguous contents section.
+
+- This validation step is REQUIRED and MUST be applied even if those blocks were previously included.
 - Do NOT remove headings like:
     "Content Strategy", "Content Overview", "Content Marketing"
 - Do NOT remove any paragraph/sentence that contains the word "content".
+- Do NOT remove numbered lists in normal body sections unless they are inside this contents section.
 
 -----------------------------------------
 Output:
