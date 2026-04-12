@@ -1,105 +1,101 @@
 { 
 
+  "response_id": "RESP-ACC-2026-00142", 
+
   "request_id": "ACC-2026-00142", 
 
   "module": "contract_drafting", 
 
-  "submitted_by": { 
+  "status": "draft_generated", 
 
-    "uid": "asingh@pwc.com", 
+  "generated_at": "2026-04-12T10:34:22Z", 
 
-    "name": "Arun Singh", 
+  "document": { 
 
-    "role": "partner" 
+    "title": "Non-Disclosure Agreement — Acme Corporation", 
 
-  }, 
+    "version": "v0.1 (AI Draft)", 
 
-  "document_type": "NDA", 
+    "word_count": 2840, 
 
-  "interaction_mode": "draft_mode", 
+    "sections": [ 
 
-  "jurisdiction": "new_york", 
+      "Parties and Recitals", 
 
-  "client": { 
+      "Definition of Confidential Information", 
 
-    "name": "Acme Corporation", 
+      "Obligations of Confidentiality", 
 
-    "type": "fortune_500", 
+      "Permitted Disclosures", 
 
-    "contact_name": "Jane Doe", 
+      "IP and Work Product Ownership", 
 
-    "contact_email": "jane.doe@acme.com" 
+      "Data Protection", 
 
-  }, 
+      "Term and Termination", 
 
-  "commercial_terms": { 
+      "Governing Law and Jurisdiction", 
 
-    "contract_value_usd": 250000, 
+      "General Provisions" 
 
-    "currency": "USD", 
+    ], 
 
-    "line_of_service": "advisory", 
-
-    "industry": "financial_services", 
-
-    "start_date": "2026-05-01", 
-
-    "end_date": "2027-04-30", 
-
-    "payment_terms": "net_30" 
+    "file_ref": "s3://accord-docs/drafts/ACC-2026-00142/NDA_Acme_v0.1.docx" 
 
   }, 
 
-  "scope": { 
+  "risk_summary": { 
 
-    "description": "Advisory services for digital transformation roadmap. Deliverables include current state assessment, target architecture, and implementation plan.", 
+    "overall_risk": "medium", 
 
-    "special_instructions": "Include mutual NDA provisions. Limit liability to contract value. Apply NY IP assignment rules.", 
+    "flags": [ 
 
-    "preferred_template": "standard", 
+      { 
 
-    "governing_law": "New York" 
+        "clause": "Liability Cap", 
 
-  }, 
+        "risk_level": "high", 
 
-  "flags": { 
+        "note": "Cap set to contract value per instructions. Verify client acceptance." 
 
-    "mutual_nda": true, 
+      }, 
 
-    "data_protection_clauses": true, 
+      { 
 
-    "subcontractor_disclosure": false, 
+        "clause": "Data Protection", 
 
-    "ip_assigned_to_client": false 
+        "risk_level": "medium", 
 
-  }, 
+        "note": "GDPR compliance clauses included. Legal review recommended for NY addendum." 
 
-  "risk_assessment": { 
+      } 
 
-    "auto_score": "medium", 
-
-    "score_inputs": { 
-
-      "value_band": "100k_500k", 
-
-      "los_risk": "low", 
-
-      "client_type_risk": "low", 
-
-      "industry_risk": "medium" 
-
-    }, 
-
-    "routing": "risk_review_required" 
+    ] 
 
   }, 
 
-  "metadata": { 
+  "routing": { 
 
-    "created_at": "2026-04-12T10:30:00Z", 
+    "routed_to": "risk_review", 
 
-    "status": "pending_draft_generation" 
+    "reason": "Medium risk score — value band 100k-500k with financial services industry flag", 
+
+    "assigned_to": "risk_team_queue", 
+
+    "sla_hours": 24 
+
+  }, 
+
+  "agent_metadata": { 
+
+    "model": "claude-sonnet-4-20250514", 
+
+    "template_used": "standard_nda_ny_v3", 
+
+    "clauses_from_library": 9, 
+
+    "generation_time_seconds": 18 
 
   } 
 
-}
+} 
