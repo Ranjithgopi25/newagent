@@ -1,119 +1,162 @@
 import json
-import os
 import logging
-from typing import Dict, List, Any
+import os
+from typing import Dict, Any, Optional
 
-from langchain_core.messages import HumanMessage
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.core.deps import get_llm_client_agent
-from app.common.document_utils import (
-    extract_text_from_docx,
-    extract_text_from_pdf,
-    extract_text_from_pptx,
-    extract_text_from_xlsx,
-)
-from .prompt import build_field_extraction_prompt
+from pydantic import BaseModel, Field
+
+from .graph import run_contract_draft_graph, resume_contract_draft_graph
+from .validation import load_field_mapping
 
 logger = logging.getLogger(__name__)
 
-FIELD_MAPPING_PATH = os.path.join(os.path.dirname(__file__), "field_mapping.json")
+router = APIRouter()
 
-llm = get_llm_client_agent()
-
-
-def load_field_mapping() -> dict:
-    with open(FIELD_MAPPING_PATH, "r") as f:
-        return json.load(f)
+SUPPORTED_PRIMARY = [".doc", ".docx", ".pdf", ".pptx", ".xlsx"]
+SUPPORTED_SECONDARY = [".doc", ".docx", ".pdf", ".pptx"]
 
 
-_EXTRACTORS = {
-    ".docx": extract_text_from_docx,
-    ".doc": extract_text_from_docx,
-    ".pdf": extract_text_from_pdf,
-    ".pptx": extract_text_from_pptx,
-    ".xlsx": extract_text_from_xlsx,
-}
+# ============================================================
+# GET /field-mapping/{contract_type}
+# ============================================================
 
+@router.get("/field-mapping/{contract_type}")
+async def get_field_mapping(contract_type: str):
+    """Return field definitions for a given contract type."""
+    data = load_field_mapping()
 
-def extract_document_text_from_bytes(file_bytes: bytes, filename: str) -> str:
-    """Extract text from raw file bytes using the filename extension."""
-    ext = os.path.splitext(filename)[1].lower()
-    if not ext:
-        raise ValueError(f"Could not determine file type from filename: {filename}")
-
-    extractor = _EXTRACTORS.get(ext)
-    if not extractor:
-        raise ValueError(
-            f"Unsupported file type: {ext}. Supported: {list(_EXTRACTORS.keys())}"
+    mapping_contract_type = data.get("contract_type", "")
+    if mapping_contract_type.upper() != contract_type.upper():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No field mapping found for contract type: {contract_type}",
         )
 
-    if isinstance(file_bytes, bytearray):
-        file_bytes = bytes(file_bytes)
+    field_definitions = data.get("field_definitions", [])
 
-    text = extractor(file_bytes)
-    logger.info("[EXTRACT] Extracted %d characters from %s", len(text), filename)
-    return text
-
-
-def extract_document_text(file_path: str) -> str:
-    """Read a document from disk and extract text based on file extension."""
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Document not found: {file_path}")
-
-    with open(file_path, "rb") as f:
-        file_bytes = f.read()
-
-    name = os.path.basename(file_path)
-    return extract_document_text_from_bytes(file_bytes, name if name else file_path)
-
-
-async def ask_llm_to_extract_fields(
-    document_text: str, field_definitions: List[Dict[str, Any]]
-) -> Dict[str, Any]:
-    """Send document text + field definitions to LLM, get back extracted field values."""
-    prompt = build_field_extraction_prompt(document_text, field_definitions)
-
-    response = await llm.ainvoke([HumanMessage(content=prompt)])
-    raw = response.content if hasattr(response, "content") else str(response)
-
-    try:
-        raw_clean = raw.strip()
-        if raw_clean.startswith("```"):
-            raw_clean = raw_clean.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        extracted = json.loads(raw_clean)
-        if not isinstance(extracted, dict):
-            logger.warning("[LLM_EXTRACT] LLM returned non-dict, got %s", type(extracted))
-            return {}
-        return extracted
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.warning("[LLM_EXTRACT] Failed to parse LLM response: %s", e)
-        return {}
-
-
-def validate_extracted_fields(
-    extracted_fields: Dict[str, Any], field_definitions: List[Dict[str, Any]]
-) -> Dict[str, Any]:
-    """Check extracted fields against field_mapping definitions. Return validation result."""
-    missing_fields = []
-
-    for field_def in field_definitions:
-        if not field_def.get("required"):
-            continue
-
-        field_key = field_def["field_key"]
-        value = extracted_fields.get(field_key)
-
-        if value is None or (isinstance(value, str) and not value.strip()):
-            missing_fields.append({
-                "field_key": field_key,
-                "label": field_def.get("label", field_key),
-                "type": field_def.get("type", "text"),
-                "prompt_hint": field_def.get("prompt_hint", ""),
-                "options": field_def.get("options"),
-            })
+    required_fields = [f for f in field_definitions if f.get("required")]
+    optional_fields = [f for f in field_definitions if not f.get("required")]
 
     return {
-        "valid": len(missing_fields) == 0,
-        "missing_fields": missing_fields,
-        "extracted_fields": extracted_fields,
+        "contract_type": contract_type.upper(),
+        "total_fields": len(field_definitions),
+        "required_count": len(required_fields),
+        "optional_count": len(optional_fields),
+        "field_definitions": field_definitions,
     }
+
+
+# ============================================================
+# POST /draft — browser uploads (multipart). Graph uses document_upload.file_bytes.
+# ============================================================
+
+class DraftContractRequest(BaseModel):
+    contract_type: Dict[str, bool]
+    document_upload: Dict[str, Any]
+    supporting_document: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    prid: str
+    flex_id: str
+    template: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    lookup_in_icertis: bool = False
+
+
+@router.post("/draft")
+async def draft_contract(
+    document_file: UploadFile = File(..., description="Primary contract document (SOW / proposal)"),
+    contract_type: str = Form(
+        ...,
+        description='JSON object of booleans, e.g. {"statement_of_work":true,"engagement_letter":false,...}',
+    ),
+    prid: str = Form(...),
+    flex_id: str = Form(...),
+    lookup_in_icertis: str = Form("false"),
+    supporting_document_file: Optional[UploadFile] = File(None),
+    template_file: Optional[UploadFile] = File(None),
+):
+    """Multipart upload from the browser; passes file bytes into the graph (no separate /draft/multipart)."""
+    try:
+        contract_type_dict = json.loads(contract_type)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid contract_type JSON: {e}") from e
+
+    if not isinstance(contract_type_dict, dict):
+        raise HTTPException(status_code=400, detail="contract_type must be a JSON object")
+
+    lookup_flag = str(lookup_in_icertis).lower() in ("1", "true", "yes", "on")
+
+    doc_name = document_file.filename or "document"
+    doc_bytes = await document_file.read()
+    doc_ext = os.path.splitext(doc_name)[1].lower() or ""
+
+    document_upload: Dict[str, Any] = {
+        "file_name": doc_name,
+        "file_bytes": doc_bytes,
+        "file_type": doc_ext,
+        "supported_formats": SUPPORTED_PRIMARY,
+    }
+
+    supporting_document: Dict[str, Any] = {}
+    if supporting_document_file and supporting_document_file.filename:
+        sup_name = supporting_document_file.filename
+        supporting_document = {
+            "file_name": sup_name,
+            "file_bytes": await supporting_document_file.read(),
+            "file_type": os.path.splitext(sup_name)[1].lower() or "",
+            "supported_formats": SUPPORTED_SECONDARY,
+        }
+
+    template: Dict[str, Any] = {}
+    if template_file and template_file.filename:
+        tpl_name = template_file.filename
+        template = {
+            "file_name": tpl_name,
+            "file_bytes": await template_file.read(),
+            "file_type": os.path.splitext(tpl_name)[1].lower() or "",
+            "supported_formats": SUPPORTED_SECONDARY,
+        }
+
+    input_data = {
+        "contract_type": contract_type_dict,
+        "document_upload": document_upload,
+        "supporting_document": supporting_document,
+        "prid": prid,
+        "flex_id": flex_id,
+        "template": template,
+        "lookup_in_icertis": lookup_flag,
+    }
+
+    result = await run_contract_draft_graph(input_data)
+    return result
+
+
+# ============================================================
+# POST /draft/json — server-side paths (e.g. Draft.json with file_path), not for browser file picker
+# ============================================================
+
+
+@router.post("/draft/json")
+async def draft_contract_from_json(request: DraftContractRequest):
+    """JSON body with document_upload.file_path on disk — same graph as multipart /draft."""
+    result = await run_contract_draft_graph(request.model_dump())
+    return result
+
+
+# ============================================================
+# POST /draft/resume — Step 2: User fills missing fields, resume draft generation
+# ============================================================
+
+class ResumeDraftRequest(BaseModel):
+    contract_type: Dict[str, bool]
+    prid: str
+    flex_id: str
+    extracted_fields: Dict[str, Any]
+    user_filled_fields: Dict[str, Any]
+
+
+@router.post("/draft/resume")
+async def resume_draft_contract(request: ResumeDraftRequest):
+    """Step 2: User provides missing field values → re-validate → generate draft."""
+    result = await resume_contract_draft_graph(request.model_dump())
+    return result
