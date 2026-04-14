@@ -1,1163 +1,1854 @@
-
-import { Component, Input, ViewChild, ElementRef, HostListener, Output, EventEmitter, OnInit } from '@angular/core';
+import { Component, OnInit, ChangeDetectorRef  } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { HttpClient } from '@angular/common/http';
-import { ThoughtLeadershipMetadata, Message } from '../../../../../core/models';
-import { CanvasStateService } from '../../../../../core/services/canvas-state.service';
-import { TlChatBridgeService } from '../../../../../core/services/tl-chat-bridge.service';
-import { ChatService } from '../../../../../core/services/chat.service';
-import { ToastService } from '../../../../../core/services/toast.service';
-import { ChatEditWorkflowService } from '../../../../../core/services/chat-edit-workflow.service';
-import { environment } from '../../../../../../environments/environment';
-import { TlRequestFormComponent } from '../../../../phoenix/TL/request-form';
-import { AuthFetchService } from '../../../../../core/services/auth-fetch.service';
-import { TlFlowService } from '../../../../../core/services/tl-flow.service';
-import { extractDocumentTitle } from '../../../../../core/utils/edit-content.utils';
-import { formatFinalArticleWithBlockTypes} from '../../../../../core/utils/edit-content.utils';
-import { BlockTypeInfo } from '../../../../../core/utils/edit-content.utils';
-import { renderMarkdownForDisplay } from '../../../../../core/utils/edit-content.utils';
-import {saveAs} from 'file-saver';
+import { FormsModule } from '@angular/forms';
+import { TlFlowService } from '../../../core/services/tl-flow.service';
+import { ChatService } from '../../../core/services/chat.service';
+import { TlChatBridgeService } from '../../../core/services/tl-chat-bridge.service';
+import { AuthFetchService } from '../../../core/services/auth-fetch.service';
+import { ThoughtLeadershipMetadata } from '../../../core/models';
+import { FileUploadComponent } from '../../../shared/ui/components/file-upload/file-upload.component';
+import { EditorProgressItem } from '../../../shared/ui/components/editor-progress/editor-progress.component'; // EditorProgressComponent removed - not used in template
+import { normalizeEditorOrder, normalizeContent, EditorType, extractDocumentTitle, getEditorDisplayName, formatMarkdown, convertMarkdownToHtml, renderMarkdownForDisplay, extractFileText, parseEditorialFeedback, renderEditorialFeedbackHtml, EditorialFeedbackItem } from '../../../core/utils/edit-content.utils';
+import { AI_CONTENT_DISCLAIMER_MARKDOWN_SUFFIX } from '../../../core/services/chat-edit-workflow.service';
+import { 
+  createParagraphEditsFromComparison, 
+  allParagraphsDecided,
+  validateStringEquality
+} from '../../../core/utils/paragraph-edit.utils';
+import { ParagraphEdit } from '../../../core/models/message.model';
+import { environment } from '../../../../environments/environment';
+interface EditForm {
+  selectedEditors: EditorType[];
+  uploadedFile: File | null;
+  pastedText: string;
+}
+
+interface ParagraphFeedback {
+  index: number;
+  original: string;
+  edited: string;
+  tags: string[];
+  autoApproved: boolean;
+  approved?: boolean | null;
+  block_type?: string;
+  level?: number;
+  editorial_feedback: {
+    development?: any[];
+    content?: any[];
+    copy?: any[];
+    line?: any[];
+    brand?: any[];
+  };
+  displayOriginal?: string;
+  displayEdited?: string;
+}
 
 @Component({
-    selector: 'app-tl-action-buttons',
-    imports: [CommonModule, TlRequestFormComponent],
-    templateUrl: './tl-action-buttons.component.html',
-    styleUrls: ['./tl-action-buttons.component.scss']
+  selector: 'app-edit-content-flow',
+  standalone: true,
+  imports: [CommonModule, FormsModule, FileUploadComponent], // EditorProgressComponent removed - not used in template
+  templateUrl: './edit-content-flow.component.html',
+  styleUrls: ['./edit-content-flow.component.scss']
 })
-export class TlActionButtonsComponent implements OnInit {
-  @Input() metadata!: ThoughtLeadershipMetadata;
-  @Input() messageId?: string;
-  @Input() message?: Message;  // Optional: Full message for accessing paragraph_edits
-  @Input() selectedFlow?: 'ppt' | 'thought-leadership' | 'market-intelligence';
-  @ViewChild('exportButton') exportButton?: ElementRef<HTMLButtonElement>;
+export class EditContentFlowComponent implements OnInit {
+  isGenerating: boolean = false;
+  editFeedback: string = '';
+  feedbackItems: EditorialFeedbackItem[] = [];
+  feedbackHtml: string = '';
+  revisedContent: string = '';
+  originalContent: string = '';
+  iterationCount: number = 0;
+  showSatisfactionPrompt: boolean = false;
+  showImprovementInput: boolean = false;
+  improvementRequestText: string = '';
+  fileUploadError: string = '';
+  uploadedFileSize: string = '';
+  MAX_FILE_SIZE_MB: number = 5;
+  editorProgressList: EditorProgressItem[] = [];
+  currentEditorIndex: number = 0;
+  totalEditors: number = 0;
+  currentEditorId: string = '';
   
-  isConvertingToPodcast = false;
-  showExportDropdown = false;
-  isCopied = false;
-  isExporting = false;
-  isExported = false;
-  exportFormat = '';
-  showRequestForm = false;
-  translatedContent = '';
-  isPreparingDocument = false;
-  isDocumentPrepared = false;
+  // Sequential workflow properties
+  threadId: string | null = null;
+  currentEditor: string | null = null;
+  isSequentialMode: boolean = false;
+  isLastEditor: boolean = false;
+  isEditorLoading: boolean = false; // Track if current editor is loading
+  
+  paragraphFeedbackData: ParagraphFeedback[] = [];
+  paragraphEdits: ParagraphEdit[] = [];
+  showFinalOutput: boolean = false;
+  /** Final article as markdown (same as Quick Start). For in-component display we convert to HTML. */
+  finalArticle: string = '';
+  isGeneratingFinal: boolean = false;
 
-  @Output() raisePhoenix = new EventEmitter<void>();
-  @Output() exportRequested = new EventEmitter<{ format: 'word' | 'pdf' | 'ppt', component: any }>();
-  @Output() copyRequested = new EventEmitter<{ content: string, component: any }>();
+  /** HTML for in-component display of final article — same as Quick Start: marked.parse + list/citation post-process (no convertMarkdownToHtml). */
+  get finalArticleDisplay(): string {
+    return this.finalArticle ? renderMarkdownForDisplay(this.finalArticle) : '';
+  }
 
-  @HostListener('document:click', ['$event'])
-  onDocumentClick(event: MouseEvent): void {
-    const target = event.target as HTMLElement;
-    const exportDropdown = target.closest('.export-dropdown');
-    if (!exportDropdown && this.showExportDropdown) {
-      this.showExportDropdown = false;
+  /** Paragraphs that require review (exclude autoApproved) */
+  private get reviewParagraphs(): ParagraphFeedback[] {
+    return (this.paragraphFeedbackData || [])
+      .filter(p => p.autoApproved !== true)
+      .sort((a, b) => a.index - b.index);
+  }
+
+  /** Flatten all editorial feedback items across paragraphs */
+  private getAllFeedbackItems(): Array<{
+    paraIndex: number;
+    editorType: string;
+    fbIndex: number;
+    fb: any;
+  }> {
+    const items: Array<{ paraIndex: number; editorType: string; fbIndex: number; fb: any }> = [];
+
+    for (const para of this.reviewParagraphs) {
+      const types = Object.keys(para.editorial_feedback || {});
+      for (const editorType of types) {
+        const arr = (para.editorial_feedback as any)[editorType] || [];
+        arr.forEach((fb: any, fbIndex: number) => {
+          items.push({ paraIndex: para.index, editorType, fbIndex, fb });
+        });
+      }
+    }
+
+    return items;
+  }
+
+  /** Count of feedback items approved (fb.approved === true) */
+  get approvedFeedbackCount(): number {
+    return this.getAllFeedbackItems().filter(x => x.fb?.approved === true).length;
+  }
+
+  /** Count of feedback items rejected (fb.approved === false) */
+  get rejectedFeedbackCount(): number {
+    return this.getAllFeedbackItems().filter(x => x.fb?.approved === false).length;
+  }
+
+  /** Count of feedback items pending (fb.approved is null/undefined) */
+  get pendingFeedbackCount(): number {
+    return this.getAllFeedbackItems().filter(
+      x => x.fb?.approved === null || x.fb?.approved === undefined
+    ).length;
+  }
+
+  /** Scroll to the first feedback card with the requested status */
+  scrollToFirstFeedbackByStatus(status: 'pending' | 'approved' | 'rejected'): void {
+    const match = this.getAllFeedbackItems().find(x => {
+      if (status === 'approved') return x.fb?.approved === true;
+      if (status === 'rejected') return x.fb?.approved === false;
+      return x.fb?.approved === null || x.fb?.approved === undefined;
+    });
+
+    if (!match) return;
+
+    const el = document.getElementById(`fb-${match.paraIndex}-${match.editorType}-${match.fbIndex}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
     }
   }
+
+  
+  formData: EditForm = {
+    selectedEditors: ['line+copy', 'brand-alignment'],
+    uploadedFile: null,
+    pastedText: ''
+  };
+  
+  fileReadError: string = '';
+
+  // Notification properties
+  showNotification: boolean = false;
+  notificationMessage: string = '';
+  notificationType: 'success' | 'error' = 'success';
+
+  isCopied: boolean = false;
+
+
+  editorTypes: { id: EditorType; name: string; description: string; details: string; disabled: boolean }[] = [
+    {
+      id: 'content' as EditorType,
+      name: 'Strengthen content structure and key messaging (clarify positioning, flow, and key points)',
+      // icon: '🚀',
+      description: 'Development and Content editors run together, then combined into one result',
+      details: 'Development: structure, narrative, POV. Content: MECE, citations, logic. Same-sentence merge of rules and impact.',
+      disabled: false
+    },
+    {
+      id: 'line+copy' as EditorType,
+      name: 'Copyedit (smooth phrasing, grammar, and consistency)',
+      // icon: '📝',
+      description: 'Line and Copy editors run together, then combined into one result',
+      details: 'Line: flow, readability, style. Copy: grammar, punctuation, typos. Same-sentence merge of rules and impact.',
+      disabled: false
+    },
+    {
+      id: 'brand-alignment' as EditorType,
+      name: 'Risk review',
+      // icon: '🎯',
+      description: 'Aligns content writing standards with PwC brand',
+      details: 'Checks: we/you language, contractions, active voice, prohibited words (catalyst, PwC Network), China references, brand messaging',
+      disabled: true
+    }
+  ];
 
   constructor(
-    private canvasStateService: CanvasStateService,
-    private http: HttpClient,
-    private tlChatBridge: TlChatBridgeService,
-    private authFetchService: AuthFetchService,
+    public tlFlowService: TlFlowService,
     private chatService: ChatService,
-    private toastService: ToastService,
-    private editWorkflowService: ChatEditWorkflowService,
-    private sanitizer: DomSanitizer,
-    private tlFlowService: TlFlowService
+    private tlChatBridge: TlChatBridgeService,
+    private cdr: ChangeDetectorRef,
+    private authFetchService: AuthFetchService
   ) {}
-  
 
   ngOnInit(): void {
-    console.log('[TL Action Buttons] Component initialized with metadata:', {
-      contentType: this.metadata?.contentType,
-      hasPodcastUrl: !!this.metadata?.podcastAudioUrl,
-      podcastUrl: this.metadata?.podcastAudioUrl?.substring(0, 80),
-      showActions: this.metadata?.showActions,
-      isPodcast: this.isPodcast
-    });
-  }
-private exportWordNewLogic(): void {
-  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-    this.toastService.error('Content is not available yet.');
-    return;
-  }
-
-  // Prepare content according to new logic
-  const plainText = this.metadata.fullContent
-    .replace(/<br>/g, '\n')
-    .replace(/<[^>]+>/g, ''); // strip HTML
-
-  const title = this.metadata.topic?.trim() || 'Generated Document';
-  const filename = `${this.sanitizeFilename(title)}.docx`;
-
-  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-  const endpoint = `${apiUrl}/api/v1/export/word-standalone`; 
-
-  this.authFetchService.authenticatedFetch(endpoint, {
-    method: 'POST',
-    body: JSON.stringify({
-      content: plainText,
-      title,
-      content_type: this.metadata.contentType
-    })
-  })
-    .then(response => {
-      if (!response.ok) throw new Error('Failed to generate Word document');
-      return response.blob();
-    })
-    .then(blob => {
-      return this.downloadBlobWithSaveDialog(blob, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    })
-    .then(() => {
-      this.resetExportState();
-    })
-    .catch(err => {
-      // Log generic message without full error object to prevent information leakage
-      console.error('[TL Action Buttons] Word document export failed');
-      this.toastService.error('Failed to generate Word document. Please try again.');
-      this.isExporting = false;
-    });
-}
-
-  // private isEditContent(): boolean {
-  //   // Check if this is edit content workflow
-  //   // Edit content may have contentType 'edit-content' 
-  //   return this.metadata?.contentType === 'edit-content';
-  // }
-
-
-
-  downloadWord(): void {
-    // this.exportDocument('/api/v1/export/word', 'docx', 'docx');
-    const isSocialModule = this.metadata?.contentType === 'socialMedia';
-    const isEditContent = this.metadata?.contentType === 'edit-article';
-    const isMarketModule = this.metadata?.contentType === 'conduct-research'; 
-    const isindustryModule = this.metadata?.contentType === 'industry-insights';
-    const isproposalModule = this.metadata?.contentType === 'proposal-inputs';
-    const isprepMeetModule = this.metadata?.contentType === 'prep-meet';
-    const isPovModule = this.metadata?.contentType === 'pov';
-    const isDraftModule = this.metadata?.contentType === 'article' || 'blog' ||'executive_brief';
-    const isrefineModule = this.metadata?.contentType === 'refine-content';
-    console.log('[TL Action Buttons] downloadWord() called:', {
-      contentType: this.metadata?.contentType,
-      selectedFlow: this.selectedFlow,
-      isSocialModule,
-      isPovModule,isrefineModule,
-      isMarketModule,
-      timestamp: new Date().toISOString()
-    });
-    
-    if (isEditContent) {
-      this.exportEditContentWord();
-    } else if (isSocialModule) {
-      this.exportUIWord();  
-    }
-    else if (isindustryModule || isprepMeetModule || isproposalModule || isMarketModule || isrefineModule ){
-       this.exportDocument('/api/v1/export/word-pwc-mi-module', 'docx', 'docx');
-    }
-    else if (isPovModule ) {
-      this.exportDocument('/api/v1/export/word', 'docx', 'docx');
-    }
-    else if (isDraftModule){
-      this.exportDocument('/api/v1/export/word', 'docx', 'docx'); 
-    }
-    else {
-      console.log("Export word 2")
-      this.exportDocument('/api/v1/export/word', 'docx', 'docx'); 
+    // Auto-attach pre-generated DOCX when opened from action buttons (e.g., SOW -> Redline contract)
+    const preGeneratedFile = this.tlFlowService.getPreGeneratedDocument();
+    if (preGeneratedFile) {
+      this.formData.uploadedFile = preGeneratedFile;
+      this.formData.pastedText = '';
+      this.uploadedFileSize = this.formatFileSize(preGeneratedFile.size);
+      this.tlFlowService.clearPreGeneratedDocument();
     }
   }
 
-  /** Extract export title from markdown: prefer # Title (level-1), then ## heading, then first short non-list line. */
-  private getEditContentExportTitleAndContent(): { content: string; title: string } {
-    const content = this.metadata.fullContent || '';
-    const lines = content.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
-    let title = '';
-    let fallbackHeading = '';
-    for (const line of lines) {
-      const h1 = line.match(/^#\s+(.+)$/);
-      if (h1 && h1[1]) {
-        title = h1[1].replace(/\*\*/g, '').trim();
-        break;
-      }
-      const hAny = line.match(/^#+\s+(.+)$/);
-      if (hAny && hAny[1] && !fallbackHeading) {
-        fallbackHeading = hAny[1].replace(/\*\*/g, '').trim();
-      }
-      if (!title && !/^#+\s/.test(line) && line.length < 120 && !/^[-*]\s/.test(line) && !/^\d+\.\s/.test(line)) {
-        title = line.replace(/\*\*/g, '').trim();
-        break;
-      }
-    }
-    return { content, title: title || fallbackHeading || 'Revised Article' };
+  get isOpen(): boolean {
+    return this.tlFlowService.currentFlow === 'edit-content';
   }
 
-  private async exportEditContentWord(): Promise<void> {
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      alert('Content is not available yet.');
-      return;
-    }
-    this.isExporting = true;
-    try {
-      const { content, title: exportTitle } = this.getEditContentExportTitleAndContent();
-      const finalTitle = exportTitle;
-      const filename = `${this.sanitizeFilename(finalTitle)}.docx`;
-      this.chatService.exportEditContentToWord({
-        content,
-        title: exportTitle,
-        block_types: [],
-        content_type: this.metadata.contentType
-      }).subscribe({
-        next: (blob: Blob) => {
-          this.downloadBlobWithSaveDialog(blob, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document').then(() => {
-            this.resetExportState();
-          }).catch(err => {
-            // Log generic message without full error object to prevent information leakage
-            console.error('[TL Action Buttons] Download failed');
-            this.isExporting = false;
-          });
-        },
-        error: (error) => {
-          // Log generic message without full error object to prevent information leakage
-          console.error('[TL Action Buttons] Word export failed');
-          alert('Failed to generate Word document. Please try again.');
-          this.isExporting = false;
-        }
-      });
-    } catch (error) {
-      // Log generic message without full error object to prevent information leakage
-      console.error('[TL Action Buttons] Word export exception');
-      alert('Failed to generate Word document. Please try again.');
-      this.isExporting = false;
-    }
+  onClose(): void {
+    this.resetForm();
+    this.tlFlowService.closeFlow();
   }
 
-  downloadPDF(): void {
-    // Consider message as 'market module' when contentType is conduct-research or selectedFlow is market-intelligence
-    const contentType = String(this.metadata?.contentType || '');
-    const isEditContent = this.metadata?.contentType === 'edit-article';
-    const isMarketModule = contentType === 'conduct-research';
-    const isIndustryModule = contentType === 'industry-insights';
-    const isproposalModule = contentType === 'proposal-inputs';
-    const isprepMeetModule = contentType === 'prep-meet';
-    const isPovModule = contentType === 'pov';
-    const isDraftModule = contentType === 'article'||'blog'||'executive_brief';
-    const isrefineModule = this.metadata?.contentType === 'refine-content';
-    const isConductResearch = this.metadata?.contentType === 'conduct-research';
-    console.log('[TL Action Buttons] downloadPDF() called:', {
-      contentType,
-      selectedFlow: this.selectedFlow,
-      isMarketModule,
-      isIndustryModule,
-      isPovModule,
-      isprepMeetModule,
-      isproposalModule,isrefineModule,
-      timestamp: new Date().toISOString()
-    });
-      if (isEditContent) {
-        this.exportEditContentPDF();
-        return;
-    }
-      else if (isIndustryModule || isprepMeetModule || isproposalModule || isMarketModule || isrefineModule || isConductResearch ){
-          this.exportDocument('/api/v1/export/pdf-pwc-mi-module', 'pdf', 'pdf');
-          return;
- 
-      }
-      else if (isPovModule ) {
-        this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
-        return;
-      }
-      else if(isDraftModule){
-        this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
-        return;
-      }
-      else {
-        this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
-      }
-    // const endpoint = isMarketModule
-    //   ? '/api/v1/export/pdf-pwc-no-toc'
-    //   : '/api/v1/export/pdf-pwc';
-    
-    // console.log('[TL Action Buttons] Using endpoint:', endpoint);
-    // this.exportDocument(endpoint, 'pdf', 'pdf');
+  back(): void{
+    this.resetForm();
+    this.tlFlowService.closeFlow();
+    this.tlFlowService.openGuidedDialog();
   }
 
-  private async exportEditContentPDF(): Promise<void> {
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      alert('Content is not available yet.');
-      return;
-    }
-    this.isExporting = true;
-    try {
-      const { content, title: exportTitle } = this.getEditContentExportTitleAndContent();
-      const finalTitle = exportTitle;
-      const filename = `${this.sanitizeFilename(finalTitle)}.pdf`;
-      this.chatService.exportEditContentToPDF({
-        content,
-        content_type: this.metadata.contentType,
-        title: exportTitle,
-        block_types: []
-      }).subscribe({
-        next: (blob: Blob) => {
-          this.downloadBlobWithSaveDialog(blob, filename, 'application/pdf').then(() => {
-            this.resetExportState();
-          }).catch(err => {
-            // Log generic message without full error object to prevent information leakage
-            console.error('[TL Action Buttons] PDF download failed');
-            this.isExporting = false;
-          });
-        },
-        error: (error) => {
-          // Log generic message without full error object to prevent information leakage
-          console.error('[TL Action Buttons] PDF export failed');
-          alert('Failed to generate PDF document. Please try again.');
-          this.isExporting = false;
-        }
-      });
-    } catch (error) {
-      // Log generic message without full error object to prevent information leakage
-      console.error('[TL Action Buttons] PDF export exception');
-      alert('Failed to generate PDF document. Please try again.');
-      this.isExporting = false;
-    }
-  }
-  
-  downloadPPT(): void {
-    this.exportPPT('/api/v1/export/ppt');
-  }
-
-  downloadPodcast(): void {
-    if (this.metadata.podcastAudioUrl && this.metadata.podcastFilename) {
-      const link = document.createElement('a');
-      link.href = this.metadata.podcastAudioUrl;
-      link.download = this.metadata.podcastFilename;
-      link.click();
-    }
-  }
-
-  cleanedDocumentText!: string;
-  documentTitle!: string;
-  preGeneratedDocFile: File | null = null;
-  isGeneratingDocument = false;
-
-  onRaisePhoenix(): void {
-
-    this.cleanedDocumentText = this.metadata.fullContent
-    .replace(/<br>/g, '\n')
-    .replace(/<[^>]+>/g, '');
-
-    const lines = this.cleanedDocumentText
-    .split('\n')
-    .filter(line => line.trim());
-
-    this.documentTitle = lines.length > 0
-    ? lines[0].substring(0, 150)
-    : 'Generated Document';
-
-    this.showRequestForm = true;
-    this.raisePhoenix.emit();
-  }
-
-  onReadyToPublish(): void {
-    // Check if content is available
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      this.toastService.error('Content is not available yet.');
-      return;
-    }
-
-    this.isPreparingDocument = true;
-    this.isDocumentPrepared = false;
-    this.toastService.info('Preparing document for publication...');
-
-    // Clean content (same pattern as onRaisePhoenix)
-    const cleanedText = this.metadata.fullContent
-      .replace(/<br>/g, '\n')
-      .replace(/<[^>]+>/g, '');
-
-    const title = this.metadata.topic?.trim() || 'Generated Document';
-
-    // Generate DOCX via API
-    const plainText = cleanedText;
-    const filename = 'generated_content.docx';
-
-    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-    const endpoint = `${apiUrl}/api/v1/export/word-standalone`;
-
-    console.log('[TL Action Buttons] Generating document for ready-to-publish:', { 
-      title, 
-      contentType: this.metadata.contentType 
-    });
-
-    this.authFetchService.authenticatedFetch(endpoint, {
-      method: 'POST',
-      body: JSON.stringify({
-        content: plainText,
-        title,
-        content_type: this.metadata.contentType
-      })
-    })
-      .then(response => {
-        if (!response.ok) throw new Error('Failed to generate Word document');
-        return response.blob();
-      })
-      .then(blob => {
-        // Create File object from blob
-        const file = new File(
-          [blob], 
-          filename, 
-          { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }
-        );
-        
-        // Store in component property (following onRaisePhoenix pattern)
-        this.preGeneratedDocFile = file;
-        
-        // Store in service for ready-to-publish-flow to access
-        this.tlFlowService.setPreGeneratedDocument(file);
-        
-        console.log('[TL Action Buttons] Document generated and stored');
-        
-        // Show prepared state
-        this.isPreparingDocument = false;
-        this.isDocumentPrepared = true;
-        
-        // Open the ready-to-publish flow
-        this.tlFlowService.openFlow('ready-to-publish');
-        
-        this.toastService.success('Document prepared! Opening publication window...');
-        
-        // Reset animation state after delay
-        setTimeout(() => {
-          this.isDocumentPrepared = false;
-        }, 2000);
-      })
-      .catch(err => {
-        // Log generic message without full error object to prevent information leakage
-        console.error('[TL Action Buttons] Document generation failed');
-        this.toastService.error('Failed to prepare document. Please try again.');
-        this.isPreparingDocument = false;
-        this.isDocumentPrepared = false;
-      });
-  }
-  
-  phoenixRdpLink = '';
-  ticketNumber = '';
-
-  onTicketCreated(event: {
-  requestNumber: string;
-  phoenixRdpLink: string;
-  }): void {
-  // Validate and escape untrusted data before using in HTTP response
-  try {
-    this.validateAndEscapeUrl(event.phoenixRdpLink);
-    const escapedRequestNumber = this.escapeHtmlSpecialChars(event.requestNumber);
-    const escapedLink = this.escapeHtmlAttribute(event.phoenixRdpLink);
-    this.phoenixRdpLink = event.phoenixRdpLink;
-    this.ticketNumber = event.requestNumber;
-    console.log('Ticket created:', event.requestNumber);
-    this.translatedContent = `Request created successfully! Your request number is: <a href="${escapedLink}" target="_blank" rel="noopener noreferrer">${escapedRequestNumber}</a>`.trim();
-  } catch (error) {
-    // Log generic message without full error object to prevent information leakage
-    console.error('[TL Action Buttons] Invalid ticket data');
-    this.translatedContent = 'Error processing request. Please try again.';
-  }
-  this.showRequestForm = false; 
-  this.sendToChat();
-}
-
-sendToChat(): void {
-
-  const topic = `Phoenix Request - ${this.ticketNumber}`;
-  let contentType: string;
-
-   
-    // Create metadata for the message
-    const metadata: ThoughtLeadershipMetadata = {
-      contentType: 'Phoenix_Request',
-      topic: topic,
-      fullContent: this.translatedContent,
-      showActions: false
+  resetForm(): void {
+    this.isGenerating = false;
+    this.editFeedback = '';
+    this.feedbackItems = [];
+    this.feedbackHtml = '';
+    this.revisedContent = '';
+    this.originalContent = '';
+    this.fileReadError = '';
+    this.fileUploadError = '';
+    this.uploadedFileSize = '';
+    this.iterationCount = 0;
+    this.showSatisfactionPrompt = false;
+    this.showImprovementInput = false;
+    this.improvementRequestText = '';
+    this.paragraphEdits = [];
+    this.paragraphFeedbackData = [];
+    this.showFinalOutput = false;
+    this.finalArticle = '';
+    this.isGeneratingFinal = false;
+    this.editorProgressList = [];
+    this.currentEditorIndex = 0;
+    this.totalEditors = 0;
+    this.currentEditorId = '';
+    this.isCopied = false;
+    this.isEditorLoading = false;
+    this.formData = {
+      selectedEditors: ['line+copy', 'brand-alignment'],
+      uploadedFile: null,
+      pastedText: ''
     };
-  const chatMessage = this.translatedContent;
-   
-    // Send to chat via bridge
-    console.log('[FormatTranslatorFlow] Sending to chat with metadata:', metadata);
-    this.tlChatBridge.sendToChat(chatMessage, metadata);
-    //this.onClose();
-}
-
-  copyToClipboard(): void {
-    // Emit event to parent (chat component) to show reminder dialog
-    const markdownContent = this.metadata.fullContent ?? '';
-    this.copyRequested.emit({ content: markdownContent, component: this });
   }
 
-  proceedWithCopy(content: string): void {
-    // Convert markdown to HTML (same format as UI display)
-    const htmlContent = renderMarkdownForDisplay(content);
-    
-    // Use ClipboardItem to support both HTML and plain text formats
-    if (navigator.clipboard && navigator.clipboard.write) {
-      const clipboardItem = new ClipboardItem({
-        'text/html': new Blob([htmlContent], { type: 'text/html' }),
-        'text/plain': new Blob([content], { type: 'text/plain' })
-      });
+  canEdit(): boolean {
+    const hasUpload = this.formData.uploadedFile !== null;
+    const hasPastedText = !!this.formData.pastedText?.trim();
+    return (hasUpload || hasPastedText) && this.formData.selectedEditors.length > 0;
+  }
+
+  clearUploadError(): void {
+    this.fileUploadError = '';
+  }
+
+  clearReadError(): void {
+    this.fileReadError = '';
+  }
+  
+  onFileSelect(file: File): void {
+    if (file) {
+      // Reset error states
+      this.fileReadError = '';
+      this.fileUploadError = '';
       
-      navigator.clipboard.write([clipboardItem]).then(() => {
-        this.isCopied = true;
-        // Reset the "copied" feedback after 2 seconds
-        setTimeout(() => {
-          this.isCopied = false;
-        }, 2000);
-      }).catch(err => {
-        console.error('Failed to copy to clipboard:', err);
-        // Fallback to plain text if HTML copy fails
-        navigator.clipboard.writeText(content).then(() => {
-          this.isCopied = true;
-          setTimeout(() => {
-            this.isCopied = false;
-          }, 2000);
-        }).catch(fallbackErr => {
-          console.error('Failed to copy plain text to clipboard:', fallbackErr);
-        });
-      });
+      // Calculate and display file size
+      this.uploadedFileSize = this.formatFileSize(file.size);
+      this.formData.uploadedFile = file;
+    }
+  }
+
+  onFileRemoved(): void {
+    this.formData.uploadedFile = null;
+    this.fileUploadError = '';
+    this.fileReadError = '';
+    this.uploadedFileSize = '';
+  }
+
+  formatFileSize(bytes: number): string {
+     if (bytes === 0) return '0 Bytes';
+    
+    // Show exact size in KB (no rounding)
+    if (bytes < 1024) {
+      return bytes + ' Bytes';
+    } else if (bytes < 1024 * 1024) {
+      // Exact KB with decimal precision
+      const kb = bytes / 1024;
+      return kb.toFixed(2) + ' KB';
     } else {
-      // Fallback for older browsers
-      navigator.clipboard.writeText(content).then(() => {
-        this.isCopied = true;
-        setTimeout(() => {
-          this.isCopied = false;
-        }, 2000);
-      }).catch(err => {
-        console.error('Failed to copy to clipboard:', err);
-      });
+      // For MB and above, show with 2 decimal places
+      const mb = bytes / (1024 * 1024);
+      return mb.toFixed(2) + ' MB';
     }
   }
 
-  openInCanvas(): void {
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      this.toastService.error('Content is not available yet.');
+  /** Toggle editor selection, ensuring brand-alignment is always included */
+  toggleEditor(type: EditorType): void {
+    if (type === 'brand-alignment') {
       return;
     }
-    // Only allow supported types for canvas
-    const allowedTypes = ['article', 'blog', 'white_paper', 'executive_brief', 'socialMedia','conduct-research'];
-    if (!allowedTypes.includes(this.metadata.contentType)) {
-      this.toastService.warning('Canvas is only available for articles, blogs, white papers, executive briefs, social media posts, and conduct research.');
+    
+    const index = this.formData.selectedEditors.indexOf(type);
+    if (index > -1) {
+      this.formData.selectedEditors.splice(index, 1);
+    } else {
+      this.formData.selectedEditors.push(type);
+    }
+    
+    if (!this.formData.selectedEditors.includes('brand-alignment')) {
+      this.formData.selectedEditors.push('brand-alignment');
+    }
+  }
+
+  isEditorSelected(type: EditorType): boolean {
+    return this.formData.selectedEditors.includes(type);
+  }
+
+  /** Get selectable editors (excluding brand-alignment which is always enabled) */
+  get selectableEditors(): { id: EditorType; name: string; description: string; details: string; disabled: boolean }[] {
+    // Redline Contract UI: only show Copyedit as selectable option.
+    return this.editorTypes.filter(editor => editor.id === 'line+copy');
+  }
+
+  /** Get brand alignment editor info */
+  get brandAlignmentEditor(): { id: EditorType; name: string; description: string; details: string; disabled: boolean } | undefined {
+    return this.editorTypes.find(editor => editor.id === 'brand-alignment');
+  }
+
+  /** Get selected editors in normalized order (for timeline display) */
+  get selectedEditorsForTimeline(): { id: EditorType; name: string; description: string; details: string; disabled: boolean }[] {
+    if (!this.formData.selectedEditors || this.formData.selectedEditors.length === 0) {
+      return [];
+    }
+    
+    // Normalize order to match processing order
+    const normalizedOrder = normalizeEditorOrder([...this.formData.selectedEditors]) as EditorType[];
+    
+    // Map to full editor info objects
+    return normalizedOrder.map(editorId => {
+      const editor = this.editorTypes.find(e => e.id === editorId);
+      return editor || {
+        id: editorId,
+        name: getEditorDisplayName(editorId),
+        icon: '',
+        description: '',
+        details: '',
+        disabled: false
+      };
+    });
+  }
+
+  /** Steps array for editor timeline (0..totalEditors-1) */
+  get editorSteps(): number[] {
+    const total = this.totalEditors || 0;
+    if (total <= 0) return [];
+    return Array.from({ length: total }, (_, i) => i);
+  }
+
+
+  getEditorNames(): string {
+    if (this.formData.selectedEditors.length === 0) return '';
+    if (this.formData.selectedEditors.length === 1) {
+      const editor = this.editorTypes.find(e => e.id === this.formData.selectedEditors[0]);
+      return editor ? editor.name : '';
+    }
+    return `${this.formData.selectedEditors.length} editors`;
+  }
+  
+  getSatisfactionPromptText(): string {
+    if (this.iterationCount === 1) {
+      return 'Are you satisfied with the edited document output, or do you need additional updates?';
+    }
+    return `Are you satisfied with this revision (Iteration ${this.iterationCount}), or do you need additional updates?`;
+  }
+
+  async editContent(): Promise<void> {
+    this.isGenerating = true;
+    this.isEditorLoading = true; // Initial editor loading starts
+    this.fileReadError = '';
+    this.fileUploadError = '';
+    this.editFeedback = '';
+    this.revisedContent = '';
+    this.editorProgressList = [];
+    this.currentEditorIndex = 0;
+    this.totalEditors = 0;
+    this.currentEditorId = '';
+    
+    let contentText = '';
+    
+    if (this.formData.uploadedFile) {
+      // Validate file is not empty
+      if (this.formData.uploadedFile.size === 0) {
+        this.fileUploadError = 'The uploaded file is empty. Please upload a valid document with content.';
+        this.isGenerating = false;
+        return;
+      }
+      
+      // Validate minimum file size (10 bytes)
+      const MIN_FILE_SIZE = 10;
+      if (this.formData.uploadedFile.size < MIN_FILE_SIZE) {
+        this.fileUploadError = 'The uploaded file appears to be empty or corrupted. Please upload a valid document.';
+        this.isGenerating = false;
+        return;
+      }
+      
+      // Validate maximum file size (5MB)
+      const fileSizeMB = this.formData.uploadedFile.size / (1024 * 1024);
+      if (fileSizeMB > this.MAX_FILE_SIZE_MB) {
+        this.fileUploadError = `File size exceeds the maximum limit of ${this.MAX_FILE_SIZE_MB}MB. Please upload a smaller file.`;
+        this.isGenerating = false;
+        return;
+      }
+      
+      try {
+        const extractedText = await extractFileText(this.formData.uploadedFile);
+        contentText = normalizeContent(extractedText);
+        
+        // Validate extracted content is not empty
+        if (!contentText || contentText.trim().length === 0) {
+          this.fileUploadError = 'The uploaded document appears to be empty or contains no readable text. Please upload a document with content.';
+          this.isGenerating = false;
+          return;
+        }
+        
+        // Validate minimum content length (50 characters for meaningful content)
+        const MIN_CONTENT_LENGTH = 50;
+        if (contentText.trim().length < MIN_CONTENT_LENGTH) {
+          this.fileUploadError = `The uploaded document contains insufficient content (minimum ${MIN_CONTENT_LENGTH} characters required). Please upload a document with more text.`;
+          this.isGenerating = false;
+          return;
+        }
+        
+        this.originalContent = contentText;
+      } catch (error) {
+        console.error('Error extracting file:', error);
+        this.fileReadError = 'Error reading uploaded file. Please try again or upload a different format.';
+        this.isGenerating = false;
+        return;
+      }
+    } else {
+      contentText = normalizeContent(this.formData.pastedText || '');
+      if (!contentText || contentText.trim().length === 0) {
+        this.fileUploadError = 'Please upload a document or paste contract text.';
+        this.isGenerating = false;
+        return;
+      }
+    }
+    
+    const messages = [{
+      role: 'user' as const,
+      content: contentText
+    }];
+
+    let fullResponse = '';
+    const editorsToUse = normalizeEditorOrder(this.formData.selectedEditors) as EditorType[];
+
+    this.editorProgressList = editorsToUse.map((id, index) => ({
+      editorId: id,
+      editorName: getEditorDisplayName(id),
+      status: 'pending' as const,
+      current: index + 1,
+      total: editorsToUse.length
+    }));
+    this.totalEditors = editorsToUse.length;
+    this.chatService.streamEditContent(messages, editorsToUse, 0, 50000).subscribe({
+      next: (data: any) => {
+        if (data.type === 'editor_progress') {
+          // Backend sends 1-based index, convert to 0-based for our array
+          const backendCurrentIndex = data.current || 1;
+          this.currentEditorIndex = backendCurrentIndex - 1; // Convert to 0-based
+          this.totalEditors = data.total || editorsToUse.length;
+          this.currentEditorId = data.editor || '';
+          
+          // Set loading state when editor starts processing
+          this.isEditorLoading = true;
+          
+          // Update editor statuses (using 0-based index)
+          this.editorProgressList.forEach((editor, index) => {
+            if (index < this.currentEditorIndex) {
+              editor.status = 'completed';
+            } else if (index === this.currentEditorIndex) {
+              editor.status = 'processing'; // In Progress when loading
+              editor.current = backendCurrentIndex; // Keep 1-based for display
+              editor.total = this.totalEditors;
+            } else {
+              editor.status = 'pending';
+            }
+          });
+
+          this.cdr.detectChanges();
+        } else if (data.type === 'editor_content') {
+          if (data.content) {
+            fullResponse += data.content;
+          }
+        } else if (data.type === 'editor_complete') {
+          // Sequential workflow: Handle single editor completion
+          console.log('[EditContentFlow] Editor complete:', data);
+          
+          // Store thread_id for sequential workflow
+          if (data.thread_id) {
+            this.threadId = data.thread_id;
+            this.isSequentialMode = true;
+          }
+          
+          // Store current editor info
+          if (data.current_editor) {
+            this.currentEditor = data.current_editor;
+            this.currentEditorIndex = data.editor_index || 0;
+            this.totalEditors = data.total_editors || this.totalEditors;
+            this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || 1) - 1;
+          }
+          
+          // Update editor progress - change to review-pending after generation
+          const completedEditor = this.editorProgressList.find(e => e.editorId === data.current_editor);
+          if (completedEditor) {
+            completedEditor.status = 'review-pending';
+          }
+          
+          // Process paragraph edits (same structure as final_complete)
+          if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
+            console.log('[EditContentFlow] Paragraph edits received:', data.paragraph_edits);
+            this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
+          }
+          
+          // Update content
+          if (data.original_content) {
+            this.originalContent = data.original_content;
+          }
+          
+          if (data.final_revised) {
+            const trimmedRevised = data.final_revised.trim();
+            fullResponse = trimmedRevised;
+            this.revisedContent = convertMarkdownToHtml(trimmedRevised);
+          }
+          
+          // Process feedback (only current editor's feedback)
+          if (data.combined_feedback) {
+            const feedbackContent = data.combined_feedback.trim();
+            this.feedbackItems = parseEditorialFeedback(feedbackContent);
+            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+            this.editFeedback = this.feedbackHtml;
+          }
+          
+          this.isGenerating = false;
+          this.isEditorLoading = false; // Editor loaded, now in review pending state
+          this.cdr.detectChanges();
+        } else if (data.type === 'editor_error') {
+          console.error(`${data.editor} editor error:`, data.error);
+        } else if (data.type === 'final_complete') {
+          this.editorProgressList.forEach(editor => {
+            if (editor.status !== 'error') {
+              editor.status = 'completed';
+            }
+          });
+          this.currentEditorId = 'completed';
+          this.cdr.detectChanges();
+          
+          if (data.combined_feedback) {
+            const feedbackContent = data.combined_feedback.trim();
+            // parse and render structured feedback; keep legacy fallback in editFeedback
+            this.feedbackItems = parseEditorialFeedback(feedbackContent);
+            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+            this.editFeedback = this.feedbackHtml;
+          }
+          
+          if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
+            console.log('Paragraph edits received:', data.paragraph_edits);
+            this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
+          } else if (data.final_revised && data.original_content) {
+            this.paragraphEdits = this.createParagraphEditsFromComparison(
+              data.original_content,
+              data.final_revised
+            );
+          }
+          
+          if (data.original_content) {
+            this.originalContent = data.original_content;
+          }
+          
+          if (data.final_revised) {
+            const trimmedRevised = data.final_revised.trim();
+            fullResponse = trimmedRevised;
+            this.revisedContent = convertMarkdownToHtml(trimmedRevised);
+          }
+          
+          this.isGenerating = false;
+        } else if (data?.type === 'content' && data.content) {
+          fullResponse += data.content;
+        } else if (data?.type === 'done' || data?.done) {
+          return;
+        } else if (data?.error) {
+          this.editFeedback = `Error: ${data.error}`;
+          this.isGenerating = false;
+          return;
+        } else if (typeof data === 'string') {
+          fullResponse += data;
+        }
+      },
+      error: (error: any) => {
+        console.error('[EditContentFlow] Streaming error:', error);
+        this.editFeedback = 'Sorry — we ran into an issue while processing your request.\nPlease try submitting it again.\nStill having trouble? Reach out to us via the Support option for assistance.';
+        this.isGenerating = false;
+      },
+      complete: () => {
+        this.iterationCount++;
+        if (this.revisedContent && this.revisedContent.trim()) {
+          this.showSatisfactionPrompt = true;
+        }
+      }
+    });
+  }
+
+  /** Parse edit response (fallback method for old format or improvement requests) */
+  private parseEditResponse(response: string): void {
+    if (!response || !response.trim()) {
       return;
     }
-    // Map socialMedia and conduct-research to an accepted canvas type (they function like articles)
-    let canvasContentType: 'article' | 'blog' | 'white_paper' | 'executive_brief';
-    switch (this.metadata.contentType) {
-      case 'article':
-      case 'blog':
-      case 'white_paper':
-      case 'executive_brief':
-        canvasContentType = this.metadata.contentType;
-        break;
-      case 'socialMedia':
-      case 'conduct-research':
-      default:
-        canvasContentType = 'article';
-        break;
-    }
-    this.canvasStateService.loadFromContent(
-      this.metadata.fullContent,
-      this.metadata.topic || 'Untitled',
-      canvasContentType,
-      this.messageId
-    );
-  }
 
-  toggleExportDropdown(): void {
-    this.showExportDropdown = !this.showExportDropdown;
-  }
-  // downloadProcessedFile(): void {
-  //   if (!this.downloadUrl) {
-  //     console.warn('[SlideCreationFlow] No download URL available');
-  //     return;
-  //   }
-
-  //   const link = document.createElement('a');
-  //   link.href = this.downloadUrl;
-  //   link.target = '_blank';
-  //   link.download = 'Slide.pptx'; // default filename
-  //   link.click();
-  // }
-  exportSelected(format: 'word' | 'pdf' | 'ppt'): void {
-    this.showExportDropdown = false;
-    // Emit event to parent (chat component) to show reminder dialog
-    this.exportRequested.emit({ format, component: this });
-  }
-
-  // Called by parent after reminder confirmation
-  proceedWithExport(format: 'word' | 'pdf' | 'ppt'): void {
-    this.isExporting = true;
-    this.isExported = false;
-    this.exportFormat = format.toUpperCase();
+    const feedbackMatch = response.match(/===\s*FEEDBACK\s*===\s*([\s\S]*?)(?====\s*REVISED ARTICLE\s*===|$)/i);
+    const revisedMatch = response.match(/===\s*REVISED ARTICLE\s*===\s*([\s\S]*?)$/i);
     
-    if (format === 'word') {
-      this.downloadWord();       
-    } else if(format === 'pdf') {
-      this.downloadPDF();
-    } else if (format === 'ppt') {
-      this.downloadPPT();
+    if (feedbackMatch && feedbackMatch[1]) {
+      const feedbackContent = feedbackMatch[1].trim();
+      this.feedbackItems = parseEditorialFeedback(feedbackContent);
+      this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+      this.editFeedback = this.feedbackHtml;
+    } else if (!revisedMatch && response.trim()) {
+      const feedbackContent = response.trim();
+      this.feedbackItems = parseEditorialFeedback(feedbackContent);
+      this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+      this.editFeedback = this.feedbackHtml;
+    }
+    
+    if (revisedMatch && revisedMatch[1]) {
+      let revisedText = revisedMatch[1].trim();
+      revisedText = revisedText
+        .replace(/===\s*FEEDBACK\s*===/gi, '')
+        .replace(/##\s*📝\s*Editorial\s*Feedback/gi, '')
+        .trim();
+      this.revisedContent = convertMarkdownToHtml(revisedText);
     }
   }
 
-  private resetExportState(): void {
-    setTimeout(() => {
-      this.isExporting = false;
-    }, 500);
-    
-    this.isExported = true;
-    // Reset success indicator after 3 seconds
-    setTimeout(() => {
-      this.isExported = false;
-    }, 3000);
+  /** Convert markdown to HTML (public method for template) */
+  convertMarkdownToHtml(markdown: string): string {
+    return convertMarkdownToHtml(markdown);
   }
 
-  private exportDocument(endpoint: string, extension: string, format: string): void {
-    // Reuse the same approach as EditContentFlowComponent.downloadRevised()
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      this.toastService.error('Content is not available yet.');
+  /** Copy content to clipboard */
+  async copyToClipboard(): Promise<void>  {
+    let content = '';
+    if (this.showFinalOutput && this.finalArticle) {
+      content = this.finalArticle;
+    } else {
+      content = this.revisedContent || this.editFeedback;
+    }
+    const plainText = content.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    try {
+      await navigator.clipboard.writeText(plainText);
+      
+      this.isCopied = true;
+      this.cdr.detectChanges();
+
+      setTimeout(() => {
+        this.isCopied = false;
+        this.cdr.detectChanges();
+      },2000);
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+      this.showNotificationMessage('Failed to copy ', 'error');
+    }
+
+  }
+
+  /** Download revised content as DOCX or PDF */
+  async downloadRevised(format: 'docx' | 'pdf'): Promise<void> {
+    let contentToDownload = '';
+    if (this.showFinalOutput && this.finalArticle) {
+      contentToDownload = this.finalArticle;
+    } else if (this.revisedContent) {
+      contentToDownload = this.revisedContent.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    } else {
+      this.showNotificationMessage('article is not available yet.', 'error');
       return;
     }
 
-    // Clean content the same way as the working implementation
-    const plainText = this.metadata.fullContent.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    const plainText = contentToDownload.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    const endpoint = format === 'docx' ? '/api/v1/export/word' : '/api/v1/export/pdf-pwc';
+    const extension = format === 'docx' ? 'docx' : 'pdf';
+    const title = 'revised-article';
     
-    // Extract first line as subtitle (title for download)
+    // Extract first line as subtitle
     const lines = plainText.split('\n').filter(line => line.trim());
-    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : 'Generated Document'; // First line as title, max 150 chars
-    const title = subtitle; // Use subtitle as the main title, not the topic
-    
-    // console.log(`>>>>>>>>>>>>>`,plainText);
+    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : ''; // First line, max 150 chars
 
     // Get API URL from environment (supports runtime config via window._env)
     const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
     const fullEndpoint = `${apiUrl}${endpoint}`;
 
-    // Use fetch API like the working implementation (same as EditContentFlowComponent.downloadRevised)
-    this.authFetchService.authenticatedFetch(fullEndpoint, {
-      method: 'POST',
-      body: JSON.stringify({
-        content: plainText,
-        title,
-        subtitle: '',  // Don't pass subtitle separately since title is already set to it
-        content_type: this.metadata.contentType,  // Use snake_case to match backend
+    try {
+      const response = await this.authFetchService.authenticatedFetch(fullEndpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          content: plainText,
+          title,
+          subtitle
+        })
+      });
 
-      })
-    })
-    .then(response => {
       if (!response.ok) {
         throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
       }
-      return response.blob();
-    })
-    .then(blob => {
-      const filename = `${this.sanitizeFilename(title)}.${extension}`;
-      return this.downloadBlobWithSaveDialog(blob, filename);
-    })
-    .then(() => {
-      this.resetExportState();
-    })
-    .catch(error => {
-      // Log generic message without full error object to prevent information leakage
-      console.error(`[TL Action Buttons] ${extension.toUpperCase()} export failed`);
-      this.toastService.error(`Failed to generate ${extension.toUpperCase()} file. Please try again.`);
-      this.isExporting = false;
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      //link.href = url;
+      link.download = `${title}.${extension}`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+      this.showNotificationMessage(`${extension.toUpperCase()} downloaded successfully!`, 'success');
+    } catch (error) {
+      console.error(`Error generating ${extension.toUpperCase()}:`, error);
+      this.showNotificationMessage(`Failed to generate ${extension.toUpperCase()} file. Please try again.`, 'error');
+    }
+  }
+  
+  /** Handle satisfaction response - send to chat or show improvement input */
+  // onSatisfactionResponse(isSatisfied: boolean): void {
+  //   if (isSatisfied) {
+  //     const contentToSend = (this.showFinalOutput && this.finalArticle) 
+  //       ? this.finalArticle 
+  //       : this.revisedContent;
+      
+  //     if (contentToSend && contentToSend.trim()) {
+  //       let plainText = contentToSend;
+  //       if (contentToSend.includes('<')) {
+  //         const tempDiv = document.createElement('div');
+  //         tempDiv.innerHTML = contentToSend;
+  //         plainText = tempDiv.textContent || tempDiv.innerText || '';
+  //       }
+  //       plainText = plainText.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
+        
+  //       const headerLines: string[] = ['### Guided Journey – Edit Content'];
+  //       const uploadedFileName = this.formData.uploadedFile?.name;
+  //       if (uploadedFileName) {
+  //         headerLines.push(`_Source: ${uploadedFileName}_`);
+  //       }
+        
+  //       const selectedEditorNames = this.formData.selectedEditors
+  //         .map(id => {
+  //           const editor = this.editorTypes.find(e => e.id === id);
+  //           return editor ? editor.name : id;
+  //         })
+  //         .join(', ');
+        
+  //       if (selectedEditorNames) {
+  //         headerLines.push(`_Editors Applied: ${selectedEditorNames}_`);
+  //       }
+        
+  //       const articleTitle = this.showFinalOutput ? 'Final Revised Article' : 'Revised Article';
+  //       headerLines.push('', `**${articleTitle}**`, '');
+        
+  //       const documentTitle = extractDocumentTitle(
+  //         this.originalContent || '',
+  //         uploadedFileName
+  //       );
+        
+  //       if (documentTitle && documentTitle !== articleTitle) {
+  //         headerLines.push(`**${documentTitle}**`, '');
+  //       }
+        
+  //       const headerHtml = convertMarkdownToHtml(headerLines.join('\n'));
+  //       const contentHtml = this.showFinalOutput && this.finalArticle
+  //         ? convertMarkdownToHtml(this.finalArticle)
+  //         : this.revisedContent;
+  //       const combinedHtml = `${headerHtml}${contentHtml}`;
+        
+  //       const revisedMetadata: ThoughtLeadershipMetadata = {
+  //         contentType: 'article',
+  //         topic: documentTitle || articleTitle,
+  //         fullContent: plainText,
+  //         showActions: true
+  //       };
+        
+  //       this.tlChatBridge.sendMessage({
+  //         role: 'assistant',
+  //         content: combinedHtml,
+  //         timestamp: new Date(),
+  //         isHtml: true,
+  //         thoughtLeadership: revisedMetadata
+  //       });
+  //     }
+      
+  //     this.onClose();
+  //   } else {
+  //     this.showImprovementInput = true;
+  //     this.showSatisfactionPrompt = false;
+  //   }
+  // }
+  
+  submitImprovementRequest(): void {
+    if (!this.improvementRequestText?.trim()) {
+      return;
+    }
+    
+    const nextIteration = this.iterationCount + 1;
+    if (nextIteration > 5) {
+      alert('You have reached the maximum number of iterations (5). Please start a new edit workflow if you need further changes.');
+      this.cancelImprovementRequest();
+      return;
+    }
+    
+    const revisedPlainText = this.revisedContent.replace(/<br>/g, '\n');
+    const improvementMessage = `Please review the following revised article and apply these additional improvements:\n\n${this.improvementRequestText.trim()}\n\nRevised Article:\n${revisedPlainText}`;
+    
+    const messages = [{
+      role: 'user' as const,
+      content: improvementMessage
+    }];
+    
+    this.isGenerating = true;
+    this.showImprovementInput = false;
+    this.improvementRequestText = '';
+    this.editFeedback = '';
+    this.revisedContent = '';
+    
+    let fullResponse = '';
+    const editorsToUse = normalizeEditorOrder(this.formData.selectedEditors) as EditorType[];
+
+    this.chatService.streamEditContent(messages, editorsToUse).subscribe({
+      next: (data: any) => {
+        if (data.type === 'editor_progress') {
+        } else if (data.type === 'editor_content') {
+          if (data.content) {
+            fullResponse += data.content;
+          }
+        } else if (data.type === 'editor_complete') {
+          if (data.revised_content) {
+            fullResponse = data.revised_content;
+            this.revisedContent = convertMarkdownToHtml(fullResponse);
+          }
+        } else if (data.type === 'editor_error') {
+          console.error(`${data.editor} editor error:`, data.error);
+        } else if (data.type === 'final_complete') {
+          if (data.final_revised) {
+            fullResponse = data.final_revised;
+            this.revisedContent = convertMarkdownToHtml(fullResponse);
+          }
+          if (data.combined_feedback) {
+            const feedbackContent = data.combined_feedback.trim();
+            this.feedbackItems = parseEditorialFeedback(feedbackContent);
+            this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+            this.editFeedback = this.feedbackHtml;
+          }
+        } else if (data.type === 'content' && data.content) {
+          fullResponse += data.content;
+        } else if (typeof data === 'string') {
+          fullResponse += data;
+        }
+      },
+      error: (error: any) => {
+        console.error('Error improving content:', error);
+        this.editFeedback = 'Sorry, there was an error processing your improvement request. Please try again.';
+        this.isGenerating = false;
+        this.revisedContent = revisedPlainText.replace(/\n/g, '<br>');
+        this.showSatisfactionPrompt = true;
+      },
+      complete: () => {
+        if (!this.revisedContent && fullResponse) {
+          this.parseEditResponse(fullResponse);
+        }
+        this.isGenerating = false;
+        this.iterationCount = nextIteration;
+        if (!this.revisedContent || !this.revisedContent.trim()) {
+          this.revisedContent = revisedPlainText.replace(/\n/g, '<br>');
+        }
+        this.showSatisfactionPrompt = true;
+      }
     });
   }
-  private exportUIWord(): void {
-  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-    this.toastService.error('Content is not available yet.');
-    return;
+  
+  cancelImprovementRequest(): void {
+    this.showImprovementInput = false;
+    this.improvementRequestText = '';
+    this.showSatisfactionPrompt = true;
   }
-
-  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-  const endpoint = `${apiUrl}/api/v1/export/word-ui`;
-
-  // IMPORTANT: send content AS-IS (no stripping)
-  const content = this.metadata.fullContent;
-
-  // Title logic can stay simple
-  const title = 'Generated Document';
-
-  this.authFetchService.authenticatedFetch(endpoint, {
-    method: 'POST',
-    body: JSON.stringify({
-      content,
-      title
-    })
-  })
-  .then(response => {
-    if (!response.ok) {
-      throw new Error('Failed to generate Word document');
+  
+  /** Create paragraph edits by comparing original and edited content */
+  private createParagraphEditsFromComparison(original: string, edited: string): ParagraphEdit[] {
+    const allEditorNames = this.formData.selectedEditors.map(editorId => {
+      const editor = this.editorTypes.find(e => e.id === editorId);
+      return editor ? editor.name : editorId;
+    });
+    
+    return createParagraphEditsFromComparison(original, edited, allEditorNames);
+  }
+  
+  /** Approve a paragraph edit */
+  approveParagraph(index: number): void {
+    const paragraph = this.paragraphEdits.find(p => p.index === index);
+    if (!paragraph) {
+      return;
     }
-    return response.blob();
-  })
-  .then(blob => {
-    const filename = `${this.sanitizeFilename(title)}.docx`;
-    return this.downloadBlobWithSaveDialog(blob, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-  })
-  .then(() => {
-    this.resetExportState();
-  })
-  .catch(error => {
-    // Log generic message without full error object to prevent information leakage
-    console.error('[TL Action Buttons] Word export failed');
-    this.toastService.error('Failed to generate Word file.');
-    this.isExporting = false;
-  });
-}
-
-private async exportPPT(endpoint: string): Promise<void> {
-
-  if (
-
-    !this.metadata.fullContent ||
-
-    !this.metadata.fullContent.trim()
-
-  ) {
-
-    this.toastService.error('Content is not available yet.');
-
-    return;
-
+    paragraph.approved = true; 
   }
- 
-  const plainText = this.metadata.fullContent
+  
+  /** Decline a paragraph edit */
+  declineParagraph(index: number): void {
+    const paragraph = this.paragraphEdits.find(p => p.index === index);
+    if (!paragraph) {
+      return;
+    }
+    paragraph.approved = false;
+  }
 
-    .replace(/\n/g, '\n')
+  /** Get paragraphs that require user review (excludes auto-approved), sorted by index */
+  get getParagraphsForReview(): ParagraphEdit[] {
+    return this.paragraphEdits
+      .filter(p => p.autoApproved !== true)
+      .sort((a, b) => a.index - b.index);
+  }
+  
+  /** Get count of auto-approved paragraphs */
+  get autoApprovedCount(): number {
+    return this.paragraphEdits.filter(p => p.autoApproved === true).length;
+  }
+  
+  /** Get auto-approved count text with proper pluralization */
+  get autoApprovedText(): string {
+    const count = this.autoApprovedCount;
+    if (count === 0) {
+      return '';
+    }
+    return `(${count} paragraph${count !== 1 ? 's' : ''} auto-approved)`;
+  }
 
-    .replace(/<[^>]+>/g, '');
- 
-  const title =
+  /** Get paragraphs that require user review (excludes auto-approved), sorted by index */
+  get getParagraphsForFeedbackReview(): ParagraphFeedback[] {
+    return this.paragraphFeedbackData
+      .filter(p => p.autoApproved !== true)
+      .sort((a, b) => a.index - b.index);
+  }
 
-    this.metadata.topic?.trim() || 'Generated Presentation';
- 
-  const filename = `${this.sanitizeFilename(title)}.pptx`;
- 
-  const apiUrl =
+  /** Get count of auto-approved paragraphs in feedback data */
+  get autoApprovedFeedbackCount(): number {
+    return this.paragraphFeedbackData.filter(
+      p => p.autoApproved === true
+    ).length;
+  }
 
-    (window as any)._env?.apiUrl || environment.apiUrl || '';
- 
-  const fullEndpoint = `${apiUrl}${endpoint}`;
- 
-  try {
+  /** Get auto-approved count text for feedback data */
+  get autoApprovedFeedbackText(): string {
+    const count = this.autoApprovedFeedbackCount;
 
-    const response =
+    if (count === 0) {
+      return '';
+    }
 
-      await this.authFetchService.authenticatedFetch(
+    return `(${count} paragraph${count !== 1 ? 's' : ''} auto-approved)`;
+  }
+  
+  /** Check if all paragraphs have been decided */
+  get allParagraphsDecided(): boolean {
+    // Check both paragraphEdits and paragraphFeedbackData
+    const editsDecided = this.paragraphEdits.length === 0 || allParagraphsDecided(this.paragraphEdits);
+    const feedbackDecided = this.allParagraphFeedbackDecided;
+    return editsDecided && feedbackDecided;
+  }
 
-        fullEndpoint,
-
-        {
-
-          method: 'POST',
-
-          body: JSON.stringify({
-
-            content: plainText,
-
-            title
-
-          })
-
+  /** Check if all paragraph feedback items are decided */
+  get allParagraphFeedbackDecided(): boolean {
+    if (!this.paragraphFeedbackData || this.paragraphFeedbackData.length === 0) {
+      return true; // No feedback to decide
+    }
+    
+    return this.paragraphFeedbackData.every(para => {
+      // Check if paragraph itself is decided
+      if (para.approved === null || para.approved === undefined) {
+        return false;
+      }
+      
+      // Check if all editorial feedback items are decided
+      const feedbackTypes = Object.keys(para.editorial_feedback || {});
+      for (const editorType of feedbackTypes) {
+        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+        for (const fb of feedbacks) {
+          if (fb.approved === null || fb.approved === undefined) {
+            return false;
+          }
         }
+      }
+      
+      return true;
+    });
+  }
 
+  /** Check if all paragraphs are approved */
+  get allParagraphsApproved(): boolean {
+    return this.paragraphEdits.length > 0 && 
+           this.paragraphEdits.every(p => p.approved === true);
+  }
+  
+  /** Check if all paragraphs are declined */
+  get allParagraphsDeclined(): boolean {
+    return this.paragraphEdits.length > 0 && 
+           this.paragraphEdits.every(p => p.approved === false);
+  }
+
+  get isImprovementRequestValid(): boolean {
+    return !!this.improvementRequestText && this.improvementRequestText.trim().length > 0;
+  }
+  
+  /** Approve all paragraph edits */
+  approveAllParagraphs(): void {
+    if (this.paragraphEdits.length === 0) {
+      return;
+    }
+    
+    this.paragraphEdits.forEach(paragraph => {
+      paragraph.approved = true;
+    });
+  }
+  
+  /** Decline all paragraph edits */
+  declineAllParagraphs(): void {
+    if (this.paragraphEdits.length === 0) {
+      return;
+    }
+    
+    this.paragraphEdits.forEach(paragraph => {
+      paragraph.approved = false;
+    });
+  }
+
+  
+  /** Generate final article using approved edits */
+  async runFinalOutput(): Promise<void> {
+    if (!this.allParagraphsDecided) {
+      alert('Please approve or decline all paragraph edits before generating the final article.');
+      return;
+    }
+    
+    this.isGeneratingFinal = true;
+    
+    try {
+      const decisions = this.paragraphEdits.map(p => ({
+        index: p.index,
+        approved: p.approved === true
+      }));
+      
+      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
+        method: 'POST',
+        body: JSON.stringify({
+          original_content: this.originalContent,
+          paragraph_edits: this.paragraphEdits.map(p => ({
+            index: p.index,
+            original: p.original,
+            edited: p.edited,
+            tags: p.tags,
+            autoApproved: p.autoApproved
+          })),
+          decisions: decisions
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Failed to generate final article: ${response.status} ${errorText}`);
+      }
+      
+      const data = await response.json();
+      const finalArticle = data.final_article || '';
+      
+      if (!finalArticle) {
+        throw new Error('No final article returned from server');
+      }
+      
+      // Same as Quick Start: store markdown only (no formatFinalArticleWithBlockTypes). Display uses getter to HTML.
+      this.finalArticle = finalArticle.trim();
+      this.showFinalOutput = true;
+      this.showSatisfactionPrompt = true;
+    } catch (error) {
+      console.error('Error generating final article:', error);
+      const errorMessage = error instanceof Error 
+        ? `Failed to generate final article: ${error.message}` 
+        : 'Failed to generate final article. Please try again.';
+      alert(errorMessage);
+    } finally {
+      this.isGeneratingFinal = false;
+    }
+  }
+
+  /** Generate final article using approved edits and feedback */
+  async generateFinalOutput(): Promise<void> {
+    if (!this.allParagraphsDecided) {
+      alert('Please approve or reject all paragraph edits and feedback before generating the final article.');
+      return;
+    }
+    
+    this.isGeneratingFinal = true;
+    
+    try {
+      // Collect all approved/rejected decisions from paragraphFeedbackData
+      const paragraphDecisions = this.paragraphFeedbackData.map(para => ({
+        index: para.index,
+        approved: para.approved === true,
+        editorial_feedback_decisions: this.collectFeedbackDecisions(para)
+      }));
+      
+      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/final`, {
+        method: 'POST',
+        body: JSON.stringify({
+          original_content: this.originalContent,
+          paragraph_edits: this.paragraphFeedbackData.map(p => ({
+            index: p.index,
+            original: p.original,
+            edited: p.edited,
+            tags: p.tags,
+            autoApproved: p.autoApproved,
+            block_type: p.block_type || 'paragraph',
+            level: p.level || 0,
+            editorial_feedback: p.editorial_feedback
+          })),
+          decisions: paragraphDecisions,
+          include_quality_checks: true,
+          include_copy_check: true
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Failed to generate final article: ${response.status} ${errorText}`);
+      }
+      
+      const data = await response.json();
+      const finalArticle = data.final_article || '';
+      
+      if (!finalArticle) {
+        throw new Error('No final article returned from server');
+      }
+      
+      const trimmedFinal = finalArticle.trim();
+      
+      // Same as Quick Start: send markdown so chat renders with marked.parse() (getFormattedContent). No formatFinalArticleWithBlockTypes.
+      const headerLines: string[] = ['### Guided Journey – Edit Content'];
+      const uploadedFileName = this.formData.uploadedFile?.name;
+      if (uploadedFileName) {
+        headerLines.push(`_Source: ${uploadedFileName}_`);
+      }
+      headerLines.push('', '---', '');
+      
+      const documentTitle = extractDocumentTitle(
+        this.originalContent || '',
+        uploadedFileName
       );
- 
-    if (!response.ok) {
-
-      throw new Error('Failed to start PPT generation');
-
+      
+      let contentAsMarkdown = headerLines.join('\n') + trimmedFinal;
+      
+      const disclaimer = AI_CONTENT_DISCLAIMER_MARKDOWN_SUFFIX;
+      contentAsMarkdown += disclaimer;
+      
+      const revisedMetadata: ThoughtLeadershipMetadata = {
+        contentType: 'edit-article',
+        topic: documentTitle || 'Final Revised Article',
+        fullContent: trimmedFinal + disclaimer,
+        showActions: true
+      };
+      
+      // Send to chat as markdown (isHtml: false) so chat uses marked.parse() like Quick Start
+      this.tlChatBridge.sendMessage({
+        role: 'assistant',
+        content: contentAsMarkdown,
+        timestamp: new Date(),
+        isHtml: false,
+        thoughtLeadership: revisedMetadata
+      });
+      
+      // Close the edit-content-flow component
+      this.onClose();
+    } catch (error) {
+      console.error('Error generating final article:', error);
+      const errorMessage = error instanceof Error 
+        ? `Failed to generate final article: ${error.message}` 
+        : 'Failed to generate final article. Please try again.';
+      alert(errorMessage);
+    } finally {
+      this.isGeneratingFinal = false;
     }
- 
-    const data = await response.json();
+  }
 
-    const downloadUrl = data.download_url;
- 
-    if (!downloadUrl) {
 
-      throw new Error('No download URL returned');
 
+  /** Collect feedback decisions from a paragraph */
+  private collectFeedbackDecisions(para: ParagraphFeedback): any {
+    const decisions: any = {};
+    const feedbackTypes = Object.keys(para.editorial_feedback || {});
+    
+    for (const editorType of feedbackTypes) {
+      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+      decisions[editorType] = feedbacks.map((fb: any) => ({
+        issue: fb.issue,
+        approved: fb.approved === true
+      }));
     }
- 
-    // ✅ SAFE URL-ONLY DOWNLOAD
-
-    saveAs(downloadUrl, filename);
- 
-    this.resetExportState();
- 
-  } catch (err) {
-
-    console.error('[TL Action Buttons] PPT export failed');
-
-    this.toastService.error('Failed to generate PPT file.');
-
-    this.isExporting = false;
-
+    
+    return decisions;
   }
 
-}
- 
+  /** Process paragraph edits from backend response (reusable helper) */
+  private processParagraphEdits(paragraph_edits: any[]): ParagraphFeedback[] {
+    // If API returned no paragraph edits at all, just clear the data array.
+    // The template can show an inline "no feedback" message inside the paragraph box.
+    if (!paragraph_edits || !Array.isArray(paragraph_edits) || paragraph_edits.length === 0) {
+      return [];
+    }
 
-  private async writeBlobToSelectedFile(fileHandle: any, blob: Blob): Promise<void> {
-    // const writable = await fileHandle.createWritable();
-    // await writable.write(blob);
-    // await writable.close();
-const safeBlob = new Blob([await blob.arrayBuffer()], {
-  type: 'application/octet-stream'
-});
- 
-const writable = await fileHandle.createWritable();
-await writable.write(await safeBlob.arrayBuffer());
-await writable.close();
+    const feedbackData: ParagraphFeedback[] = paragraph_edits.map((edit: any) => {
+      const editorial_feedback = {
+        development: edit.editorial_feedback?.development || [],
+        content: edit.editorial_feedback?.content || [],
+        copy: edit.editorial_feedback?.copy || [],
+        line: edit.editorial_feedback?.line || [],
+        brand: edit.editorial_feedback?.brand || []
+      };
+
+      return {
+        index: edit.index || 0,
+        original: edit.original || '',
+        edited: edit.edited || '',
+        tags: edit.tags || [],
+        autoApproved: edit.autoApproved ?? false,
+        approved: edit.approved ?? null,
+        block_type: edit.block_type || 'paragraph',
+        level: edit.level || 0,
+        editorial_feedback
+      };
+    });
+
+    return feedbackData;
   }
 
+  /** True when there are no feedback items inside paragraphFeedbackData */
+  get hasNoParagraphFeedback(): boolean {
+    if (!this.paragraphFeedbackData || this.paragraphFeedbackData.length === 0) {
+      return true;
+    }
 
-  private downloadFile(extension: string, mimeType: string): void {
-    const blob = new Blob([this.metadata.fullContent], { type: mimeType });
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${this.sanitizeFilename(this.metadata.topic)}.${extension}`;
-    link.click();
-    window.URL.revokeObjectURL(url);
+    // No editorial feedback items across all paragraphs
+    return this.paragraphFeedbackData.every(para => {
+      const types = Object.keys(para.editorial_feedback || {});
+      return types.every(t => {
+        const arr = (para.editorial_feedback as any)[t] || [];
+        return !arr || arr.length === 0;
+      });
+    });
   }
 
-  private sanitizeFilename(filename: string): string {
-    return filename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-  }
-
-  get isPodcast(): boolean {
-    const result = this.metadata.contentType === 'podcast' && !!this.metadata.podcastAudioUrl;
-    // console.log('[TL Action Buttons] isPodcast check:', {
-    //   contentType: this.metadata.contentType,
-    //   hasPodcastUrl: !!this.metadata.podcastAudioUrl,
-    //   podcastUrl: this.metadata.podcastAudioUrl?.substring(0, 50),
-    //   result: result
-    // });
-    return result;
-  }
-
-  get isSowDraftResponse(): boolean {
-    const type = String(this.metadata?.contentType || '').toLowerCase();
-    return type === 'sow';
-  }
-
-  get isRedlineResponse(): boolean {
-    const type = String(this.metadata?.contentType || '').toLowerCase();
-    return type === 'edit-article' || type === 'edit-content';
-  }
-
-  openRedlineContractFlow(): void {
-    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
-      this.toastService.error('Content is not available yet.');
+  /** Move to next editor in sequential workflow */
+  async nextEditor(): Promise<void> {
+    if (!this.threadId) {
+      console.error('[EditContentFlow] No thread_id available for next editor');
       return;
     }
 
-    this.isGeneratingDocument = true;
-    this.toastService.info('Preparing document for redline...');
+    if (!this.allParagraphsDecided) {
+      alert('Please approve or reject all paragraph edits before proceeding to the next editor.');
+      return;
+    }
 
-    const cleanedText = this.metadata.fullContent
-      .replace(/<br>/g, '\n')
-      .replace(/<[^>]+>/g, '');
+    this.isGenerating = true;
+    this.isEditorLoading = true; // Mark that we're loading the next editor
 
-    const title = this.metadata.topic?.trim() || 'Generated Document';
-    const filename = 'generated_content.docx';
-    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-    const endpoint = `${apiUrl}/api/v1/export/word-standalone`;
+    // Mark current editor as completed when moving to next
+    const currentEditorItem = this.editorProgressList.find(e => e.editorId === this.currentEditor);
+    if (currentEditorItem && currentEditorItem.status === 'review-pending') {
+      currentEditorItem.status = 'completed';
+    }
 
-    this.authFetchService.authenticatedFetch(endpoint, {
-      method: 'POST',
-      body: JSON.stringify({
-        content: cleanedText,
-        title,
-        content_type: this.metadata.contentType
-      })
-    })
-      .then(response => {
-        if (!response.ok) throw new Error('Failed to generate Word document');
-        return response.blob();
-      })
-      .then(blob => {
-        const file = new File(
-          [blob],
-          filename,
-          { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }
-        );
-
-        this.preGeneratedDocFile = file;
-        this.tlFlowService.setPreGeneratedDocument(file);
-        this.tlFlowService.openFlow('edit-content');
-        this.toastService.success('Redline document is ready.');
-      })
-      .catch(() => {
-        this.toastService.error('Failed to prepare redline document. Please try again.');
-      })
-      .finally(() => {
-        this.isGeneratingDocument = false;
-      });
-  }
-  
-  convertToPodcast(): void {
-    if (this.isConvertingToPodcast) return;
-    
-    this.isConvertingToPodcast = true;
-    
-    // Prepare the podcast generation request with correct backend schema
-    const formData = new FormData();
-    formData.append('topic', this.metadata.topic); // Required field
-    formData.append('style', 'dialogue'); // dialogue or monologue
-    formData.append('duration', 'medium'); // short, medium, or long
-    formData.append('context', this.metadata.fullContent); // The content to convert
-    
-    let scriptContent = '';
-    let audioBase64 = '';
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    
-    // Get API URL from environment (supports runtime config via window._env)
-    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
-    
-    // Use fetch for SSE streaming
-    this.authFetchService.authenticatedFetchFormData(`${apiUrl}/api/v1/tl/generate-podcast`, {
-      method: 'POST',
-      body: formData
-    })
-    .then(response => {
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    // Immediately update next editor to 'processing' status for visual feedback
+    const nextEditorIndex = this.currentEditorIndex + 1;
+    if (nextEditorIndex < this.editorProgressList.length) {
+      const nextEditorItem = this.editorProgressList[nextEditorIndex];
+      if (nextEditorItem && (nextEditorItem.status === 'pending' || nextEditorItem.status === 'review-pending')) {
+        nextEditorItem.status = 'processing';
+        this.cdr.detectChanges();
       }
-      
-      reader = response.body?.getReader();
+    }
+
+    try {
+      // Collect decisions from paragraphFeedbackData
+      const decisions = this.paragraphFeedbackData.map(para => ({
+        index: para.index,
+        approved: para.approved === true
+      }));
+
+      // Prepare paragraph_edits
+      const paragraph_edits = this.paragraphFeedbackData.map(para => ({
+        index: para.index,
+        original: para.original,
+        edited: para.edited,
+        tags: para.tags || [],
+        autoApproved: para.autoApproved || false,
+        approved: para.approved
+      }));
+
+      // Call /next endpoint via ChatService
+      const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+      const response = await this.authFetchService.authenticatedFetch(`${apiUrl}/api/v1/tl/edit-content/next`, {
+        method: 'POST',
+        body: JSON.stringify({
+          thread_id: this.threadId,
+          paragraph_edits: paragraph_edits,
+          decisions: decisions,
+          accept_all: false,
+          reject_all: false
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Failed to proceed to next editor: ${response.status} ${errorText}`);
+      }
+
+      // Handle streaming response
+      const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      
-      const readStream = (): any => {
-        return reader?.read().then(({ done, value }) => {
-          if (done) {
-            this.isConvertingToPodcast = false;
-            
-            console.log('[Podcast Debug] Stream complete');
-            //console.log('[Podcast Debug] audioBase64 length:', audioBase64?.length || 0);
-            //console.log('[Podcast Debug] scriptContent length:', scriptContent?.length || 0);
-            
-            // Send podcast to chat with metadata
-            if (audioBase64 && scriptContent) {
-              console.log('[Podcast Debug] Converting base64 to blob...');
-              const audioBlob = this.base64ToBlob(audioBase64, 'audio/mpeg');
-              console.log('[Podcast Debug] Blob size:', audioBlob.size, 'bytes');
-              
-              const audioUrl = URL.createObjectURL(audioBlob);
-              console.log('[Podcast Debug] Audio URL created:', audioUrl);
-              
-              // Create metadata for the podcast message
-              const podcastMetadata: ThoughtLeadershipMetadata = {
-                contentType: 'podcast',
-                topic: `${this.metadata.topic} (Podcast)`,
-                fullContent: scriptContent,
-                showActions: true,
-                podcastAudioUrl: audioUrl,
-                podcastFilename: `${this.sanitizeFilename(this.metadata.topic)}_podcast.mp3`
-              };
-              
-              console.log('[Podcast Debug] Metadata:', podcastMetadata);
-              
-              // Send to chat via bridge
-              const podcastMessage = `📻 **Podcast Generated Successfully!**\n\n**Script:**\n\n${scriptContent}\n\n🎧 **Audio Ready!** Listen below or download the MP3 file.`;
-              this.tlChatBridge.sendToChat(podcastMessage, podcastMetadata);
-              
-              console.log('[Podcast Debug] Sent to chat via bridge');
-              this.toastService.success('Podcast generated and added to chat!');
-            } else {
-              console.error('[Podcast Debug] Missing data - audioBase64:', !!audioBase64, 'scriptContent:', !!scriptContent);
-            }
-            return;
-          }
-          
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          
-          lines.forEach(line => {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6).trim();
-              if (data) {
-                try {
-                  const parsed = JSON.parse(data);
-                  //console.log('[Podcast Debug] SSE event type:', parsed.type);
+
+      if (!reader) {
+        throw new Error('No response body reader available');
+      }
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.slice(6).trim();
+            if (dataStr && dataStr !== '[DONE]') {
+              try {
+                const data = JSON.parse(dataStr);
+                
+                // Handle editor_progress - show In Progress
+                if (data.type === 'editor_progress') {
+                  // Backend sends 1-based index, convert to 0-based for our array
+                  const backendCurrentIndex = data.current || 1;
+                  this.currentEditorIndex = backendCurrentIndex - 1; // Convert to 0-based
+                  this.totalEditors = data.total || this.totalEditors;
+                  this.currentEditorId = data.editor || '';
+                  this.isEditorLoading = true;
                   
-                  if (parsed.type === 'script') {
-                    scriptContent = parsed.content;
-                    //console.log('[Podcast Debug] Script received, length:', scriptContent.length);
-                  } else if (parsed.type === 'complete') {
-                    audioBase64 = parsed.audio;
-                    //console.log('[Podcast Debug] Audio received, base64 length:', audioBase64?.length || 0);
-                  } else if (parsed.type === 'error') {
-                    console.error('[TL Action Buttons] Podcast generation failed');
-                    this.toastService.error(`Error generating podcast: ${parsed.message}`);
-                    
-                    // Abort the reader and reset state immediately
-                    reader?.cancel();
-                    this.isConvertingToPodcast = false;
-                    throw new Error(parsed.message);
-                  } else if (parsed.type === 'progress') {
-                    //console.log('[Podcast Debug] Progress:', parsed.message);
-                  }
-                } catch (e) {
-                  console.error('[TL Action Buttons] Error parsing SSE data');
+                  // Update editor statuses (using 0-based index)
+                  this.editorProgressList.forEach((editor, index) => {
+                    if (index < this.currentEditorIndex) {
+                      editor.status = 'completed';
+                    } else if (index === this.currentEditorIndex) {
+                      editor.status = 'processing'; // In Progress
+                      editor.current = backendCurrentIndex; // Keep 1-based for display
+                      editor.total = this.totalEditors;
+                    } else {
+                      editor.status = 'pending';
+                    }
+                  });
+                  
+                  this.cdr.detectChanges();
                 }
+                
+                // Handle all_complete
+                if (data.type === 'all_complete') {
+                  this.isGenerating = false;
+                  // Mark as last editor to show "Generate Final Output" button
+                  this.isLastEditor = true;
+                  this.currentEditorIndex = this.totalEditors;
+                  this.cdr.detectChanges();
+                  return;
+                }
+
+                // Handle editor_complete (same as initial flow)
+                if (data.type === 'editor_complete') {
+                  const scrollContainer = document.querySelector('.flow-content') || 
+                                         document.querySelector('.flow-container') || 
+                                         document.documentElement;
+                  const scrollPosition = scrollContainer === document.documentElement
+                    ? window.scrollY || window.pageYOffset 
+                    : (scrollContainer as HTMLElement).scrollTop;
+
+                  // Store thread_id
+                  if (data.thread_id) {
+                    this.threadId = data.thread_id;
+                  }
+
+                  // Store current editor info
+                  if (data.current_editor) {
+                    this.currentEditor = data.current_editor;
+                    this.currentEditorIndex = data.editor_index || 0;
+                    this.totalEditors = data.total_editors || this.totalEditors;
+                    this.isLastEditor = (data.editor_index || 0) >= (data.total_editors || 1) - 1;
+                  }
+
+                  // Mark previous editor as completed when moving to next editor
+                  if (this.currentEditorIndex > 0) {
+                    const previousEditorIndex = this.currentEditorIndex - 1;
+                    const previousEditor = this.editorProgressList[previousEditorIndex];
+                    if (previousEditor && previousEditor.status === 'review-pending') {
+                      previousEditor.status = 'completed';
+                    }
+                  }
+
+                  // Update current editor to review-pending after generation completes
+                  const currentEditorItem = this.editorProgressList.find(e => e.editorId === data.current_editor);
+                  if (currentEditorItem) {
+                    currentEditorItem.status = 'review-pending';
+                  }
+
+                  // Process paragraph edits
+                  if (data.paragraph_edits && Array.isArray(data.paragraph_edits)) {
+                    this.paragraphFeedbackData = this.processParagraphEdits(data.paragraph_edits);
+                  }
+
+                  // Update content
+                  if (data.original_content) {
+                    this.originalContent = data.original_content;
+                  }
+
+                  if (data.final_revised) {
+                    this.revisedContent = convertMarkdownToHtml(data.final_revised.trim());
+                  }
+
+                  // Process feedback
+                  if (data.combined_feedback) {
+                    const feedbackContent = data.combined_feedback.trim();
+                    this.feedbackItems = parseEditorialFeedback(feedbackContent);
+                    this.feedbackHtml = renderEditorialFeedbackHtml(this.feedbackItems);
+                    this.editFeedback = this.feedbackHtml;
+                  }
+
+                  this.isGenerating = false;
+                  this.isEditorLoading = false; // Loading complete, now in review pending state
+                  
+                  this.cdr.detectChanges();
+
+                  setTimeout(() => {
+                    const paragraphSection = document.getElementById('paragraph-feedback-section');
+                    if (paragraphSection) {
+                      paragraphSection.scrollIntoView({ 
+                        behavior: 'smooth', 
+                        block: 'start',
+                        inline: 'nearest'
+                      });
+                    }
+                  }, 100);
+
+
+                }
+
+                // Handle errors
+                if (data.type === 'error') {
+                  throw new Error(data.error || 'Unknown error');
+                }
+              } catch (e) {
+                console.error('[EditContentFlow] Error parsing SSE data:', e);
               }
             }
-          });
-          
-          return readStream();
-        }).catch((error) => {
-          // Handle stream reading errors
-          this.isConvertingToPodcast = false;
-          reader?.cancel();
-          throw error;
-        });
-      };
-      
-      return readStream();
-    })
-    .catch(error => {
-      console.error('[TL Action Buttons] Error converting to podcast');
-      this.toastService.error(`Failed to convert content to podcast: ${error.message || 'Unknown error'}`);
-      this.isConvertingToPodcast = false;
-      reader?.cancel();
-    });
-  }
-  
-  private base64ToBlob(base64: string, contentType: string): Blob {
-    const byteCharacters = atob(base64);
-    const byteArrays = [];
-    
-    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
-      const slice = byteCharacters.slice(offset, offset + 512);
-      const byteNumbers = new Array(slice.length);
-      for (let i = 0; i < slice.length; i++) {
-        byteNumbers[i] = slice.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      byteArrays.push(byteArray);
-    }
-    
-    return new Blob(byteArrays, { type: contentType });
-  }
-
-  /**
-   * Escape HTML special characters to prevent XSS attacks
-   */
-  private escapeHtmlSpecialChars(untrustedData: string): string {
-    if (!untrustedData) return '';
-    const div = document.createElement('div');
-    div.textContent = untrustedData;
-    return div.innerHTML;
-  }
-
-  /**
-   * Escape data for use in HTML attributes
-   */
-  private escapeHtmlAttribute(untrustedData: string): string {
-    if (!untrustedData) return '';
-    return untrustedData
-      .replace(/&/g, '&amp;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#x27;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-  }
-
-  /**
-   * Validate URL to prevent open redirect attacks
-   */
-  private validateAndEscapeUrl(urlString: string): void {
-    if (!urlString) throw new Error('URL is empty');
-    
-    try {
-      const url = new URL(urlString);
-      
-      if (!['http:', 'https:'].includes(url.protocol)) {
-        throw new Error(`Invalid protocol: ${url.protocol}`);
-      }
-    } catch (error) {
-      throw new Error(`URL validation failed: ${error instanceof Error ? error.message : 'Invalid URL'}`);
-    }
-  }
-
-  private async downloadBlobWithSaveDialog(blob: Blob, filename: string, mimeTypeOverride?: string): Promise<void> {
-    // Check if File System Access API is available (Chrome, Edge, Firefox with flag)
-    if ('showSaveFilePicker' in window) {
-      try {
-        const ext = filename.split('.').pop()?.toLowerCase() || '';
-        let mimeType = mimeTypeOverride || blob.type || 'application/octet-stream';
-        
-        // Map extensions to proper MIME types if needed
-        if (!mimeTypeOverride && (!blob.type || blob.type === 'application/octet-stream')) {
-          switch (ext) {
-            case 'docx':
-              mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-              break;
-            case 'pdf':
-              mimeType = 'application/pdf';
-              break;
-            case 'pptx':
-              mimeType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-              break;
-            case 'txt':
-              mimeType = 'text/plain';
-              break;
-            case 'mp3':
-              mimeType = 'audio/mpeg';
-              break;
           }
         }
-        
-        const handle = await (window as any).showSaveFilePicker({
-          suggestedName: filename,
-          types: [
-            {
-              description: `${ext.toUpperCase()} Files`,
-              accept: { [mimeType]: [`.${ext}`] }
-            }
-          ]
-        });
-        const safeBlob = new Blob([await blob.arrayBuffer()], {
-  type: 'application/octet-stream'
-});
- 
-const writable = await handle.createWritable();
-await writable.write(await safeBlob.arrayBuffer());
-await writable.close();
-
-      } catch (error: any) {
-        if (error.name !== 'AbortError') {
-          console.error('[TL Action Buttons] Error saving file');
-          // Fallback to default download if dialog fails
-          this.fallbackDownload(blob, filename);
-        }
       }
-    } else {
-      // Fallback: use default download behavior for unsupported browsers
-      this.fallbackDownload(blob, filename);
+    } catch (error) {
+      console.error('[EditContentFlow] Error in nextEditor:', error);
+      const errorMessage = error instanceof Error 
+        ? `Failed to proceed to next editor: ${error.message}` 
+        : 'Failed to proceed to next editor. Please try again.';
+      alert(errorMessage);
+      this.isGenerating = false;
+      this.isEditorLoading = false; // Reset loading state on error
     }
   }
 
-private fallbackDownload(blob: Blob, filename: string): void {
-  // ✅ Sanitize the filename
-  const safeFilename = filename
-   .replace(/[^a-zA-Z0-9._-]/g, '_')
-   .replace(/_{2,}/g, '_')
-   .replace(/^_+|_+$/g, '') || 'download';
-  // ✅ Create a safe blob with correct MIME (optional, use blob.type if already safe)
-  const safeBlob = new Blob([blob], { type: blob.type || 'application/octet-stream' });
-  // ✅ Use FileSaver.js to trigger the download
-  saveAs(safeBlob, safeFilename);
-}
- 
+  objectKeys = Object.keys;
+
+  /** Get display name for editor */
+  getEditorDisplayName(editorId: string | null): string {
+    if (!editorId) return '';
+    
+    return getEditorDisplayName(editorId);
+  }
+
+  /** Update paragraph's approved status based on its feedback items */
+  private updateParagraphApprovedStatus(para: ParagraphFeedback): void {
+    // Check if all feedback items in this paragraph are decided
+    const feedbackTypes = Object.keys(para.editorial_feedback || {});
+    let allDecided = true;
+    let allApproved = true;
+    let hasAnyFeedback = false;
+    
+    for (const editorType of feedbackTypes) {
+      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+      for (const fb of feedbacks) {
+        hasAnyFeedback = true;
+        if (fb.approved === null || fb.approved === undefined) {
+          allDecided = false;
+          break;
+        } else if (fb.approved === false) {
+          allApproved = false;
+        }
+      }
+      if (!allDecided) break;
+    }
+    
+    // If no feedback items exist, paragraph doesn't need approval
+    if (!hasAnyFeedback) {
+      para.approved = true; // No feedback means nothing to approve/reject
+      return;
+    }
+    
+    // If all feedback items are decided, set paragraph's approved status
+    if (allDecided) {
+      // Set to true if all are approved, false if any are rejected
+      para.approved = allApproved;
+    } else {
+      // If not all feedback items are decided, reset paragraph approval to null
+      // This ensures the getter properly reflects that decisions are incomplete
+      para.approved = null;
+    }
+  }
+
+
+  approveEditorialFeedback(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    
+    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === true) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = true; // Approve (green/strikeout)
+    }
+    
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
+    
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  rejectEditorialFeedback(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    
+    // Toggle: If already rejected, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === false) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = false; // Reject (green/strikeout opposite)
+    }
+    
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
+    
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  applyEditorialFix(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    
+    // Toggle: If already approved, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === true) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = true; // Approve (green/strikeout)
+    }
+    
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
+    
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  rejectEditorialFix(para: any, editorType: string, fb: any) {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    
+    // Toggle: If already rejected, uncheck it (set to null for unreviewed/yellow)
+    if (fb.approved === false) {
+      fb.approved = null; // Uncheck - back to unreviewed state (yellow)
+    } else {
+      fb.approved = false; // Reject (green/strikeout opposite)
+    }
+    
+    // Clear display properties so highlightAllFeedbacks() handles all highlighting
+    para.displayOriginal = undefined;
+    para.displayEdited = undefined;
+
+    this.updateParagraphApprovedStatus(para);
+    
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  highlightAllFeedbacks(
+    para: ParagraphFeedback,
+    hovered?: { editorType: string; fbIndex: number }
+  ): { original: string; edited: string } {
+
+    let highlightedOriginal = para.original;
+    let highlightedEdited = para.edited;
+
+    type HighlightItem = {
+      text: string;
+      approved: boolean | null;
+      start: number;
+      end: number;
+      hovered: boolean;
+    };
+
+    const originalItems: HighlightItem[] = [];
+    const editedItems: HighlightItem[] = [];
+
+    // ------------------------------------------------------------
+    // STEP 1: Collect ALL highlight metadata (NO string mutation)
+    // ------------------------------------------------------------
+    Object.keys(para.editorial_feedback).forEach(editorType => {
+      const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+
+      feedbacks.forEach((fb: any, idx: number) => {
+        const issueText = fb.issue?.trim();
+        const fixText = fb.fix?.trim();
+
+        const isHovered =
+          !!hovered &&
+          hovered.editorType === editorType &&
+          hovered.fbIndex === idx;
+
+        const approved: boolean | null =
+          fb.approved === true ? true : fb.approved === false ? false : null;
+
+        // ---- ORIGINAL (issue) ----
+        if (issueText) {
+          const regex = new RegExp(this.escapeRegex(issueText), 'g');
+          let match: RegExpExecArray | null;
+
+          while ((match = regex.exec(highlightedOriginal)) !== null) {
+            originalItems.push({
+              text: issueText,
+              approved,
+              start: match.index,
+              end: match.index + issueText.length,
+              hovered: isHovered
+            });
+          }
+        }
+
+        // ---- EDITED (fix) ----
+        if (fixText) {
+          const regex = new RegExp(this.escapeRegex(fixText), 'g');
+          let match: RegExpExecArray | null;
+
+          while ((match = regex.exec(highlightedEdited)) !== null) {
+            editedItems.push({
+              text: fixText,
+              approved,
+              start: match.index,
+              end: match.index + fixText.length,
+              hovered: isHovered
+            });
+          }
+        }
+      });
+    });
+
+    // ------------------------------------------------------------
+    // STEP 2: Apply highlights (END → START to keep indexes valid)
+    // ------------------------------------------------------------
+    const applyHighlights = (
+      source: string,
+      items: HighlightItem[],
+      mode: 'original' | 'edited'
+    ): string => {
+
+      items
+        .sort((a, b) => b.start - a.start)
+        .forEach(item => {
+          let cssClass = '';
+
+          if (mode === 'original') {
+            if (item.approved === true) {
+              cssClass = 'strikeout highlight-yellow';
+            } else if (item.approved === false) {
+              cssClass = 'highlight-green';
+            } else {
+              cssClass = 'highlight-yellow';
+            }
+          } else {
+            if (item.approved === true) {
+              cssClass = 'highlight-green';
+            } else if (item.approved === false) {
+              cssClass = 'strikeout highlight-yellow';
+            } else {
+              cssClass = 'highlight-yellow';
+            }
+          }
+
+          if (item.hovered) {
+            cssClass += ' highlight-border';
+          }
+
+          const wrapped = `<span class="${cssClass}">${item.text}</span>`;
+
+          source =
+            source.substring(0, item.start) +
+            wrapped +
+            source.substring(item.end);
+        });
+
+      return source;
+    };
+
+    highlightedOriginal = applyHighlights(
+      highlightedOriginal,
+      originalItems,
+      'original'
+    );
+
+    highlightedEdited = applyHighlights(
+      highlightedEdited,
+      editedItems,
+      'edited'
+    );
+
+    return {
+      original: highlightedOriginal,
+      edited: highlightedEdited
+    };
+  }
+
+
+  // Helper method to escape special regex characters
+  private escapeRegex(str: string): string {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  approveAllFeedback(): void {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    this.paragraphFeedbackData.forEach(para => {
+
+      para.approved = true;
+
+
+      Object.keys(para.editorial_feedback).forEach(editorType => {
+        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+        feedbacks.forEach((fb: any) => {
+          // Set all to approved (don't toggle)
+          fb.approved = true;
+        });
+      });
+      // Clear display properties so highlightAllFeedbacks() handles all highlighting
+      para.displayOriginal = undefined;
+      para.displayEdited = undefined;
+    });
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+  rejectAllFeedback(): void {
+    // Prevent changes after final output is generated
+    if (this.showFinalOutput) {
+      return;
+    }
+    this.paragraphFeedbackData.forEach(para => {
+      para.approved = false;
+      Object.keys(para.editorial_feedback).forEach(editorType => {
+        const feedbacks = (para.editorial_feedback as any)[editorType] || [];
+        feedbacks.forEach((fb: any) => {
+          // Set all to rejected (don't toggle)
+          fb.approved = false;
+        });
+      });
+      // Clear display properties so highlightAllFeedbacks() handles all highlighting
+      para.displayOriginal = undefined;
+      para.displayEdited = undefined;
+    });
+    // Force change detection to update the view
+    this.cdr.detectChanges();
+  }
+
+    /** Show notification message */
+  private showNotificationMessage(message: string, type: 'success' | 'error' = 'success'): void {
+    this.notificationMessage = message;
+    this.notificationType = type;
+    this.showNotification = true;
+    
+    // Auto-hide after 3 seconds
+    setTimeout(() => {
+      this.showNotification = false;
+    }, 3000);
+  }
+
+  hoveredFeedback: { paraIndex: number, editorType: string, fbIndex: number } | null = null;
+
+  onFeedbackHover(paraIndex: number, editorType: string, fbIndex: number) {
+    this.hoveredFeedback = { paraIndex, editorType, fbIndex };
+  }
+
+  onFeedbackLeave() {
+    this.hoveredFeedback = null;
+  }
 }
