@@ -29,13 +29,11 @@
               (fileRemoved)="onFileRemoved()">
             </app-file-upload>
             <div class="or-divider">OR</div>
-            <label class="form-label">Paste contract text</label>
-            <textarea
-              class="paste-textarea"
+            <input
+              class="contract-number-input"
               [(ngModel)]="formData.pastedText"
-              placeholder="Paste contract text here..."
-              rows="5">
-            </textarea>
+              placeholder="Enter Contracting Hub contract number here"
+              type="text">
           </div>
           <div class="form-section">
             <label class="form-label">
