@@ -1,432 +1,183 @@
-from datetime import datetime, timezone
 import json
 import logging
+import os
+from typing import Dict, Any, Optional, List
 
-from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.core.deps import get_llm_client_agent
+from pydantic import BaseModel, Field
 
-from .schema import ContractDraftState
-from .prompt import build_sow_generation_prompt, build_sow_targeted_edit_prompt
-from .validation import (
-    extract_document_text,
-    extract_document_text_from_bytes,
-    ask_llm_to_extract_fields,
-    validate_extracted_fields,
-    load_field_mapping,
+from .graph import (
+    run_contract_draft_graph,
+    resume_contract_draft_graph,
+    resume_contract_draft_targeted_edit_graph,
 )
+from .validation import load_field_mapping
 
 logger = logging.getLogger(__name__)
 
-llm = get_llm_client_agent()
+router = APIRouter()
+
+SUPPORTED_PRIMARY = [".doc", ".docx", ".pdf", ".pptx", ".xlsx"]
+SUPPORTED_SECONDARY = [".doc", ".docx", ".pdf", ".pptx"]
 
 
 # ============================================================
-# HELPER: resolve active contract type from toggle dict
+# GET /field-mapping/{contract_type}
 # ============================================================
 
-def _get_active_contract_type(contract_type_dict: dict) -> str:
-    """Return the contract type key that is True (e.g. 'SOW')."""
-    type_map = {
-        "statement_of_work": "SOW",
-        "engagement_letter": "Engagement Letter",
-        "master_services_agreement": "MSA",
-        "non_disclosure_agreement": "NDA",
-        "product_license_agreement": "Product License Agreement",
-    }
-    for key, active in contract_type_dict.items():
-        if active:
-            return type_map.get(key, key.upper())
-    return "SOW"
+@router.get("/field-mapping/{contract_type}")
+async def get_field_mapping(contract_type: str):
+    """Return field definitions for a given contract type."""
+    data = load_field_mapping()
 
-
-# ============================================================
-# NODE: EXTRACT_DOCUMENT
-# ============================================================
-
-def extract_document_node(state: ContractDraftState):
-    """Read the uploaded document and extract text content.
-
-    Supports either:
-    - Server path: ``document_upload.file_path`` (JSON / CLI)
-    - Browser upload: ``document_upload.file_bytes`` + ``file_name`` (multipart, no temp file)
-    """
-    du = state.document_upload or {}
-    file_bytes = du.get("file_bytes")
-    file_path = (du.get("file_path") or "").strip()
-
-    if file_bytes is not None:
-        file_name = du.get("file_name") or "document"
-        if isinstance(file_name, str) and not file_name.strip():
-            file_name = "document"
-        logger.info("[EXTRACT_DOCUMENT] Extracting text from in-memory upload (%s)", file_name)
-        raw = file_bytes if isinstance(file_bytes, (bytes, bytearray)) else bytes(file_bytes)
-        document_text = extract_document_text_from_bytes(raw, str(file_name))
-    elif file_path:
-        logger.info("[EXTRACT_DOCUMENT] Extracting text from path %s", file_path)
-        document_text = extract_document_text(file_path)
-    else:
-        raise ValueError(
-            "document_upload must include either 'file_bytes' + 'file_name' (browser) "
-            "or 'file_path' (server path)"
+    mapping_contract_type = data.get("contract_type", "")
+    if mapping_contract_type.upper() != contract_type.upper():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No field mapping found for contract type: {contract_type}",
         )
 
-    return {
-        "document_text": document_text,
-    }
+    field_definitions = data.get("field_definitions", [])
 
-
-# ============================================================
-# NODE: LLM_FIELD_EXTRACTION
-# ============================================================
-
-async def llm_field_extraction_node(state: ContractDraftState):
-    """Use LLM to extract structured fields from document text."""
-    logger.info("[LLM_FIELD_EXTRACTION] Extracting fields via LLM")
-
-    mapping = load_field_mapping()
-    field_definitions = mapping.get("field_definitions", [])
-
-    extracted = await ask_llm_to_extract_fields(state.document_text, field_definitions)
-
-    logger.info("[LLM_FIELD_EXTRACTION] Extracted %d fields", len(extracted))
-    return {
-        "extracted_fields": extracted,
-    }
-
-
-# ============================================================
-# NODE: VALIDATE_FIELDS
-# ============================================================
-
-def validate_fields_node(state: ContractDraftState):
-    """Validate extracted fields against field_mapping.json required fields."""
-    logger.info("[VALIDATE_FIELDS] Validating extracted fields")
-
-    mapping = load_field_mapping()
-    field_definitions = mapping.get("field_definitions", [])
-
-    result = validate_extracted_fields(state.extracted_fields, field_definitions)
+    required_fields = [f for f in field_definitions if f.get("required")]
+    optional_fields = [f for f in field_definitions if not f.get("required")]
 
     return {
-        "validation_passed": result["valid"],
-        "missing_fields": result["missing_fields"],
+        "contract_type": contract_type.upper(),
+        "total_fields": len(field_definitions),
+        "required_count": len(required_fields),
+        "optional_count": len(optional_fields),
+        "field_definitions": field_definitions,
     }
 
 
 # ============================================================
-# NODE: DRAFT_GENERATION
+# POST /draft — browser uploads (multipart). Graph uses document_upload.file_bytes.
 # ============================================================
 
-async def draft_generation_node(state: ContractDraftState):
-    """Use LLM to generate SOW contract draft from extracted fields."""
-    active_type = _get_active_contract_type(state.contract_type)
+class DraftContractRequest(BaseModel):
+    contract_type: Dict[str, bool]
+    document_upload: Dict[str, Any]
+    supporting_document: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    prid: str
+    flex_id: str
+    template: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    lookup_in_icertis: bool = False
 
-    logger.info("[DRAFT_GENERATION] Generating %s draft", active_type)
 
-    prompt = build_sow_generation_prompt(
-        extracted_fields=state.extracted_fields,
-        contract_type=active_type,
-    )
+@router.post("/draft")
+async def draft_contract(
+    document_file: UploadFile = File(..., description="Primary contract document (SOW / proposal)"),
+    contract_type: str = Form(
+        ...,
+        description='JSON object of booleans, e.g. {"statement_of_work":true,"engagement_letter":false,...}',
+    ),
+    prid: str = Form(...),
+    flex_id: str = Form(...),
+    lookup_in_icertis: str = Form("false"),
+    supporting_document_file: Optional[UploadFile] = File(None),
+    template_file: Optional[UploadFile] = File(None),
+):
+    """Multipart upload from the browser; passes file bytes into the graph (no separate /draft/multipart)."""
+    try:
+        contract_type_dict = json.loads(contract_type)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid contract_type JSON: {e}") from e
 
-    response = await llm.ainvoke([HumanMessage(content=prompt)])
-    draft_text = response.content if hasattr(response, "content") else str(response)
+    if not isinstance(contract_type_dict, dict):
+        raise HTTPException(status_code=400, detail="contract_type must be a JSON object")
 
-    return {
-        "draft_content": draft_text,
+    lookup_flag = str(lookup_in_icertis).lower() in ("1", "true", "yes", "on")
+
+    doc_name = document_file.filename or "document"
+    doc_bytes = await document_file.read()
+    doc_ext = os.path.splitext(doc_name)[1].lower() or ""
+
+    document_upload: Dict[str, Any] = {
+        "file_name": doc_name,
+        "file_bytes": doc_bytes,
+        "file_type": doc_ext,
+        "supported_formats": SUPPORTED_PRIMARY,
     }
 
+    supporting_document: Dict[str, Any] = {}
+    if supporting_document_file and supporting_document_file.filename:
+        sup_name = supporting_document_file.filename
+        supporting_document = {
+            "file_name": sup_name,
+            "file_bytes": await supporting_document_file.read(),
+            "file_type": os.path.splitext(sup_name)[1].lower() or "",
+            "supported_formats": SUPPORTED_SECONDARY,
+        }
 
-# ============================================================
-# NODE: ASSEMBLE_RESPONSE
-# ============================================================
+    template: Dict[str, Any] = {}
+    if template_file and template_file.filename:
+        tpl_name = template_file.filename
+        template = {
+            "file_name": tpl_name,
+            "file_bytes": await template_file.read(),
+            "file_type": os.path.splitext(tpl_name)[1].lower() or "",
+            "supported_formats": SUPPORTED_SECONDARY,
+        }
 
-def assemble_response_node(state: ContractDraftState):
-    """Build the final response JSON."""
-    logger.info("[ASSEMBLE_RESPONSE] Building final response")
-
-    active_type = _get_active_contract_type(state.contract_type)
-    ef = state.extracted_fields
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    response = {
-        "status": "draft_generated",
-        "generated_at": generated_at,
-        "contract_type": active_type,
-        "prid": state.prid,
-        "flex_id": state.flex_id,
-        "extracted_fields": ef,
-        "draft_content": state.draft_content,
+    input_data = {
+        "contract_type": contract_type_dict,
+        "document_upload": document_upload,
+        "supporting_document": supporting_document,
+        "prid": prid,
+        "flex_id": flex_id,
+        "template": template,
+        "lookup_in_icertis": lookup_flag,
     }
 
-    return {
-        "final_response": response,
-    }
+    result = await run_contract_draft_graph(input_data)
+    return result
 
 
 # ============================================================
-# CONDITIONAL ROUTERS
+# POST /draft/json — server-side paths (e.g. Draft.json with file_path), not for browser file picker
 # ============================================================
 
-def _entry_router(state: ContractDraftState) -> str:
-    """Skip extraction if fields are already provided (resume flow)."""
-    if state.validation_passed and state.extracted_fields:
-        return "DRAFT_GENERATION"
-    return "EXTRACT_DOCUMENT"
 
-
-def _validation_router(state: ContractDraftState) -> str:
-    """Route based on whether validation passed."""
-    if state.validation_passed:
-        return "DRAFT_GENERATION"
-    return END
+@router.post("/draft/json")
+async def draft_contract_from_json(request: DraftContractRequest):
+    """JSON body with document_upload.file_path on disk — same graph as multipart /draft."""
+    result = await run_contract_draft_graph(request.model_dump())
+    return result
 
 
 # ============================================================
-# BUILD GRAPH (single graph for both initial and resume flows)
+# POST /draft/resume — Step 2: User fills missing fields, resume draft generation
 # ============================================================
 
-def build_contract_draft_graph():
-    graph = StateGraph(ContractDraftState)
-
-    graph.add_node("EXTRACT_DOCUMENT", extract_document_node)
-    graph.add_node("LLM_FIELD_EXTRACTION", llm_field_extraction_node)
-    graph.add_node("VALIDATE_FIELDS", validate_fields_node)
-    graph.add_node("DRAFT_GENERATION", draft_generation_node)
-    graph.add_node("ASSEMBLE_RESPONSE", assemble_response_node)
-
-    # Entry: route based on whether we already have validated fields
-    graph.set_conditional_entry_point(_entry_router)
-
-    # Extraction flow
-    graph.add_edge("EXTRACT_DOCUMENT", "LLM_FIELD_EXTRACTION")
-    graph.add_edge("LLM_FIELD_EXTRACTION", "VALIDATE_FIELDS")
-    graph.add_conditional_edges("VALIDATE_FIELDS", _validation_router)
-
-    # Draft generation flow
-    graph.add_edge("DRAFT_GENERATION", "ASSEMBLE_RESPONSE")
-    graph.add_edge("ASSEMBLE_RESPONSE", END)
-
-    return graph.compile()
+class ResumeDraftRequest(BaseModel):
+    contract_type: Dict[str, bool]
+    prid: str
+    flex_id: str
+    extracted_fields: Dict[str, Any]
+    user_filled_fields: Dict[str, Any]
 
 
-# ============================================================
-# PUBLIC API
-# ============================================================
-
-async def run_contract_draft_graph(input_data: dict) -> dict:
-    """Step 1: Extract document, extract fields via LLM, validate.
-    Returns missing fields if validation fails, or the generated draft if all fields are present."""
-    graph = build_contract_draft_graph()
-
-    initial_state = ContractDraftState(
-        contract_type=input_data.get("contract_type", {}),
-        document_upload=input_data.get("document_upload", {}),
-        supporting_document=input_data.get("supporting_document", {}),
-        prid=input_data.get("prid", ""),
-        flex_id=input_data.get("flex_id", ""),
-        template=input_data.get("template", {}),
-        lookup_in_icertis=input_data.get("lookup_in_icertis", False),
-    )
-
-    result = await graph.ainvoke(initial_state)
-
-    if not result.get("validation_passed", False):
-        return {
-            "status": "validation_requirement_to_fulfill",
-            "message": "Required fields are missing. Please provide the following fields.",
-            "missing_fields": result.get("missing_fields", []),
-            "extracted_fields": result.get("extracted_fields", {}),
-        }
-
-    return result.get("final_response", {})
+@router.post("/draft/resume")
+async def resume_draft_contract(request: ResumeDraftRequest):
+    """Step 2: User provides missing field values → re-validate → generate draft."""
+    result = await resume_contract_draft_graph(request.model_dump())
+    return result
 
 
-async def resume_contract_draft_graph(input_data: dict) -> dict:
-    """Step 2: User provides the missing fields. Merge into extracted_fields,
-    re-validate, and proceed to draft generation using the same graph."""
-
-    extracted_fields = input_data.get("extracted_fields", {})
-    user_filled_fields = input_data.get("user_filled_fields", {})
-
-    # Merge user-provided values into extracted fields
-    extracted_fields.update(user_filled_fields)
-
-    # Re-validate before invoking graph
-    mapping = load_field_mapping()
-    field_definitions = mapping.get("field_definitions", [])
-    validation = validate_extracted_fields(extracted_fields, field_definitions)
-
-    if not validation["valid"]:
-        return {
-            "status": "validation_requirement_to_fulfill",
-            "message": "Required fields are still missing. Please provide the following fields.",
-            "missing_fields": validation["missing_fields"],
-            "extracted_fields": extracted_fields,
-        }
-
-    # Validation passed — same graph, but entry router skips to DRAFT_GENERATION
-    graph = build_contract_draft_graph()
-
-    initial_state = ContractDraftState(
-        contract_type=input_data.get("contract_type", {}),
-        prid=input_data.get("prid", ""),
-        flex_id=input_data.get("flex_id", ""),
-        extracted_fields=extracted_fields,
-        validation_passed=True,
-    )
-
-    result = await graph.ainvoke(initial_state)
-    return result.get("final_response", {})
+class ResumeEditDraftRequest(BaseModel):
+    contract_type: Dict[str, bool]
+    prid: str
+    flex_id: str
+    extracted_fields: Dict[str, Any]
+    user_filled_fields: Dict[str, Any]
+    previous_draft_content: str
+    changed_field_keys: List[str] = Field(default_factory=list)
 
 
-def _has_required_sow_headings(content: str) -> bool:
-    """Basic guard that checks top-level sections still exist."""
-    required_headings = (
-        "**PARTIES**",
-        "**3. SCOPE OF WORK**",
-        "**6. COMMERCIAL TERMS AND PAYMENT**",
-        "**13. SIGNATURE BLOCK**",
-    )
-    return all(h in content for h in required_headings)
-
-
-async def resume_contract_draft_targeted_edit_graph(input_data: dict) -> dict:
-    """Step 2b: Apply surgical edits to prior draft using changed fields only."""
-    extracted_fields = dict(input_data.get("extracted_fields", {}) or {})
-    user_filled_fields = dict(input_data.get("user_filled_fields", {}) or {})
-    previous_draft_content = str(input_data.get("previous_draft_content", "") or "")
-    changed_field_keys = input_data.get("changed_field_keys", [])
-
-    if not previous_draft_content.strip():
-        return {
-            "status": "error",
-            "message": "previous_draft_content is required for targeted resume-edit.",
-        }
-
-    if not user_filled_fields:
-        # Nothing changed: return previous draft unchanged and keep response shape.
-        active_type = _get_active_contract_type(input_data.get("contract_type", {}))
-        generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        return {
-            "status": "draft_generated",
-            "generated_at": generated_at,
-            "contract_type": active_type,
-            "prid": input_data.get("prid", ""),
-            "flex_id": input_data.get("flex_id", ""),
-            "extracted_fields": extracted_fields,
-            "draft_content": previous_draft_content,
-        }
-
-    extracted_fields.update(user_filled_fields)
-
-    mapping = load_field_mapping()
-    field_definitions = mapping.get("field_definitions", [])
-    validation = validate_extracted_fields(extracted_fields, field_definitions)
-    if not validation["valid"]:
-        return {
-            "status": "validation_requirement_to_fulfill",
-            "message": "Required fields are still missing. Please provide the following fields.",
-            "missing_fields": validation["missing_fields"],
-            "extracted_fields": extracted_fields,
-        }
-
-    active_type = _get_active_contract_type(input_data.get("contract_type", {}))
-    effective_changed_keys = changed_field_keys or list(user_filled_fields.keys())
-    changed_fields_payload = {
-        key: {
-            "old": input_data.get("extracted_fields", {}).get(key),
-            "new": extracted_fields.get(key),
-        }
-        for key in effective_changed_keys
-    }
-    prompt = build_sow_targeted_edit_prompt(
-        previous_draft_content=previous_draft_content,
-        changed_fields=changed_fields_payload,
-        contract_type=active_type,
-    )
-    response = await llm.ainvoke([HumanMessage(content=prompt)])
-    draft_text = response.content if hasattr(response, "content") else str(response)
-    draft_text = draft_text.strip()
-
-    if not draft_text:
-        return {
-            "status": "error",
-            "message": "Targeted resume-edit returned empty draft content.",
-        }
-    if not _has_required_sow_headings(draft_text):
-        return {
-            "status": "error",
-            "message": "Targeted resume-edit returned malformed draft structure.",
-        }
-
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return {
-        "status": "draft_generated",
-        "generated_at": generated_at,
-        "contract_type": active_type,
-        "prid": input_data.get("prid", ""),
-        "flex_id": input_data.get("flex_id", ""),
-        "extracted_fields": extracted_fields,
-        "draft_content": draft_text,
-    }
-
-# ============================================================
-# CLI ENTRY POINT
-# ============================================================
-
-if __name__ == "__main__":
-    import asyncio
-    import os
-
-    demo_path = os.path.join(os.path.dirname(__file__), "Draft.json")
-    with open(demo_path, "r") as f:
-        input_data = json.load(f)
-
-    print("Running contract draft graph...\n")
-    response = asyncio.run(run_contract_draft_graph(input_data))
-
-    while response.get("status") == "validation_requirement_to_fulfill":
-        missing = response.get("missing_fields", [])
-        extracted = response.get("extracted_fields", {})
-
-        print(f"\nMISSING REQUIRED FIELDS ({len(missing)}):")
-        user_filled = {}
-        for field in missing:
-            label = field.get("label", field["field_key"])
-            opts = field.get("options")
-            prompt = f"  {label}"
-            if opts:
-                prompt += f" [{', '.join(opts)}]"
-            value = input(f"{prompt}: ").strip()
-
-            ftype = field.get("type", "text")
-            if ftype == "number":
-                try:
-                    value = float(value) if "." in value else int(value)
-                except ValueError:
-                    pass
-            elif ftype == "boolean":
-                value = value.lower() in ("true", "yes", "1", "y")
-
-            user_filled[field["field_key"]] = value
-
-        extracted.update(user_filled)
-        print("\nGenerating SOW draft...")
-
-        response = asyncio.run(resume_contract_draft_graph({
-            "contract_type": input_data.get("contract_type", {}),
-            "prid": input_data.get("prid", ""),
-            "flex_id": input_data.get("flex_id", ""),
-            "extracted_fields": extracted,
-            "user_filled_fields": user_filled,
-        }))
-
-    if response.get("status") == "draft_generated":
-        print(f"\nContract: {response.get('contract_type')} | "
-              f"PRID: {response.get('prid')} | Flex: {response.get('flex_id')}")
-        print(response.get("draft_content", ""))
-    else:
-        print(json.dumps(response, indent=2))
-
+@router.post("/draft/resume-edit")
+async def resume_edit_draft_contract(request: ResumeEditDraftRequest):
+    """Step 2b: User updates specific fields; perform strict targeted edits only."""
+    result = await resume_contract_draft_targeted_edit_graph(request.model_dump())
+    return result
