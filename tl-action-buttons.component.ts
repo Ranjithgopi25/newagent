@@ -1,989 +1,429 @@
-@import '../../../shared/ui/styles/design-tokens';
-@import '../../../shared/ui/styles/mixins';
+from datetime import datetime, timezone
+import json
+import logging
 
-.flow-backdrop {
-  @include modal-backdrop;
-}
+from langgraph.graph import StateGraph, END
+from langchain_core.messages import HumanMessage
 
-.flow-container {
-  @include modal-container;
-  max-width: 560px;
-  border-radius: 0px;
-  position: relative;
-  display: flex;
-  flex-direction: column;
-}
+from app.core.deps import get_llm_client_agent
 
-.flow-header {
-  padding: 10px 20px;
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-shrink: 0;
-  border-radius: 0px;
-}
+from .schema import ContractDraftState
+from .prompt import build_sow_generation_prompt, build_sow_targeted_edit_prompt
+from .validation import (
+    extract_document_text,
+    extract_document_text_from_bytes,
+    ask_llm_to_extract_fields,
+    validate_extracted_fields,
+    load_field_mapping,
+)
 
-.flow-title {
-  font-size: $font-size-xl;
-  font-weight: $font-weight-semibold;
-  color: var(--text-primary);
-  margin: 0;
-}
+logger = logging.getLogger(__name__)
 
-.back-btn,
-.close-btn {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  padding: $spacing-md;
-  border-radius: $radius-lg;
-  transition: all $transition-fast;
+llm = get_llm_client_agent()
 
-  &:hover {
-    background: var(--hover-bg);
-    color: var(--text-primary);
-  }
 
-  svg {
-    display: block;
-  }
-}
+# ============================================================
+# HELPER: resolve active contract type from toggle dict
+# ============================================================
 
-.flow-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px;
-  max-width: 100%;
-  margin: 0;
-  position: relative;
-}
+def _get_active_contract_type(contract_type_dict: dict) -> str:
+    """Return the contract type key that is True (e.g. 'SOW')."""
+    type_map = {
+        "statement_of_work": "SOW",
+        "engagement_letter": "Engagement Letter",
+        "master_services_agreement": "MSA",
+        "non_disclosure_agreement": "NDA",
+        "product_license_agreement": "Product License Agreement",
+    }
+    for key, active in contract_type_dict.items():
+        if active:
+            return type_map.get(key, key.upper())
+    return "SOW"
 
-.panel-title {
-  font-size: 14px;
-  font-weight: 400;
-  color: var(--text-primary);
-  margin-bottom: 24px;
-  line-height: 1.5;
-}
 
-.form-section {
-  margin-bottom: 20px;
+# ============================================================
+# NODE: EXTRACT_DOCUMENT
+# ============================================================
 
-  &.required-section {
-    background: #FFF5EB;
-    padding: 16px;
-    border-radius: 0px;
-  }
-}
+def extract_document_node(state: ContractDraftState):
+    """Read the uploaded document and extract text content.
 
-.form-label {
-  display: block;
-  font-weight: 500;
-  color: var(--text-primary);
-  margin-bottom: 8px;
-  font-size: 11.5px;
+    Supports either:
+    - Server path: ``document_upload.file_path`` (JSON / CLI)
+    - Browser upload: ``document_upload.file_bytes`` + ``file_name`` (multipart, no temp file)
+    """
+    du = state.document_upload or {}
+    file_bytes = du.get("file_bytes")
+    file_path = (du.get("file_path") or "").strip()
 
-  .required {
-    color: #FE7C39;
-    margin-left: 4px;
-  }
-}
-.required {
-    color: #FE7C39;
-    margin-left: 4px;
-  }
-// File upload handled by shared component
+    if file_bytes is not None:
+        file_name = du.get("file_name") or "document"
+        if isinstance(file_name, str) and not file_name.strip():
+            file_name = "document"
+        logger.info("[EXTRACT_DOCUMENT] Extracting text from in-memory upload (%s)", file_name)
+        raw = file_bytes if isinstance(file_bytes, (bytes, bytearray)) else bytes(file_bytes)
+        document_text = extract_document_text_from_bytes(raw, str(file_name))
+    elif file_path:
+        logger.info("[EXTRACT_DOCUMENT] Extracting text from path %s", file_path)
+        document_text = extract_document_text(file_path)
+    else:
+        raise ValueError(
+            "document_upload must include either 'file_bytes' + 'file_name' (browser) "
+            "or 'file_path' (server path)"
+        )
 
-.form-select {
-  width: 100%;
-  padding: 10px 14px;
-  border: 2px solid var(--border-color);
-  border-radius: 0px;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-size: 0.9rem;
-  transition: all 0.2s;
-
-  &:focus {
-    outline: none;
-    border-color: #FFAA72;
-  }
-}
-.template-select {
-    width: 100%;
-    padding: 6px 26px 6px 8px;
-    border: 1px solid var(--border-color);
-    border-radius: 0px;
-    font-size: 12px;
-    line-height: 1.15;
-    background: var(--bg-primary);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23fd5108' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 12px center;
-    appearance: none;
-    cursor: pointer;
-    transition: border-color 0.2s;
-
-    &:hover {
-      border-color: #FFAA72;
+    return {
+        "document_text": document_text,
     }
 
-    &:focus {
-      outline: none;
-      border-color: #FFAA72;
-      box-shadow: 0 0 0 3px rgba(208, 74, 2, 0.1);
-    }
-  }
 
-.helper-text {
-  margin-top: 6px;
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  font-style: italic;
-}
+# ============================================================
+# NODE: LLM_FIELD_EXTRACTION
+# ============================================================
 
-.services-checklist {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 6px;
-  margin-top: 6px;
-}
+async def llm_field_extraction_node(state: ContractDraftState):
+    """Use LLM to extract structured fields from document text."""
+    logger.info("[LLM_FIELD_EXTRACTION] Extracting fields via LLM")
 
-.toggle-item {
-  position: relative;
-  display: block;
-  cursor: pointer;
-  user-select: none;
+    mapping = load_field_mapping()
+    field_definitions = mapping.get("field_definitions", [])
 
-  input[type="checkbox"] {
-    position: absolute;
-    opacity: 0;
-    width: 0;
-    height: 0;
+    extracted = await ask_llm_to_extract_fields(state.document_text, field_definitions)
 
-    &:focus + .toggle-switch {
-      outline: 2px solid #FFAA72;
-      outline-offset: 2px;
-    }
-  }
-
-  .toggle-switch {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 8px;
-    background: #f5f5f5;
-    border: 1.5px solid #ddd;
-    border-radius: 0px;
-    transition: all 0.2s;
-    min-height: 34px;
-
-    &:hover {
-      border-color: #ccc;
+    logger.info("[LLM_FIELD_EXTRACTION] Extracted %d fields", len(extracted))
+    return {
+        "extracted_fields": extracted,
     }
 
-    .toggle-indicator {
-      position: relative;
-      width: 32px;
-      height: 18px;
-      background: #ccc;
-      border-radius: 9px;
-      transition: background 0.2s;
-      flex-shrink: 0;
 
-      &::after {
-        content: '';
-        position: absolute;
-        top: 2px;
-        left: 2px;
-        width: 14px;
-        height: 14px;
-        background: var(--bg-primary);
-        border-radius: 50%;
-        transition: transform 0.2s;
-      }
+# ============================================================
+# NODE: VALIDATE_FIELDS
+# ============================================================
+
+def validate_fields_node(state: ContractDraftState):
+    """Validate extracted fields against field_mapping.json required fields."""
+    logger.info("[VALIDATE_FIELDS] Validating extracted fields")
+
+    mapping = load_field_mapping()
+    field_definitions = mapping.get("field_definitions", [])
+
+    result = validate_extracted_fields(state.extracted_fields, field_definitions)
+
+    return {
+        "validation_passed": result["valid"],
+        "missing_fields": result["missing_fields"],
     }
 
-    .toggle-label {
-      flex: 1;
-      font-size: 11.5px;
-      color: #666;
-      font-weight: 500;
-      text-align: left;
-      line-height: 1.2;
-      max-width: 100%;
-      word-wrap: break-word;
-    }
-  }
 
-  input[type="checkbox"]:checked + .toggle-switch {
-    background: #FFAA72;
-    border-color: #FFAA72;
+# ============================================================
+# NODE: DRAFT_GENERATION
+# ============================================================
 
-    .toggle-indicator {
-      background: rgba(255, 255, 255, 0.3);
+async def draft_generation_node(state: ContractDraftState):
+    """Use LLM to generate SOW contract draft from extracted fields."""
+    active_type = _get_active_contract_type(state.contract_type)
 
-      &::after {
-        transform: translateX(14px);
-      }
-    }
+    logger.info("[DRAFT_GENERATION] Generating %s draft", active_type)
 
-    .toggle-label {
-      color: #fff;
-    }
-  }
-}
+    prompt = build_sow_generation_prompt(
+        extracted_fields=state.extracted_fields,
+        contract_type=active_type,
+    )
 
-.checkbox-item {
-  padding: 8px 12px;
-  background: var(--bg-primary);
-  border: 1.5px solid var(--border-color);
-  border-radius: 0px;
-  margin-top: 6px;
+    response = await llm.ainvoke([HumanMessage(content=prompt)])
+    draft_text = response.content if hasattr(response, "content") else str(response)
 
-  label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-    margin: 0;
-
-    input[type="checkbox"] {
-      width: 16px;
-      height: 16px;
-      cursor: pointer;
-      accent-color: #FFAA72;
+    return {
+        "draft_content": draft_text,
     }
 
-    span {
-      font-size: 12px;
-      color: #333;
-      font-weight: 500;
+
+# ============================================================
+# NODE: ASSEMBLE_RESPONSE
+# ============================================================
+
+def assemble_response_node(state: ContractDraftState):
+    """Build the final response JSON."""
+    logger.info("[ASSEMBLE_RESPONSE] Building final response")
+
+    active_type = _get_active_contract_type(state.contract_type)
+    ef = state.extracted_fields
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    response = {
+        "status": "draft_generated",
+        "generated_at": generated_at,
+        "contract_type": active_type,
+        "prid": state.prid,
+        "flex_id": state.flex_id,
+        "extracted_fields": ef,
+        "draft_content": state.draft_content,
     }
-  }
-}
 
-.sub-services {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 6px;
-  margin-top: 6px;
-  padding-left: 24px;
-}
-
-.section-label {
-  font-size: 11.5px;
-  color: #333;
-  margin-bottom: 4px;
-  display: block;
-  font-weight: 500;
-
-  &.required-label::after {
-    content: '(required)';
-    color: #FE7C39;
-    margin-left: 4px;
-  }
-}
-
-.text-area {
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid #ddd;
-  border-radius: 0px;
-  font-size: 12px;
-  font-family: inherit;
-  resize: vertical;
-  min-height: 44px;
-  line-height: 1.3;
-  background: #fef6f1;
-  transition: border-color 0.2s;
-
-  &::placeholder {
-    color: #aaa;
-  }
-
-  &:hover {
-    border-color: #ccc;
-  }
-
-  &:focus {
-    outline: none;
-    border-color: #FFAA72;
-    box-shadow: 0 0 0 3px rgba(208, 74, 2, 0.1);
-    background: var(--bg-primary);
-  }
-}
-
-.text-input {
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid #ddd;
-  border-radius: 0px;
-  font-size: 12px;
-  font-family: inherit;
-  line-height: 1.3;
-  background: #fef6f1;
-  transition: border-color 0.2s;
-
-  &::placeholder {
-    color: #aaa;
-  }
-
-  &:hover {
-    border-color: #ccc;
-  }
-
-  &:focus {
-    outline: none;
-    border-color: #FFAA72;
-    box-shadow: 0 0 0 3px rgba(208, 74, 2, 0.1);
-    background: var(--bg-primary);
-  }
-}
-
-.or-divider {
-  text-align: center;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary);
-  margin: 12px 0;
-}
-
-.apply-btn {
-  width: 100%;
-  padding: 14px 20px;
-  background: #FFAA72;
-  color: white;
-  border: none;
-  border-radius: 0px;
-  font-size: 0.95rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-
-  &:hover:not(:disabled) {
-    background: #FE7C39;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(208, 74, 2, 0.3);
-  }
-
-  &:disabled {
-    background: #ccc;
-    cursor: not-allowed;
-    transform: none;
-    box-shadow: none;
-  }
-
-  .generate-spinner {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    line-height: 1;
-    
-    svg {
-      width: 24px;
-      height: 24px;
-      animation: spin 1s linear infinite;
-      display: block;
+    return {
+        "final_response": response,
     }
-  }
-}
 
-.spinner {
-  display: inline-block;
-  width: 16px;
-  height: 16px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: white;
-  border-radius: 50%;
-  animation: spin 0.6s linear infinite;
-}
 
-.generation-output {
-  margin-top: 24px;
-  padding-top: 24px;
-  border-top: 2px solid var(--border-color);
-}
+# ============================================================
+# CONDITIONAL ROUTERS
+# ============================================================
 
-.flow-content-wrapper {
-  position: relative;
-}
+def _entry_router(state: ContractDraftState) -> str:
+    """Skip extraction if fields are already provided (resume flow)."""
+    if state.validation_passed and state.extracted_fields:
+        return "DRAFT_GENERATION"
+    return "EXTRACT_DOCUMENT"
 
-// Loading state for flow-content-wrapper (blurs only content, not overlay)
-.flow-content-wrapper.loading {
-  filter: blur(0.20px);
-  pointer-events: none;
-}
 
-// Loading overlay with spinner
-.loading-overlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(255, 255, 255, 0.7);
-  border-radius: 0px;
-  z-index: 112000;
-  overflow: hidden;
-}
+def _validation_router(state: ContractDraftState) -> str:
+    """Route based on whether validation passed."""
+    if state.validation_passed:
+        return "DRAFT_GENERATION"
+    return END
 
-.loading-spinner {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 16px;
-}
 
-.spinner-ring {
-  width: 60px;
-  height: 60px;
-  border: 6px solid rgba(255, 170, 114, 0.2);
-  border-top-color: #FE7C39;
-  border-radius: 50%;
-  animation: spin-rotation 1s linear infinite;
-}
+# ============================================================
+# BUILD GRAPH (single graph for both initial and resume flows)
+# ============================================================
 
-.loading-text {
-  font-size: 16px;
-  font-weight: 550;
-  color: #FE7C39;
-  margin: 0;
-}
+def build_contract_draft_graph():
+    graph = StateGraph(ContractDraftState)
 
-.loading-dots {
-  display: inline;
-}
+    graph.add_node("EXTRACT_DOCUMENT", extract_document_node)
+    graph.add_node("LLM_FIELD_EXTRACTION", llm_field_extraction_node)
+    graph.add_node("VALIDATE_FIELDS", validate_fields_node)
+    graph.add_node("DRAFT_GENERATION", draft_generation_node)
+    graph.add_node("ASSEMBLE_RESPONSE", assemble_response_node)
 
-.loading-dots .dot {
-  display: inline;
-  font-size: 22px;
-  opacity: 0;
-  animation: pulse-dot 1.5s infinite;
-  
-  &:nth-child(1) {
-    animation-delay: 0s;
-  }
-  
-  &:nth-child(2) {
-    animation-delay: 0.3s;
-  }
-  
-  &:nth-child(3) {
-    animation-delay: 0.6s;
-  }
+    # Entry: route based on whether we already have validated fields
+    graph.set_conditional_entry_point(_entry_router)
 
-  &::after {
-    content: '.';
-  }
-}
+    # Extraction flow
+    graph.add_edge("EXTRACT_DOCUMENT", "LLM_FIELD_EXTRACTION")
+    graph.add_edge("LLM_FIELD_EXTRACTION", "VALIDATE_FIELDS")
+    graph.add_conditional_edges("VALIDATE_FIELDS", _validation_router)
 
-@keyframes pulse-dot {
-  0%, 20%, 100% {
-    opacity: 0;
-  }
-  40%, 80% {
-    opacity: 1;
-  }
-}
+    # Draft generation flow
+    graph.add_edge("DRAFT_GENERATION", "ASSEMBLE_RESPONSE")
+    graph.add_edge("ASSEMBLE_RESPONSE", END)
 
-@keyframes spin-rotation {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-.assistant-message {
-  padding: 20px;
-  background: var(--bg-secondary);
-  border-radius: 0px;
-  margin-bottom: 16px;
-  line-height: 1.6;
-  color: var(--text-primary);
-}
+    return graph.compile()
 
-.upload-error-message {
-  color: #FE7C39;
-  font-size: 11px;
-  font-weight: 500;
-  padding: 4px 0;
-}
 
-.download-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 20px;
-  background: #FFAA72;
-  color: white;
-  border: none;
-  border-radius: 0px;
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 1rem;
-  transition: all 0.2s;
+# ============================================================
+# PUBLIC API
+# ============================================================
 
-  &:hover {
-    background: #FE7C39;
-    transform: translateY(-1px);
-  }
+async def run_contract_draft_graph(input_data: dict) -> dict:
+    """Step 1: Extract document, extract fields via LLM, validate.
+    Returns missing fields if validation fails, or the generated draft if all fields are present."""
+    graph = build_contract_draft_graph()
 
-  svg {
-    display: block;
-  }
-}
+    initial_state = ContractDraftState(
+        contract_type=input_data.get("contract_type", {}),
+        document_upload=input_data.get("document_upload", {}),
+        supporting_document=input_data.get("supporting_document", {}),
+        prid=input_data.get("prid", ""),
+        flex_id=input_data.get("flex_id", ""),
+        template=input_data.get("template", {}),
+        lookup_in_icertis=input_data.get("lookup_in_icertis", False),
+    )
 
-/* Make prepare and download buttons share the same look and equal width */
-.download-actions {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-}
+    result = await graph.ainvoke(initial_state)
 
-.prepare-btn,
-.download-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 12px 20px;
-  background: #FFAA72;
-  color: white;
-  border: none;
-  border-radius: 0px;
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 1rem;
-  transition: all 0.2s;
-  flex: 1; /* ensure both buttons take equal width */
-  text-align: center;
-}
+    if not result.get("validation_passed", False):
+        return {
+            "status": "validation_requirement_to_fulfill",
+            "message": "Required fields are missing. Please provide the following fields.",
+            "missing_fields": result.get("missing_fields", []),
+            "extracted_fields": result.get("extracted_fields", {}),
+        }
 
-.prepare-btn:hover:not(:disabled),
-.download-btn:hover:not(:disabled) {
-  background: #FE7C39;
-  transform: translateY(-1px);
-}
+    return result.get("final_response", {})
 
-.prepare-btn:disabled,
-.download-btn:disabled {
-  background: #ccc;
-  cursor: not-allowed;
-  transform: none;
-}
 
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
+async def resume_contract_draft_graph(input_data: dict) -> dict:
+    """Step 2: User provides the missing fields. Merge into extracted_fields,
+    re-validate, and proceed to draft generation using the same graph."""
 
-@keyframes slideUp {
-  from {
-    transform: translateY(20px);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
-  }
-}
+    extracted_fields = input_data.get("extracted_fields", {})
+    user_filled_fields = input_data.get("user_filled_fields", {})
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
+    # Merge user-provided values into extracted fields
+    extracted_fields.update(user_filled_fields)
 
-@media (max-width: 768px) {
-  .flow-container {
-    width: 95%;
-    max-height: 95vh;
-  }
+    # Re-validate before invoking graph
+    mapping = load_field_mapping()
+    field_definitions = mapping.get("field_definitions", [])
+    validation = validate_extracted_fields(extracted_fields, field_definitions)
 
-  .sub-services-grid {
-    grid-template-columns: 1fr;
-  }
-}
+    if not validation["valid"]:
+        return {
+            "status": "validation_requirement_to_fulfill",
+            "message": "Required fields are still missing. Please provide the following fields.",
+            "missing_fields": validation["missing_fields"],
+            "extracted_fields": extracted_fields,
+        }
 
-.helper-text {
-  font-size: 12px;
-  color: #6c757d;
-  margin: 4px 0 8px;
-}
-.apply-btn {
-  width: 100%;
-  padding: 14px 20px;
-  background: #FFAA72;
-  color: black;
-  border: none;
-  border-radius: 0px;
-  font-size: 0.95rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
+    # Validation passed — same graph, but entry router skips to DRAFT_GENERATION
+    graph = build_contract_draft_graph()
 
-  &:hover:not(:disabled) {
-    background: #FE7C39;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(208, 74, 2, 0.3);
-  }
+    initial_state = ContractDraftState(
+        contract_type=input_data.get("contract_type", {}),
+        prid=input_data.get("prid", ""),
+        flex_id=input_data.get("flex_id", ""),
+        extracted_fields=extracted_fields,
+        validation_passed=True,
+    )
 
-  &:disabled {
-    background: #ccc;
-    color: white;
-    cursor: not-allowed;
-    transform: none;
-    box-shadow: none;
-  }
-}
+    result = await graph.ainvoke(initial_state)
+    return result.get("final_response", {})
 
-.spinner {
-  display: inline-block;
-  width: 16px;
-  height: 16px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: white;
-  border-radius: 50%;
-  animation: spin 0.6s linear infinite;
-}
 
-.generation-output {
-  margin-top: 24px;
-  padding-top: 24px;
-  border-top: 2px solid var(--border-color);
-}
+def _has_required_sow_headings(content: str) -> bool:
+    """Basic guard that checks top-level sections still exist."""
+    required_headings = (
+        "**PARTIES**",
+        "**3. SCOPE OF WORK**",
+        "**6. COMMERCIAL TERMS AND PAYMENT**",
+        "**13. SIGNATURE BLOCK**",
+    )
+    return all(h in content for h in required_headings)
 
-.missing-fields-panel {
-  margin-top: 0;
-  margin-bottom: 24px;
-  padding: 22px 24px 24px;
-  min-height: 120px;
-  background: #fff8f3;
-  border: 1px solid #ffd8c2;
-  border-radius: 0;
-}
 
-.missing-fields-panel--priority {
-  border-width: 2px;
-  border-color: #fe7c39;
-}
+async def resume_contract_draft_targeted_edit_graph(input_data: dict) -> dict:
+    """Step 2b: Apply surgical edits to prior draft using changed fields only."""
+    extracted_fields = dict(input_data.get("extracted_fields", {}) or {})
+    user_filled_fields = dict(input_data.get("user_filled_fields", {}) or {})
+    previous_draft_content = str(input_data.get("previous_draft_content", "") or "")
+    changed_field_keys = input_data.get("changed_field_keys", [])
 
-.missing-fields-kicker {
-  margin: 0 0 6px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: #c2410c;
-}
+    if not previous_draft_content.strip():
+        return {
+            "status": "error",
+            "message": "previous_draft_content is required for targeted resume-edit.",
+        }
 
-.missing-fields-api-message {
-  margin: 0 0 14px;
-  font-size: 14px;
-  color: var(--text-primary);
-  line-height: 1.5;
-}
+    if not user_filled_fields:
+        # Nothing changed: return previous draft unchanged and keep response shape.
+        active_type = _get_active_contract_type(input_data.get("contract_type", {}))
+        generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return {
+            "status": "draft_generated",
+            "generated_at": generated_at,
+            "contract_type": active_type,
+            "prid": input_data.get("prid", ""),
+            "flex_id": input_data.get("flex_id", ""),
+            "extracted_fields": extracted_fields,
+            "draft_content": previous_draft_content,
+        }
 
-.missing-fields-intro {
-  margin-bottom: 14px;
-  font-size: 14px;
-  line-height: 1.5;
-}
+    extracted_fields.update(user_filled_fields)
 
-.missing-step-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 18px;
-  margin-bottom: 14px;
-  padding: 12px 14px;
-  background: #fff;
-  border: 1px solid #eee;
-  font-size: 13px;
-  color: #444;
+    mapping = load_field_mapping()
+    field_definitions = mapping.get("field_definitions", [])
+    validation = validate_extracted_fields(extracted_fields, field_definitions)
+    if not validation["valid"]:
+        return {
+            "status": "validation_requirement_to_fulfill",
+            "message": "Required fields are still missing. Please provide the following fields.",
+            "missing_fields": validation["missing_fields"],
+            "extracted_fields": extracted_fields,
+        }
 
-  .summary-item {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
-  }
-}
-
-.link-back-to-form {
-  display: block;
-  margin: 0 0 18px;
-  padding: 0;
-  border: none;
-  background: none;
-  color: #c2410c;
-  font-size: 13px;
-  text-decoration: underline;
-  cursor: pointer;
-
-  &:hover {
-    color: #9a3412;
-  }
-}
-
-.missing-fields-title {
-  margin: 0 0 10px;
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary);
-  line-height: 1.3;
-}
-
-.missing-field-row {
-  margin-bottom: 20px;
-
-  .form-label {
-    font-size: 13px;
-    margin-bottom: 6px;
-  }
-
-  .text-input {
-    min-height: 40px;
-    font-size: 14px;
-    padding: 10px 12px;
-  }
-
-  select.text-input {
-    min-height: 42px;
-  }
-}
-
-.field-hint {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin: 0 0 8px;
-  font-style: italic;
-  line-height: 1.4;
-}
-
-.missing-fields-panel > .apply-btn {
-  margin-top: 10px;
-  padding: 16px 24px;
-  font-size: 1rem;
-}
-
-.checkbox-inline {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  cursor: pointer;
-
-  input {
-    accent-color: #ffaa72;
-  }
-}
-
-.draft-result {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 2px solid var(--border-color);
-}
-
-.sow-version-selector {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
-
-  label {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
-  select {
-    min-width: 140px;
-    padding: 8px 10px;
-    border: 1px solid var(--border-color);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    font-size: 13px;
-    outline: none;
-
-    &:focus {
-      border-color: #fe7c39;
+    active_type = _get_active_contract_type(input_data.get("contract_type", {}))
+    effective_changed_keys = changed_field_keys or list(user_filled_fields.keys())
+    changed_fields_payload = {
+        key: {
+            "old": input_data.get("extracted_fields", {}).get(key),
+            "new": extracted_fields.get(key),
+        }
+        for key in effective_changed_keys
     }
-  }
-}
+    prompt = build_sow_targeted_edit_prompt(
+        previous_draft_content=previous_draft_content,
+        changed_fields=changed_fields_payload,
+        contract_type=active_type,
+    )
+    response = await llm.ainvoke([HumanMessage(content=prompt)])
+    draft_text = response.content if hasattr(response, "content") else str(response)
+    draft_text = draft_text.strip()
 
-.sow-version-banner {
-  margin: 0 0 12px;
-  padding: 10px 12px;
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--text-primary);
-  background: #fff8f3;
-  border: 1px solid #ffd8c2;
-}
+    # Be fault-tolerant: do not fail the user flow if model output drifts.
+    # Fallback to previous draft content instead of returning hard error.
+    if not draft_text or not _has_required_sow_headings(draft_text):
+        logger.warning(
+            "[TARGETED_RESUME_EDIT] Invalid targeted-edit output; using previous draft as fallback."
+        )
+        draft_text = previous_draft_content.strip()
 
-.draft-regenerating-placeholder {
-  margin-bottom: 12px;
-  padding: 14px 12px;
-  text-align: center;
-  border: 1px dashed var(--border-color);
-  background: #f8f9fa;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 600;
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "status": "draft_generated",
+        "generated_at": generated_at,
+        "contract_type": active_type,
+        "prid": input_data.get("prid", ""),
+        "flex_id": input_data.get("flex_id", ""),
+        "extracted_fields": extracted_fields,
+        "draft_content": draft_text,
+    }
 
-  p {
-    margin: 0;
-  }
-}
+# ============================================================
+# CLI ENTRY POINT
+# ============================================================
 
-.draft-result-hint {
-  margin: 0 0 12px;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--text-secondary);
-}
+if __name__ == "__main__":
+    import asyncio
+    import os
 
-.draft-result-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 8px;
+    demo_path = os.path.join(os.path.dirname(__file__), "Draft.json")
+    with open(demo_path, "r") as f:
+        input_data = json.load(f)
 
-  .apply-btn {
-    width: auto;
-    flex: 1 1 auto;
-    min-width: min(160px, 100%);
-  }
-}
+    print("Running contract draft graph...\n")
+    response = asyncio.run(run_contract_draft_graph(input_data))
 
-.apply-btn.secondary-btn {
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
+    while response.get("status") == "validation_requirement_to_fulfill":
+        missing = response.get("missing_fields", [])
+        extracted = response.get("extracted_fields", {})
 
-  &:hover:not(:disabled) {
-    background: var(--hover-bg);
-    box-shadow: none;
-  }
-}
+        print(f"\nMISSING REQUIRED FIELDS ({len(missing)}):")
+        user_filled = {}
+        for field in missing:
+            label = field.get("label", field["field_key"])
+            opts = field.get("options")
+            prompt = f"  {label}"
+            if opts:
+                prompt += f" [{', '.join(opts)}]"
+            value = input(f"{prompt}: ").strip()
 
-.extracted-summary {
-  max-height: min(320px, 45vh);
-  overflow: auto;
-  margin-bottom: 12px;
-  padding: 10px;
-  background: #f8f9fa;
-  border: 1px solid var(--border-color);
-  font-size: 11px;
-}
+            ftype = field.get("type", "text")
+            if ftype == "number":
+                try:
+                    value = float(value) if "." in value else int(value)
+                except ValueError:
+                    pass
+            elif ftype == "boolean":
+                value = value.lower() in ("true", "yes", "1", "y")
 
-.extracted-summary-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid #dee2e6;
-}
+            user_filled[field["field_key"]] = value
 
-.link-edit-fields {
-  padding: 0;
-  border: none;
-  background: none;
-  color: #c2410c;
-  font-size: 13px;
-  font-weight: 600;
-  text-decoration: underline;
-  cursor: pointer;
+        extracted.update(user_filled)
+        print("\nGenerating SOW draft...")
 
-  &:hover {
-    color: #9a3412;
-  }
-}
+        response = asyncio.run(resume_contract_draft_graph({
+            "contract_type": input_data.get("contract_type", {}),
+            "prid": input_data.get("prid", ""),
+            "flex_id": input_data.get("flex_id", ""),
+            "extracted_fields": extracted,
+            "user_filled_fields": user_filled,
+        }))
 
-.apply-extracted-regenerate {
-  flex: 1 1 auto;
-  min-width: min(220px, 100%);
-  padding: 10px 16px;
-  font-size: 0.9rem;
-}
+    if response.get("status") == "draft_generated":
+        print(f"\nContract: {response.get('contract_type')} | "
+              f"PRID: {response.get('prid')} | Flex: {response.get('flex_id')}")
+        print(response.get("draft_content", ""))
+    else:
+        print(json.dumps(response, indent=2))
 
-.extracted-row {
-  display: grid;
-  grid-template-columns: minmax(100px, 1fr) 2fr;
-  gap: 8px;
-  padding: 4px 0;
-  border-bottom: 1px solid #e9ecef;
-
-  &:last-child {
-    border-bottom: none;
-  }
-
-  &--edit {
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
-}
-
-.extracted-edit-input {
-  width: 100%;
-  min-height: 44px;
-  resize: vertical;
-  font-size: 12px;
-  font-family: ui-monospace, monospace;
-}
-
-.extracted-key {
-  font-weight: 600;
-  color: #495057;
-  word-break: break-all;
-}
-
-.extracted-val {
-  color: #212529;
-  word-break: break-word;
-  font-family: ui-monospace, monospace;
-}
-
-.draft-markdown-body {
-  max-height: 55vh;
-  overflow: auto;
-  padding: 12px;
-  border: 1px solid var(--border-color);
-  background: var(--bg-primary);
-  font-size: 13px;
-  line-height: 1.5;
-
-  :deep(h1),
-  :deep(h2),
-  :deep(h3) {
-    margin-top: 1em;
-    margin-bottom: 0.5em;
-  }
-
-  :deep(p) {
-    margin: 0.5em 0;
-  }
-
-  :deep(ul),
-  :deep(ol) {
-    padding-left: 1.25rem;
-  }
-}
