@@ -1,593 +1,410 @@
-@if (isOpen) {
-  <div class="flow-backdrop">
-    <div class="flow-container" (click)="$event.stopPropagation()">
-      <div class="flow-header">
-        <h2 class="flow-title">Redline contract</h2>
-        <div class="header-buttons">
-            <button class="close-btn" (click)="onClose()" aria-label="Close">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-              </svg>
-            </button>
-          </div>
-        </div>
-        <div class="flow-content">
-        <div class="flow-content-wrapper" [class.loading]="isGenerating">
-          <h3 class="panel-title">Could you share a copy of the draft to review?</h3>
-          <div class="upload-item">
-            <label class="form-label">
-              Upload contract
-              <span class="required">(required)</span>
-            </label>
-            <p class="helper-text">
-            Supported formats: .doc, .docx, .pdf, .txt (Max 1 file)
-            </p>
-            <app-file-upload
-              [(ngModel)]="formData.uploadedFile"
-              accept=".pdf,.docx,.txt,.doc"
-              label="Upload document"
-              (fileSelected)="onFileSelect($event)"
-              (fileRemoved)="onFileRemoved()">
-            </app-file-upload>
-            <div class="or-divider">OR</div>
-            <input
-              class="contract-number-input"
-              [(ngModel)]="formData.pastedText"
-              placeholder="Enter Contracting Hub contract number here"
-              type="text">
-          </div>
-          <div class="form-section">
-            <label class="form-label">
-              What type of review do you wish to conduct?
-              <span class="required">(required)</span>
-            </label>
-            <div class="services-checklist">
-              @for (editor of selectableEditors; track editor) {
-                <label class="toggle-item">
-            <input 
-              type="checkbox" 
-              [checked]="isEditorSelected(editor.id)"
-              (change)="toggleEditor(editor.id)"
-              [id]="editor.id">
-            <span class="toggle-switch">
-              <span class="toggle-indicator"></span>
-              <span class="toggle-label">
-                @if (editor.name.includes('(')) {
-                  <strong>{{ editor.name.substring(0, editor.name.indexOf('(')) }}</strong>{{ editor.name.substring(editor.name.indexOf('(')) }}
-                } @else {
-                  <strong>{{ editor.name }}</strong>
-                }
-              </span>
-            </span>
-          </label>
-                }
-                @if (brandAlignmentEditor) {
-                  <label class="toggle-item disabled">
-            <input 
-              type="checkbox" 
-              [checked]="true"
-              id="brand-alignment"
-              disabled>
-            <span class="toggle-switch disabled">
-              <span class="toggle-indicator"></span>
-              <span class="toggle-label">
-                @if (brandAlignmentEditor.name.includes('(')) {
-                  <strong>{{ brandAlignmentEditor.name.substring(0, brandAlignmentEditor.name.indexOf('(')) }}</strong>{{ brandAlignmentEditor.name.substring(brandAlignmentEditor.name.indexOf('(')) }}
-                } @else {
-                  <strong>{{ brandAlignmentEditor.name }}</strong>
-                }
-              </span>
-            </span>
-          </label>
-                  }
-        </div>
-      </div>
+from datetime import datetime, timezone
+import logging
+from typing import Any, Dict, List
 
-      <!-- Display upload error -->
-              @if (fileUploadError) {
-                <div class="error-message">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>
-        <span>{{ fileUploadError }}</span>
-        <button class="error-close-btn" (click)="clearUploadError()" aria-label="Close error">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
-      </div>
-              }
-      <!-- Display file read error -->
-              @if (fileReadError) {
-                <div class="error-message">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>
-        <span>{{ fileReadError }}</span>
-        <button class="error-close-btn" (click)="clearReadError()" aria-label="Close error">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
-      </div>
-              }
-      <button 
-        class="apply-btn" 
-        (click)="editContent()"
-        [disabled]="!canEdit() || isGenerating">
-                @if (isGenerating) {
-                  <span class="generate-spinner">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <circle cx="12" cy="12" r="9"></circle>
-                      <path d="M12 7v5l3 3"></path>
-                    </svg>
-                  </span>
-                }
-        <span>{{ isGenerating ? 'Processing...' : 'Redline contract' }}</span>
-      </button>
-      <!-- Loading Overlay (covers the wrapper) -->
-                                                  @if (isGenerating) {
-                                                    <div class="loading-overlay"></div>
-                                                  }
-                                                  </div>
+from langgraph.graph import StateGraph, END
+from langchain_core.messages import HumanMessage
 
-                                              <!-- Loading Spinner (fixed on viewport) -->
-                                              @if (isGenerating) {
-                                                <div class="loading-spinner-fixed">
-                                                  <div class="loading-spinner">
-                                                    <div class="spinner-ring"></div>
-                                                    <p class="loading-text">Processing <span class="loading-dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span></p>
-                                                  </div>
-                                                </div>
-                                              }
+from app.core.deps import get_llm_client_agent
 
-      <!-- Per-paragraph feedback UI (show when we have paragraph data OR sequential mode with editor response so "no feedback" message can show) -->
-              @if ((paragraphFeedbackData && paragraphFeedbackData.length) || (isSequentialMode && currentEditor && (revisedContent || editFeedback))) {
-                <div id="paragraph-feedback-section">
-                  @if (paragraphFeedbackData && paragraphFeedbackData.length && !showFinalOutput && !hasNoParagraphFeedback) {
-                    <div class="bulk-actions">
-          <button class="ef-approve-btn" (click)="approveAllFeedback()">Approve all</button>
-          <button class="ef-reject-btn" (click)="rejectAllFeedback()">Reject all</button>
-        </div>
-                  }
+from .schema import ContractDraftState
+from .prompt import build_sow_generation_prompt, build_sow_targeted_edit_prompt
+from .validation import (
+    extract_document_text,
+    extract_document_text_from_bytes,
+    ask_llm_to_extract_fields,
+    validate_extracted_fields,
+    load_field_mapping,
+)
 
-                  @if (hasNoParagraphFeedback) {
-                    <div class="paragraph-no-feedback">
-                      <p>
-                        There are no feedback changes from
-                        <strong>{{ getEditorDisplayName(currentEditor) }}</strong>.
-                      </p>
-                    </div>
-                  }
-        <!-- <div *ngIf="autoApprovedFeedbackCount > 0" class="auto-approved-info">
-          <span>{{ autoApprovedFeedbackText }}</span>
-        </div> -->
-                @for (para of getParagraphsForFeedbackReview; track para) {
-                  <div
-            class="paragraph-feedback-section">
-          <div class="paragraph-row">
-            <div class="paragraph-col">
-              <h5>Original</h5>
-                <div class="paragraph-text-box"
-                    [innerHTML]="highlightAllFeedbacks(
-                      para,
-                      hoveredFeedback && hoveredFeedback.paraIndex === para.index ? hoveredFeedback : undefined
-                    ).original">
-                </div>
-            </div>
-            <div class="paragraph-col"
-                [ngClass]="{
-                  'approved-section': para.approved === true,
-                  'rejected-section': para.approved === false
-                }">
-              <h5>Edited</h5>
-              <div class="paragraph-text-box"
-                  [innerHTML]="highlightAllFeedbacks(
-                    para,
-                    hoveredFeedback && hoveredFeedback.paraIndex === para.index ? hoveredFeedback : undefined
-                  ).edited">
-              </div>
-            </div>
-          </div>
+logger = logging.getLogger(__name__)
 
-          <div class="editorial-feedback-list">
-            @for (editorType of objectKeys(para.editorial_feedback); track editorType) {
-              @if ($any(para.editorial_feedback)[editorType]?.length) {
-                <div class="editor-type-label">
-                  {{ editorType | titlecase }} Editor Feedback
-                </div>
-
-                @for (
-                  fb of $any(para.editorial_feedback)[editorType];
-                  track fb;
-                  let fbIndex = $index
-                ) {
-                  <div
-                    class="ef-card"
-                    [attr.id]="'fb-' + para.index + '-' + editorType + '-' + fbIndex"
-                    (mouseenter)="onFeedbackHover(para.index, editorType, fbIndex)"
-                    (mouseleave)="onFeedbackLeave()"
-                  >
-                    <div class="ef-header">
-                      <span class="ef-issue">{{ fb.issue }}</span>
-                      <span
-                        class="ef-priority"
-                        [ngClass]="{
-                          'priority-critical': fb.priority === 'Critical',
-                          'priority-important': fb.priority === 'Important',
-                          'priority-enhancement': fb.priority === 'Enhancement'
-                        }"
-                      >
-                        {{ fb.priority }}
-                      </span>
-                    </div>
-
-                    <div class="ef-body">
-                      <div class="ef-row ef-fix">
-                        <span class="ef-label">Fix:</span>
-                        <span class="ef-value">{{ fb.fix }}</span>
-                      </div>
-
-                      <div class="ef-row ef-rule">
-                        <span class="ef-label-small">Rule:</span>
-                        <span class="ef-value-small">{{ fb.rule_used || fb.rule }}</span>
-                      </div>
-
-                      <div class="ef-row ef-impact">
-                        <span class="ef-label-small">Impact:</span>
-                        <span class="ef-value-small">{{ fb.impact }}</span>
-                      </div>
-
-                      @if (!showFinalOutput) {
-                        <div class="ef-actions">
-                          <button
-                            class="ef-approve-btn"
-                            (click)="applyEditorialFix(para, editorType, fb)"
-                            [disabled]="fb.approved || showFinalOutput"
-                          >
-                            ✓ Approve
-                          </button>
-                          <button
-                            class="ef-reject-btn"
-                            (click)="rejectEditorialFix(para, editorType, fb)"
-                            [disabled]="fb.approved === false || showFinalOutput"
-                          >
-                            ✗ Reject
-                          </button>
-                        </div>
-                      }
-
-                      @if (fb.approved === true) {
-                        <div class="ef-status">
-                          <span class="ef-approved">✓ Approved</span>
-                        </div>
-                      }
-
-                      @if (fb.approved === false) {
-                        <div class="ef-status">
-                          <span class="ef-rejected">✗ Rejected</span>
-                        </div>
-                      }
-                    </div>
-                  </div>
-                }
-              }
-            }
-          </div>
+llm = get_llm_client_agent()
 
 
-          <!-- <div *ngIf="para.tags?.length" class="paragraph-tags">
-            <strong>Services Used:</strong>
-            <span *ngFor="let tag of para.tags" class="tag-badge">{{ tag }}</span>
-          </div> -->
-        </div>
-      }
+# ============================================================
+# HELPER: resolve active contract type from toggle dict
+# ============================================================
 
-        <!-- Sequential Workflow Progress Indicator -->
-        @if (isSequentialMode && currentEditor) {
-          <div class="sequential-progress">
-            <div class="progress-header">
-              <h4 class="progress-title">Editor progress</h4>
-              <span class="progress-badge">
-                {{ currentEditorIndex + 1 }} of {{ totalEditors }}
-              </span>
-            </div>
-            <!-- <div class="progress-bar-container">
-              <div class="progress-bar" [style.width.%]="((currentEditorIndex + 1) / totalEditors) * 100"></div>
-            </div>
-            <p class="progress-text">
-              Current Editor: <strong>{{ getEditorDisplayName(currentEditor) }}</strong>
-            </p> -->
+def get_active_contract_type(contract_type_dict: Dict[str, bool]) -> str:
+    """Return the contract type key that is True (e.g. 'SOW')."""
+    type_map = {
+        "statement_of_work": "SOW",
+        "engagement_letter": "Engagement Letter",
+        "master_services_agreement": "MSA",
+        "non_disclosure_agreement": "NDA",
+        "product_license_agreement": "Product License Agreement",
+    }
+    for key, active in contract_type_dict.items():
+        if active:
+            return type_map.get(key, key.upper())
+    return "SOW"
 
-            <!-- Horizontal Editor Timeline -->
-            @if (totalEditors > 0 && selectedEditorsForTimeline.length > 0) {
-              <div class="editor-timeline horizontal">
-                @for (editor of selectedEditorsForTimeline; track editor.id; let i = $index; let last = $last) {
-                  @if (editorProgressList[i]) {
-                    <div
-                      class="timeline-item"
-                      [ngClass]="{
-                        'completed': editorProgressList[i].status === 'completed',
-                        'active': editorProgressList[i].status === 'processing' || editorProgressList[i].status === 'review-pending',
-                        'upcoming': editorProgressList[i].status === 'pending'
-                      }"
-                    >
-                      <div class="timeline-marker" [ngClass]="{ 'blink-marker': editorProgressList[i].status === 'processing' }">
-                        @if (editorProgressList[i].status === 'completed') {
-                          ✓
-                        } @else {
-                          <span [ngClass]="{ 'blink-number': editorProgressList[i].status === 'processing' }">{{ i + 1 }}</span>
-                        }
-                      </div>
-                      <div class="timeline-editor-name">
-                        {{ editor.name }}
-                      </div>
-                      <div class="timeline-status" [ngClass]="{ 'loading-status': editorProgressList[i].status === 'processing' }">
-                        @if (editorProgressList[i].status === 'completed') { Completed }
-                        @if (editorProgressList[i].status === 'processing') {
-                          <span class="blink-animation">In progress</span>
-                        }
-                        @if (editorProgressList[i].status === 'review-pending') {
-                          Review Pending
-                        }
-                        @if (editorProgressList[i].status === 'pending') { Not Started }
-                      </div>
-                    </div>
-                    
-                    <!-- Connector line -->
-                    @if (!last) {
-                      <div 
-                        class="timeline-connector"
-                        [ngClass]="{ 'completed': editorProgressList[i].status === 'completed' }">
-                      </div>
-                    }
-                  }
-                }
-              </div>
-            }
 
-            @if (paragraphFeedbackData && paragraphFeedbackData.length) {
-              <div class="paragraph-status-summary">
-                <h5 class="status-summary-title">Feedback summary</h5>
-                <div class="feedback-pills">
-                  <button
-                    type="button"
-                    class="status-pill approved"
-                    (click)="scrollToFirstFeedbackByStatus('approved')"
-                    [disabled]="approvedFeedbackCount === 0">
-                    Approved: <strong>{{ approvedFeedbackCount }}</strong>
-                  </button>
+def build_draft_generated_response(
+    *,
+    contract_type_dict: Dict[str, bool],
+    prid: str,
+    flex_id: str,
+    extracted_fields: Dict[str, Any],
+    draft_content: str,
+) -> Dict[str, Any]:
+    """Build a consistent draft_generated response payload."""
+    return {
+        "status": "draft_generated",
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "contract_type": get_active_contract_type(contract_type_dict),
+        "prid": prid,
+        "flex_id": flex_id,
+        "extracted_fields": extracted_fields,
+        "draft_content": draft_content,
+    }
 
-                  <button
-                    type="button"
-                    class="status-pill rejected"
-                    (click)="scrollToFirstFeedbackByStatus('rejected')"
-                    [disabled]="rejectedFeedbackCount === 0">
-                    Rejected: <strong>{{ rejectedFeedbackCount }}</strong>
-                  </button>
 
-                  <button
-                    type="button"
-                    class="status-pill pending"
-                    (click)="scrollToFirstFeedbackByStatus('pending')"
-                    [disabled]="pendingFeedbackCount === 0">
-                    Pending: <strong>{{ pendingFeedbackCount }}</strong>
-                  </button>
-                </div>
-              </div>
-            }
-          </div>
+def build_validation_requirement_response(
+    message: str,
+    *,
+    missing_fields: List[Dict[str, Any]],
+    extracted_fields: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build a consistent validation_requirement_to_fulfill response payload."""
+    return {
+        "status": "validation_requirement_to_fulfill",
+        "message": message,
+        "missing_fields": missing_fields,
+        "extracted_fields": extracted_fields,
+    }
+
+
+def validate_required_fields(extracted_fields: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate extracted fields against required field mapping definitions."""
+    mapping = load_field_mapping()
+    field_definitions = mapping.get("field_definitions", [])
+    return validate_extracted_fields(extracted_fields, field_definitions)
+
+
+# ============================================================
+# NODE: EXTRACT_DOCUMENT
+# ============================================================
+
+def extract_document_node(state: ContractDraftState):
+    """Read the uploaded document and extract text content.
+
+    Supports either:
+    - Server path: ``document_upload.file_path`` (JSON / CLI)
+    - Browser upload: ``document_upload.file_bytes`` + ``file_name`` (multipart, no temp file)
+    """
+    du = state.document_upload or {}
+    file_bytes = du.get("file_bytes")
+    file_path = (du.get("file_path") or "").strip()
+
+    if file_bytes is not None:
+        file_name = du.get("file_name") or "document"
+        if isinstance(file_name, str) and not file_name.strip():
+            file_name = "document"
+        logger.info("[EXTRACT_DOCUMENT] Extracting text from in-memory upload (%s)", file_name)
+        raw = file_bytes if isinstance(file_bytes, (bytes, bytearray)) else bytes(file_bytes)
+        document_text = extract_document_text_from_bytes(raw, str(file_name))
+    elif file_path:
+        logger.info("[EXTRACT_DOCUMENT] Extracting text from path %s", file_path)
+        document_text = extract_document_text(file_path)
+    else:
+        raise ValueError(
+            "document_upload must include either 'file_bytes' + 'file_name' (browser) "
+            "or 'file_path' (server path)"
+        )
+
+    return {
+        "document_text": document_text,
+    }
+
+
+# ============================================================
+# NODE: LLM_FIELD_EXTRACTION
+# ============================================================
+
+async def llm_field_extraction_node(state: ContractDraftState):
+    """Use LLM to extract structured fields from document text."""
+    logger.info("[LLM_FIELD_EXTRACTION] Extracting fields via LLM")
+
+    mapping = load_field_mapping()
+    field_definitions = mapping.get("field_definitions", [])
+
+    extracted = await ask_llm_to_extract_fields(state.document_text, field_definitions)
+
+    logger.info("[LLM_FIELD_EXTRACTION] Extracted %d fields", len(extracted))
+    return {
+        "extracted_fields": extracted,
+    }
+
+
+# ============================================================
+# NODE: VALIDATE_FIELDS
+# ============================================================
+
+def validate_fields_node(state: ContractDraftState):
+    """Validate extracted fields against field_mapping.json required fields."""
+    logger.info("[VALIDATE_FIELDS] Validating extracted fields")
+
+    mapping = load_field_mapping()
+    field_definitions = mapping.get("field_definitions", [])
+
+    result = validate_extracted_fields(state.extracted_fields, field_definitions)
+
+    return {
+        "validation_passed": result["valid"],
+        "missing_fields": result["missing_fields"],
+    }
+
+
+# ============================================================
+# NODE: DRAFT_GENERATION
+# ============================================================
+
+async def draft_generation_node(state: ContractDraftState):
+    """Use LLM to generate SOW contract draft from extracted fields."""
+    active_type = get_active_contract_type(state.contract_type)
+
+    logger.info("[DRAFT_GENERATION] Generating %s draft", active_type)
+
+    prompt = build_sow_generation_prompt(
+        extracted_fields=state.extracted_fields,
+        contract_type=active_type,
+    )
+
+    response = await llm.ainvoke([HumanMessage(content=prompt)])
+    draft_text = response.content if hasattr(response, "content") else str(response)
+
+    return {
+        "draft_content": draft_text,
+    }
+
+
+# ============================================================
+# NODE: ASSEMBLE_RESPONSE
+# ============================================================
+
+def assemble_response_node(state: ContractDraftState):
+    """Build the final response JSON."""
+    logger.info("[ASSEMBLE_RESPONSE] Building final response")
+
+    return {
+        "final_response": build_draft_generated_response(
+            contract_type_dict=state.contract_type,
+            prid=state.prid,
+            flex_id=state.flex_id,
+            extracted_fields=state.extracted_fields,
+            draft_content=state.draft_content,
+        ),
+    }
+
+
+# ============================================================
+# BUILD GRAPH (single graph for both initial and resume flows)
+# ============================================================
+
+def build_contract_draft_graph():
+    graph = StateGraph(ContractDraftState)
+
+    graph.add_node("EXTRACT_DOCUMENT", extract_document_node)
+    graph.add_node("LLM_FIELD_EXTRACTION", llm_field_extraction_node)
+    graph.add_node("VALIDATE_FIELDS", validate_fields_node)
+    graph.add_node("DRAFT_GENERATION", draft_generation_node)
+    graph.add_node("ASSEMBLE_RESPONSE", assemble_response_node)
+
+    # Entry: route based on whether we already have validated fields
+    graph.set_conditional_entry_point(
+        lambda state: "DRAFT_GENERATION"
+        if state.validation_passed and state.extracted_fields
+        else "EXTRACT_DOCUMENT"
+    )
+
+    # Extraction flow
+    graph.add_edge("EXTRACT_DOCUMENT", "LLM_FIELD_EXTRACTION")
+    graph.add_edge("LLM_FIELD_EXTRACTION", "VALIDATE_FIELDS")
+    graph.add_conditional_edges(
+        "VALIDATE_FIELDS",
+        lambda state: "DRAFT_GENERATION" if state.validation_passed else END,
+    )
+
+    # Draft generation flow
+    graph.add_edge("DRAFT_GENERATION", "ASSEMBLE_RESPONSE")
+    graph.add_edge("ASSEMBLE_RESPONSE", END)
+
+    return graph.compile()
+
+
+# ============================================================
+# PUBLIC API
+# ============================================================
+
+async def run_contract_draft_graph(input_data: dict) -> dict:
+    """Step 1: Extract document, extract fields via LLM, validate.
+    Returns missing fields if validation fails, or the generated draft if all fields are present."""
+    graph = build_contract_draft_graph()
+
+    initial_state = ContractDraftState(
+        contract_type=input_data.get("contract_type", {}),
+        document_upload=input_data.get("document_upload", {}),
+        supporting_document=input_data.get("supporting_document", {}),
+        prid=input_data.get("prid", ""),
+        flex_id=input_data.get("flex_id", ""),
+        template=input_data.get("template", {}),
+        lookup_in_icertis=input_data.get("lookup_in_icertis", False),
+    )
+
+    result = await graph.ainvoke(initial_state)
+
+    if not result.get("validation_passed", False):
+        return build_validation_requirement_response(
+            "Required fields are missing. Please provide the following fields.",
+            missing_fields=result.get("missing_fields", []),
+            extracted_fields=result.get("extracted_fields", {}),
+        )
+
+    return result.get("final_response", {})
+
+
+async def resume_contract_draft_graph(input_data: dict) -> dict:
+    """Step 2: User provides the missing fields. Merge into extracted_fields,
+    re-validate, and proceed to draft generation using the same graph."""
+
+    extracted_fields = dict(input_data.get("extracted_fields", {}) or {})
+    user_filled_fields = input_data.get("user_filled_fields", {})
+
+    # Merge user-provided values into extracted fields
+    extracted_fields.update(user_filled_fields)
+
+    # Re-validate before invoking graph
+    validation = validate_required_fields(extracted_fields)
+
+    if not validation["valid"]:
+        return build_validation_requirement_response(
+            "Required fields are still missing. Please provide the following fields.",
+            missing_fields=validation["missing_fields"],
+            extracted_fields=extracted_fields,
+        )
+
+    # Validation passed — same graph, but entry router skips to DRAFT_GENERATION
+    graph = build_contract_draft_graph()
+
+    initial_state = ContractDraftState(
+        contract_type=input_data.get("contract_type", {}),
+        prid=input_data.get("prid", ""),
+        flex_id=input_data.get("flex_id", ""),
+        extracted_fields=extracted_fields,
+        validation_passed=True,
+    )
+
+    result = await graph.ainvoke(initial_state)
+    return result.get("final_response", {})
+
+
+def _has_required_sow_headings(content: str) -> bool:
+    """Basic guard that checks top-level sections still exist."""
+    required_headings = (
+        "**PARTIES**",
+        "**3. SCOPE OF WORK**",
+        "**6. COMMERCIAL TERMS AND PAYMENT**",
+        "**13. SIGNATURE BLOCK**",
+    )
+    return all(h in content for h in required_headings)
+
+
+async def resume_contract_draft_targeted_edit_graph(input_data: dict) -> dict:
+    """Step 2b: Apply surgical edits to prior draft using changed fields only."""
+    extracted_fields = dict(input_data.get("extracted_fields", {}) or {})
+    user_filled_fields = dict(input_data.get("user_filled_fields", {}) or {})
+    previous_draft_content = str(input_data.get("previous_draft_content", "") or "")
+    changed_field_keys = input_data.get("changed_field_keys", [])
+    original_extracted_fields = dict(input_data.get("extracted_fields", {}) or {})
+    contract_type_dict = input_data.get("contract_type", {})
+    prid = input_data.get("prid", "")
+    flex_id = input_data.get("flex_id", "")
+
+    if not previous_draft_content.strip():
+        return {
+            "status": "error",
+            "message": "previous_draft_content is required for targeted resume-edit.",
         }
 
-        <!-- Sequential Workflow: Show both Next Editor and Generate Final Output options (same as quick start: show even when no paragraph feedback) -->
-        @if (isSequentialMode && !showFinalOutput) {
-          <div class="sequential-actions-container">
-            <div class="final-output-actions">
-              <button 
-                type="button"
-                class="final-output-btn"
-                (click)="generateFinalOutput()"
-                [disabled]="!allParagraphsDecided || isGeneratingFinal || isGenerating">
-                @if (isGeneratingFinal) {
-                  <span class="spinner"></span>
-                }
-                {{ isGeneratingFinal ? 'Generating final output...' : 'Generate final output' }}
-              </button>
-              @if (!allParagraphsDecided) {
-                <p class="final-output-hint">
-                  Please approve or reject all paragraph edits and feedback to generate the final article.
-                </p>
-              }
-            </div>
+    if not user_filled_fields:
+        # Nothing changed: return previous draft unchanged and keep response shape.
+        return build_draft_generated_response(
+            contract_type_dict=contract_type_dict,
+            prid=prid,
+            flex_id=flex_id,
+            extracted_fields=extracted_fields,
+            draft_content=previous_draft_content,
+        )
 
-            <!-- Next Editor Button (only if not last editor) -->
-            @if (!isLastEditor) {
-              <div class="next-editor-actions">
-                <button 
-                  type="button"
-                  class="next-editor-btn"
-                  (click)="nextEditor()"
-                  [disabled]="!allParagraphsDecided || isGenerating">
-                  @if (isGenerating) {
-                    <span class="spinner"></span>
-                  }
-                  {{ isGenerating ? 'Loading next editor...' : 'Next editor →' }}
-                </button>
-                @if (!allParagraphsDecided) {
-                  <p class="next-editor-hint">
-                    Please approve or reject all paragraph edits before proceeding to the next editor.
-                  </p>
-                }
-              </div>
-            }
+    extracted_fields.update(user_filled_fields)
+    effective_changed_keys = changed_field_keys or list(user_filled_fields.keys())
+    if not any(original_extracted_fields.get(key) != extracted_fields.get(key) for key in effective_changed_keys):
+        return build_draft_generated_response(
+            contract_type_dict=contract_type_dict,
+            prid=prid,
+            flex_id=flex_id,
+            extracted_fields=extracted_fields,
+            draft_content=previous_draft_content,
+        )
 
-            <!-- Generate Final Output Button (always available in sequential mode) -->
-            <!-- <div class="final-output-actions">
-              <button 
-                type="button"
-                class="final-output-btn"
-                (click)="generateFinalOutput()"
-                [disabled]="!allParagraphsDecided || isGeneratingFinal">
-                @if (isGeneratingFinal) {
-                  <span class="spinner"></span>
-                }
-                {{ isGeneratingFinal ? 'Generating Final Output...' : 'Generate Final Output' }}
-              </button>
-              @if (!allParagraphsDecided) {
-                <p class="final-output-hint">
-                  Please approve or reject all paragraph edits and feedback to generate the final article.
-                </p>
-              }
-            </div> -->
-          </div>
+    validation = validate_required_fields(extracted_fields)
+    if not validation["valid"]:
+        return build_validation_requirement_response(
+            "Required fields are still missing. Please provide the following fields.",
+            missing_fields=validation["missing_fields"],
+            extracted_fields=extracted_fields,
+        )
+
+    active_type = get_active_contract_type(contract_type_dict)
+    changed_fields_payload = {
+        key: {
+            "old": original_extracted_fields.get(key),
+            "new": extracted_fields.get(key),
         }
+        for key in effective_changed_keys
+    }
+    prompt = build_sow_targeted_edit_prompt(
+        previous_draft_content=previous_draft_content,
+        changed_fields=changed_fields_payload,
+        contract_type=active_type,
+    )
+    response = await llm.ainvoke([HumanMessage(content=prompt)])
+    draft_text = response.content if hasattr(response, "content") else str(response)
+    draft_text = str(draft_text).strip()
+    if draft_text.startswith("```"):
+        draft_text = draft_text.strip("`")
+        if draft_text.lower().startswith("markdown"):
+            draft_text = draft_text[8:].strip()
 
-        <!-- Non-sequential mode: Show only Generate Final Output -->
-        @if (!isSequentialMode && !showFinalOutput && paragraphFeedbackData.length > 0) {
-          <div class="final-output-actions">
-            <button 
-              type="button"
-              class="final-output-btn"
-              (click)="generateFinalOutput()"
-              [disabled]="!allParagraphsDecided || isGeneratingFinal || isGenerating">
-              @if (isGeneratingFinal) {
-                <span class="spinner"></span>
-              }
-              {{ isGeneratingFinal ? 'Generating final output...' : 'Generate final output' }}
-            </button>
-            @if (!allParagraphsDecided) {
-              <p class="final-output-hint">
-                Please approve or reject all paragraph edits and feedback to generate the final article.
-              </p>
-            }
-          </div>
-        }
+    if not draft_text or not _has_required_sow_headings(draft_text):
+        logger.warning(
+            "[TARGETED_RESUME_EDIT] Invalid targeted-edit output; retrying with full regenerate prompt."
+        )
+        full_prompt = build_sow_generation_prompt(
+            extracted_fields=extracted_fields,
+            contract_type=active_type,
+        )
+        full_response = await llm.ainvoke([HumanMessage(content=full_prompt)])
+        draft_text = full_response.content if hasattr(full_response, "content") else str(full_response)
+        draft_text = str(draft_text).strip()
+        if draft_text.startswith("```"):
+            draft_text = draft_text.strip("`")
+            if draft_text.lower().startswith("markdown"):
+                draft_text = draft_text[8:].strip()
 
-        <!-- Final Output Display -->
-              @if (showFinalOutput && finalArticle) {
-                <div class="final-output-section">
-          <!-- <h3 class="final-output-title">Final Article</h3> -->
-          <div class="final-output-content revised-content-formatted" [innerHTML]="finalArticleDisplay"></div>
-          
-          <!-- Export Actions -->
-          <div class="export-actions">
-            <button 
-              type="button"
-              class="export-btn pdf-btn"
-              (click)="downloadRevised('pdf')"
-              title="Export as PDF">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-                <line x1="16" y1="13" x2="8" y2="13"></line>
-                <line x1="16" y1="17" x2="8" y2="17"></line>
-              </svg>
-              Export PDF
-            </button>
-            <button 
-              type="button"
-              class="export-btn docx-btn"
-              (click)="downloadRevised('docx')"
-              title="Export as DOCX">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-                <line x1="16" y1="13" x2="8" y2="13"></line>
-                <line x1="16" y1="17" x2="8" y2="17"></line>
-              </svg>
-              Export DOCX
-            </button>
-            <button 
-              type="button"
-              class="export-btn copy-btn"
-              (click)="copyToClipboard()"
-              [title]="isCopied ? 'Copied!' : 'Copy to clipboard'">
-              @if (isCopied) {
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                Copied !
-              } @else {
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-                Copy
-              }
-            </button>
-          </div>
-                  <!-- Satisfaction Prompt -->
-                  <!-- @if (showSatisfactionPrompt) {
-                    <div class="satisfaction-prompt">
-            <p class="satisfaction-question">{{ getSatisfactionPromptText() }}</p>
-            <div class="satisfaction-buttons">
-              <button 
-                class="satisfaction-btn satisfied-btn"
-                (click)="onSatisfactionResponse(true)">
-                ✓ Satisfied
-              </button>
-              <button 
-                class="satisfaction-btn improve-btn"
-                (click)="onSatisfactionResponse(false)">
-                ✗ Need Improvement
-              </button>
-            </div>
-          </div>
-                  } -->
-          <!-- Improvement Input -->
-                  <!-- @if (showImprovementInput) {
-                    <div class="improvement-input">
-            <label class="improvement-label">What improvements would you like?</label>
-            <textarea 
-              class="improvement-textarea"
-              [(ngModel)]="improvementRequestText"
-              placeholder="Describe the improvements you'd like to see..."></textarea>
-            <div class="improvement-actions">
-              <button 
-                class="improvement-submit-btn"
-                (click)="submitImprovementRequest()"
-                [disabled]="!isImprovementRequestValid || isGenerating">
-                {{ isGenerating ? 'Processing...' : 'Submit' }}
-              </button>
-              <button 
-                class="improvement-cancel-btn"
-                (click)="cancelImprovementRequest()">
-                Cancel
-              </button>
-            </div>
-          </div>
-                  } -->
-        </div>
-              }
-            </div>
-          }
-    </div>
-  </div>
-  <!-- Notification Toast -->
-@if (showNotification) {
-  <div class="notification-toast" [attr.data-type]="notificationType">
-    <div class="notification-content">
-      @if (notificationType === 'success') {
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      }
-      @if (notificationType === 'error') {
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>
-      }
-      <span>{{ notificationMessage }}</span>
-    </div>
-  </div>
-}
-</div>
-}
+    if not draft_text:
+        logger.warning(
+            "[TARGETED_RESUME_EDIT] Empty regenerate output; using previous draft as last fallback."
+        )
+        draft_text = previous_draft_content.strip()
+
+    return build_draft_generated_response(
+        contract_type_dict=contract_type_dict,
+        prid=prid,
+        flex_id=flex_id,
+        extracted_fields=extracted_fields,
+        draft_content=draft_text,
+    )
+
