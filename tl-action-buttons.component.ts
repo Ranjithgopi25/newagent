@@ -1,4 +1,4 @@
-import { Component, OnInit, ChangeDetectorRef  } from '@angular/core';
+import { Component, OnInit, OnDestroy, ChangeDetectorRef  } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { TlFlowService } from '../../../core/services/tl-flow.service';
@@ -17,6 +17,7 @@ import {
 } from '../../../core/utils/paragraph-edit.utils';
 import { ParagraphEdit } from '../../../core/models/message.model';
 import { environment } from '../../../../environments/environment';
+import { Subscription } from 'rxjs';
 interface EditForm {
   selectedEditors: EditorType[];
   uploadedFile: File | null;
@@ -50,7 +51,7 @@ interface ParagraphFeedback {
   templateUrl: './edit-content-flow.component.html',
   styleUrls: ['./edit-content-flow.component.scss']
 })
-export class EditContentFlowComponent implements OnInit {
+export class EditContentFlowComponent implements OnInit, OnDestroy {
   isGenerating: boolean = false;
   editFeedback: string = '';
   feedbackItems: EditorialFeedbackItem[] = [];
@@ -165,6 +166,7 @@ export class EditContentFlowComponent implements OnInit {
   notificationType: 'success' | 'error' = 'success';
 
   isCopied: boolean = false;
+  private flowSubscription?: Subscription;
 
 
   editorTypes: { id: EditorType; name: string; description: string; details: string; disabled: boolean }[] = [
@@ -203,14 +205,19 @@ export class EditContentFlowComponent implements OnInit {
   ) {}
 
   ngOnInit(): void {
-    // Auto-attach pre-generated DOCX when opened from action buttons (e.g., SOW -> Redline contract)
-    const preGeneratedFile = this.tlFlowService.getPreGeneratedDocument();
-    if (preGeneratedFile) {
-      this.formData.uploadedFile = preGeneratedFile;
-      this.formData.pastedText = '';
-      this.uploadedFileSize = this.formatFileSize(preGeneratedFile.size);
-      this.tlFlowService.clearPreGeneratedDocument();
-    }
+    // Handle pre-generated file on first load if available.
+    this.consumePreGeneratedDocument();
+
+    // Component stays mounted; listen for each edit-content open and then consume file.
+    this.flowSubscription = this.tlFlowService.activeFlow$.subscribe(flow => {
+      if (flow === 'edit-content') {
+        this.consumePreGeneratedDocument();
+      }
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.flowSubscription?.unsubscribe();
   }
 
   get isOpen(): boolean {
@@ -226,6 +233,18 @@ export class EditContentFlowComponent implements OnInit {
     this.resetForm();
     this.tlFlowService.closeFlow();
     this.tlFlowService.openGuidedDialog();
+  }
+
+  private consumePreGeneratedDocument(): void {
+    const preGeneratedFile = this.tlFlowService.getPreGeneratedDocument();
+    if (!preGeneratedFile) {
+      return;
+    }
+
+    this.formData.uploadedFile = preGeneratedFile;
+    this.formData.pastedText = '';
+    this.uploadedFileSize = this.formatFileSize(preGeneratedFile.size);
+    this.tlFlowService.clearPreGeneratedDocument();
   }
 
   resetForm(): void {
