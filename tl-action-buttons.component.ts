@@ -349,12 +349,27 @@ async def resume_contract_draft_targeted_edit_graph(input_data: dict) -> dict:
     response = await llm.ainvoke([HumanMessage(content=prompt)])
     draft_text = response.content if hasattr(response, "content") else str(response)
     draft_text = draft_text.strip()
+    if draft_text.startswith("```"):
+        # Model may occasionally wrap output in markdown fences.
+        draft_text = draft_text.strip("`")
+        if draft_text.lower().startswith("markdown"):
+            draft_text = draft_text[8:].strip()
 
-    # Be fault-tolerant: do not fail the user flow if model output drifts.
-    # Fallback to previous draft content instead of returning hard error.
     if not draft_text or not _has_required_sow_headings(draft_text):
         logger.warning(
-            "[TARGETED_RESUME_EDIT] Invalid targeted-edit output; using previous draft as fallback."
+            "[TARGETED_RESUME_EDIT] Invalid targeted-edit output; retrying with full regenerate prompt."
+        )
+        full_prompt = build_sow_generation_prompt(
+            extracted_fields=extracted_fields,
+            contract_type=active_type,
+        )
+        full_response = await llm.ainvoke([HumanMessage(content=full_prompt)])
+        draft_text = full_response.content if hasattr(full_response, "content") else str(full_response)
+        draft_text = str(draft_text).strip()
+
+    if not draft_text:
+        logger.warning(
+            "[TARGETED_RESUME_EDIT] Empty regenerate output; using previous draft as last fallback."
         )
         draft_text = previous_draft_content.strip()
 
