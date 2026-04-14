@@ -20,6 +20,7 @@ import { environment } from '../../../../environments/environment';
 interface EditForm {
   selectedEditors: EditorType[];
   uploadedFile: File | null;
+  pastedText: string;
 }
 
 interface ParagraphFeedback {
@@ -152,7 +153,8 @@ export class EditContentFlowComponent implements OnInit {
   
   formData: EditForm = {
     selectedEditors: ['line+copy', 'brand-alignment'],
-    uploadedFile: null
+    uploadedFile: null,
+    pastedText: ''
   };
   
   fileReadError: string = '';
@@ -250,12 +252,15 @@ export class EditContentFlowComponent implements OnInit {
     this.isEditorLoading = false;
     this.formData = {
       selectedEditors: ['line+copy', 'brand-alignment'],
-      uploadedFile: null
+      uploadedFile: null,
+      pastedText: ''
     };
   }
 
   canEdit(): boolean {
-    return this.formData.uploadedFile !== null && this.formData.selectedEditors.length > 0;
+    const hasUpload = this.formData.uploadedFile !== null;
+    const hasPastedText = !!this.formData.pastedText?.trim();
+    return (hasUpload || hasPastedText) && this.formData.selectedEditors.length > 0;
   }
 
   clearUploadError(): void {
@@ -446,6 +451,13 @@ export class EditContentFlowComponent implements OnInit {
         this.isGenerating = false;
         return;
       }
+    } else {
+      contentText = normalizeContent(this.formData.pastedText || '');
+      if (!contentText || contentText.trim().length === 0) {
+        this.fileUploadError = 'Please upload a document or paste contract text.';
+        this.isGenerating = false;
+        return;
+      }
     }
     
     const messages = [{
@@ -464,13 +476,7 @@ export class EditContentFlowComponent implements OnInit {
       total: editorsToUse.length
     }));
     this.totalEditors = editorsToUse.length;
-    const isGuidedStart = this.tlFlowService.launchSource === 'guided-dialog';
-
-    this.chatService.streamEditContent(messages, editorsToUse, 0, 50000, {
-      guidedStart: isGuidedStart,
-      guidedUseCase: 'redline-contract',
-      guidedSource: isGuidedStart ? 'guided-dialog' : 'direct'
-    }).subscribe({
+    this.chatService.streamEditContent(messages, editorsToUse, 0, 50000).subscribe({
       next: (data: any) => {
         if (data.type === 'editor_progress') {
           // Backend sends 1-based index, convert to 0-based for our array
