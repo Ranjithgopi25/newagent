@@ -1,2917 +1,694 @@
-import { Injectable } from '@angular/core';
-import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
-import { Observable, from, switchMap } from 'rxjs';
-import { Message, ChatRequest, DraftRequest, ThoughtLeadershipRequest, ResearchRequest, ArticleRequest, BestPracticesRequest, PodcastRequest, UpdateSectionRequest } from '../models';
-import { environment } from '../../../environments/environment';
-import { MsalService } from '@azure/msal-angular';
+import { JsonPipe } from '@angular/common';
+import { Component, Input, OnInit, OnDestroy, ViewChild, ElementRef } from '@angular/core';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { FormsModule } from '@angular/forms';
+import { firstValueFrom, Subject, takeUntil } from 'rxjs';
+import { DdcFlowService } from '../../../core/services/ddc-flow.service';
+import { ChatEditWorkflowService } from '../../../core/services/chat-edit-workflow.service';
+import {
+  ChatService,
+  ContractMissingField,
+  ContractTypeFlags,
+} from '../../../core/services/chat.service';
+import { FileUploadComponent } from '../../../shared/ui/components/file-upload/file-upload.component';
+import { renderMarkdownForDisplay } from '../../../core/utils/edit-content.utils';
 
-
-// Chat History Models
-export interface ChatSessionSummary {
-  session_id: string;
-  source: string;
-  title?: string;
-  preview: string;
-  message_count: number;
-  created_at: string;
-  updated_at: string;
+/** One saved SOW draft response (user can switch between versions after regenerate). */
+export interface SowDraftVersion {
+  markdown: string;
+  extractedFields: Record<string, unknown>;
 }
 
-export interface ChatSessionDetail {
-  session_id: string;
-  source: string;
-  title?: string;
-  conversation: {
-    messages: Message[];
-  };
-  created_at: string;
-  updated_at: string;
-}
-
-/** TL contract draft (LangGraph) — matches backend Draft.json / router */
-export interface ContractTypeFlags {
-  statement_of_work: boolean;
-  engagement_letter: boolean;
-  master_services_agreement: boolean;
-  non_disclosure_agreement: boolean;
-  product_license_agreement: boolean;
-}
-
-export interface ContractMissingField {
-  field_key: string;
-  label: string;
-  type: string;
-  prompt_hint?: string;
-  options?: string[];
-}
-
-export interface ContractDraftValidationResponse {
-  status: 'validation_requirement_to_fulfill';
-  message?: string;
-  missing_fields: ContractMissingField[];
-  extracted_fields: Record<string, unknown>;
-}
-
-export interface ContractDraftGeneratedResponse {
-  status: 'draft_generated';
-  generated_at?: string;
-  contract_type?: string;
-  prid?: string;
-  flex_id?: string;
-  extracted_fields: Record<string, unknown>;
-  draft_content: string;
-}
-
-@Injectable({
-  providedIn: 'root'
+@Component({
+  selector: 'app-slide-creation-prompt-flow',
+  imports: [FormsModule, JsonPipe, FileUploadComponent],
+  templateUrl: './slide-creation-prompt-flow.component.html',
+  styleUrls: ['./slide-creation-prompt-flow.component.scss'],
 })
-export class ChatService { 
-  private readonly peopleSearchBase =
-  `${this.apiUrl}/api/v1/ddc/phoenix/people-search`;
-  private get apiUrl(): string {
-    // Support runtime configuration via window._env (for production)
-    // Validate URL to prevent open redirect attacks (CWE-601)
-    const windowApiUrl = (window as any)._env?.apiUrl;
-    const configuredUrl = windowApiUrl || environment.apiUrl || '';
-    
-    if (configuredUrl && windowApiUrl) {
-      // If window._env.apiUrl is set, validate it before using
-      try {
-        const url = new URL(configuredUrl);
-        // Only allow http and https protocols
-        if (!['http:', 'https:'].includes(url.protocol)) {
-          console.error('[ChatService] Invalid API URL protocol. Using environment.apiUrl instead.');
-          return environment.apiUrl || '';
-        }
-      } catch (e) {
-        console.error('[ChatService] Invalid API URL format. Using environment.apiUrl instead.');
-        return environment.apiUrl || '';
-      }
-    }
-    
-    return configuredUrl;
-  }
-  
+export class SlideCreationPromptFlowComponent implements OnInit, OnDestroy {
+  @Input() hideBackButton = false;
+  @Input() openedFrom: 'quick-action' | 'guided-dialog' | null = null;
+  @ViewChild('scopeOfWorkUpload') scopeOfWorkUpload?: FileUploadComponent;
+  @ViewChild('supportingDocUpload') supportingDocUpload?: FileUploadComponent;
+  @ViewChild('sowTemplateUpload') sowTemplateUpload?: FileUploadComponent;
+  @ViewChild('missingFieldsPanel') missingFieldsPanel?: ElementRef<HTMLElement>;
+
+  isOpen = false;
+  isGenerating = false;
+  /** Legacy HTML banner (errors, ticket success) */
+  generatedContent = '';
+
+  scopeOfWorkFile: File | null = null;
+  supportingDocFile: File | null = null;
+  sowTemplateFile: File | null = null;
+
+  scopeOfWorkUploadError = false;
+  supportingDocUploadError = false;
+  sowTemplateUploadError = false;
+
+  prid = '';
+  flexId = '';
+  lookupInIcertis = false;
+
+  showMissingFieldsStep = false;
+  /** API message when validation fails (optional) */
+  validationStepMessage = '';
+  missingFields: ContractMissingField[] = [];
+  /** Latest merged extracted fields from the API (for resume + display) */
+  extractedFieldsState: Record<string, unknown> = {};
+  userFilledFields: Record<string, unknown> = {};
+
+  draftMarkdown = '';
+  draftHtmlSafe: SafeHtml | null = null;
+  showExtractedSummary = false;
+
+  /** Successful drafts in order; regenerating appends Version 2, 3, … */
+  sowDraftVersions: SowDraftVersion[] = [];
+  /** Index into `sowDraftVersions` for the body + extracted fields shown. */
+  selectedSowVersionIndex = 0;
+  /** Next successful `draft_generated` replaces all versions or appends (after regenerate). */
+  private nextSowDraftMode: 'replace' | 'append' = 'replace';
+
+  /** Snapshot when a draft succeeds — used to merge edits on resume/regenerate. */
+  extractedFieldsBaselineSnapshot: Record<string, unknown> = {};
+  /** Inline edit of extracted fields after draft (triggers resume → draft LLM again). */
+  editingExtractedFields = false;
+  editableExtractedStrings: Record<string, string> = {};
+
+  /** Set when user runs Generate (shown during missing-fields step) */
+  lastScopeOfWorkFileName = '';
+
+  /** Show draft-result hint only after a successful "Apply changes & regenerate draft" from extracted fields. */
+  showDraftResultHintAfterApplyRegenerate = false;
+
+  private destroy$ = new Subject<void>();
 
   constructor(
-    private http: HttpClient,
-    private msalService: MsalService
-  ) {
-    console.log('[ChatService] Constructor - apiUrl:', this.apiUrl);
-    console.log('[ChatService] window._env:', (window as any)._env);
-    console.log('[ChatService] environment.apiUrl:', environment.apiUrl);
+    private ddcFlowService: DdcFlowService,
+    private chatService: ChatService,
+    private chatEditWorkflow: ChatEditWorkflowService,
+    private sanitizer: DomSanitizer
+  ) {}
+
+  ngOnInit(): void {
+    this.ddcFlowService.activeFlow$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(flow => {
+        this.isOpen = flow === 'slide-creation-prompt';
+        if (this.isOpen) {
+          this.resetForm();
+        }
+      });
+  }
+
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
+  }
+
+  resetForm(): void {
+    this.scopeOfWorkFile = null;
+    this.supportingDocFile = null;
+    this.sowTemplateFile = null;
+    this.prid = '';
+    this.flexId = '';
+    this.lookupInIcertis = false;
+    this.generatedContent = '';
+    this.isGenerating = false;
+    this.scopeOfWorkUploadError = false;
+    this.supportingDocUploadError = false;
+    this.sowTemplateUploadError = false;
+    this.showMissingFieldsStep = false;
+    this.validationStepMessage = '';
+    this.missingFields = [];
+    this.extractedFieldsState = {};
+    this.userFilledFields = {};
+    this.draftMarkdown = '';
+    this.draftHtmlSafe = null;
+    this.showExtractedSummary = false;
+    this.sowDraftVersions = [];
+    this.selectedSowVersionIndex = 0;
+    this.nextSowDraftMode = 'replace';
+    this.extractedFieldsBaselineSnapshot = {};
+    this.editingExtractedFields = false;
+    this.editableExtractedStrings = {};
+    this.lastScopeOfWorkFileName = '';
+    this.showDraftResultHintAfterApplyRegenerate = false;
+  }
+
+  /** This flow is SOW-only; backend `contract_type` always has `statement_of_work: true`. */
+  getContractTypeFlags(): ContractTypeFlags {
+    return {
+      statement_of_work: true,
+      engagement_letter: false,
+      master_services_agreement: false,
+      non_disclosure_agreement: false,
+      product_license_agreement: false,
+    };
+  }
+
+  onScopeOfWorkSelected(file: File): void {
+    const acceptedFormats = ['.doc', '.docx', '.pdf', '.pptx', '.xlsx'];
+    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+
+    if (!acceptedFormats.includes(fileExtension)) {
+      this.scopeOfWorkUploadError = true;
+      this.scopeOfWorkUpload?.reset();
+      return;
+    }
+
+    this.scopeOfWorkUploadError = false;
+    this.scopeOfWorkFile = file;
+  }
+
+  onScopeOfWorkRemoved(): void {
+    this.scopeOfWorkFile = null;
+    this.scopeOfWorkUploadError = false;
+  }
+
+  onSupportingDocSelected(file: File): void {
+    const acceptedFormats = ['.doc', '.docx', '.pdf', '.pptx'];
+    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+
+    if (!acceptedFormats.includes(fileExtension)) {
+      this.supportingDocUploadError = true;
+      this.supportingDocUpload?.reset();
+      return;
+    }
+
+    this.supportingDocUploadError = false;
+    this.supportingDocFile = file;
+  }
+
+  onSupportingDocRemoved(): void {
+    this.supportingDocFile = null;
+    this.supportingDocUploadError = false;
+  }
+
+  onSowTemplateSelected(file: File): void {
+    const acceptedFormats = ['.doc', '.docx', '.pdf', '.pptx'];
+    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+
+    if (!acceptedFormats.includes(fileExtension)) {
+      this.sowTemplateUploadError = true;
+      this.sowTemplateUpload?.reset();
+      return;
+    }
+
+    this.sowTemplateUploadError = false;
+    this.sowTemplateFile = file;
+  }
+
+  onSowTemplateRemoved(): void {
+    this.sowTemplateFile = null;
+    this.sowTemplateUploadError = false;
+  }
+
+  get canGenerate(): boolean {
+    return !!(
+      this.scopeOfWorkFile &&
+      this.prid.trim() &&
+      this.flexId.trim() &&
+      !this.isGenerating
+    );
+  }
+
+  get canSubmitMissingFields(): boolean {
+    if (this.missingFields.length === 0) {
+      return false;
+    }
+    for (const f of this.missingFields) {
+      const v = this.userFilledFields[f.field_key];
+      const t = (f.type || 'text').toLowerCase();
+      switch (t) {
+        case 'boolean':
+          break;
+        case 'number':
+          if (v === '' || v === undefined || v === null || Number.isNaN(Number(v))) {
+            return false;
+          }
+          break;
+        case 'dropdown':
+          if (v === undefined || v === null || (typeof v === 'string' && !String(v).trim())) {
+            return false;
+          }
+          break;
+        default:
+          if (v === undefined || v === null || (typeof v === 'string' && !v.trim())) {
+            return false;
+          }
+      }
+    }
+    return true;
+  }
+
+  close(): void {
+    this.ddcFlowService.closeFlow();
+  }
+
+  back(): void {
+    this.ddcFlowService.closeFlow();
+    this.ddcFlowService.openGuidedDialog();
+  }
+
+  private buildMultipartFormData(): FormData {
+    const fd = new FormData();
+    fd.append('document_file', this.scopeOfWorkFile!);
+    fd.append('contract_type', JSON.stringify(this.getContractTypeFlags()));
+    fd.append('prid', this.prid.trim());
+    fd.append('flex_id', this.flexId.trim());
+    fd.append('lookup_in_icertis', String(this.lookupInIcertis));
+    if (this.supportingDocFile) {
+      fd.append('supporting_document_file', this.supportingDocFile);
+    }
+    if (this.sowTemplateFile) {
+      fd.append('template_file', this.sowTemplateFile);
+    }
+    return fd;
   }
 
   /**
-   * Get authentication headers for JSON requests
-   * MSAL interceptor only works with HttpClient, so we need to manually add headers for fetch()
+   * Initialize controls for each missing field. Prefill from `extractedFieldsState`
+   * when the API returned a partial value (backend still lists field as missing if empty).
    */
-  private async getAuthHeaders(): Promise<Record<string, string>> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
+  private fieldHasUsableInput(f: ContractMissingField, v: unknown): boolean {
+    const t = (f.type || 'text').toLowerCase();
+    if (v === undefined) {
+      return false;
+    }
+    if (t === 'boolean') {
+      return true;
+    }
+    if (t === 'number') {
+      return v !== null && v !== '' && !Number.isNaN(Number(v));
+    }
+    if (v === null) {
+      return false;
+    }
+    if (typeof v === 'string') {
+      return v.trim().length > 0;
+    }
+    return true;
+  }
 
-    if (environment.useAuth) {
+  private initUserFilledFromMissing(missing: ContractMissingField[]): void {
+    const next: Record<string, unknown> = { ...this.userFilledFields };
+    for (const f of missing) {
+      const key = f.field_key;
+      const fromApi = this.extractedFieldsState[key];
+      const t = (f.type || 'text').toLowerCase();
+
+      if (this.fieldHasUsableInput(f, next[key])) {
+        continue;
+      }
+
+      if (fromApi !== undefined && fromApi !== null) {
+        if (typeof fromApi === 'string' && fromApi.trim()) {
+          next[key] = t === 'date' ? this.normalizeDateForInput(fromApi) : fromApi;
+          continue;
+        }
+        if (typeof fromApi === 'number' && !Number.isNaN(fromApi)) {
+          next[key] = fromApi;
+          continue;
+        }
+        if (typeof fromApi === 'boolean') {
+          next[key] = fromApi;
+          continue;
+        }
+      }
+
+      if (next[key] === undefined) {
+        if (t === 'boolean') {
+          next[key] = false;
+        } else if (t === 'number') {
+          next[key] = null;
+        } else {
+          next[key] = '';
+        }
+      }
+    }
+    this.userFilledFields = { ...next };
+  }
+
+  /** Normalize ISO or loose date strings to yyyy-mm-dd for input[type=date] */
+  private normalizeDateForInput(value: string): string {
+    const s = value.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      return s;
+    }
+    const d = Date.parse(s);
+    if (!Number.isNaN(d)) {
+      const x = new Date(d);
+      const y = x.getFullYear();
+      const m = String(x.getMonth() + 1).padStart(2, '0');
+      const day = String(x.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+    return '';
+  }
+
+  /** Coerce value for resume payload to match backend / field_mapping types */
+  private coerceUserValue(field: ContractMissingField, raw: unknown): unknown {
+    const t = (field.type || 'text').toLowerCase();
+    switch (t) {
+      case 'number': {
+        const n = typeof raw === 'number' ? raw : Number(raw);
+        return Number.isNaN(n) ? null : n;
+      }
+      case 'boolean':
+        return Boolean(raw);
+      case 'date':
+        if (typeof raw === 'string' && raw.trim()) {
+          return raw.trim();
+        }
+        return raw ?? '';
+      default:
+        return raw;
+    }
+  }
+
+  /** Return to full form without losing files; user can click Generate again */
+  backToDocumentForm(): void {
+    this.showMissingFieldsStep = false;
+    this.validationStepMessage = '';
+    this.missingFields = [];
+    this.userFilledFields = {};
+    this.generatedContent = '';
+  }
+
+  /** Lowercase type for @switch in template (backend may vary casing). */
+  normalizedFieldType(field: ContractMissingField): string {
+    return (field.type || 'text').toLowerCase();
+  }
+
+  private setDraftHtmlFromMarkdown(md: string): void {
+    this.draftMarkdown = md;
+    if (!md?.trim()) {
+      this.draftHtmlSafe = null;
+      return;
+    }
+    this.draftHtmlSafe = this.sanitizer.bypassSecurityTrustHtml(renderMarkdownForDisplay(md));
+  }
+
+  /** True when the selected draft is the latest (edits / resume baseline apply here only). */
+  isViewingLatestSowVersion(): boolean {
+    return (
+      this.sowDraftVersions.length > 0 &&
+      this.selectedSowVersionIndex === this.sowDraftVersions.length - 1
+    );
+  }
+
+  /** While a new version is being generated, keep prior version(s) in tabs but hide the body. */
+  showRegeneratingPlaceholder(): boolean {
+    return this.isGenerating && this.nextSowDraftMode === 'append';
+  }
+
+  selectSowVersion(index: number): void {
+    if (index < 0 || index >= this.sowDraftVersions.length) {
+      return;
+    }
+    this.selectedSowVersionIndex = index;
+    const v = this.sowDraftVersions[index];
+    this.extractedFieldsState = JSON.parse(JSON.stringify(v.extractedFields)) as Record<string, unknown>;
+    this.setDraftHtmlFromMarkdown(v.markdown);
+    this.cancelEditingExtractedFields();
+  }
+
+  private handleDraftResponse(res: Record<string, unknown>): void {
+    const status = String(res['status'] ?? '').trim();
+    if (status === 'validation_requirement_to_fulfill') {
+      this.showMissingFieldsStep = true;
+      this.validationStepMessage =
+        typeof res['message'] === 'string' ? res['message'] : '';
+      this.missingFields = Array.isArray(res['missing_fields'])
+        ? (res['missing_fields'] as ContractMissingField[])
+        : [];
+      this.extractedFieldsState = {
+        ...((res['extracted_fields'] as Record<string, unknown>) || {}),
+      };
+      this.initUserFilledFromMissing(this.missingFields);
+      if (this.sowDraftVersions.length > 0) {
+        const last = this.sowDraftVersions[this.sowDraftVersions.length - 1];
+        this.selectedSowVersionIndex = this.sowDraftVersions.length - 1;
+        this.setDraftHtmlFromMarkdown(last.markdown);
+      } else {
+        this.draftMarkdown = '';
+        this.draftHtmlSafe = null;
+      }
+      this.generatedContent = '';
+      if (this.missingFields.length > 0) {
+        setTimeout(() => {
+          this.missingFieldsPanel?.nativeElement?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start',
+          });
+        }, 100);
+      }
+      return;
+    }
+    if (status === 'draft_generated') {
+      this.showMissingFieldsStep = false;
+      this.validationStepMessage = '';
+      this.missingFields = [];
+      const extracted = {
+        ...((res['extracted_fields'] as Record<string, unknown>) || {}),
+      };
+      const content = (res['draft_content'] as string) || '';
+      const entry: SowDraftVersion = {
+        markdown: content,
+        extractedFields: extracted,
+      };
+
+      if (this.nextSowDraftMode === 'append' && this.sowDraftVersions.length > 0) {
+        this.sowDraftVersions = [...this.sowDraftVersions, entry];
+      } else {
+        this.sowDraftVersions = [entry];
+      }
+      this.selectedSowVersionIndex = this.sowDraftVersions.length - 1;
+      this.nextSowDraftMode = 'replace';
+
+      this.extractedFieldsState = JSON.parse(JSON.stringify(extracted)) as Record<string, unknown>;
+      this.extractedFieldsBaselineSnapshot = JSON.parse(
+        JSON.stringify(extracted)
+      ) as Record<string, unknown>;
+      this.editingExtractedFields = false;
+      this.editableExtractedStrings = {};
+      this.setDraftHtmlFromMarkdown(content);
+      this.generatedContent = '';
+      return;
+    }
+    this.generatedContent =
+      'Unexpected response from contract draft service. Please try again or contact support.';
+  }
+
+  async generate(): Promise<void> {
+    if (!this.canGenerate || !this.scopeOfWorkFile) {
+      return;
+    }
+
+    this.nextSowDraftMode = 'replace';
+    this.isGenerating = true;
+    this.generatedContent = '';
+    this.showMissingFieldsStep = false;
+    this.showDraftResultHintAfterApplyRegenerate = false;
+
+    try {
+      this.lastScopeOfWorkFileName = this.scopeOfWorkFile?.name || '';
+      const formData = this.buildMultipartFormData();
+      const res = (await firstValueFrom(
+        this.chatService.postContractDraftMultipart(formData)
+      )) as Record<string, unknown>;
+
+      this.handleDraftResponse(res);
+    } catch (e) {
+      console.error('[SlideCreationPromptFlow] Contract draft failed', e);
+      this.generatedContent =
+        'An error occurred while generating the draft contract. Please try again.';
+      this.draftHtmlSafe = null;
+      this.draftMarkdown = '';
+      this.sowDraftVersions = [];
+      this.selectedSowVersionIndex = 0;
+    } finally {
+      this.isGenerating = false;
+    }
+  }
+
+  async submitMissingFields(): Promise<void> {
+    if (!this.canSubmitMissingFields) {
+      return;
+    }
+
+    this.nextSowDraftMode = this.sowDraftVersions.length > 0 ? 'append' : 'replace';
+
+    const user_filled_fields: Record<string, unknown> = {};
+    for (const f of this.missingFields) {
+      const raw = this.userFilledFields[f.field_key];
+      user_filled_fields[f.field_key] = this.coerceUserValue(f, raw);
+    }
+
+    this.isGenerating = true;
+    try {
+      const res = (await firstValueFrom(
+        this.chatService.postContractDraftResume({
+          contract_type: this.getContractTypeFlags(),
+          prid: this.prid.trim(),
+          flex_id: this.flexId.trim(),
+          extracted_fields: JSON.parse(JSON.stringify(this.extractedFieldsState)) as Record<string, unknown>,
+          user_filled_fields,
+        })
+      )) as Record<string, unknown>;
+
+      this.handleDraftResponse(res);
+    } catch (e) {
+      console.error('[SlideCreationPromptFlow] Resume draft failed', e);
+      this.generatedContent =
+        'An error occurred while submitting required fields. Please try again.';
+    } finally {
+      this.isGenerating = false;
+    }
+  }
+
+  /**
+   * Send the draft for the **currently selected version** to the main chat via TL chat bridge
+   * (same path as guided TL content). Closes the SOW modal without prefilling the composer.
+   */
+  generateSowInChat(): void {
+    const v = this.sowDraftVersions[this.selectedSowVersionIndex];
+    const body = v?.markdown?.trim() || this.draftMarkdown?.trim();
+    if (!body) {
+      return;
+    }
+    const versionNumber = this.selectedSowVersionIndex + 1;
+    this.chatEditWorkflow.pushSowDraftToChat(body, versionNumber);
+    this.ddcFlowService.closeFlow();
+  }
+
+  startEditingExtractedFields(): void {
+    if (!this.isViewingLatestSowVersion()) {
+      return;
+    }
+    this.editingExtractedFields = true;
+    const next: Record<string, string> = {};
+    for (const [k, v] of Object.entries(this.extractedFieldsState)) {
+      next[k] = this.formatFieldForInput(v);
+    }
+    this.editableExtractedStrings = next;
+  }
+
+  cancelEditingExtractedFields(): void {
+    this.editingExtractedFields = false;
+    this.editableExtractedStrings = {};
+  }
+
+  onEditableExtractedChange(key: string, value: string): void {
+    this.editableExtractedStrings = { ...this.editableExtractedStrings, [key]: value };
+  }
+
+  async applyExtractedEditsAndRegenerate(): Promise<void> {
+    if (!this.editingExtractedFields || !this.isViewingLatestSowVersion()) {
+      return;
+    }
+
+    this.nextSowDraftMode = 'append';
+
+    const user_filled_fields: Record<string, unknown> = {};
+    const changed_field_keys: string[] = [];
+    for (const key of Object.keys(this.editableExtractedStrings)) {
+      const orig = this.extractedFieldsBaselineSnapshot[key];
+      const parsed = this.parseEditableFieldValue(this.editableExtractedStrings[key], orig);
+      if (!this.areFieldValuesEqual(orig, parsed)) {
+        user_filled_fields[key] = parsed;
+        changed_field_keys.push(key);
+      }
+    }
+
+    this.isGenerating = true;
+    try {
+      const res = (await firstValueFrom(
+        this.chatService.postContractDraftResumeEdit({
+          contract_type: this.getContractTypeFlags(),
+          prid: this.prid.trim(),
+          flex_id: this.flexId.trim(),
+          extracted_fields: JSON.parse(JSON.stringify(this.extractedFieldsBaselineSnapshot)) as Record<
+            string,
+            unknown
+          >,
+          user_filled_fields,
+          previous_draft_content: this.draftMarkdown ?? '',
+          changed_field_keys,
+        })
+      )) as Record<string, unknown>;
+
+      this.handleDraftResponse(res);
+      this.cancelEditingExtractedFields();
+      if (String(res['status'] ?? '').trim() === 'draft_generated') {
+        this.showDraftResultHintAfterApplyRegenerate = true;
+      }
+    } catch (e) {
+      console.error('[SlideCreationPromptFlow] Regenerate from edited fields failed', e);
+      this.generatedContent =
+        'An error occurred while regenerating the draft. Please try again.';
+    } finally {
+      this.isGenerating = false;
+    }
+  }
+
+  private formatFieldForInput(v: unknown): string {
+    if (v === null || v === undefined) {
+      return '';
+    }
+    if (typeof v === 'object') {
+      return JSON.stringify(v);
+    }
+    return String(v);
+  }
+
+  private parseEditableFieldValue(raw: string, original: unknown): unknown {
+    const s = raw.trim();
+    if (original === undefined) {
+      if (s === '') {
+        return '';
+      }
       try {
-        const account = this.msalService.instance.getActiveAccount();
-        if (account) {
-          const response = await this.msalService.instance.acquireTokenSilent({
-            scopes: ['User.Read'], // Use the same scope as in protectedResourceMap
-            account: account
-          });
-          
-          if (response.idToken) {
-            headers['Authorization'] = `Bearer ${response.idToken}`;
-            console.log('[ChatService] Added auth header (ID token) to fetch() call');
-          }
-        }
-      } catch (error) {
-        console.error('[ChatService] Failed to acquire token for fetch():', error);
+        return JSON.parse(s);
+      } catch {
+        return s;
       }
     }
-
-    return headers;
-  }
-
-  /**
-   * Get authentication headers for FormData requests (no Content-Type header)
-   * Browser will automatically set Content-Type with multipart boundary
-   */
-  private async getAuthHeadersForFormData(): Promise<Record<string, string>> {
-    const headers: Record<string, string> = {};
-
-    if (environment.useAuth) {
+    if (original === null && s === '') {
+      return null;
+    }
+    if (typeof original === 'number') {
+      const n = Number(s);
+      return Number.isNaN(n) ? original : n;
+    }
+    if (typeof original === 'boolean') {
+      const low = s.toLowerCase();
+      return low === 'true' || low === '1' || low === 'yes';
+    }
+    if (original !== null && typeof original === 'object') {
       try {
-        const account = this.msalService.instance.getActiveAccount();
-        if (account) {
-          const response = await this.msalService.instance.acquireTokenSilent({
-            scopes: ['User.Read'],
-            account: account
-          });
-          
-          if (response.idToken) {
-            headers['Authorization'] = `Bearer ${response.idToken}`;
-            console.log('[ChatService] Added auth header (ID token) to FormData fetch() call');
-          }
-        }
-      } catch (error) {
-        console.error('[ChatService] Failed to acquire token for FormData fetch():', error);
+        return JSON.parse(s || 'null');
+      } catch {
+        return raw;
       }
     }
-
-    return headers;
+    return s;
   }
 
-  /**
-   * Wrapper around fetch() that automatically adds authentication headers for JSON requests
-   * Use this instead of fetch() for all API calls with JSON body
-   */
-  private async authenticatedFetch(url: string, options: RequestInit = {}): Promise<Response> {
-    const authHeaders = await this.getAuthHeaders();
-    
-    // Merge auth headers with any existing headers
-    const headers: Record<string, string> = {
-      ...authHeaders,
-      ...(options.headers as Record<string, string> || {})
-    };
-
-    console.log('[ChatService] authenticatedFetch - URL:', url);
-    console.log('[ChatService] authenticatedFetch - Has Authorization:', !!headers['Authorization']);
-
-    return fetch(url, {
-      ...options,
-      headers
-    });
-  }
-
-  /**
-   * Wrapper around fetch() for FormData requests - doesn't set Content-Type (browser sets it with boundary)
-   * Use this for file uploads and multipart form data
-   */
-  private async authenticatedFetchFormData(url: string, options: RequestInit = {}): Promise<Response> {
-    const authHeaders = await this.getAuthHeadersForFormData();
-    
-    // Merge auth headers with any existing headers
-    const headers: Record<string, string> = {
-      ...authHeaders,
-      ...(options.headers as Record<string, string> || {})
-    };
-
-    console.log('[ChatService] authenticatedFetchFormData - URL:', url);
-    console.log('[ChatService] authenticatedFetchFormData - Has Authorization:', !!headers['Authorization']);
-
-    return fetch(url, {
-      ...options,
-      headers
-    });
-  }
-
-  detectEditIntent(input: string): Observable<{is_edit_intent: boolean, confidence: number, detected_editors?: string[]}> {
-    const fullUrl = `${this.apiUrl}/api/v1/chat/detect-edit-intent`;
-    console.log('[ChatService] detectEditIntent - Full URL:', fullUrl);
-    console.log('[ChatService] detectEditIntent - this.apiUrl:', this.apiUrl);
-    console.log('[ChatService] detectEditIntent - Expected to match: http://localhost:8000/api/v1/');
-    
-    return this.http.post<{is_edit_intent: boolean, confidence: number, detected_editors?: string[]}>(
-      fullUrl,
-      { input: input.trim() }
-    );
-  }
-
-  detectDraftIntent(input: string): Observable<{ is_draft_intent: boolean, confidence: number, detected_topic?: string, detected_content_type?: string[] }> {
-    return this.http.post<{ is_draft_intent: boolean, confidence: number, detected_topic?: string, detected_content_type?: string[] }>(
-      `${this.apiUrl}/api/v1/chat/detect-draft-intent`,
-      { input: input.trim() }
-    );
-  }
-
-  /**
-   * DDC Chat Agent
-   * Posts FormData to `/api/v1/ddc/ddc_chat_agent`.
-   * - Accepts a message string, optional conversation id, and optional PPT file.
-   * - Handles PPTX blob responses (sanitized/improved presentations) and JSON responses.
-   */
-  ddcChatAgent(message: string, conversationId?: string, file?: File, userId?: string, sessionId?: string): Observable<any> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      formData.append('message', message);
-      // Always append conversation_id (blank on first message, backend ID on subsequent messages)
-      formData.append('conversation_id', conversationId || '');
-      if (file) {
-        formData.append('file', file, file.name);
-      }
-      
-      // Add chat history fields for persistence
-      if (userId) {
-        formData.append('user_id', userId);
-      }
-      if (sessionId) {
-        formData.append('session_id', sessionId);
-      }
-      formData.append('source', 'Doc_Studio');
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ddc/ddc_chat_agent`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(`Network response was not ok: ${response.status} ${response.statusText}`);
-        }
-
-        const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
-        const convId = response.headers.get('X-Conversation-ID') || undefined;
-        const summaryHeader = response.headers.get('X-Sanitization-Summary');
-        let summary = null;
-        if (summaryHeader) {
-          try { summary = JSON.parse(summaryHeader); } catch (e) { /* ignore parse errors */ }
-        }
-
-        if (contentType.includes('application/vnd.openxmlformats-officedocument.presentationml.presentation') || contentType.includes('application/octet-stream')) {
-          return response.blob().then(blob => {
-            // Extract filename from Content-Disposition header if available
-            const contentDisposition = response.headers.get('Content-Disposition') || '';
-            let filename: string | undefined;
-            const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/i);
-            if (filenameMatch && filenameMatch[1]) {
-              filename = filenameMatch[1];
-              console.log('[ChatService] ddcChatAgent: extracted filename from Content-Disposition:', filename);
-            } else {
-              console.log('[ChatService] ddcChatAgent: no filename found in Content-Disposition header');
-            }
-            observer.next({ blob, conversation_id: convId, summary, filename });
-          });
-        }
-
-        return response.json().then(json => {
-          if (convId && !json.conversation_id) json.conversation_id = convId;
-          if (summary && !json.sanitization_summary) json.sanitization_summary = summary;
-          observer.next(json);
-        });
-      })
-      .then(() => observer.complete())
-      .catch(error => observer.error(error));
-    });
-  }
- 
-
-  sendMessage(messages: Message[], userId?: string, sessionId?: string, threadId?: string, source?: string): Observable<any> {
-    const request: ChatRequest = {
-      messages: messages,
-      stream: false,
-      user_id: userId,
-      session_id: sessionId,
-      thread_id: threadId,
-      source: source || "Chat"
-    };
-    
-    console.log('[ChatService] sendMessage - URL:', `${this.apiUrl}/api/v1/chat`);
-    console.log('[ChatService] sendMessage - Request:', request);
-    console.log("Calling from sendMessage Chat");
-    return this.http.post(`${this.apiUrl}/api/v1/chat`, request);
-  }
-
-  createDraft(draftRequest: DraftRequest): Observable<any> {
-    return this.http.post(`${this.apiUrl}/api/draft`, draftRequest);
-  }
-
-  streamChat(messages: Message[], userId?: string, sessionId?: string, threadId?: string, source?: string): Observable<any> {
-    return new Observable(observer => {
-      let endpointUrl = '';
-      let actualSource = source || 'Chat';
-      
-      if (source === 'Market_Intelligence') {
-        endpointUrl = '/api/v1/tl/mi_chat_agent';
-        actualSource = 'Market_Intelligence';
-      } else if (source === 'Cortex' || source === 'Thought_Leadership') {
-        endpointUrl = '/api/v1/tl/tl_chat_agent';
-        actualSource = 'Cortex';
-      } else {
-        endpointUrl = '/api/v1/tl/tl_chat_agent';
-        actualSource = 'Cortex';
-      }
-      
-      const request: ChatRequest = {
-        messages: messages,
-        stream: true,
-        user_id: userId,
-        session_id: sessionId,
-        thread_id: threadId,
-        source: actualSource
-      };
-      console.log("Calling from Stream Chat Source is:", actualSource, "Endpoint:", endpointUrl);
-      this.authenticatedFetch(`${this.apiUrl}${endpointUrl}`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          try {
-            const parsed = JSON.parse(eventData);
-            
-            // Emit content as string
-            if (parsed.content) {
-              observer.next(parsed.content);
-            } 
-            // Emit entire metadata object for component to handle
-            else if (parsed.type === 'metadata') {
-              observer.next(parsed);  // ← Emit full metadata object
-            }
-            // Emit done signal as object
-            else if (parsed.done === true) {
-              observer.next(parsed);  // ← Emit full done object
-              doneSignalReceived = true;
-            }
-            // Handle errors
-            else if (parsed.error) {
-              observer.error(new Error(parsed.error));
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamChat');
-            observer.next(eventData);
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              const trimmedLine = line.trim();
-              if (!trimmedLine) return;
-              if (trimmedLine.startsWith('data: ')) {
-                const data = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(data);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamDraft(draftRequest: DraftRequest): Observable<string> {
-    return new Observable(observer => {
-      this.authenticatedFetch(`${this.apiUrl}/api/draft`, {
-        method: 'POST',
-        body: JSON.stringify(draftRequest)
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          try {
-            const parsed = JSON.parse(eventData);
-            if (parsed.content) {
-              observer.next(parsed.content);
-            } else if (parsed.error) {
-              observer.error(new Error(parsed.error));
-            }
-            if (parsed.done === true) {
-              doneSignalReceived = true;
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamDraft');
-            observer.next(eventData);
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              const trimmedLine = line.trim();
-              if (!trimmedLine) return;
-              if (trimmedLine.startsWith('data: ')) {
-                const data = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(data);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamThoughtLeadership(tlRequest: ThoughtLeadershipRequest): Observable<string> {
-    return new Observable(observer => {
-      this.authenticatedFetch(`${this.apiUrl}/api/thought-leadership`, {
-        method: 'POST',
-        body: JSON.stringify(tlRequest)
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          try {
-            const parsed = JSON.parse(eventData);
-            if (parsed.content) {
-              observer.next(parsed.content);
-            } else if (parsed.error) {
-              observer.error(new Error(parsed.error));
-            }
-            if (parsed.done === true) {
-              doneSignalReceived = true;
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamThoughtLeadership');
-            observer.next(eventData);
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              const trimmedLine = line.trim();
-              if (!trimmedLine) return;
-              if (trimmedLine.startsWith('data: ')) {
-                const data = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(data);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  improvePPT(originalFile: File, referenceFile: File | null): Observable<Blob> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      formData.append('original_ppt', originalFile);
-      if (referenceFile) {
-        formData.append('reference_ppt', referenceFile);
-      }
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ppt/improve`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        return response.blob();
-      })
-      .then(blob => {
-        observer.next(blob);
-        observer.complete();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  downloadDdcFormatted(formData: FormData) {
-    // Use HttpClient to get response with headers and blob body
-    // Return an Observable of the full HttpResponse containing the blob
-    return this.http.post(`${this.apiUrl}/api/v1/ddc/brand-format/format-file`, formData, {
-      responseType: 'blob',
-      observe: 'response' as 'body'
-    });
-  }
-
-  streamSanitizationConversation(
-    messages: Message[], 
-    uploadedFileName?: string,
-    clientIdentity?: string,
-    pageRange?: string,
-    tier1Services?: string[],
-    tier2Services?: string[]
-  ): Observable<string> {
-    return new Observable(observer => {
-      const request = {
-        messages: messages,
-        uploaded_file_name: uploadedFileName,
-        client_identity: clientIdentity,
-        page_range: pageRange,
-        tier1_services: tier1Services,
-        tier2_services: tier2Services,
-        stream: true
-      };
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/ppt/sanitize/conversation`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          try {
-            const parsed = JSON.parse(eventData);
-            if (parsed.content) {
-              observer.next(parsed.content);
-            } else if (parsed.error) {
-              observer.error(new Error(parsed.error));
-            }
-            if (parsed.done === true) {
-              doneSignalReceived = true;
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamSanitizationConversation');
-            observer.next(eventData);
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              const trimmedLine = line.trim();
-              if (!trimmedLine) return;
-              if (trimmedLine.startsWith('data: ')) {
-                const data = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(data);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  sanitizePPT(file: File, clientName: string, products: string, options?: any): Observable<{blob: Blob, stats: any}> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      formData.append('original_ppt', file);
-      if (clientName) {
-        formData.append('client_name', clientName);
-      }
-      if (products) {
-        formData.append('client_products', products);
-      }
-      if (options) {
-        // Convert camelCase to snake_case for backend
-        const backendOptions = {
-          numeric_data: options.numericData,
-          personal_info: options.personalInfo,
-          financial_data: options.financialData,
-          locations: options.locations,
-          identifiers: options.identifiers,
-          names: options.names,
-          logos: options.logos,
-          metadata: options.metadata,
-          llm_detection: options.llmDetection,
-          hyperlinks: options.hyperlinks,
-          embedded_objects: options.embeddedObjects
-        };
-        formData.append('sanitization_options', JSON.stringify(backendOptions));
-      }
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ppt/sanitize`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        const statsHeader = response.headers.get('X-Sanitization-Stats');
-        let stats = null;
-        if (statsHeader) {
-          try {
-            stats = JSON.parse(statsHeader);
-          } catch (e) {
-            console.warn('Could not parse sanitization stats');
-          }
-        }
-        return response.blob().then(blob => ({blob, stats}));
-      })
-      .then(result => {
-        observer.next(result);
-        observer.complete();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamDdcWorkflow(workflow: 'brand-format' | 'professional-polish' | 'sanitization' | 'client-customization' | 'rfp-response' | 'ddc-format-translator' | 'slide-creation' | 'slide-creation-prompt' |'event-branding', formData: FormData): Observable<string> {
-    return this.streamFormData(`${this.apiUrl}/api/v1/ddc/${workflow}`, formData);
-  }
-
-  streamDdcBrandFormat(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('brand-format', formData);
-  }
-
-  streamDdcProfessionalPolish(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('professional-polish', formData);
-  }
-
-  streamDdcSanitization(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('sanitization', formData);
-  }
-
-  streamDdcEventBranding(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('event-branding', formData);
-  }
-
-  streamDdcClientCustomization(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('client-customization', formData);
-  }
-
-  streamDdcRfpResponse(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('rfp-response', formData);
-  }
-
-  streamDdcFormatTranslator(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('ddc-format-translator', formData);
-  }
-
-  streamDdcSlideCreation(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('slide-creation', formData);
-  }
-  streamDdcSlideCreationPrompt(formData: FormData): Observable<string> {
-    return this.streamDdcWorkflow('slide-creation-prompt', formData);
-  }
-
-  createDdcSlide(formData: FormData): Observable<any> {
-  return this.http.post(`${this.apiUrl}/api/v1/ddc/slide-creation`, formData);
-  }
-
-  createDdcSow(formData: FormData): Observable<any> {
-    return this.http.post(`${this.apiUrl}/api/v1/ddc/sow-creation`, formData);
-  }
-
-  /**
-   * TL contract draft — `POST /tl/contract/draft` (multipart: primary document + metadata).
-   * Backend runs EXTRACT_DOCUMENT → LLM_FIELD_EXTRACTION → VALIDATE → DRAFT or returns missing fields.
-   */
-  postContractDraftMultipart(formData: FormData): Observable<
-    ContractDraftValidationResponse | ContractDraftGeneratedResponse | Record<string, unknown>
-  > {
-    return new Observable(observer => {
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/contract/draft`, {
-        method: 'POST',
-        body: formData
-      })
-        .then(response => {
-          if (!response.ok) {
-            return response.text().then(text => {
-              throw new Error(text || `Contract draft failed: ${response.status}`);
-            });
-          }
-          return response.json();
-        })
-        .then(data => {
-          observer.next(data);
-          observer.complete();
-        })
-        .catch(err => observer.error(err));
-    });
-  }
-
-  /**
-   * Resume after user fills missing required fields.
-   */
-  postContractDraftResume(payload: {
-    contract_type: ContractTypeFlags;
-    prid: string;
-    flex_id: string;
-    extracted_fields: Record<string, unknown>;
-    user_filled_fields: Record<string, unknown>;
-  }): Observable<ContractDraftValidationResponse | ContractDraftGeneratedResponse | Record<string, unknown>> {
-    return new Observable(observer => {
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/contract/draft/resume`, {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      })
-        .then(response => {
-          if (!response.ok) {
-            return response.text().then(text => {
-              throw new Error(text || `Contract draft resume failed: ${response.status}`);
-            });
-          }
-          return response.json();
-        })
-        .then(data => {
-          observer.next(data);
-          observer.complete();
-        })
-        .catch(err => observer.error(err));
-    });
-  }
-
-  /**
-   * Targeted resume-edit after user changes specific extracted fields.
-   */
-  postContractDraftResumeEdit(payload: {
-    contract_type: ContractTypeFlags;
-    prid: string;
-    flex_id: string;
-    extracted_fields: Record<string, unknown>;
-    user_filled_fields: Record<string, unknown>;
-    previous_draft_content: string;
-    changed_field_keys: string[];
-  }): Observable<ContractDraftValidationResponse | ContractDraftGeneratedResponse | Record<string, unknown>> {
-    return new Observable(observer => {
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/contract/draft/resume-edit`, {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      })
-        .then(response => {
-          if (!response.ok) {
-            return response.text().then(text => {
-              throw new Error(text || `Contract draft resume-edit failed: ${response.status}`);
-            });
-          }
-          return response.json();
-        })
-        .then(data => {
-          observer.next(data);
-          observer.complete();
-        })
-        .catch(err => observer.error(err));
-    });
-  }
-
-  createPhoenixRequest(formData: FormData): Observable<any> {
-  return this.http.post(
-    `${this.apiUrl}/api/v1/ddc/phoenix/create-request`,formData);
-  } 
-
-searchPeople(name: string, email?: string): Observable<any> {
-  const safeName = encodeURIComponent(name.trim());
- 
-  let params = new HttpParams();
- 
-  if (email?.trim()) {
-    params = params.set('email', email.trim());
-  }
-  
-  return this.http.get(
-    `${this.peopleSearchBase}/${safeName}`,
-    { params }
-  );
-}
-
-  submitRiskAssessment(payload: any): Observable<any> {
-    return this.http.post(
-      `${this.apiUrl}/api/v1/ddc/risk-assessment/submit`,
-      payload
-    );
-  }
-
-  getPhoenixRequestConfigDdc(): Observable<any> {
-  return this.http.get(
-    `${this.apiUrl}/api/v1/ddc/phoenix/request-config-ddc`
-  );
-}
-
-  getPhoenixRequestConfigTl(): Observable<any> {
-  return this.http.get(
-    `${this.apiUrl}/api/v1/ddc/phoenix/request-config-tl`
-  );
-}
-
-  getPhoenixRequestConfigRisk(): Observable<any> {
-  return this.http.get(
-    `${this.apiUrl}/api/v1/ddc/phoenix/request-config-risk`
-  );
-}
-
-createRequestToPublishAuditLog(payload: any): Observable<any> {
-  return this.http.post(
-    `${this.apiUrl}/api/v1/tl/request-to-publish/audit`, payload
-  );
-}
-// "Request to Publish" feature - get all requests created by the user
-//parse form data if required: JSON.parse(item.user_form_data)
-/* sample response
-{
-  "success": true,
-  "data": [
-    {
-      "user_name": "Esha",
-      "user_email": "esha@example.com",
-      "content_category": "Public sources",
-      "request_id": "REQ123",
-      "request_status": "Pending",
-      "updated_at": "2026-03-17T10:30:00Z"
+  private areFieldValuesEqual(a: unknown, b: unknown): boolean {
+    if (a === b) {
+      return true;
     }
-  ]
-}
- *
- */
-getMyRequests(userEmail: string): Observable<any> {
-  return this.http.post(
-    `${this.apiUrl}/api/v1/tl/request-to-publish/get-my-requests`,
-    { user_email: userEmail }
-  );
-}
-
-
-getLeaderTasks(email: string): Observable<any> {
-  return this.http.post(
-    `${this.apiUrl}/api/v1/tl/request-to-publish/get-leader-tasks`,
-    { leader_email: email }
-  );
-}
-
-/* payload should be like this
-{
-  request_id: "REQ123",
-  leader_email: "leader@example.com",
-  status: "Approved",  //Approved / Rejected
-  form_data: ""   //JSON.stringify(form_data)
-}
-  */
-updateLeaderAction(payload: any): Observable<any> {
-  return this.http.post(
-    `${this.apiUrl}/api/v1/tl/request-to-publish/update-leader-action`,
-    payload
-  );
-}
-
-//to get the uploaded file
-downloadFile(requestId: string): Observable<Blob> {
-  return this.http.get(
-    `${this.apiUrl}/api/v1/tl/request-to-publish/download-file/${requestId}`,
-    { responseType: 'blob' }
-  );
-}
-
-
- getUserProfile(email: string): Observable<any> {
-  return this.http.get(
-    `${this.apiUrl}/api/v1/profile/details/user/${email}`);
-  }
-  private streamFormData(endpoint: string, formData: FormData): Observable<string> {
-    return new Observable(observer => {
-      this.authenticatedFetchFormData(endpoint, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(`Network response was not ok: ${response.status}`);
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          try {
-            const parsed = JSON.parse(eventData);
-            if (parsed.content) {
-              observer.next(parsed.content);
-            } else if (parsed.error) {
-              observer.error(new Error(parsed.error));
-            }
-            if (parsed.done === true) {
-              doneSignalReceived = true;
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamFormData');
-            observer.next(eventData);
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              const trimmedLine = line.trim();
-              if (!trimmedLine) return;
-              if (trimmedLine.startsWith('data: ')) {
-                const data = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(data);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  exportDocument(content: string, title: string, format: string): Observable<Blob> {
-    return new Observable(observer => {
-      const endpoint = format === 'pdf' ? '/api/v1/export/pdf-pwc' : '/api/v1/export/word';
-      
-      this.authenticatedFetch(`${this.apiUrl}${endpoint}`, {
-        method: 'POST',
-        body: JSON.stringify({ content, title, format })
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(`Export failed: ${response.statusText}`);
-        }
-        return response.blob();
-      })
-      .then(blob => {
-        observer.next(blob);
-        observer.complete();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamResearch(researchRequest: any): Observable<string> {
-    return new Observable(observer => {
-      this.authenticatedFetch(`${this.apiUrl}/api/research`, {
-        method: 'POST',
-        body: JSON.stringify(researchRequest)
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          try {
-            const parsed = JSON.parse(eventData);
-            if (parsed.content) {
-              observer.next(parsed.content);
-            } else if (parsed.error) {
-              observer.error(new Error(parsed.error));
-            }
-            if (parsed.done === true) {
-              doneSignalReceived = true;
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamResearch');
-            observer.next(eventData);
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              const trimmedLine = line.trim();
-              if (!trimmedLine) return;
-              if (trimmedLine.startsWith('data: ')) {
-                const data = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(data);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  draftArticle(articleData: any, outlineFile?: File, supportingDocs?: File[]): Observable<string> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      formData.append('topic', articleData.topic);
-      formData.append('content_type', articleData.content_type);
-      formData.append('desired_length', articleData.desired_length.toString());
-      formData.append('tone', articleData.tone);
-      
-      if (articleData.outline_text) {
-        formData.append('outline_text', articleData.outline_text);
-      }
-      if (articleData.additional_context) {
-        formData.append('additional_context', articleData.additional_context);
-      }
-      if (outlineFile) {
-        formData.append('outline_file', outlineFile);
-      }
-      if (supportingDocs && supportingDocs.length > 0) {
-        supportingDocs.forEach(doc => {
-          formData.append('supporting_docs', doc);
-        });
-      }
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/draft-article`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    if (parsed.content) {
-                      observer.next(parsed.content);
-                    } else if (parsed.done) {
-                      observer.complete();
-                    } else if (parsed.error) {
-                      observer.error(new Error(parsed.error));
-                    }
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamBestPractices(file: File, categories?: string[]): Observable<string> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      formData.append('file', file);
-      if (categories && categories.length > 0) {
-        formData.append('categories', categories.join(','));
-      }
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/ppt/validate-best-practices`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          try {
-            const parsed = JSON.parse(eventData);
-            if (parsed.content) {
-              observer.next(parsed.content);
-            } else if (parsed.error) {
-              observer.error(new Error(parsed.error));
-            }
-            if (parsed.done === true) {
-              doneSignalReceived = true;
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamBestPractices');
-            observer.next(eventData);
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              const trimmedLine = line.trim();
-              if (!trimmedLine) return;
-              if (trimmedLine.startsWith('data: ')) {
-                const data = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(data);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  generatePodcast(
-    files: File[] | null, 
-    contentText: string | null, 
-    customization: string | null, 
-    podcastStyle: string = 'dialogue',
-    speaker1Name?: string,
-    speaker1Voice?: string,
-    speaker1Accent?: string,
-    speaker2Name?: string,
-    speaker2Voice?: string,
-    speaker2Accent?: string
-  ): Observable<any> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      
-      if (files && files.length > 0) {
-        files.forEach(file => {
-          formData.append('files', file);
-        });
-      }
-      
-      if (contentText) {
-        formData.append('content_text', contentText);
-      }
-      
-      if (customization) {
-        formData.append('customization', customization);
-      }
-      
-      formData.append('podcast_style', podcastStyle);
-      
-      if (speaker1Name) formData.append('speaker1_name', speaker1Name);
-      if (speaker1Voice) formData.append('speaker1_voice', speaker1Voice);
-      if (speaker1Accent) formData.append('speaker1_accent', speaker1Accent);
-      if (speaker2Name) formData.append('speaker2_name', speaker2Name);
-      if (speaker2Voice) formData.append('speaker2_voice', speaker2Voice);
-      if (speaker2Accent) formData.append('speaker2_accent', speaker2Accent);
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/generate-podcast`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    observer.next(parsed);
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamResearchWithMaterials(
-    files: File[] | null,
-    links: string[] | null,
-    query: string,
-    focusAreas: string[],
-    additionalContext: string | null
-  ): Observable<any> {
-    return new Observable(observer => {
-      const formData = new FormData();
-      
-      if (files && files.length > 0) {
-        files.forEach(file => {
-          formData.append('files', file);
-        });
-      }
-      
-      if (links && links.length > 0) {
-        links.forEach(link => {
-          formData.append('links', link);
-        });
-      }
-      
-      formData.append('query', query);
-      
-      if (focusAreas && focusAreas.length > 0) {
-        formData.append('focus_areas', JSON.stringify(focusAreas));
-      }
-      
-      if (additionalContext) {
-        formData.append('additional_context', additionalContext);
-      }
-
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/research-with-materials`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    const parsed = JSON.parse(data);
-                    observer.next(parsed);
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  // NEW: Thought Leadership Section Methods (5 Sections)
-
-  streamDraftContent(
-    payload: Message[] | {
-      messages: Message[],
-      content_type?: string,
-      topic?: string,
-      word_limit?: string,
-      audience_tone?: string,
-      outline?: { type: string, content: string },
-      supporting_documents?: { content: string },
-      research?: any,
-      stream: boolean
-    },
-    improvementPrompt?: string,
-    draftParams?: any
-  ): Observable<any> {
-    return new Observable(observer => {
-      let request: any;
-
-      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
-      if (Array.isArray(payload)) {
-        // Old format: Message[] for improvement iterations
-        request = { messages: payload, stream: true };
-        
-        // Add improvement_prompt to request if provided
-        if (improvementPrompt) {
-          request.improvement_prompt = improvementPrompt;
-        }
-        
-        // Add draft parameters for improvement iterations
-        if (draftParams) {
-          if (draftParams.contentType) request.content_type = draftParams.contentType;
-          if (draftParams.topic) request.topic = draftParams.topic;
-          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
-          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
-          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
-          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
-          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
-        }
-      } else {
-        // New format: Structured payload object with all fields
-        request = payload;
-      }
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/draft-content`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    observer.next(JSON.parse(data));
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-  /**
-   * Stream POV (Point of View) content generation
-   * Routes to /api/v1/tl/pov endpoint instead of draft-content
-   */
-  streamPOVContent(
-    payload: Message[] | {
-      messages: Message[],
-      content_type?: string,
-      topic?: string,
-      word_limit?: string,
-      audience_tone?: string,
-      outline?: { type: string, content: string },
-      supporting_documents?: { content: string },
-      research?: any,
-      stream: boolean
-    },
-    improvementPrompt?: string,
-    draftParams?: any
-  ): Observable<any> {
-    return new Observable(observer => {
-      let request: any;
-
-      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
-      if (Array.isArray(payload)) {
-        // Old format: Message[] for improvement iterations
-        request = { messages: payload, stream: true };
-        
-        // Add improvement_prompt to request if provided
-        if (improvementPrompt) {
-          request.improvement_prompt = improvementPrompt;
-        }
-        
-        // Add draft parameters for improvement iterations
-        if (draftParams) {
-          if (draftParams.contentType) request.content_type = draftParams.contentType;
-          if (draftParams.topic) request.topic = draftParams.topic;
-          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
-          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
-          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
-          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
-          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
-        }
-      } else {
-        // New format: Structured payload object with all fields
-        request = payload;
-      }
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/pov`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    observer.next(JSON.parse(data));
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-    /**
-   * Stream RFP (Request for Proposal) content generation
-   * Routes to /api/v1/tl/rfp endpoint instead of draft-content
-   */
-  streamRFPContent(
-    payload: Message[] | {
-      messages: Message[],
-      content_type?: string,
-      topic?: string,
-      client?: string,
-      word_limit?: string,
-      audience_tone?: string,
-      outline?: { type: string, content: string },
-      supporting_documents?: { content: string },
-      research?: any,
-      stream: boolean
-    },
-    improvementPrompt?: string,
-    draftParams?: any
-  ): Observable<any> {
-    return new Observable(observer => {
-      let request: any;
-
-      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
-      if (Array.isArray(payload)) {
-        // Old format: Message[] for improvement iterations
-        request = { messages: payload, stream: true };
-        
-        // Add improvement_prompt to request if provided
-        if (improvementPrompt) {
-          request.improvement_prompt = improvementPrompt;
-        }
-        
-        // Add draft parameters for improvement iterations
-        if (draftParams) {
-          if (draftParams.contentType) request.content_type = draftParams.contentType;
-          if (draftParams.topic) request.topic = draftParams.topic;
-          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
-          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
-          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
-          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
-          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
-        }
-      } else {
-        // New format: Structured payload object with all fields
-        request = payload;
-      }
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/rfp`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          try {
-            const parsed = JSON.parse(eventData);
-            observer.next(parsed);
-            if (parsed.done === true) {
-              doneSignalReceived = true;
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamRFPContent');
-            observer.next({ type: 'content', content: eventData });
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              const trimmedLine = line.trim();
-              if (!trimmedLine) return;
-              if (trimmedLine.startsWith('data: ')) {
-                const data = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(data);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-  /**
-   * Analyze user satisfaction with generated draft content using LLM backend
-   */
-  analyzeSatisfaction(request: {
-    user_input: string,
-    generated_content: string,
-    content_type: string,
-    topic: string
-  }): Observable<any> {
-    return this.http.post<any>(`${this.apiUrl}/api/v1/tl/draft-content/analyze-satisfaction`, request);
-  }
-
-  // streamConductResearch(messages: Message[], sourceGroups?: string[]): Observable<any> {
-  streamConductResearch(formData: FormData): Observable<any> {  
-  return new Observable(observer => {
-      this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/conduct-research`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          try {
-            const parsed = JSON.parse(eventData);
-            observer.next(parsed);
-            if (parsed.done === true) {
-              doneSignalReceived = true;
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamConductResearch');
-            observer.next({ type: 'content', content: eventData });
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              const trimmedLine = line.trim();
-              if (!trimmedLine) return;
-              if (trimmedLine.startsWith('data: ')) {
-                const data = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(data);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-  /** Stream edit content workflow with specified editor types */
-  streamEditContent(
-    messages: Message[], 
-    editorTypes?: string[], 
-    temperature: number = 0,
-    maxTokens: number = 50000
-  ): Observable<any> {
-    if (temperature < 0 || temperature > 2) {
-      console.warn(`[ChatService] Temperature ${temperature} is outside valid range (0.0-2.0), using default 0`);
-      temperature = 0;
+    try {
+      return JSON.stringify(a) === JSON.stringify(b);
+    } catch {
+      return false;
     }
-    
-    if (maxTokens < 1000 || maxTokens > 128000) {
-      console.warn(`[ChatService] maxTokens ${maxTokens} is outside valid range (1000-128000), using default 50000`);
-      maxTokens = 50000;
-    }
-    
-    return new Observable(observer => {
-      const request: any = { 
-        messages, 
-        stream: true,
-        editor_types: editorTypes || [],
-        temperature: temperature,
-        max_tokens: maxTokens
-      };
-// streamEditContent(messages: Message[], editorTypes?: string[], temperature: number = 0.0): Observable<any> {
-//     return new Observable(observer => {
-//       const request = { 
-//         messages, 
-//         stream: true,
-//         editor_types: editorTypes || [],
-//         temperature: temperature
-//       };
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/edit-content`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim();
-                if (data) {
-                  try {
-                    observer.next(JSON.parse(data));
-                  } catch (e) {
-                    console.error('Error parsing SSE data:', e);
-                  }
-                }
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
   }
 
-  // Accept either an array of messages OR a structured payload { messages, original_content, services, stream }
-  streamRefineContent(payload: Message[] | { messages: Message[]; original_content?: string; services?: any[]; stream?: boolean }): Observable<any> {
-    return new Observable(observer => {
-      const request = Array.isArray(payload)
-        ? { messages: payload, stream: true }
-        : { messages: payload.messages || [], original_content: (payload as any).original_content, services: (payload as any).services, stream: (payload as any).stream ?? true };
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/refine-content`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          try {
-            const parsed = JSON.parse(eventData);
-            observer.next(parsed);
-            if (parsed.done === true) {
-              doneSignalReceived = true;
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamRefineContent');
-            observer.next({ type: 'content', content: eventData });
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              const trimmedLine = line.trim();
-              if (!trimmedLine) return;
-              if (trimmedLine.startsWith('data: ')) {
-                const data = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(data);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
+  /** Entries for *ngFor over extracted_fields (object keys) */
+  extractedFieldEntries(): { key: string; value: unknown }[] {
+    return Object.entries(this.extractedFieldsState).map(([key, value]) => ({ key, value }));
   }
-
-  streamFormatTranslator(params: any): Observable<any> {
-    return new Observable(observer => {
-      // Determine if this is the new JSON format or old FormData format
-      const isJsonFormat = params.messages && params.services && params.stream !== undefined;
-      
-      if (isJsonFormat) {
-        // New JSON format: structured payload with messages and services
-        console.log('[ChatService] Format Translator Request (JSON):', {
-          sourceFormat: params.services?.format_translator?.source_format,
-          targetFormat: params.services?.format_translator?.target_format
-        });
-
-        this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/format-translator`, {
-          method: 'POST',
-          body: JSON.stringify(params)
-        })
-        .then(response => this.handleFormatTranslatorStream(response, observer))
-        .catch(error => observer.error(error));
-      } else {
-        // Old FormData format: for backward compatibility
-        const formData = new FormData();
-        formData.append('content', params.content);
-        formData.append('source_format', params.sourceFormat);
-        formData.append('target_format', params.targetFormat);
-        formData.append('uploadedFile', params.uploadedFile, params.uploadedFile.name);
-        
-        if (params.customization) formData.append('customization', params.customization);
-        if (params.podcastStyle) formData.append('podcast_style', params.podcastStyle);
-        if (params.podcastDuration) formData.append('podcast_duration', params.podcastDuration);
-        if (params.speaker1Name !== undefined) formData.append('speaker1_name', params.speaker1Name);
-        if (params.speaker1Voice !== undefined) formData.append('speaker1_voice', params.speaker1Voice);
-        if (params.speaker1Accent !== undefined) formData.append('speaker1_accent', params.speaker1Accent);
-        if (params.speaker2Name !== undefined) formData.append('speaker2_name', params.speaker2Name);
-        if (params.speaker2Voice !== undefined) formData.append('speaker2_voice', params.speaker2Voice);
-        if (params.speaker2Accent !== undefined) formData.append('speaker2_accent', params.speaker2Accent);
-        if (params.wordLimit) formData.append('word_limit', params.wordLimit);
-
-        console.log('[ChatService] Format Translator Request (FormData):', {
-          sourceFormat: params.sourceFormat,
-          targetFormat: params.targetFormat,
-          hasSpeaker1: !!params.speaker1Name,
-          hasSpeaker2: !!params.speaker2Name
-        });
-
-        this.authenticatedFetchFormData(`${this.apiUrl}/api/v1/tl/format-translator`, {
-          method: 'POST',
-          body: formData
-        })
-        .then(response => this.handleFormatTranslatorStream(response, observer))
-        .catch(error => observer.error(error));
-      }
-    });
-  }
-
-  /**
-   * Helper method to handle Format Translator stream response
-   */
-  private handleFormatTranslatorStream(response: Response, observer: any): void {
-    if (!response.ok) {
-      console.error('[ChatService] Format translator API failed');
-      throw new Error(`Server returned ${response.status}: ${response.statusText}`);
-    }
-    
-    const reader = response.body?.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    const readStream = (): any => {
-      return reader?.read().then(({ done, value }) => {
-        if (done) {
-          // Process any remaining buffered data before completing (fix for missing last content)
-          if (buffer.trim()) {
-            if (buffer.startsWith('data: ')) {
-              const data = buffer.slice(6).trim();
-              if (data) {
-                try {
-                  const parsed = JSON.parse(data);
-                  //console.log('[ChatService] Format Translator final SSE data:', parsed);
-                  observer.next(parsed);
-                } catch (e) {
-                  console.error('[ChatService] Error parsing final SSE data');
-                  observer.next({ type: 'content', content: data });
-                }
-              }
-            } else if (buffer.includes("placemat")) {
-              try {
-                const parsed = JSON.parse(buffer);
-                observer.next({ type: 'placemat', content: buffer, url: parsed.download_url, status: parsed.status });
-              } catch (e) {
-                console.error('[ChatService] Error parsing final placemat data');
-              }
-            }
-          }
-          observer.complete();
-          return;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        if(buffer.includes("placemat")) {
-          try {
-            const parsed = JSON.parse(buffer);
-            observer.next({ type: 'placemat', content: buffer, url: parsed.download_url, status: parsed.status });
-          } catch (e) {
-            console.error('[ChatService] Error parsing placemat data');
-          }
-        }
-
-        lines.forEach(line => {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6).trim();
-            if (data) {
-              try {
-                const parsed = JSON.parse(data);
-                //console.log('[ChatService] Format Translator SSE data:', parsed);
-                observer.next(parsed);
-              } catch (e) {
-                console.error('[ChatService] Error parsing SSE data');
-                // If parsing fails, try to send as string content
-                observer.next({ type: 'content', content: data });
-              }
-            }
-          }
-        });
-
-        return readStream();
-      });
-    };
-
-    return readStream();
-  }
-
-  streamSectionUpdate(request: UpdateSectionRequest): Observable<string> {
-    return new Observable(observer => {
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/update-section`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          try {
-            const parsed = JSON.parse(eventData);
-            if (parsed.content) {
-              observer.next(parsed.content);
-            } else if (parsed.error) {
-              observer.error(new Error(parsed.error));
-            }
-            if (parsed.done === true) {
-              doneSignalReceived = true;
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamSectionUpdate');
-            observer.next(eventData);
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              const trimmedLine = line.trim();
-              if (!trimmedLine) return;
-              if (trimmedLine.startsWith('data: ')) {
-                const data = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(data);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        observer.error(error);
-      });
-    });
-  }
-
-  streamPrepareClientMeeting(
-    payload: Message[] | {
-      messages: Message[],
-      content_type?: string,
-      topic?: string,
-      word_limit?: string,
-      audience_tone?: string,
-      outline?: { type: string, content: string },
-      supporting_documents?: { content: string },
-      research?: any,
-      stream: boolean
-    },
-    improvementPrompt?: string,
-    draftParams?: any
-  ): Observable<any> {
-    return new Observable(observer => {
-      let request: any;
-
-      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
-      if (Array.isArray(payload)) {
-        // Old format: Message[] for improvement iterations
-        request = { messages: payload, stream: true };
-        
-        // Add improvement_prompt to request if provided
-        if (improvementPrompt) {
-          request.improvement_prompt = improvementPrompt;
-        }
-        
-        // Add draft parameters for improvement iterations
-        if (draftParams) {
-          if (draftParams.contentType) request.content_type = draftParams.contentType;
-          if (draftParams.topic) request.topic = draftParams.topic;
-          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
-          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
-          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
-          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
-          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
-        }
-      } else {
-        // New format: Structured payload object with all fields
-        request = payload;
-      }
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/prep-client-meeting`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          try {
-            const parsed = JSON.parse(eventData);
-            observer.next(parsed);
-            if (parsed.done === true) {
-              doneSignalReceived = true;
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamPrepareClientMeeting');
-            observer.next({ type: 'content', content: eventData });
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            lines.forEach(line => {
-              const trimmedLine = line.trim();
-              if (!trimmedLine) return;
-              if (trimmedLine.startsWith('data: ')) {
-                const data = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(data);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => observer.error(error));
-    });
-  }
-
-  streamProposalInsights(
-    payload: Message[] | {
-      messages: Message[],
-      content_type?: string,
-      topic?: string,
-      word_limit?: string,
-      audience_tone?: string,
-      outline?: { type: string, content: string },
-      supporting_documents?: { content: string },
-      research?: any,
-      stream: boolean
-    },
-    improvementPrompt?: string,
-    draftParams?: any
-  ): Observable<any> {
-    return new Observable(observer => {
-      let request: any;
-
-      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
-      if (Array.isArray(payload)) {
-        // Old format: Message[] for improvement iterations
-        request = { messages: payload, stream: true };
-        
-        // Add improvement_prompt to request if provided
-        if (improvementPrompt) {
-          request.improvement_prompt = improvementPrompt;
-        }
-        
-        // Add draft parameters for improvement iterations
-        if (draftParams) {
-          if (draftParams.contentType) request.content_type = draftParams.contentType;
-          if (draftParams.topic) request.topic = draftParams.topic;
-          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
-          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
-          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
-          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
-          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
-        }
-      } else {
-        // New format: Structured payload object with all fields
-        request = payload;
-      }
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/proposal_insights`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          
-          try {
-            const parsed = JSON.parse(eventData);
-            //console.log('[ChatService] Proposal Insights SSE event:', parsed);
-            observer.next(parsed);
-            
-            // Check if this is the done signal
-            if (parsed.done === true) {
-              doneSignalReceived = true;
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamProposalInsights');
-            // Still emit unparseable data as string content
-            observer.next({ type: 'content', content: eventData });
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              // Edge case: Flush remaining buffer when stream ends
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                // Handle case where final event doesn't end with newline
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  // Try to parse as JSON directly
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              
-              // Only complete the observable when done signal received or stream fully read
-              if (doneSignalReceived) {
-                console.log('[ChatService] Proposal Insights stream completed with done signal');
-                observer.complete();
-              } else {
-                console.log('[ChatService] Proposal Insights stream ended without explicit done signal');
-                observer.complete();
-              }
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            
-            // Split by double newline (SSE standard format) and single newlines
-            // SSE events are separated by \n\n, but we also handle \n for compatibility
-            const events = buffer.split('\n');
-            buffer = events.pop() || '';
-
-            events.forEach(line => {
-              const trimmedLine = line.trim();
-              
-              // Skip empty lines
-              if (!trimmedLine) return;
-              
-              // Parse SSE format "data: {json}"
-              if (trimmedLine.startsWith('data: ')) {
-                const eventData = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(eventData);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                // Handle case where JSON is sent without "data: " prefix
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        console.error('[ChatService] Proposal Insights stream error');
-        observer.error(error);
-      });
-    });
-  }
-
-  streamIndustryInsights(
-    payload: Message[] | {
-      messages: Message[],
-      content_type?: string,
-      topic?: string,
-      word_limit?: string,
-      audience_tone?: string,
-      outline?: { type: string, content: string },
-      supporting_documents?: { content: string },
-      research?: any,
-      stream: boolean
-    },
-    improvementPrompt?: string,
-    draftParams?: any
-  ): Observable<any> {
-    return new Observable(observer => {
-      let request: any;
-
-      // Check if payload is an array (old format for improvement iterations) or structured object (new format)
-      if (Array.isArray(payload)) {
-        // Old format: Message[] for improvement iterations
-        request = { messages: payload, stream: true };
-        
-        // Add improvement_prompt to request if provided
-        if (improvementPrompt) {
-          request.improvement_prompt = improvementPrompt;
-        }
-        
-        // Add draft parameters for improvement iterations
-        if (draftParams) {
-          if (draftParams.contentType) request.content_type = draftParams.contentType;
-          if (draftParams.topic) request.topic = draftParams.topic;
-          if (draftParams.wordLimit) request.word_limit = draftParams.wordLimit;
-          if (draftParams.audienceTone) request.audience_tone = draftParams.audienceTone;
-          if (draftParams.outlineDoc) request.outline_doc = draftParams.outlineDoc;
-          if (draftParams.supportingDoc) request.supporting_doc = draftParams.supportingDoc;
-          if (draftParams.useFactivaResearch !== undefined) request.use_factiva_research = draftParams.useFactivaResearch;
-        }
-      } else {
-        // New format: Structured payload object with all fields
-        request = payload;
-      }
-
-      this.authenticatedFetch(`${this.apiUrl}/api/v1/tl/industry_insights`, {
-        method: 'POST',
-        body: JSON.stringify(request)
-      })
-      .then(response => {
-        if (!response.ok) throw new Error('Network response was not ok');
-        
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let doneSignalReceived = false;
-
-        const parseAndEmitEvent = (eventData: string): void => {
-          if (!eventData || !eventData.trim()) return;
-          
-          try {
-            const parsed = JSON.parse(eventData);
-            //console.log('[ChatService] Industry Insights SSE event:', parsed);
-            observer.next(parsed);
-            
-            // Check if this is the done signal
-            if (parsed.done === true) {
-              doneSignalReceived = true;
-            }
-          } catch (error) {
-            console.error('[ChatService] Error parsing SSE JSON in streamIndustryInsights');
-            // Still emit unparseable data as string content
-            observer.next({ type: 'content', content: eventData });
-          }
-        };
-
-        function readStream(): any {
-          return reader?.read().then(({ done, value }) => {
-            if (done) {
-              // Edge case: Flush remaining buffer when stream ends
-              const remainingData = buffer.trim();
-              if (remainingData) {
-                // Handle case where final event doesn't end with newline
-                if (remainingData.startsWith('data: ')) {
-                  const data = remainingData.slice(6).trim();
-                  parseAndEmitEvent(data);
-                } else if (remainingData) {
-                  // Try to parse as JSON directly
-                  parseAndEmitEvent(remainingData);
-                }
-              }
-              
-              // Only complete the observable when done signal received or stream fully read
-              if (doneSignalReceived) {
-                console.log('[ChatService] Industry Insights stream completed with done signal');
-              } else {
-                console.log('[ChatService] Industry Insights stream ended without explicit done signal');
-              }
-              observer.complete();
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            
-            // Split by double newline (SSE standard format) and single newlines
-            // SSE events are separated by \n\n, but we also handle \n for compatibility
-            const events = buffer.split('\n');
-            buffer = events.pop() || '';
-
-            events.forEach(line => {
-              const trimmedLine = line.trim();
-              
-              // Skip empty lines
-              if (!trimmedLine) return;
-              
-              // Parse SSE format "data: {json}"
-              if (trimmedLine.startsWith('data: ')) {
-                const eventData = trimmedLine.slice(6).trim();
-                parseAndEmitEvent(eventData);
-              } else if (trimmedLine.startsWith('{') || trimmedLine.startsWith('"')) {
-                // Handle case where JSON is sent without "data: " prefix
-                parseAndEmitEvent(trimmedLine);
-              }
-            });
-
-            return readStream();
-          });
-        }
-
-        return readStream();
-      })
-      .catch(error => {
-        console.error('[ChatService] Industry Insights stream error');
-        observer.error(error);
-      });
-    });
-  }
-
-  // exportToWord(data: { content: string; title: string }): Observable<Blob> {
-  //   return this.http.post(`${this.apiUrl}/api/v1/export/word`, data, {
-
-  exportToWord(data: { content: string; title: string; content_type?: string }): Observable<Blob> {
-        return this.http.post(`${this.apiUrl}/api/v1/export/word`, data, {
-      responseType: 'blob'
-    });
-  }
-
-  exportToPDF(data: { content: string; title: string }): Observable<Blob> {
-    return this.http.post(`${this.apiUrl}/api/v1/export/pdf-pwc`, data, {
-      responseType: 'blob'
-    });
-  }
-  exportPdfWithBullets(payload: {content: string;title: string;}): Observable<Blob> {
-    return this.http.post(`${this.apiUrl}/api/v1/export/pdf-pwc-bullets`,payload,
-      { responseType: 'blob' }
-    );
-  }
-  exportToText(data: { content: string; title: string }): Observable<Blob> {
-    return this.http.post(`${this.apiUrl}/api/v1/export/text`, data, {
-      responseType: 'blob'
-    });
-  }
-
-
-  exportEditContentToWord(data: { 
-    content: string; 
-    title: string; 
-    block_types?: Array<{index: number; type: string; level?: number}>;
-    subtitle?: string;
-    content_type?: string;
-    references?: Array<Record<string, any>> | null;
-  }): Observable<Blob> {
-      return this.http.post(`${this.apiUrl}/api/v1/export/edit-content/word`, data, {
-        responseType: 'blob'
-      });
-    }
-
-
-  exportEditContentToPDF(data: { 
-    content: string; 
-    title: string; 
-    block_types?: Array<{index: number; type: string; level?: number}>;
-    subtitle?: string;
-    content_type?: string;
-    references?: Array<Record<string, any>> | null;
-  }): Observable<Blob> {
-      return this.http.post(`${this.apiUrl}/api/v1/export/edit-content/pdf`, data, {
-        responseType: 'blob'
-      });
-    }
-
-
-  // ===== Chat History Management Methods =====
-  // These methods manage chat history retrieval from database (lazy loading)
-
-  /**
-   * Get all chat session summaries for a user.
-   * Returns only titles and metadata, NOT full conversations.
-   * @param userId User email or identifier
-   * @param source Optional source filter (Chat, DDDC, Cortex, etc.)
-   * @returns List of session summaries
-   */
-  getUserSessions(userId: string, source?: string): Observable<ChatSessionSummary[]> {
-    let url = `${this.apiUrl}/api/v1/chat-history/sessions?user_id=${encodeURIComponent(userId)}`;
-    if (source) {
-      url += `&source=${encodeURIComponent(source)}`;
-    }
-    return this.http.get<ChatSessionSummary[]>(url);
-  }
-
-  /**
-   * Preload all user sessions from database into Redis cache when the user logs in.
-   * Subsequent calls to getUserSessions() will be extremely fast (cache hit).
-   * 
-   * Benefits:
-   * - Loads all historical sessions into cache at login, New chats append to pre-warmed cache
-   * - History panel loads instantly from cache (no DB hit)
-   * - Auto-refreshes after 2-hour TTL expiry
-   * 
-   * @param userId User email or identifier
-   * @returns Preload status with session count
-   */
-  preloadChatHistoryCache(userId: string): Observable<{ status: string; message: string; session_count: number }> {
-    const url = `${this.apiUrl}/api/v1/chat-history/sessions/preload?user_id=${encodeURIComponent(userId)}`;
-    return this.http.post<{ status: string; message: string; session_count: number }>(url, {});
-  }
-
-  /**
-   * Get full conversation for a specific session.
-   * Call this only when user clicks on a session to load the conversation.
-   * @param sessionId Session identifier
-   * @returns Complete session data with conversation messages
-   */
-  getSessionConversation(sessionId: string): Observable<ChatSessionDetail> {
-    return this.http.get<ChatSessionDetail>(
-      `${this.apiUrl}/api/v1/chat-history/sessions/${encodeURIComponent(sessionId)}`
-    );
-  }
-
-  /**
-   * Delete a chat session (soft delete).
-   * @param sessionId Session identifier
-   * @returns Deletion confirmation
-   */
-  deleteSession(sessionId: string): Observable<any> {
-    return this.http.delete(
-      `${this.apiUrl}/api/v1/chat-history/sessions/${encodeURIComponent(sessionId)}`
-    );
-  }
-  exportWordStandalone(payload: {
-  content: string;
-  title: string;
-  content_type?: string;
-}): Observable<Blob> {
-  return this.http.post(
-    `${this.apiUrl}/api/v1/export/word-standalone`,
-    payload,
-    { responseType: 'blob' }
-  );
-}
-exportWordUI(data: { content: string; title: string }): Observable<Blob> {
-  return this.http.post(
-    `${this.apiUrl}/api/v1/export/word-ui`,
-    data,
-    { responseType: 'blob' }
-  );
-}
-
-exportPdfStandalone(payload: {
-  content: string;
-  title: string;
-}): Observable<Blob> {
-  return this.http.post(
-    `${this.apiUrl}/api/v1/export/pdf-pwc`,
-    payload,
-    { responseType: 'blob' }
-  );
-}
-
-/**
- * Stream from tl_chat_agent endpoint which can return:
- * 1. JSON response with edit intent workflow data -> trigger edit workflow
- * 2. Streaming response for normal chat -> stream content
- */
-streamTlChatAgent(
-  messages: Array<{role: string, content: string}>,
-  userId?: string,
-  sessionId?: string,
-  threadId?: string,
-  source?: string
-): Observable<any> {
-  return new Observable(observer => {
-    const apiUrl = `${this.apiUrl}/api/v1/tl/tl_chat_agent`;
-    console.log('[ChatService] streamTlChatAgent - URL:', apiUrl);
-
-    const payload = {
-      messages: messages,
-      user_id: userId,
-      session_id: sessionId,
-      thread_id: threadId,
-      source: source || 'Cortex'
-    };
-
-    this.authenticatedFetch(apiUrl, {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(`API responded with status: ${response.status}`);
-        }
-
-        const contentType = response.headers.get('content-type');
-        const xContentType = response.headers.get('x-content-type');
-        //console.log('[ChatService] streamTlChatAgent - Content-Type:', contentType);
-        //console.log('[ChatService] streamTlChatAgent - x-content-type:', xContentType);
-
-        // Emit x-content-type header if present (for Quick Request export content type)
-        if (xContentType) {
-          observer.next({ type: 'x-content-type', contentType: xContentType, isStreamChunk: false });
-        }
-
-        // Check if response is JSON (edit intent workflow)
-        if (contentType && contentType.includes('application/json')) {
-          return response.json().then(data => {
-            //console.log('[ChatService] Received JSON response:', data);
-            observer.next({ ...data, isStreamChunk: false });
-            observer.complete();
-          });
-        }
-
-        // Otherwise, stream text content
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error('Response body is not readable');
-        }
-
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        const processChunk = ({ done, value }: ReadableStreamReadResult<Uint8Array>) => {
-          if (done) {
-            observer.complete();
-            return;
-          }
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-
-          // Keep the last incomplete line in the buffer
-          buffer = lines[lines.length - 1];
-
-          // Process complete lines
-          for (let i = 0; i < lines.length - 1; i++) {
-            const line = lines[i].trim();
-            if (line.startsWith('data: ')) {
-              const dataStr = line.slice(6); // Remove 'data: ' prefix
-              try {
-                const parsedData = JSON.parse(dataStr);
-                //console.log('[ChatService] Parsed streaming data:', parsedData);
-
-                // Handle content chunks
-                if (parsedData.type === 'content' && parsedData.content) {
-                  observer.next(parsedData.content);
-                }
-                // Handle webpage_ready signal with optional content and URL
-                else if (parsedData.type === 'webpage_ready' && parsedData.content === 'completed') {
-                  //console.log('[ChatService] Received webpage_ready signal:', parsedData);
-                  observer.next({ type: 'webpage_ready', isWebpageReady: true, url: parsedData.url || null });
-                }
-                // Handle done signal
-                else if (parsedData.type === 'done' && parsedData.done) {
-                  observer.complete();
-                  return;
-                }
-                // Emit metadata chunks so component can track workflow responses
-                else if (parsedData.type === 'metadata') {
-                  //console.log('[ChatService] Received metadata in stream:', parsedData);
-                  // Emit metadata signal so component knows this is a workflow interaction
-                  observer.next({ type: 'metadata', isMetadata: true, workflow: parsedData.workflow });
-                }
-              } catch (e) {
-                console.error('[ChatService] Error parsing streaming data');
-              }
-            }
-          }
-
-          reader.read().then(processChunk).catch(err => observer.error(err));
-        };
-
-        reader.read().then(processChunk).catch(err => observer.error(err));
-        return Promise.resolve();
-      })
-      .catch(error => {
-        console.error('[ChatService] Error in streamTlChatAgent');
-        observer.error(error);
-      });
-  });
-}
 }
