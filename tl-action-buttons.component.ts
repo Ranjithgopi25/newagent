@@ -139,12 +139,12 @@
           class="action-btn btn-canvas"
           (click)="openRedlineContractFlow()"
           title="Open Redline contract">
-          <span>Redline contract</span>
+          <span>Readline contract</span>
         </button>
       }
 
       <!-- Ready to publish button -->             
-      @if (selectedFlow !== 'market-intelligence' && metadata.contentType !== 'podcast') {
+      @if (selectedFlow !== 'market-intelligence' && metadata.contentType !== 'podcast' && metadata.contentType !== 'sow') {
         <button
           class="action-btn btn-canvas"
           (click)="onReadyToPublish()"
