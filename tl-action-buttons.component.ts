@@ -1,220 +1,1163 @@
-<div class="tl-action-buttons">
-  <!-- Podcast Audio Player (if podcast) -->
-  <!-- @if (isPodcast && metadata.podcastAudioUrl) {
-    <div class="podcast-player">
-      <audio controls [src]="metadata.podcastAudioUrl"></audio>
-    </div>
-  } -->
 
-  <!-- Compact Action Buttons -->
-  <div class="action-bar">
-    <!-- Primary Actions Group -->
-    <div class="primary-actions">
-      <!-- Canvas Button -->
-      <!-- <button
-        class="action-btn btn-canvas"
-        (click)="openInCanvas()"
-        title="Open in Canvas">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          <path d="M9 9h6v6H9z"></path>
-        </svg>
-        <span>Canvas</span>
-      </button> -->
+import { Component, Input, ViewChild, ElementRef, HostListener, Output, EventEmitter, OnInit } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { HttpClient } from '@angular/common/http';
+import { ThoughtLeadershipMetadata, Message } from '../../../../../core/models';
+import { CanvasStateService } from '../../../../../core/services/canvas-state.service';
+import { TlChatBridgeService } from '../../../../../core/services/tl-chat-bridge.service';
+import { ChatService } from '../../../../../core/services/chat.service';
+import { ToastService } from '../../../../../core/services/toast.service';
+import { ChatEditWorkflowService } from '../../../../../core/services/chat-edit-workflow.service';
+import { environment } from '../../../../../../environments/environment';
+import { TlRequestFormComponent } from '../../../../phoenix/TL/request-form';
+import { AuthFetchService } from '../../../../../core/services/auth-fetch.service';
+import { TlFlowService } from '../../../../../core/services/tl-flow.service';
+import { extractDocumentTitle } from '../../../../../core/utils/edit-content.utils';
+import { formatFinalArticleWithBlockTypes} from '../../../../../core/utils/edit-content.utils';
+import { BlockTypeInfo } from '../../../../../core/utils/edit-content.utils';
+import { renderMarkdownForDisplay } from '../../../../../core/utils/edit-content.utils';
+import {saveAs} from 'file-saver';
 
-      <!-- Copy to Clipboard -->
-      <button
-        class="action-btn btn-icon"
-        (click)="copyToClipboard()"
-        [class.copied]="isCopied"
-        title="Copy to clipboard">
-        @if (!isCopied) {
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-          </svg>
-        }
-        @if (isCopied) {
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="20 6 9 17 4 12"></polyline>
-          </svg>
-        }
-        <span>{{ isCopied ? 'Copied!' : 'Copy' }}</span>
-      </button>
-
-      <!-- Export Dropdown (for non-podcast content) -->
-      @if (metadata.contentType !== 'podcast') {
-        <div class="export-buttons">
-          <div class="dropdown export-dropdown">
-            <button
-              class="action-btn btn-export"
-              (click)="toggleExportDropdown()"
-              #exportButton
-              title="Export document"
-              [class.exporting]="isExporting"
-              [class.exported]="isExported"
-              [disabled]="isExporting">
-              @if (isExporting) {
-                <span class="export-spinner">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="9"></circle>
-                    <path d="M12 7v5l3 3"></path>
-                  </svg>
-                </span>
-              }
-              @if (!isExporting && !isExported) {
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 5v14"></path>
-                  <polyline points="19 12 12 19 5 12"></polyline>
-                </svg>
-              }
-              @if (isExported) {
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="20 6 9 17 4 12"></polyline>
-                </svg>
-              }
-              <span>{{ isExporting ? 'Exporting...' : isExported ? 'Exported!' : 'Export' }}</span>
-              @if (!isExporting) {
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-left:4px;">
-                  <polyline points="6 9 12 15 18 9"></polyline>
-                </svg>
-              }
-            </button>
-            <!-- Raise Phoenix Request button - same styling as Canvas button -->             
-            <!-- @if (selectedFlow !== 'market-intelligence') {
-              <button
-                class="action-btn btn-canvas raise-btn"
-                (click)="onRaisePhoenix()"
-                title="Request MCX Publication Support"
-                [disabled]="true"
-                style="opacity: 0.5; cursor: not-allowed">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;">
-                  <path d="M12 2s-4 3-4 7c0 5 4 9 4 9s4-4 4-9c0-4-4-7-4-7z"></path>
-                  <path d="M5 18c2 2 5 3 7 3s5-1 7-3"></path>
-                </svg>
-                <span>Request MCX publication support</span>
-              </button>
-            } -->
-            @if (showExportDropdown && !isExporting) {
-              <div class="dropdown-menu">
-                <button class="dropdown-item" (click)="exportSelected('word')">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                    <polyline points="14 2 14 8 20 8"></polyline>
-                  </svg>
-                  Word (.docx)
-                </button>
-                @if (metadata.contentType !== 'socialMedia') {
-                  <button class="dropdown-item" (click)="exportSelected('pdf')">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                      <polyline points="14 2 14 8 20 8"></polyline>
-                      <line x1="16" y1="13" x2="8" y2="13"></line>
-                      <line x1="16" y1="17" x2="8" y2="17"></line>
-                    </svg>
-                    PDF (.pdf)
-                  </button>
-                }
-                @if (metadata.contentType !== 'socialMedia') {
-                  <button class="dropdown-item" (click)="exportSelected('ppt')">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                      <polyline points="14 2 14 8 20 8"></polyline>
-                      <rect x="8" y="12" width="8" height="6" rx="1"></rect>
-                      <line x1="10" y1="14" x2="14" y2="14"></line>
-                      <line x1="10" y1="16" x2="14" y2="16"></line>
-                    </svg>
-                    PPT (.ppt)
-                  </button>
-                }
-              </div>
-            }
-          </div>
-        </div>
-      }
-
-      <!-- Draft content response: quick jump to Redline Contract -->
-      @if (isSowDraftResponse && metadata.contentType !== 'podcast') {
-        <button
-          class="action-btn btn-canvas"
-          (click)="openRedlineContractFlow()"
-          title="Open Redline contract">
-          <span>Readline contract</span>
-        </button>
-      }
-
-      <!-- Ready to publish button -->             
-      @if (selectedFlow !== 'market-intelligence' && metadata.contentType !== 'podcast' && metadata.contentType !== 'sow') {
-        <button
-          class="action-btn btn-canvas"
-          (click)="onReadyToPublish()"
-          [title]="isRedlineResponse ? 'Support for approval' : 'Ready to publish'"
-          [class.preparing]="isPreparingDocument"
-          [class.prepared]="isDocumentPrepared"
-          [disabled]="isPreparingDocument">
-          @if (isPreparingDocument) {
-            <span class="prepare-spinner">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="9"></circle>
-                <path d="M12 7v5l3 3"></path>
-              </svg>
-            </span>
-          }
-          @if (!isPreparingDocument && !isDocumentPrepared) {
-            <svg width="16" height="16" viewBox="0 0 96.000000 96.000000" preserveAspectRatio="xMidYMid meet" style="margin-right:6px;"> <g transform="translate(0.000000,96.000000) scale(0.100000,-0.100000)" fill="currentColor" stroke="none"> <path d="M60 554 l0 -324 173 2 c220 4 229 22 12 26 l-155 3 0 292 0 292 390 0 390 0 0 -285 0 -285 -41 73 -40 73 -117 -3 -117 -3 -53 -92 -54 -92 43 -76 c34 -59 48 -75 66 -75 23 0 23 2 23 110 0 90 -3 110 -15 110 -11 0 -15 -19 -17 -90 l-3 -91 -31 58 -32 58 47 78 46 77 99 -2 99 -3 43 -70 c24 -38 43 -75 44 -81 0 -6 -15 -37 -32 -70 l-33 -59 -3 98 c-2 77 -6 97 -17 97 -12 0 -15 -20 -15 -110 l0 -110 28 0 c23 1 33 11 70 75 l42 75 0 324 0 325 -420 0 -420 0 0 -325z"/> <path d="M208 765 c-31 -17 -63 -67 -73 -112 -9 -44 24 -117 65 -142 52 -31 94 -35 145 -12 107 47 118 197 19 262 -35 23 -117 25 -156 4z m62 -72 c0 -62 -35 -166 -54 -160 -6 1 -22 24 -35 50 -28 57 -23 87 24 134 50 50 65 45 65 -24z m96 23 c50 -50 46 -66 -16 -66 l-50 0 0 50 c0 62 16 66 66 16z m34 -107 c0 -24 -35 -68 -67 -83 -35 -16 -87 -22 -81 -8 2 4 11 28 22 55 l19 47 53 0 c33 0 54 -4 54 -11z"/> <path d="M603 700 c-110 -67 -64 -240 64 -242 104 -1 170 96 127 187 -33 71 -123 97 -191 55z m140 -36 c63 -62 36 -149 -56 -178 -44 -14 -117 46 -117 96 0 63 44 107 106 108 31 0 48 -6 67 -26z"/> <path d="M150 441 c0 -13 15 -16 95 -16 78 0 95 3 95 15 0 12 -18 15 -95 16 -80 0 -95 -2 -95 -15z"/> <path d="M150 378 c0 -16 13 -18 130 -18 117 0 130 2 130 18 0 15 -13 17 -130 17 -117 0 -130 -2 -130 -17z"/> </g> </svg>
-          }
-          @if (isDocumentPrepared) {
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="20 6 9 17 4 12"></polyline>
-            </svg>
-          }
-          <span>{{ isPreparingDocument ? 'Preparing...' : isDocumentPrepared ? 'Ready!' : (isRedlineResponse ? 'Support for approval' : 'Ready to publish') }}</span>
-        </button>
-      }
-
-      <!-- Podcast Download -->
-      @if (isPodcast) {
-        <button
-          class="action-btn btn-icon"
-          (click)="downloadPodcast()"
-          title="Download podcast MP3">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-            <polyline points="7 10 12 15 17 10"></polyline>
-            <line x1="12" y1="15" x2="12" y2="3"></line>
-          </svg>
-          <span>Download MP3</span>
-        </button>
-      }
-    </div>
-
-    <!-- Secondary Action -->
-    <div class="secondary-actions">
-      <!-- Convert to Podcast (for non-podcast content) -->
-      <!-- @if (metadata.contentType !== 'podcast') {
-        <button
-          class="action-btn btn-podcast"
-          (click)="convertToPodcast()"
-          [disabled]="true"
-          title="Convert content to podcast">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-            <line x1="12" y1="19" x2="12" y2="23"></line>
-            <line x1="8" y1="23" x2="16" y2="23"></line>
-          </svg>
-          <span>{{ isConvertingToPodcast ? 'Converting...' : 'Podcast' }}</span>
-        </button>
-      } -->
-    </div>
-  </div>
+@Component({
+    selector: 'app-tl-action-buttons',
+    imports: [CommonModule, TlRequestFormComponent],
+    templateUrl: './tl-action-buttons.component.html',
+    styleUrls: ['./tl-action-buttons.component.scss']
+})
+export class TlActionButtonsComponent implements OnInit {
+  @Input() metadata!: ThoughtLeadershipMetadata;
+  @Input() messageId?: string;
+  @Input() message?: Message;  // Optional: Full message for accessing paragraph_edits
+  @Input() selectedFlow?: 'ppt' | 'thought-leadership' | 'market-intelligence';
+  @ViewChild('exportButton') exportButton?: ElementRef<HTMLButtonElement>;
   
-  @if (showRequestForm) {
-  <app-tl-request-form
-    [documentText]="cleanedDocumentText"
-    [documentTitle]="documentTitle"
-    (ticketCreated)="onTicketCreated($event)"
-    (close)="showRequestForm = false">
-  </app-tl-request-form>
+  isConvertingToPodcast = false;
+  showExportDropdown = false;
+  isCopied = false;
+  isExporting = false;
+  isExported = false;
+  exportFormat = '';
+  showRequestForm = false;
+  translatedContent = '';
+  isPreparingDocument = false;
+  isDocumentPrepared = false;
+
+  @Output() raisePhoenix = new EventEmitter<void>();
+  @Output() exportRequested = new EventEmitter<{ format: 'word' | 'pdf' | 'ppt', component: any }>();
+  @Output() copyRequested = new EventEmitter<{ content: string, component: any }>();
+
+  @HostListener('document:click', ['$event'])
+  onDocumentClick(event: MouseEvent): void {
+    const target = event.target as HTMLElement;
+    const exportDropdown = target.closest('.export-dropdown');
+    if (!exportDropdown && this.showExportDropdown) {
+      this.showExportDropdown = false;
+    }
+  }
+
+  constructor(
+    private canvasStateService: CanvasStateService,
+    private http: HttpClient,
+    private tlChatBridge: TlChatBridgeService,
+    private authFetchService: AuthFetchService,
+    private chatService: ChatService,
+    private toastService: ToastService,
+    private editWorkflowService: ChatEditWorkflowService,
+    private sanitizer: DomSanitizer,
+    private tlFlowService: TlFlowService
+  ) {}
+  
+
+  ngOnInit(): void {
+    console.log('[TL Action Buttons] Component initialized with metadata:', {
+      contentType: this.metadata?.contentType,
+      hasPodcastUrl: !!this.metadata?.podcastAudioUrl,
+      podcastUrl: this.metadata?.podcastAudioUrl?.substring(0, 80),
+      showActions: this.metadata?.showActions,
+      isPodcast: this.isPodcast
+    });
+  }
+private exportWordNewLogic(): void {
+  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+    this.toastService.error('Content is not available yet.');
+    return;
+  }
+
+  // Prepare content according to new logic
+  const plainText = this.metadata.fullContent
+    .replace(/<br>/g, '\n')
+    .replace(/<[^>]+>/g, ''); // strip HTML
+
+  const title = this.metadata.topic?.trim() || 'Generated Document';
+  const filename = `${this.sanitizeFilename(title)}.docx`;
+
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  const endpoint = `${apiUrl}/api/v1/export/word-standalone`; 
+
+  this.authFetchService.authenticatedFetch(endpoint, {
+    method: 'POST',
+    body: JSON.stringify({
+      content: plainText,
+      title,
+      content_type: this.metadata.contentType
+    })
+  })
+    .then(response => {
+      if (!response.ok) throw new Error('Failed to generate Word document');
+      return response.blob();
+    })
+    .then(blob => {
+      return this.downloadBlobWithSaveDialog(blob, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    })
+    .then(() => {
+      this.resetExportState();
+    })
+    .catch(err => {
+      // Log generic message without full error object to prevent information leakage
+      console.error('[TL Action Buttons] Word document export failed');
+      this.toastService.error('Failed to generate Word document. Please try again.');
+      this.isExporting = false;
+    });
 }
-</div>
+
+  // private isEditContent(): boolean {
+  //   // Check if this is edit content workflow
+  //   // Edit content may have contentType 'edit-content' 
+  //   return this.metadata?.contentType === 'edit-content';
+  // }
+
+
+
+  downloadWord(): void {
+    // this.exportDocument('/api/v1/export/word', 'docx', 'docx');
+    const isSocialModule = this.metadata?.contentType === 'socialMedia';
+    const isEditContent = this.metadata?.contentType === 'edit-article';
+    const isMarketModule = this.metadata?.contentType === 'conduct-research'; 
+    const isindustryModule = this.metadata?.contentType === 'industry-insights';
+    const isproposalModule = this.metadata?.contentType === 'proposal-inputs';
+    const isprepMeetModule = this.metadata?.contentType === 'prep-meet';
+    const isPovModule = this.metadata?.contentType === 'pov';
+    const isDraftModule = this.metadata?.contentType === 'article' || 'blog' ||'executive_brief';
+    const isrefineModule = this.metadata?.contentType === 'refine-content';
+    console.log('[TL Action Buttons] downloadWord() called:', {
+      contentType: this.metadata?.contentType,
+      selectedFlow: this.selectedFlow,
+      isSocialModule,
+      isPovModule,isrefineModule,
+      isMarketModule,
+      timestamp: new Date().toISOString()
+    });
+    
+    if (isEditContent) {
+      this.exportEditContentWord();
+    } else if (isSocialModule) {
+      this.exportUIWord();  
+    }
+    else if (isindustryModule || isprepMeetModule || isproposalModule || isMarketModule || isrefineModule ){
+       this.exportDocument('/api/v1/export/word-pwc-mi-module', 'docx', 'docx');
+    }
+    else if (isPovModule ) {
+      this.exportDocument('/api/v1/export/word', 'docx', 'docx');
+    }
+    else if (isDraftModule){
+      this.exportDocument('/api/v1/export/word', 'docx', 'docx'); 
+    }
+    else {
+      console.log("Export word 2")
+      this.exportDocument('/api/v1/export/word', 'docx', 'docx'); 
+    }
+  }
+
+  /** Extract export title from markdown: prefer # Title (level-1), then ## heading, then first short non-list line. */
+  private getEditContentExportTitleAndContent(): { content: string; title: string } {
+    const content = this.metadata.fullContent || '';
+    const lines = content.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
+    let title = '';
+    let fallbackHeading = '';
+    for (const line of lines) {
+      const h1 = line.match(/^#\s+(.+)$/);
+      if (h1 && h1[1]) {
+        title = h1[1].replace(/\*\*/g, '').trim();
+        break;
+      }
+      const hAny = line.match(/^#+\s+(.+)$/);
+      if (hAny && hAny[1] && !fallbackHeading) {
+        fallbackHeading = hAny[1].replace(/\*\*/g, '').trim();
+      }
+      if (!title && !/^#+\s/.test(line) && line.length < 120 && !/^[-*]\s/.test(line) && !/^\d+\.\s/.test(line)) {
+        title = line.replace(/\*\*/g, '').trim();
+        break;
+      }
+    }
+    return { content, title: title || fallbackHeading || 'Revised Article' };
+  }
+
+  private async exportEditContentWord(): Promise<void> {
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      alert('Content is not available yet.');
+      return;
+    }
+    this.isExporting = true;
+    try {
+      const { content, title: exportTitle } = this.getEditContentExportTitleAndContent();
+      const finalTitle = exportTitle;
+      const filename = `${this.sanitizeFilename(finalTitle)}.docx`;
+      this.chatService.exportEditContentToWord({
+        content,
+        title: exportTitle,
+        block_types: [],
+        content_type: this.metadata.contentType
+      }).subscribe({
+        next: (blob: Blob) => {
+          this.downloadBlobWithSaveDialog(blob, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document').then(() => {
+            this.resetExportState();
+          }).catch(err => {
+            // Log generic message without full error object to prevent information leakage
+            console.error('[TL Action Buttons] Download failed');
+            this.isExporting = false;
+          });
+        },
+        error: (error) => {
+          // Log generic message without full error object to prevent information leakage
+          console.error('[TL Action Buttons] Word export failed');
+          alert('Failed to generate Word document. Please try again.');
+          this.isExporting = false;
+        }
+      });
+    } catch (error) {
+      // Log generic message without full error object to prevent information leakage
+      console.error('[TL Action Buttons] Word export exception');
+      alert('Failed to generate Word document. Please try again.');
+      this.isExporting = false;
+    }
+  }
+
+  downloadPDF(): void {
+    // Consider message as 'market module' when contentType is conduct-research or selectedFlow is market-intelligence
+    const contentType = String(this.metadata?.contentType || '');
+    const isEditContent = this.metadata?.contentType === 'edit-article';
+    const isMarketModule = contentType === 'conduct-research';
+    const isIndustryModule = contentType === 'industry-insights';
+    const isproposalModule = contentType === 'proposal-inputs';
+    const isprepMeetModule = contentType === 'prep-meet';
+    const isPovModule = contentType === 'pov';
+    const isDraftModule = contentType === 'article'||'blog'||'executive_brief';
+    const isrefineModule = this.metadata?.contentType === 'refine-content';
+    const isConductResearch = this.metadata?.contentType === 'conduct-research';
+    console.log('[TL Action Buttons] downloadPDF() called:', {
+      contentType,
+      selectedFlow: this.selectedFlow,
+      isMarketModule,
+      isIndustryModule,
+      isPovModule,
+      isprepMeetModule,
+      isproposalModule,isrefineModule,
+      timestamp: new Date().toISOString()
+    });
+      if (isEditContent) {
+        this.exportEditContentPDF();
+        return;
+    }
+      else if (isIndustryModule || isprepMeetModule || isproposalModule || isMarketModule || isrefineModule || isConductResearch ){
+          this.exportDocument('/api/v1/export/pdf-pwc-mi-module', 'pdf', 'pdf');
+          return;
+ 
+      }
+      else if (isPovModule ) {
+        this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
+        return;
+      }
+      else if(isDraftModule){
+        this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
+        return;
+      }
+      else {
+        this.exportDocument('/api/v1/export/pdf-pwc', 'pdf', 'pdf');
+      }
+    // const endpoint = isMarketModule
+    //   ? '/api/v1/export/pdf-pwc-no-toc'
+    //   : '/api/v1/export/pdf-pwc';
+    
+    // console.log('[TL Action Buttons] Using endpoint:', endpoint);
+    // this.exportDocument(endpoint, 'pdf', 'pdf');
+  }
+
+  private async exportEditContentPDF(): Promise<void> {
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      alert('Content is not available yet.');
+      return;
+    }
+    this.isExporting = true;
+    try {
+      const { content, title: exportTitle } = this.getEditContentExportTitleAndContent();
+      const finalTitle = exportTitle;
+      const filename = `${this.sanitizeFilename(finalTitle)}.pdf`;
+      this.chatService.exportEditContentToPDF({
+        content,
+        content_type: this.metadata.contentType,
+        title: exportTitle,
+        block_types: []
+      }).subscribe({
+        next: (blob: Blob) => {
+          this.downloadBlobWithSaveDialog(blob, filename, 'application/pdf').then(() => {
+            this.resetExportState();
+          }).catch(err => {
+            // Log generic message without full error object to prevent information leakage
+            console.error('[TL Action Buttons] PDF download failed');
+            this.isExporting = false;
+          });
+        },
+        error: (error) => {
+          // Log generic message without full error object to prevent information leakage
+          console.error('[TL Action Buttons] PDF export failed');
+          alert('Failed to generate PDF document. Please try again.');
+          this.isExporting = false;
+        }
+      });
+    } catch (error) {
+      // Log generic message without full error object to prevent information leakage
+      console.error('[TL Action Buttons] PDF export exception');
+      alert('Failed to generate PDF document. Please try again.');
+      this.isExporting = false;
+    }
+  }
+  
+  downloadPPT(): void {
+    this.exportPPT('/api/v1/export/ppt');
+  }
+
+  downloadPodcast(): void {
+    if (this.metadata.podcastAudioUrl && this.metadata.podcastFilename) {
+      const link = document.createElement('a');
+      link.href = this.metadata.podcastAudioUrl;
+      link.download = this.metadata.podcastFilename;
+      link.click();
+    }
+  }
+
+  cleanedDocumentText!: string;
+  documentTitle!: string;
+  preGeneratedDocFile: File | null = null;
+  isGeneratingDocument = false;
+
+  onRaisePhoenix(): void {
+
+    this.cleanedDocumentText = this.metadata.fullContent
+    .replace(/<br>/g, '\n')
+    .replace(/<[^>]+>/g, '');
+
+    const lines = this.cleanedDocumentText
+    .split('\n')
+    .filter(line => line.trim());
+
+    this.documentTitle = lines.length > 0
+    ? lines[0].substring(0, 150)
+    : 'Generated Document';
+
+    this.showRequestForm = true;
+    this.raisePhoenix.emit();
+  }
+
+  onReadyToPublish(): void {
+    // Check if content is available
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      this.toastService.error('Content is not available yet.');
+      return;
+    }
+
+    this.isPreparingDocument = true;
+    this.isDocumentPrepared = false;
+    this.toastService.info('Preparing document for publication...');
+
+    // Clean content (same pattern as onRaisePhoenix)
+    const cleanedText = this.metadata.fullContent
+      .replace(/<br>/g, '\n')
+      .replace(/<[^>]+>/g, '');
+
+    const title = this.metadata.topic?.trim() || 'Generated Document';
+
+    // Generate DOCX via API
+    const plainText = cleanedText;
+    const filename = 'generated_content.docx';
+
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const endpoint = `${apiUrl}/api/v1/export/word-standalone`;
+
+    console.log('[TL Action Buttons] Generating document for ready-to-publish:', { 
+      title, 
+      contentType: this.metadata.contentType 
+    });
+
+    this.authFetchService.authenticatedFetch(endpoint, {
+      method: 'POST',
+      body: JSON.stringify({
+        content: plainText,
+        title,
+        content_type: this.metadata.contentType
+      })
+    })
+      .then(response => {
+        if (!response.ok) throw new Error('Failed to generate Word document');
+        return response.blob();
+      })
+      .then(blob => {
+        // Create File object from blob
+        const file = new File(
+          [blob], 
+          filename, 
+          { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }
+        );
+        
+        // Store in component property (following onRaisePhoenix pattern)
+        this.preGeneratedDocFile = file;
+        
+        // Store in service for ready-to-publish-flow to access
+        this.tlFlowService.setPreGeneratedDocument(file);
+        
+        console.log('[TL Action Buttons] Document generated and stored');
+        
+        // Show prepared state
+        this.isPreparingDocument = false;
+        this.isDocumentPrepared = true;
+        
+        // Open the ready-to-publish flow
+        this.tlFlowService.openFlow('ready-to-publish');
+        
+        this.toastService.success('Document prepared! Opening publication window...');
+        
+        // Reset animation state after delay
+        setTimeout(() => {
+          this.isDocumentPrepared = false;
+        }, 2000);
+      })
+      .catch(err => {
+        // Log generic message without full error object to prevent information leakage
+        console.error('[TL Action Buttons] Document generation failed');
+        this.toastService.error('Failed to prepare document. Please try again.');
+        this.isPreparingDocument = false;
+        this.isDocumentPrepared = false;
+      });
+  }
+  
+  phoenixRdpLink = '';
+  ticketNumber = '';
+
+  onTicketCreated(event: {
+  requestNumber: string;
+  phoenixRdpLink: string;
+  }): void {
+  // Validate and escape untrusted data before using in HTTP response
+  try {
+    this.validateAndEscapeUrl(event.phoenixRdpLink);
+    const escapedRequestNumber = this.escapeHtmlSpecialChars(event.requestNumber);
+    const escapedLink = this.escapeHtmlAttribute(event.phoenixRdpLink);
+    this.phoenixRdpLink = event.phoenixRdpLink;
+    this.ticketNumber = event.requestNumber;
+    console.log('Ticket created:', event.requestNumber);
+    this.translatedContent = `Request created successfully! Your request number is: <a href="${escapedLink}" target="_blank" rel="noopener noreferrer">${escapedRequestNumber}</a>`.trim();
+  } catch (error) {
+    // Log generic message without full error object to prevent information leakage
+    console.error('[TL Action Buttons] Invalid ticket data');
+    this.translatedContent = 'Error processing request. Please try again.';
+  }
+  this.showRequestForm = false; 
+  this.sendToChat();
+}
+
+sendToChat(): void {
+
+  const topic = `Phoenix Request - ${this.ticketNumber}`;
+  let contentType: string;
+
+   
+    // Create metadata for the message
+    const metadata: ThoughtLeadershipMetadata = {
+      contentType: 'Phoenix_Request',
+      topic: topic,
+      fullContent: this.translatedContent,
+      showActions: false
+    };
+  const chatMessage = this.translatedContent;
+   
+    // Send to chat via bridge
+    console.log('[FormatTranslatorFlow] Sending to chat with metadata:', metadata);
+    this.tlChatBridge.sendToChat(chatMessage, metadata);
+    //this.onClose();
+}
+
+  copyToClipboard(): void {
+    // Emit event to parent (chat component) to show reminder dialog
+    const markdownContent = this.metadata.fullContent ?? '';
+    this.copyRequested.emit({ content: markdownContent, component: this });
+  }
+
+  proceedWithCopy(content: string): void {
+    // Convert markdown to HTML (same format as UI display)
+    const htmlContent = renderMarkdownForDisplay(content);
+    
+    // Use ClipboardItem to support both HTML and plain text formats
+    if (navigator.clipboard && navigator.clipboard.write) {
+      const clipboardItem = new ClipboardItem({
+        'text/html': new Blob([htmlContent], { type: 'text/html' }),
+        'text/plain': new Blob([content], { type: 'text/plain' })
+      });
+      
+      navigator.clipboard.write([clipboardItem]).then(() => {
+        this.isCopied = true;
+        // Reset the "copied" feedback after 2 seconds
+        setTimeout(() => {
+          this.isCopied = false;
+        }, 2000);
+      }).catch(err => {
+        console.error('Failed to copy to clipboard:', err);
+        // Fallback to plain text if HTML copy fails
+        navigator.clipboard.writeText(content).then(() => {
+          this.isCopied = true;
+          setTimeout(() => {
+            this.isCopied = false;
+          }, 2000);
+        }).catch(fallbackErr => {
+          console.error('Failed to copy plain text to clipboard:', fallbackErr);
+        });
+      });
+    } else {
+      // Fallback for older browsers
+      navigator.clipboard.writeText(content).then(() => {
+        this.isCopied = true;
+        setTimeout(() => {
+          this.isCopied = false;
+        }, 2000);
+      }).catch(err => {
+        console.error('Failed to copy to clipboard:', err);
+      });
+    }
+  }
+
+  openInCanvas(): void {
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      this.toastService.error('Content is not available yet.');
+      return;
+    }
+    // Only allow supported types for canvas
+    const allowedTypes = ['article', 'blog', 'white_paper', 'executive_brief', 'socialMedia','conduct-research'];
+    if (!allowedTypes.includes(this.metadata.contentType)) {
+      this.toastService.warning('Canvas is only available for articles, blogs, white papers, executive briefs, social media posts, and conduct research.');
+      return;
+    }
+    // Map socialMedia and conduct-research to an accepted canvas type (they function like articles)
+    let canvasContentType: 'article' | 'blog' | 'white_paper' | 'executive_brief';
+    switch (this.metadata.contentType) {
+      case 'article':
+      case 'blog':
+      case 'white_paper':
+      case 'executive_brief':
+        canvasContentType = this.metadata.contentType;
+        break;
+      case 'socialMedia':
+      case 'conduct-research':
+      default:
+        canvasContentType = 'article';
+        break;
+    }
+    this.canvasStateService.loadFromContent(
+      this.metadata.fullContent,
+      this.metadata.topic || 'Untitled',
+      canvasContentType,
+      this.messageId
+    );
+  }
+
+  toggleExportDropdown(): void {
+    this.showExportDropdown = !this.showExportDropdown;
+  }
+  // downloadProcessedFile(): void {
+  //   if (!this.downloadUrl) {
+  //     console.warn('[SlideCreationFlow] No download URL available');
+  //     return;
+  //   }
+
+  //   const link = document.createElement('a');
+  //   link.href = this.downloadUrl;
+  //   link.target = '_blank';
+  //   link.download = 'Slide.pptx'; // default filename
+  //   link.click();
+  // }
+  exportSelected(format: 'word' | 'pdf' | 'ppt'): void {
+    this.showExportDropdown = false;
+    // Emit event to parent (chat component) to show reminder dialog
+    this.exportRequested.emit({ format, component: this });
+  }
+
+  // Called by parent after reminder confirmation
+  proceedWithExport(format: 'word' | 'pdf' | 'ppt'): void {
+    this.isExporting = true;
+    this.isExported = false;
+    this.exportFormat = format.toUpperCase();
+    
+    if (format === 'word') {
+      this.downloadWord();       
+    } else if(format === 'pdf') {
+      this.downloadPDF();
+    } else if (format === 'ppt') {
+      this.downloadPPT();
+    }
+  }
+
+  private resetExportState(): void {
+    setTimeout(() => {
+      this.isExporting = false;
+    }, 500);
+    
+    this.isExported = true;
+    // Reset success indicator after 3 seconds
+    setTimeout(() => {
+      this.isExported = false;
+    }, 3000);
+  }
+
+  private exportDocument(endpoint: string, extension: string, format: string): void {
+    // Reuse the same approach as EditContentFlowComponent.downloadRevised()
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      this.toastService.error('Content is not available yet.');
+      return;
+    }
+
+    // Clean content the same way as the working implementation
+    const plainText = this.metadata.fullContent.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '');
+    
+    // Extract first line as subtitle (title for download)
+    const lines = plainText.split('\n').filter(line => line.trim());
+    const subtitle = lines.length > 0 ? lines[0].substring(0, 150) : 'Generated Document'; // First line as title, max 150 chars
+    const title = subtitle; // Use subtitle as the main title, not the topic
+    
+    // console.log(`>>>>>>>>>>>>>`,plainText);
+
+    // Get API URL from environment (supports runtime config via window._env)
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const fullEndpoint = `${apiUrl}${endpoint}`;
+
+    // Use fetch API like the working implementation (same as EditContentFlowComponent.downloadRevised)
+    this.authFetchService.authenticatedFetch(fullEndpoint, {
+      method: 'POST',
+      body: JSON.stringify({
+        content: plainText,
+        title,
+        subtitle: '',  // Don't pass subtitle separately since title is already set to it
+        content_type: this.metadata.contentType,  // Use snake_case to match backend
+
+      })
+    })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`Failed to generate ${extension.toUpperCase()} document`);
+      }
+      return response.blob();
+    })
+    .then(blob => {
+      const filename = `${this.sanitizeFilename(title)}.${extension}`;
+      return this.downloadBlobWithSaveDialog(blob, filename);
+    })
+    .then(() => {
+      this.resetExportState();
+    })
+    .catch(error => {
+      // Log generic message without full error object to prevent information leakage
+      console.error(`[TL Action Buttons] ${extension.toUpperCase()} export failed`);
+      this.toastService.error(`Failed to generate ${extension.toUpperCase()} file. Please try again.`);
+      this.isExporting = false;
+    });
+  }
+  private exportUIWord(): void {
+  if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+    this.toastService.error('Content is not available yet.');
+    return;
+  }
+
+  const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+  const endpoint = `${apiUrl}/api/v1/export/word-ui`;
+
+  // IMPORTANT: send content AS-IS (no stripping)
+  const content = this.metadata.fullContent;
+
+  // Title logic can stay simple
+  const title = 'Generated Document';
+
+  this.authFetchService.authenticatedFetch(endpoint, {
+    method: 'POST',
+    body: JSON.stringify({
+      content,
+      title
+    })
+  })
+  .then(response => {
+    if (!response.ok) {
+      throw new Error('Failed to generate Word document');
+    }
+    return response.blob();
+  })
+  .then(blob => {
+    const filename = `${this.sanitizeFilename(title)}.docx`;
+    return this.downloadBlobWithSaveDialog(blob, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  })
+  .then(() => {
+    this.resetExportState();
+  })
+  .catch(error => {
+    // Log generic message without full error object to prevent information leakage
+    console.error('[TL Action Buttons] Word export failed');
+    this.toastService.error('Failed to generate Word file.');
+    this.isExporting = false;
+  });
+}
+
+private async exportPPT(endpoint: string): Promise<void> {
+
+  if (
+
+    !this.metadata.fullContent ||
+
+    !this.metadata.fullContent.trim()
+
+  ) {
+
+    this.toastService.error('Content is not available yet.');
+
+    return;
+
+  }
+ 
+  const plainText = this.metadata.fullContent
+
+    .replace(/\n/g, '\n')
+
+    .replace(/<[^>]+>/g, '');
+ 
+  const title =
+
+    this.metadata.topic?.trim() || 'Generated Presentation';
+ 
+  const filename = `${this.sanitizeFilename(title)}.pptx`;
+ 
+  const apiUrl =
+
+    (window as any)._env?.apiUrl || environment.apiUrl || '';
+ 
+  const fullEndpoint = `${apiUrl}${endpoint}`;
+ 
+  try {
+
+    const response =
+
+      await this.authFetchService.authenticatedFetch(
+
+        fullEndpoint,
+
+        {
+
+          method: 'POST',
+
+          body: JSON.stringify({
+
+            content: plainText,
+
+            title
+
+          })
+
+        }
+
+      );
+ 
+    if (!response.ok) {
+
+      throw new Error('Failed to start PPT generation');
+
+    }
+ 
+    const data = await response.json();
+
+    const downloadUrl = data.download_url;
+ 
+    if (!downloadUrl) {
+
+      throw new Error('No download URL returned');
+
+    }
+ 
+    // ✅ SAFE URL-ONLY DOWNLOAD
+
+    saveAs(downloadUrl, filename);
+ 
+    this.resetExportState();
+ 
+  } catch (err) {
+
+    console.error('[TL Action Buttons] PPT export failed');
+
+    this.toastService.error('Failed to generate PPT file.');
+
+    this.isExporting = false;
+
+  }
+
+}
+ 
+
+  private async writeBlobToSelectedFile(fileHandle: any, blob: Blob): Promise<void> {
+    // const writable = await fileHandle.createWritable();
+    // await writable.write(blob);
+    // await writable.close();
+const safeBlob = new Blob([await blob.arrayBuffer()], {
+  type: 'application/octet-stream'
+});
+ 
+const writable = await fileHandle.createWritable();
+await writable.write(await safeBlob.arrayBuffer());
+await writable.close();
+  }
+
+
+  private downloadFile(extension: string, mimeType: string): void {
+    const blob = new Blob([this.metadata.fullContent], { type: mimeType });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${this.sanitizeFilename(this.metadata.topic)}.${extension}`;
+    link.click();
+    window.URL.revokeObjectURL(url);
+  }
+
+  private sanitizeFilename(filename: string): string {
+    return filename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  }
+
+  get isPodcast(): boolean {
+    const result = this.metadata.contentType === 'podcast' && !!this.metadata.podcastAudioUrl;
+    // console.log('[TL Action Buttons] isPodcast check:', {
+    //   contentType: this.metadata.contentType,
+    //   hasPodcastUrl: !!this.metadata.podcastAudioUrl,
+    //   podcastUrl: this.metadata.podcastAudioUrl?.substring(0, 50),
+    //   result: result
+    // });
+    return result;
+  }
+
+  get isSowDraftResponse(): boolean {
+    const type = String(this.metadata?.contentType || '').toLowerCase();
+    return type === 'sow';
+  }
+
+  get isRedlineResponse(): boolean {
+    const type = String(this.metadata?.contentType || '').toLowerCase();
+    return type === 'edit-article' || type === 'edit-content';
+  }
+
+  openRedlineContractFlow(): void {
+    if (!this.metadata.fullContent || !this.metadata.fullContent.trim()) {
+      this.toastService.error('Content is not available yet.');
+      return;
+    }
+
+    this.isGeneratingDocument = true;
+    this.toastService.info('Preparing document for redline...');
+
+    const cleanedText = this.metadata.fullContent
+      .replace(/<br>/g, '\n')
+      .replace(/<[^>]+>/g, '');
+
+    const title = this.metadata.topic?.trim() || 'Generated Document';
+    const filename = 'generated_content.docx';
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    const endpoint = `${apiUrl}/api/v1/export/word-standalone`;
+
+    this.authFetchService.authenticatedFetch(endpoint, {
+      method: 'POST',
+      body: JSON.stringify({
+        content: cleanedText,
+        title,
+        content_type: this.metadata.contentType
+      })
+    })
+      .then(response => {
+        if (!response.ok) throw new Error('Failed to generate Word document');
+        return response.blob();
+      })
+      .then(blob => {
+        const file = new File(
+          [blob],
+          filename,
+          { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }
+        );
+
+        this.preGeneratedDocFile = file;
+        this.tlFlowService.setPreGeneratedDocument(file);
+        this.tlFlowService.openFlow('edit-content');
+        this.toastService.success('Redline document is ready.');
+      })
+      .catch(() => {
+        this.toastService.error('Failed to prepare redline document. Please try again.');
+      })
+      .finally(() => {
+        this.isGeneratingDocument = false;
+      });
+  }
+  
+  convertToPodcast(): void {
+    if (this.isConvertingToPodcast) return;
+    
+    this.isConvertingToPodcast = true;
+    
+    // Prepare the podcast generation request with correct backend schema
+    const formData = new FormData();
+    formData.append('topic', this.metadata.topic); // Required field
+    formData.append('style', 'dialogue'); // dialogue or monologue
+    formData.append('duration', 'medium'); // short, medium, or long
+    formData.append('context', this.metadata.fullContent); // The content to convert
+    
+    let scriptContent = '';
+    let audioBase64 = '';
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    
+    // Get API URL from environment (supports runtime config via window._env)
+    const apiUrl = (window as any)._env?.apiUrl || environment.apiUrl || '';
+    
+    // Use fetch for SSE streaming
+    this.authFetchService.authenticatedFetchFormData(`${apiUrl}/api/v1/tl/generate-podcast`, {
+      method: 'POST',
+      body: formData
+    })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      
+      const readStream = (): any => {
+        return reader?.read().then(({ done, value }) => {
+          if (done) {
+            this.isConvertingToPodcast = false;
+            
+            console.log('[Podcast Debug] Stream complete');
+            //console.log('[Podcast Debug] audioBase64 length:', audioBase64?.length || 0);
+            //console.log('[Podcast Debug] scriptContent length:', scriptContent?.length || 0);
+            
+            // Send podcast to chat with metadata
+            if (audioBase64 && scriptContent) {
+              console.log('[Podcast Debug] Converting base64 to blob...');
+              const audioBlob = this.base64ToBlob(audioBase64, 'audio/mpeg');
+              console.log('[Podcast Debug] Blob size:', audioBlob.size, 'bytes');
+              
+              const audioUrl = URL.createObjectURL(audioBlob);
+              console.log('[Podcast Debug] Audio URL created:', audioUrl);
+              
+              // Create metadata for the podcast message
+              const podcastMetadata: ThoughtLeadershipMetadata = {
+                contentType: 'podcast',
+                topic: `${this.metadata.topic} (Podcast)`,
+                fullContent: scriptContent,
+                showActions: true,
+                podcastAudioUrl: audioUrl,
+                podcastFilename: `${this.sanitizeFilename(this.metadata.topic)}_podcast.mp3`
+              };
+              
+              console.log('[Podcast Debug] Metadata:', podcastMetadata);
+              
+              // Send to chat via bridge
+              const podcastMessage = `📻 **Podcast Generated Successfully!**\n\n**Script:**\n\n${scriptContent}\n\n🎧 **Audio Ready!** Listen below or download the MP3 file.`;
+              this.tlChatBridge.sendToChat(podcastMessage, podcastMetadata);
+              
+              console.log('[Podcast Debug] Sent to chat via bridge');
+              this.toastService.success('Podcast generated and added to chat!');
+            } else {
+              console.error('[Podcast Debug] Missing data - audioBase64:', !!audioBase64, 'scriptContent:', !!scriptContent);
+            }
+            return;
+          }
+          
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          
+          lines.forEach(line => {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6).trim();
+              if (data) {
+                try {
+                  const parsed = JSON.parse(data);
+                  //console.log('[Podcast Debug] SSE event type:', parsed.type);
+                  
+                  if (parsed.type === 'script') {
+                    scriptContent = parsed.content;
+                    //console.log('[Podcast Debug] Script received, length:', scriptContent.length);
+                  } else if (parsed.type === 'complete') {
+                    audioBase64 = parsed.audio;
+                    //console.log('[Podcast Debug] Audio received, base64 length:', audioBase64?.length || 0);
+                  } else if (parsed.type === 'error') {
+                    console.error('[TL Action Buttons] Podcast generation failed');
+                    this.toastService.error(`Error generating podcast: ${parsed.message}`);
+                    
+                    // Abort the reader and reset state immediately
+                    reader?.cancel();
+                    this.isConvertingToPodcast = false;
+                    throw new Error(parsed.message);
+                  } else if (parsed.type === 'progress') {
+                    //console.log('[Podcast Debug] Progress:', parsed.message);
+                  }
+                } catch (e) {
+                  console.error('[TL Action Buttons] Error parsing SSE data');
+                }
+              }
+            }
+          });
+          
+          return readStream();
+        }).catch((error) => {
+          // Handle stream reading errors
+          this.isConvertingToPodcast = false;
+          reader?.cancel();
+          throw error;
+        });
+      };
+      
+      return readStream();
+    })
+    .catch(error => {
+      console.error('[TL Action Buttons] Error converting to podcast');
+      this.toastService.error(`Failed to convert content to podcast: ${error.message || 'Unknown error'}`);
+      this.isConvertingToPodcast = false;
+      reader?.cancel();
+    });
+  }
+  
+  private base64ToBlob(base64: string, contentType: string): Blob {
+    const byteCharacters = atob(base64);
+    const byteArrays = [];
+    
+    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+      const slice = byteCharacters.slice(offset, offset + 512);
+      const byteNumbers = new Array(slice.length);
+      for (let i = 0; i < slice.length; i++) {
+        byteNumbers[i] = slice.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      byteArrays.push(byteArray);
+    }
+    
+    return new Blob(byteArrays, { type: contentType });
+  }
+
+  /**
+   * Escape HTML special characters to prevent XSS attacks
+   */
+  private escapeHtmlSpecialChars(untrustedData: string): string {
+    if (!untrustedData) return '';
+    const div = document.createElement('div');
+    div.textContent = untrustedData;
+    return div.innerHTML;
+  }
+
+  /**
+   * Escape data for use in HTML attributes
+   */
+  private escapeHtmlAttribute(untrustedData: string): string {
+    if (!untrustedData) return '';
+    return untrustedData
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#x27;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  /**
+   * Validate URL to prevent open redirect attacks
+   */
+  private validateAndEscapeUrl(urlString: string): void {
+    if (!urlString) throw new Error('URL is empty');
+    
+    try {
+      const url = new URL(urlString);
+      
+      if (!['http:', 'https:'].includes(url.protocol)) {
+        throw new Error(`Invalid protocol: ${url.protocol}`);
+      }
+    } catch (error) {
+      throw new Error(`URL validation failed: ${error instanceof Error ? error.message : 'Invalid URL'}`);
+    }
+  }
+
+  private async downloadBlobWithSaveDialog(blob: Blob, filename: string, mimeTypeOverride?: string): Promise<void> {
+    // Check if File System Access API is available (Chrome, Edge, Firefox with flag)
+    if ('showSaveFilePicker' in window) {
+      try {
+        const ext = filename.split('.').pop()?.toLowerCase() || '';
+        let mimeType = mimeTypeOverride || blob.type || 'application/octet-stream';
+        
+        // Map extensions to proper MIME types if needed
+        if (!mimeTypeOverride && (!blob.type || blob.type === 'application/octet-stream')) {
+          switch (ext) {
+            case 'docx':
+              mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+              break;
+            case 'pdf':
+              mimeType = 'application/pdf';
+              break;
+            case 'pptx':
+              mimeType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+              break;
+            case 'txt':
+              mimeType = 'text/plain';
+              break;
+            case 'mp3':
+              mimeType = 'audio/mpeg';
+              break;
+          }
+        }
+        
+        const handle = await (window as any).showSaveFilePicker({
+          suggestedName: filename,
+          types: [
+            {
+              description: `${ext.toUpperCase()} Files`,
+              accept: { [mimeType]: [`.${ext}`] }
+            }
+          ]
+        });
+        const safeBlob = new Blob([await blob.arrayBuffer()], {
+  type: 'application/octet-stream'
+});
+ 
+const writable = await handle.createWritable();
+await writable.write(await safeBlob.arrayBuffer());
+await writable.close();
+
+      } catch (error: any) {
+        if (error.name !== 'AbortError') {
+          console.error('[TL Action Buttons] Error saving file');
+          // Fallback to default download if dialog fails
+          this.fallbackDownload(blob, filename);
+        }
+      }
+    } else {
+      // Fallback: use default download behavior for unsupported browsers
+      this.fallbackDownload(blob, filename);
+    }
+  }
+
+private fallbackDownload(blob: Blob, filename: string): void {
+  // ✅ Sanitize the filename
+  const safeFilename = filename
+   .replace(/[^a-zA-Z0-9._-]/g, '_')
+   .replace(/_{2,}/g, '_')
+   .replace(/^_+|_+$/g, '') || 'download';
+  // ✅ Create a safe blob with correct MIME (optional, use blob.type if already safe)
+  const safeBlob = new Blob([blob], { type: blob.type || 'application/octet-stream' });
+  // ✅ Use FileSaver.js to trigger the download
+  saveAs(safeBlob, safeFilename);
+}
+ 
+}
