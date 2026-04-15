@@ -1,703 +1,259 @@
-import { JsonPipe } from '@angular/common';
-import { Component, Input, OnInit, OnDestroy, ViewChild, ElementRef } from '@angular/core';
-import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { FormsModule } from '@angular/forms';
-import { firstValueFrom, Subject, takeUntil } from 'rxjs';
-import { DdcFlowService } from '../../../core/services/ddc-flow.service';
-import { ChatEditWorkflowService } from '../../../core/services/chat-edit-workflow.service';
-import {
-  ChatService,
-  ContractMissingField,
-  ContractTypeFlags,
-} from '../../../core/services/chat.service';
-import { FileUploadComponent } from '../../../shared/ui/components/file-upload/file-upload.component';
-import { renderMarkdownForDisplay } from '../../../core/utils/edit-content.utils';
-
-/** One saved SOW draft response (user can switch between versions after regenerate). */
-export interface SowDraftVersion {
-  markdown: string;
-  extractedFields: Record<string, unknown>;
-}
-
-@Component({
-  selector: 'app-slide-creation-prompt-flow',
-  imports: [FormsModule, JsonPipe, FileUploadComponent],
-  templateUrl: './slide-creation-prompt-flow.component.html',
-  styleUrls: ['./slide-creation-prompt-flow.component.scss'],
-})
-export class SlideCreationPromptFlowComponent implements OnInit, OnDestroy {
-  @Input() hideBackButton = false;
-  @Input() openedFrom: 'quick-action' | 'guided-dialog' | null = null;
-  @ViewChild('scopeOfWorkUpload') scopeOfWorkUpload?: FileUploadComponent;
-  @ViewChild('supportingDocUpload') supportingDocUpload?: FileUploadComponent;
-  @ViewChild('sowTemplateUpload') sowTemplateUpload?: FileUploadComponent;
-  @ViewChild('missingFieldsPanel') missingFieldsPanel?: ElementRef<HTMLElement>;
-
-  isOpen = false;
-  isGenerating = false;
-  /** Legacy HTML banner (errors, ticket success) */
-  generatedContent = '';
-
-  scopeOfWorkFile: File | null = null;
-  supportingDocFile: File | null = null;
-  sowTemplateFile: File | null = null;
-
-  scopeOfWorkUploadError = false;
-  supportingDocUploadError = false;
-  sowTemplateUploadError = false;
-
-  prid = '';
-  flexId = '';
-  lookupInIcertis = false;
-
-  showMissingFieldsStep = false;
-  /** API message when validation fails (optional) */
-  validationStepMessage = '';
-  missingFields: ContractMissingField[] = [];
-  /** Latest merged extracted fields from the API (for resume + display) */
-  extractedFieldsState: Record<string, unknown> = {};
-  userFilledFields: Record<string, unknown> = {};
-
-  draftMarkdown = '';
-  draftHtmlSafe: SafeHtml | null = null;
-  showExtractedSummary = false;
-
-  /** Successful drafts in order; regenerating appends Version 2, 3, … */
-  sowDraftVersions: SowDraftVersion[] = [];
-  /** Index into `sowDraftVersions` for the body + extracted fields shown. */
-  selectedSowVersionIndex = 0;
-  /** Next successful `draft_generated` replaces all versions or appends (after regenerate). */
-  private nextSowDraftMode: 'replace' | 'append' = 'replace';
-
-  /** Snapshot when a draft succeeds — used to merge edits on resume/regenerate. */
-  extractedFieldsBaselineSnapshot: Record<string, unknown> = {};
-  /** Inline edit of extracted fields after draft (triggers resume → draft LLM again). */
-  editingExtractedFields = false;
-  editableExtractedStrings: Record<string, string> = {};
-
-  /** Set when user runs Generate (shown during missing-fields step) */
-  lastScopeOfWorkFileName = '';
-
-  /** Show draft-result hint only after a successful "Apply changes & regenerate draft" from extracted fields. */
-  showDraftResultHintAfterApplyRegenerate = false;
-
-  private destroy$ = new Subject<void>();
-
-  constructor(
-    private ddcFlowService: DdcFlowService,
-    private chatService: ChatService,
-    private chatEditWorkflow: ChatEditWorkflowService,
-    private sanitizer: DomSanitizer
-  ) {}
-
-  ngOnInit(): void {
-    this.ddcFlowService.activeFlow$
-      .pipe(takeUntil(this.destroy$))
-      .subscribe(flow => {
-        this.isOpen = flow === 'slide-creation-prompt';
-        if (this.isOpen) {
-          this.resetForm();
-        }
-      });
-  }
-
-  ngOnDestroy(): void {
-    this.destroy$.next();
-    this.destroy$.complete();
-  }
-
-  resetForm(): void {
-    this.scopeOfWorkFile = null;
-    this.supportingDocFile = null;
-    this.sowTemplateFile = null;
-    this.prid = '';
-    this.flexId = '';
-    this.lookupInIcertis = false;
-    this.generatedContent = '';
-    this.isGenerating = false;
-    this.scopeOfWorkUploadError = false;
-    this.supportingDocUploadError = false;
-    this.sowTemplateUploadError = false;
-    this.showMissingFieldsStep = false;
-    this.validationStepMessage = '';
-    this.missingFields = [];
-    this.extractedFieldsState = {};
-    this.userFilledFields = {};
-    this.draftMarkdown = '';
-    this.draftHtmlSafe = null;
-    this.showExtractedSummary = false;
-    this.sowDraftVersions = [];
-    this.selectedSowVersionIndex = 0;
-    this.nextSowDraftMode = 'replace';
-    this.extractedFieldsBaselineSnapshot = {};
-    this.editingExtractedFields = false;
-    this.editableExtractedStrings = {};
-    this.lastScopeOfWorkFileName = '';
-    this.showDraftResultHintAfterApplyRegenerate = false;
-  }
-
-  /** This flow is SOW-only; backend `contract_type` always has `statement_of_work: true`. */
-  getContractTypeFlags(): ContractTypeFlags {
-    return {
-      statement_of_work: true,
-      engagement_letter: false,
-      master_services_agreement: false,
-      non_disclosure_agreement: false,
-      product_license_agreement: false,
-    };
-  }
-
-  onScopeOfWorkSelected(file: File): void {
-    const acceptedFormats = ['.doc', '.docx', '.pdf', '.pptx', '.xlsx'];
-    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
-
-    if (!acceptedFormats.includes(fileExtension)) {
-      this.scopeOfWorkUploadError = true;
-      this.scopeOfWorkUpload?.reset();
-      return;
-    }
-
-    this.scopeOfWorkUploadError = false;
-    this.scopeOfWorkFile = file;
-  }
-
-  onScopeOfWorkRemoved(): void {
-    this.scopeOfWorkFile = null;
-    this.scopeOfWorkUploadError = false;
-  }
-
-  onSupportingDocSelected(file: File): void {
-    const acceptedFormats = ['.doc', '.docx', '.pdf', '.pptx'];
-    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
-
-    if (!acceptedFormats.includes(fileExtension)) {
-      this.supportingDocUploadError = true;
-      this.supportingDocUpload?.reset();
-      return;
-    }
-
-    this.supportingDocUploadError = false;
-    this.supportingDocFile = file;
-  }
-
-  onSupportingDocRemoved(): void {
-    this.supportingDocFile = null;
-    this.supportingDocUploadError = false;
-  }
-
-  onSowTemplateSelected(file: File): void {
-    const acceptedFormats = ['.doc', '.docx', '.pdf', '.pptx'];
-    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
-
-    if (!acceptedFormats.includes(fileExtension)) {
-      this.sowTemplateUploadError = true;
-      this.sowTemplateUpload?.reset();
-      return;
-    }
-
-    this.sowTemplateUploadError = false;
-    this.sowTemplateFile = file;
-  }
-
-  onSowTemplateRemoved(): void {
-    this.sowTemplateFile = null;
-    this.sowTemplateUploadError = false;
-  }
-
-  get canGenerate(): boolean {
-    return !!(
-      this.scopeOfWorkFile &&
-      this.prid.trim() &&
-      this.flexId.trim() &&
-      !this.isGenerating
-    );
-  }
-
-  get canSubmitMissingFields(): boolean {
-    if (this.missingFields.length === 0) {
-      return false;
-    }
-    for (const f of this.missingFields) {
-      const v = this.userFilledFields[f.field_key];
-      const t = (f.type || 'text').toLowerCase();
-      switch (t) {
-        case 'boolean':
-          break;
-        case 'number':
-          if (v === '' || v === undefined || v === null || Number.isNaN(Number(v))) {
-            return false;
-          }
-          break;
-        case 'dropdown':
-          if (v === undefined || v === null || (typeof v === 'string' && !String(v).trim())) {
-            return false;
-          }
-          break;
-        default:
-          if (v === undefined || v === null || (typeof v === 'string' && !v.trim())) {
-            return false;
-          }
-      }
-    }
-    return true;
-  }
-
-  close(): void {
-    this.ddcFlowService.closeFlow();
-  }
-
-  back(): void {
-    this.ddcFlowService.closeFlow();
-    this.ddcFlowService.openGuidedDialog();
-  }
-
-  private buildMultipartFormData(): FormData {
-    const fd = new FormData();
-    fd.append('document_file', this.scopeOfWorkFile!);
-    fd.append('contract_type', JSON.stringify(this.getContractTypeFlags()));
-    fd.append('prid', this.prid.trim());
-    fd.append('flex_id', this.flexId.trim());
-    fd.append('lookup_in_icertis', String(this.lookupInIcertis));
-    if (this.supportingDocFile) {
-      fd.append('supporting_document_file', this.supportingDocFile);
-    }
-    if (this.sowTemplateFile) {
-      fd.append('template_file', this.sowTemplateFile);
-    }
-    return fd;
-  }
-
-  /**
-   * Initialize controls for each missing field. Prefill from `extractedFieldsState`
-   * when the API returned a partial value (backend still lists field as missing if empty).
-   */
-  private fieldHasUsableInput(f: ContractMissingField, v: unknown): boolean {
-    const t = (f.type || 'text').toLowerCase();
-    if (v === undefined) {
-      return false;
-    }
-    if (t === 'boolean') {
-      return true;
-    }
-    if (t === 'number') {
-      return v !== null && v !== '' && !Number.isNaN(Number(v));
-    }
-    if (v === null) {
-      return false;
-    }
-    if (typeof v === 'string') {
-      return v.trim().length > 0;
-    }
-    return true;
-  }
-
-  private initUserFilledFromMissing(missing: ContractMissingField[]): void {
-    const next: Record<string, unknown> = { ...this.userFilledFields };
-    for (const f of missing) {
-      const key = f.field_key;
-      const fromApi = this.extractedFieldsState[key];
-      const t = (f.type || 'text').toLowerCase();
-
-      if (this.fieldHasUsableInput(f, next[key])) {
-        continue;
-      }
-
-      if (fromApi !== undefined && fromApi !== null) {
-        if (typeof fromApi === 'string' && fromApi.trim()) {
-          next[key] = t === 'date' ? this.normalizeDateForInput(fromApi) : fromApi;
-          continue;
-        }
-        if (typeof fromApi === 'number' && !Number.isNaN(fromApi)) {
-          next[key] = fromApi;
-          continue;
-        }
-        if (typeof fromApi === 'boolean') {
-          next[key] = fromApi;
-          continue;
-        }
-      }
-
-      if (next[key] === undefined) {
-        if (t === 'boolean') {
-          next[key] = false;
-        } else if (t === 'number') {
-          next[key] = null;
-        } else {
-          next[key] = '';
-        }
-      }
-    }
-    this.userFilledFields = { ...next };
-  }
-
-  /** Normalize ISO or loose date strings to yyyy-mm-dd for input[type=date] */
-  private normalizeDateForInput(value: string): string {
-    const s = value.trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-      return s;
-    }
-    const d = Date.parse(s);
-    if (!Number.isNaN(d)) {
-      const x = new Date(d);
-      const y = x.getFullYear();
-      const m = String(x.getMonth() + 1).padStart(2, '0');
-      const day = String(x.getDate()).padStart(2, '0');
-      return `${y}-${m}-${day}`;
-    }
-    return '';
-  }
-
-  private isInternalExtractedFieldKey(key: string): boolean {
-    return key.startsWith('__');
-  }
-
-  /** Coerce value for resume payload to match backend / field_mapping types */
-  private coerceUserValue(field: ContractMissingField, raw: unknown): unknown {
-    const t = (field.type || 'text').toLowerCase();
-    switch (t) {
-      case 'number': {
-        const n = typeof raw === 'number' ? raw : Number(raw);
-        return Number.isNaN(n) ? null : n;
-      }
-      case 'boolean':
-        return Boolean(raw);
-      case 'date':
-        if (typeof raw === 'string' && raw.trim()) {
-          return raw.trim();
-        }
-        return raw ?? '';
-      default:
-        return raw;
-    }
-  }
-
-  /** Return to full form without losing files; user can click Generate again */
-  backToDocumentForm(): void {
-    this.showMissingFieldsStep = false;
-    this.validationStepMessage = '';
-    this.missingFields = [];
-    this.userFilledFields = {};
-    this.generatedContent = '';
-  }
-
-  /** Lowercase type for @switch in template (backend may vary casing). */
-  normalizedFieldType(field: ContractMissingField): string {
-    return (field.type || 'text').toLowerCase();
-  }
-
-  private setDraftHtmlFromMarkdown(md: string): void {
-    this.draftMarkdown = md;
-    if (!md?.trim()) {
-      this.draftHtmlSafe = null;
-      return;
-    }
-    this.draftHtmlSafe = this.sanitizer.bypassSecurityTrustHtml(renderMarkdownForDisplay(md));
-  }
-
-  /** True when the selected draft is the latest (edits / resume baseline apply here only). */
-  isViewingLatestSowVersion(): boolean {
-    return (
-      this.sowDraftVersions.length > 0 &&
-      this.selectedSowVersionIndex === this.sowDraftVersions.length - 1
-    );
-  }
-
-  /** While a new version is being generated, keep prior version(s) in tabs but hide the body. */
-  showRegeneratingPlaceholder(): boolean {
-    return this.isGenerating && this.nextSowDraftMode === 'append';
-  }
-
-  selectSowVersion(index: number): void {
-    if (index < 0 || index >= this.sowDraftVersions.length) {
-      return;
-    }
-    this.selectedSowVersionIndex = index;
-    const v = this.sowDraftVersions[index];
-    this.extractedFieldsState = JSON.parse(JSON.stringify(v.extractedFields)) as Record<string, unknown>;
-    this.setDraftHtmlFromMarkdown(v.markdown);
-    this.cancelEditingExtractedFields();
-  }
-
-  private handleDraftResponse(res: Record<string, unknown>): void {
-    const status = String(res['status'] ?? '').trim();
-    if (status === 'validation_requirement_to_fulfill') {
-      this.showMissingFieldsStep = true;
-      this.validationStepMessage =
-        typeof res['message'] === 'string' ? res['message'] : '';
-      this.missingFields = Array.isArray(res['missing_fields'])
-        ? (res['missing_fields'] as ContractMissingField[])
-        : [];
-      this.extractedFieldsState = {
-        ...((res['extracted_fields'] as Record<string, unknown>) || {}),
-      };
-      this.initUserFilledFromMissing(this.missingFields);
-      if (this.sowDraftVersions.length > 0) {
-        const last = this.sowDraftVersions[this.sowDraftVersions.length - 1];
-        this.selectedSowVersionIndex = this.sowDraftVersions.length - 1;
-        this.setDraftHtmlFromMarkdown(last.markdown);
-      } else {
-        this.draftMarkdown = '';
-        this.draftHtmlSafe = null;
-      }
-      this.generatedContent = '';
-      if (this.missingFields.length > 0) {
-        setTimeout(() => {
-          this.missingFieldsPanel?.nativeElement?.scrollIntoView({
-            behavior: 'smooth',
-            block: 'start',
-          });
-        }, 100);
-      }
-      return;
-    }
-    if (status === 'draft_generated') {
-      this.showMissingFieldsStep = false;
-      this.validationStepMessage = '';
-      this.missingFields = [];
-      const extracted = {
-        ...((res['extracted_fields'] as Record<string, unknown>) || {}),
-      };
-      const content = (res['draft_content'] as string) || '';
-      const entry: SowDraftVersion = {
-        markdown: content,
-        extractedFields: extracted,
-      };
-
-      if (this.nextSowDraftMode === 'append' && this.sowDraftVersions.length > 0) {
-        this.sowDraftVersions = [...this.sowDraftVersions, entry];
-      } else {
-        this.sowDraftVersions = [entry];
-      }
-      this.selectedSowVersionIndex = this.sowDraftVersions.length - 1;
-      this.nextSowDraftMode = 'replace';
-
-      this.extractedFieldsState = JSON.parse(JSON.stringify(extracted)) as Record<string, unknown>;
-      this.extractedFieldsBaselineSnapshot = JSON.parse(
-        JSON.stringify(extracted)
-      ) as Record<string, unknown>;
-      this.editingExtractedFields = false;
-      this.editableExtractedStrings = {};
-      this.setDraftHtmlFromMarkdown(content);
-      this.generatedContent = '';
-      return;
-    }
-    this.generatedContent =
-      'Unexpected response from contract draft service. Please try again or contact support.';
-  }
-
-  async generate(): Promise<void> {
-    if (!this.canGenerate || !this.scopeOfWorkFile) {
-      return;
-    }
-
-    this.nextSowDraftMode = 'replace';
-    this.isGenerating = true;
-    this.generatedContent = '';
-    this.showMissingFieldsStep = false;
-    this.showDraftResultHintAfterApplyRegenerate = false;
-
-    try {
-      this.lastScopeOfWorkFileName = this.scopeOfWorkFile?.name || '';
-      const formData = this.buildMultipartFormData();
-      const res = (await firstValueFrom(
-        this.chatService.postContractDraftMultipart(formData)
-      )) as Record<string, unknown>;
-
-      this.handleDraftResponse(res);
-    } catch (e) {
-      console.error('[SlideCreationPromptFlow] Contract draft failed', e);
-      this.generatedContent =
-        'An error occurred while generating the draft contract. Please try again.';
-      this.draftHtmlSafe = null;
-      this.draftMarkdown = '';
-      this.sowDraftVersions = [];
-      this.selectedSowVersionIndex = 0;
-    } finally {
-      this.isGenerating = false;
-    }
-  }
-
-  async submitMissingFields(): Promise<void> {
-    if (!this.canSubmitMissingFields) {
-      return;
-    }
-
-    this.nextSowDraftMode = this.sowDraftVersions.length > 0 ? 'append' : 'replace';
-
-    const user_filled_fields: Record<string, unknown> = {};
-    for (const f of this.missingFields) {
-      const raw = this.userFilledFields[f.field_key];
-      user_filled_fields[f.field_key] = this.coerceUserValue(f, raw);
-    }
-
-    this.isGenerating = true;
-    try {
-      const res = (await firstValueFrom(
-        this.chatService.postContractDraftResume({
-          contract_type: this.getContractTypeFlags(),
-          prid: this.prid.trim(),
-          flex_id: this.flexId.trim(),
-          extracted_fields: JSON.parse(JSON.stringify(this.extractedFieldsState)) as Record<string, unknown>,
-          user_filled_fields,
-        })
-      )) as Record<string, unknown>;
-
-      this.handleDraftResponse(res);
-    } catch (e) {
-      console.error('[SlideCreationPromptFlow] Resume draft failed', e);
-      this.generatedContent =
-        'An error occurred while submitting required fields. Please try again.';
-    } finally {
-      this.isGenerating = false;
-    }
-  }
-
-  /**
-   * Send the draft for the **currently selected version** to the main chat via TL chat bridge
-   * (same path as guided TL content). Closes the SOW modal without prefilling the composer.
-   */
-  generateSowInChat(): void {
-    const v = this.sowDraftVersions[this.selectedSowVersionIndex];
-    const body = v?.markdown?.trim() || this.draftMarkdown?.trim();
-    if (!body) {
-      return;
-    }
-    const versionNumber = this.selectedSowVersionIndex + 1;
-    this.chatEditWorkflow.pushSowDraftToChat(body, versionNumber);
-    this.ddcFlowService.closeFlow();
-  }
-
-  startEditingExtractedFields(): void {
-    if (!this.isViewingLatestSowVersion()) {
-      return;
-    }
-    this.editingExtractedFields = true;
-    const next: Record<string, string> = {};
-    for (const [k, v] of Object.entries(this.extractedFieldsState)) {
-      if (this.isInternalExtractedFieldKey(k)) {
-        continue;
-      }
-      next[k] = this.formatFieldForInput(v);
-    }
-    this.editableExtractedStrings = next;
-  }
-
-  cancelEditingExtractedFields(): void {
-    this.editingExtractedFields = false;
-    this.editableExtractedStrings = {};
-  }
-
-  onEditableExtractedChange(key: string, value: string): void {
-    this.editableExtractedStrings = { ...this.editableExtractedStrings, [key]: value };
-  }
-
-  async applyExtractedEditsAndRegenerate(): Promise<void> {
-    if (!this.editingExtractedFields || !this.isViewingLatestSowVersion()) {
-      return;
-    }
-
-    this.nextSowDraftMode = 'append';
-
-    const user_filled_fields: Record<string, unknown> = {};
-    const changed_field_keys: string[] = [];
-    for (const key of Object.keys(this.editableExtractedStrings)) {
-      const orig = this.extractedFieldsBaselineSnapshot[key];
-      const parsed = this.parseEditableFieldValue(this.editableExtractedStrings[key], orig);
-      if (!this.areFieldValuesEqual(orig, parsed)) {
-        user_filled_fields[key] = parsed;
-        changed_field_keys.push(key);
-      }
-    }
-
-    this.isGenerating = true;
-    try {
-      const res = (await firstValueFrom(
-        this.chatService.postContractDraftResumeEdit({
-          contract_type: this.getContractTypeFlags(),
-          prid: this.prid.trim(),
-          flex_id: this.flexId.trim(),
-          extracted_fields: JSON.parse(JSON.stringify(this.extractedFieldsBaselineSnapshot)) as Record<
-            string,
-            unknown
-          >,
-          user_filled_fields,
-          previous_draft_content: this.draftMarkdown ?? '',
-          changed_field_keys,
-        })
-      )) as Record<string, unknown>;
-
-      this.handleDraftResponse(res);
-      this.cancelEditingExtractedFields();
-      if (String(res['status'] ?? '').trim() === 'draft_generated') {
-        this.showDraftResultHintAfterApplyRegenerate = true;
-      }
-    } catch (e) {
-      console.error('[SlideCreationPromptFlow] Regenerate from edited fields failed', e);
-      this.generatedContent =
-        'An error occurred while regenerating the draft. Please try again.';
-    } finally {
-      this.isGenerating = false;
-    }
-  }
-
-  private formatFieldForInput(v: unknown): string {
-    if (v === null || v === undefined) {
-      return '';
-    }
-    if (typeof v === 'object') {
-      return JSON.stringify(v);
-    }
-    return String(v);
-  }
-
-  private parseEditableFieldValue(raw: string, original: unknown): unknown {
-    const s = raw.trim();
-    if (original === undefined) {
-      if (s === '') {
-        return '';
-      }
-      try {
-        return JSON.parse(s);
-      } catch {
-        return s;
-      }
-    }
-    if (original === null && s === '') {
-      return null;
-    }
-    if (typeof original === 'number') {
-      const n = Number(s);
-      return Number.isNaN(n) ? original : n;
-    }
-    if (typeof original === 'boolean') {
-      const low = s.toLowerCase();
-      return low === 'true' || low === '1' || low === 'yes';
-    }
-    if (original !== null && typeof original === 'object') {
-      try {
-        return JSON.parse(s || 'null');
-      } catch {
-        return raw;
-      }
-    }
-    return s;
-  }
-
-  private areFieldValuesEqual(a: unknown, b: unknown): boolean {
-    if (a === b) {
-      return true;
-    }
-    try {
-      return JSON.stringify(a) === JSON.stringify(b);
-    } catch {
-      return false;
-    }
-  }
-
-  /** Entries for *ngFor over extracted_fields (object keys) */
-  extractedFieldEntries(): { key: string; value: unknown }[] {
-    return Object.entries(this.extractedFieldsState)
-      .filter(([key]) => !this.isInternalExtractedFieldKey(key))
-      .map(([key, value]) => ({ key, value }));
-  }
-}
+import json
+
+def build_field_extraction_prompt(
+    document_text: str,
+    field_definitions: list,
+) -> str:
+    fields_spec = "\n".join(
+        f'- "{fd["field_key"]}": {fd.get("prompt_hint", fd["label"])} '
+        f'(type: {fd.get("type", "text")}'
+        f'{", options: " + str(fd["options"]) if fd.get("options") else ""})'
+        for fd in field_definitions
+    )
+
+    return f"""You are a contract analysis assistant. Extract structured field values from the following document text.
+
+DOCUMENT TEXT:
+{document_text}
+
+FIELDS TO EXTRACT:
+{fields_spec}
+
+INSTRUCTIONS:
+1. Read the document carefully and extract a value for each field listed above.
+2. If a field value is clearly stated in the document, provide the exact value.
+3. If a field has predefined options, choose the closest matching option.
+4. If a field value cannot be determined from the document, set it to null.
+5. For date fields, use ISO format (YYYY-MM-DD).
+6. For number fields, provide numeric values without currency symbols.
+7. For boolean fields, use true or false.
+8. For array fields, return a JSON array of strings.
+
+Return ONLY a valid JSON object with field_key as keys and extracted values. No other text.
+"""
+
+
+def build_sow_generation_prompt(
+    extracted_fields: dict,
+    contract_type: str,
+    template_text: str = "",
+) -> str:
+    """Build a prompt that generates a real, complete SOW document."""
+
+    party_1 = extracted_fields.get("primary_party_name", "[____]")
+    party_1_type = extracted_fields.get("primary_party_type", "[____]")
+    party_2 = extracted_fields.get("counterparty_name", "[____]")
+    party_2_type = extracted_fields.get("counterparty_type", "[____]")
+    contact_email = extracted_fields.get("contact_email", "[____]")
+
+    agreement_title = extracted_fields.get("agreement_title", f"{contract_type} Agreement")
+    effective_date = extracted_fields.get("effective_date", "[____]")
+    expiration_date = extracted_fields.get("expiration_date", "[____]")
+    jurisdiction = extracted_fields.get("jurisdiction", "[____]")
+    governing_law = extracted_fields.get("governing_law", "[____]")
+
+    payment_terms = extracted_fields.get("payment_terms", "[____]")
+    currency = extracted_fields.get("currency", "USD")
+    total_value = extracted_fields.get("total_value", 0) or 0
+    pricing_model = extracted_fields.get("pricing_model", "[____]")
+
+    scope_description = extracted_fields.get("scope_description", "[____]")
+    deliverables = extracted_fields.get("deliverables", [])
+    timeline_start = extracted_fields.get("timeline_start", "[____]")
+    timeline_end = extracted_fields.get("timeline_end", "[____]")
+
+    confidentiality_required = extracted_fields.get("confidentiality_required", False)
+    liability_cap_type = extracted_fields.get("liability_cap_type", "[____]")
+    liability_cap_value = extracted_fields.get("liability_cap_value", "[____]")
+    termination_notice = extracted_fields.get("termination_notice_period", "[____]")
+    indemnity_required = extracted_fields.get("indemnity_required", False)
+
+    # Build deliverables as numbered list (LLM will format into table)
+    deliverables_list = ""
+    if isinstance(deliverables, list) and deliverables:
+        for i, d in enumerate(deliverables, 1):
+            deliverables_list += f"  {i}. {d}\n"
+    else:
+        deliverables_list = "  1. As described in the Scope of Work\n"
+
+    template_guidance = ""
+    if template_text and template_text.strip():
+        template_guidance = f"""
+TEMPLATE-DRIVEN FORMAT REQUIREMENT:
+- A user-provided SOW template is supplied below.
+- Keep the template's section structure, heading style, numbering style, and formatting pattern as closely as possible.
+- Replace template placeholders with extracted values when available.
+- If template content conflicts with extracted values, extracted values take priority.
+- Keep legal completeness and enforceability in final output.
+
+<USER_TEMPLATE>
+{template_text}
+</USER_TEMPLATE>
+"""
+
+    return f"""You are a senior legal contract drafter. Generate a COMPLETE, REAL Statement of Work (SOW) document — not a template or outline. Write the full legal text for every section, ready for signature.
+
+Use the extracted contract data below to populate the document. Where data is marked [____], keep the placeholder.
+{template_guidance}
+
+---
+
+NOW GENERATE THE FULL SOW DOCUMENT IN THIS EXACT FORMAT:
+
+---
+
+**STATEMENT OF WORK**
+
+**{agreement_title}**
+
+**SOW Reference No.:** [Auto-generated]
+**Effective Date:** {effective_date}
+**Expiration Date:** {expiration_date}
+
+---
+
+**PARTIES**
+
+This Statement of Work ("SOW") is entered into as of {effective_date} ("Effective Date") by and between:
+
+**"{party_1}"** ({party_1_type}), hereinafter referred to as the "Service Provider"
+
+AND
+
+**"{party_2}"** ({party_2_type}), hereinafter referred to as the "Client"
+Contact: {contact_email}
+
+(each a "Party" and collectively the "Parties")
+
+---
+
+Write the following sections with FULL legal text (not bullet points or outlines):
+
+**1. RECITALS**
+Write 2-3 paragraphs explaining why the Parties are entering this SOW, the business context, and the purpose of the engagement.
+
+**2. DEFINITIONS**
+Define at least these terms with proper legal definitions: "Confidential Information", "Deliverables", "Intellectual Property", "Services", "Work Product", "Acceptance Criteria", "Change Order", "Project Manager".
+
+**3. SCOPE OF WORK**
+Use this scope description and expand it into formal legal language with numbered sub-sections:
+{scope_description}
+
+**4. DELIVERABLES AND MILESTONES**
+Present deliverables in a table format:
+
+Deliverables extracted from the document:
+{deliverables_list}
+Based on the above deliverables, generate a detailed table with these columns: #, Deliverable Name, Description, Due Date, Acceptance Criteria. Fill in realistic details for each deliverable based on the scope and timeline ({timeline_start} to {timeline_end}).
+
+Add an "Acceptance Process" sub-section: Client has 10 business days to review. Written acceptance or rejection with reasons. Deemed accepted if no response within review period.
+
+**5. PROJECT TIMELINE**
+State Project Start as {timeline_start} and Project End as {timeline_end}, and include a milestone schedule table based on the deliverables above.
+
+**6. COMMERCIAL TERMS AND PAYMENT**
+Write full payment clauses covering:
+- Total Contract Value: {currency} {total_value:,}
+- Pricing Model: {pricing_model}
+- Payment Terms: {payment_terms}
+- Invoice submission process, payment due dates
+- Late payment penalties (1.5% per month on overdue amounts)
+- Expense reimbursement policy (pre-approved expenses only)
+
+**7. CONFIDENTIALITY**
+{"Write a full mutual confidentiality clause covering: definition of Confidential Information, obligations of receiving party, permitted disclosures, return/destruction of information, survival period of 3 years after termination." if confidentiality_required else "No confidentiality clause required for this SOW."}
+
+**8. INTELLECTUAL PROPERTY**
+Write clauses covering:
+- All Work Product created under this SOW belongs to Client upon full payment
+- Service Provider retains ownership of pre-existing IP
+- Service Provider grants Client a perpetual, non-exclusive license to pre-existing IP embedded in Deliverables
+- No open-source software without prior written approval
+
+**9. LIABILITY AND INDEMNIFICATION**
+- Liability Cap Type: {liability_cap_type}
+- Liability Cap Value: {liability_cap_value}
+- Write full limitation of liability clause with carve-outs for gross negligence, willful misconduct, and IP infringement
+{"- Write mutual indemnification clause covering third-party claims, IP infringement, and breach of confidentiality" if indemnity_required else ""}
+
+**10. TERM AND TERMINATION**
+- Term: {effective_date} to {expiration_date}
+- Termination for convenience: {termination_notice}
+- Termination for cause: 30 days written notice with cure period
+- Write effects of termination: payment for work completed, return of materials, survival clauses
+
+**11. GOVERNING LAW AND DISPUTE RESOLUTION**
+- Governing Law: {governing_law}
+- Jurisdiction: {jurisdiction}
+- Write dispute resolution process: negotiation (30 days) → mediation → binding arbitration
+
+**12. GENERAL PROVISIONS**
+Write standard clauses for: Force Majeure, Assignment, Amendments, Entire Agreement, Severability, Waiver, Notices, Independent Contractor, Counterparts.
+
+**13. SIGNATURE BLOCK**
+
+IN WITNESS WHEREOF, the Parties have executed this Statement of Work as of the Effective Date.
+
+| | **{party_1}** | **{party_2}** |
+|---|---|---|
+| **Signature** | _________________________ | _________________________ |
+| **Name** | [____] | [____] |
+| **Title** | [____] | [____] |
+| **Date** | [____] | [____] |
+
+---
+
+CRITICAL INSTRUCTIONS:
+- Write REAL legal text, not summaries or bullet lists
+- Keep the exact section headings and order shown above (1 through 13)
+- Every section must have complete, enforceable contract language
+- Use "shall" for obligations, "may" for permissions
+- Cross-reference other sections where appropriate (e.g., "as defined in Section 2")
+- Use consistent defined terms throughout (capitalize them)
+- The output must be a complete, signable SOW document
+- Use prose paragraphs for clauses; include tables only where explicitly requested above
+- Do NOT include any commentary, notes, explanations, or markdown code fences
+- Output ONLY the final SOW document text
+"""
+
+
+def build_sow_targeted_edit_prompt(
+    previous_draft_content: str,
+    changed_fields: dict,
+    contract_type: str,
+) -> str:
+    """Build a strict surgical-edit prompt that preserves unchanged text."""
+    changed_fields_json = json.dumps(changed_fields, indent=2, ensure_ascii=True)
+
+    return f"""You are a senior legal contract editor.
+
+Your task is to perform a STRICT, SURGICAL edit of an existing {contract_type} draft.
+
+IMPORTANT EDIT INPUTS
+- Existing draft (source of truth): between <EXISTING_DRAFT> tags.
+- Changed extracted fields only: between <CHANGED_FIELDS_JSON> tags.
+
+<CHANGED_FIELDS_JSON>
+{changed_fields_json}
+</CHANGED_FIELDS_JSON>
+
+<EXISTING_DRAFT>
+{previous_draft_content}
+</EXISTING_DRAFT>
+
+STRICT EDITING RULES
+1. Edit ONLY the portions directly impacted by the changed fields.
+2. Preserve ALL unrelated text exactly as-is:
+   - same section order and headings
+   - same paragraph structure
+   - same tables and signature block layout
+3. Do NOT rewrite, paraphrase, or improve unrelated sections.
+4. Do NOT add new sections or remove existing sections.
+5. Keep legal tone and existing formatting consistent with the original draft.
+6. If a changed field appears in multiple places (e.g. parties/signature), update those references only.
+7. If no meaningful edits are required, return the original draft unchanged.
+
+OUTPUT FORMAT
+- Return ONLY the final revised draft text.
+- No preface, no explanations, no markdown code fences.
+"""
