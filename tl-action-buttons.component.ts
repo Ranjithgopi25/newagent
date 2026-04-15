@@ -1,441 +1,259 @@
-from datetime import datetime, timezone
-import logging
-from typing import Any, Dict, List
+import json
 
-from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage
+def build_field_extraction_prompt(
+    document_text: str,
+    field_definitions: list,
+) -> str:
+    fields_spec = "\n".join(
+        f'- "{fd["field_key"]}": {fd.get("prompt_hint", fd["label"])} '
+        f'(type: {fd.get("type", "text")}'
+        f'{", options: " + str(fd["options"]) if fd.get("options") else ""})'
+        for fd in field_definitions
+    )
 
-from app.core.deps import get_llm_client_agent
+    return f"""You are a contract analysis assistant. Extract structured field values from the following document text.
 
-from .schema import ContractDraftState
-from .prompt import build_sow_generation_prompt, build_sow_targeted_edit_prompt
-from .validation import (
-    extract_document_text,
-    extract_document_text_from_bytes,
-    ask_llm_to_extract_fields,
-    validate_extracted_fields,
-    load_field_mapping,
-)
+DOCUMENT TEXT:
+{document_text}
 
-logger = logging.getLogger(__name__)
+FIELDS TO EXTRACT:
+{fields_spec}
 
-llm = get_llm_client_agent()
+INSTRUCTIONS:
+1. Read the document carefully and extract a value for each field listed above.
+2. If a field value is clearly stated in the document, provide the exact value.
+3. If a field has predefined options, choose the closest matching option.
+4. If a field value cannot be determined from the document, set it to null.
+5. For date fields, use ISO format (YYYY-MM-DD).
+6. For number fields, provide numeric values without currency symbols.
+7. For boolean fields, use true or false.
+8. For array fields, return a JSON array of strings.
 
-
-# ============================================================
-# HELPER: resolve active contract type from toggle dict
-# ============================================================
-
-def get_active_contract_type(contract_type_dict: Dict[str, bool]) -> str:
-    """Return the contract type key that is True (e.g. 'SOW')."""
-    type_map = {
-        "statement_of_work": "SOW",
-        "engagement_letter": "Engagement Letter",
-        "master_services_agreement": "MSA",
-        "non_disclosure_agreement": "NDA",
-        "product_license_agreement": "Product License Agreement",
-    }
-    for key, active in contract_type_dict.items():
-        if active:
-            return type_map.get(key, key.upper())
-    return "SOW"
+Return ONLY a valid JSON object with field_key as keys and extracted values. No other text.
+"""
 
 
-def build_draft_generated_response(
-    *,
-    contract_type_dict: Dict[str, bool],
-    prid: str,
-    flex_id: str,
-    extracted_fields: Dict[str, Any],
-    draft_content: str,
-) -> Dict[str, Any]:
-    """Build a consistent draft_generated response payload."""
-    return {
-        "status": "draft_generated",
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "contract_type": get_active_contract_type(contract_type_dict),
-        "prid": prid,
-        "flex_id": flex_id,
-        "extracted_fields": extracted_fields,
-        "draft_content": draft_content,
-    }
+def build_sow_generation_prompt(
+    extracted_fields: dict,
+    contract_type: str,
+    template_text: str = "",
+) -> str:
+    """Build a prompt that generates a real, complete SOW document."""
 
+    party_1 = extracted_fields.get("primary_party_name", "[____]")
+    party_1_type = extracted_fields.get("primary_party_type", "[____]")
+    party_2 = extracted_fields.get("counterparty_name", "[____]")
+    party_2_type = extracted_fields.get("counterparty_type", "[____]")
+    contact_email = extracted_fields.get("contact_email", "[____]")
 
-def build_validation_requirement_response(
-    message: str,
-    *,
-    missing_fields: List[Dict[str, Any]],
-    extracted_fields: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Build a consistent validation_requirement_to_fulfill response payload."""
-    return {
-        "status": "validation_requirement_to_fulfill",
-        "message": message,
-        "missing_fields": missing_fields,
-        "extracted_fields": extracted_fields,
-    }
+    agreement_title = extracted_fields.get("agreement_title", f"{contract_type} Agreement")
+    effective_date = extracted_fields.get("effective_date", "[____]")
+    expiration_date = extracted_fields.get("expiration_date", "[____]")
+    jurisdiction = extracted_fields.get("jurisdiction", "[____]")
+    governing_law = extracted_fields.get("governing_law", "[____]")
 
+    payment_terms = extracted_fields.get("payment_terms", "[____]")
+    currency = extracted_fields.get("currency", "USD")
+    total_value = extracted_fields.get("total_value", 0) or 0
+    pricing_model = extracted_fields.get("pricing_model", "[____]")
 
-def validate_required_fields(extracted_fields: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate extracted fields against required field mapping definitions."""
-    mapping = load_field_mapping()
-    field_definitions = mapping.get("field_definitions", [])
-    return validate_extracted_fields(extracted_fields, field_definitions)
+    scope_description = extracted_fields.get("scope_description", "[____]")
+    deliverables = extracted_fields.get("deliverables", [])
+    timeline_start = extracted_fields.get("timeline_start", "[____]")
+    timeline_end = extracted_fields.get("timeline_end", "[____]")
 
+    confidentiality_required = extracted_fields.get("confidentiality_required", False)
+    liability_cap_type = extracted_fields.get("liability_cap_type", "[____]")
+    liability_cap_value = extracted_fields.get("liability_cap_value", "[____]")
+    termination_notice = extracted_fields.get("termination_notice_period", "[____]")
+    indemnity_required = extracted_fields.get("indemnity_required", False)
 
-def extract_optional_template_text(template_payload: Dict[str, Any]) -> str:
-    """Extract text from optional template upload payload."""
-    payload = template_payload or {}
-    file_bytes = payload.get("file_bytes")
-    file_path = (payload.get("file_path") or "").strip()
-    if file_bytes is not None:
-        file_name = payload.get("file_name") or "template"
-        raw = file_bytes if isinstance(file_bytes, (bytes, bytearray)) else bytes(file_bytes)
-        try:
-            return extract_document_text_from_bytes(raw, str(file_name))
-        except Exception as exc:
-            logger.warning("[TEMPLATE] Failed to extract template text from bytes: %s", exc)
-            return ""
-    if file_path:
-        try:
-            return extract_document_text(file_path)
-        except Exception as exc:
-            logger.warning("[TEMPLATE] Failed to extract template text from path: %s", exc)
-            return ""
-    return ""
-
-
-# ============================================================
-# NODE: EXTRACT_DOCUMENT
-# ============================================================
-
-def extract_document_node(state: ContractDraftState):
-    """Read the uploaded document and extract text content.
-
-    Supports either:
-    - Server path: ``document_upload.file_path`` (JSON / CLI)
-    - Browser upload: ``document_upload.file_bytes`` + ``file_name`` (multipart, no temp file)
-    """
-    du = state.document_upload or {}
-    file_bytes = du.get("file_bytes")
-    file_path = (du.get("file_path") or "").strip()
-
-    if file_bytes is not None:
-        file_name = du.get("file_name") or "document"
-        if isinstance(file_name, str) and not file_name.strip():
-            file_name = "document"
-        logger.info("[EXTRACT_DOCUMENT] Extracting text from in-memory upload (%s)", file_name)
-        raw = file_bytes if isinstance(file_bytes, (bytes, bytearray)) else bytes(file_bytes)
-        document_text = extract_document_text_from_bytes(raw, str(file_name))
-    elif file_path:
-        logger.info("[EXTRACT_DOCUMENT] Extracting text from path %s", file_path)
-        document_text = extract_document_text(file_path)
+    # Build deliverables as numbered list (LLM will format into table)
+    deliverables_list = ""
+    if isinstance(deliverables, list) and deliverables:
+        for i, d in enumerate(deliverables, 1):
+            deliverables_list += f"  {i}. {d}\n"
     else:
-        raise ValueError(
-            "document_upload must include either 'file_bytes' + 'file_name' (browser) "
-            "or 'file_path' (server path)"
-        )
+        deliverables_list = "  1. As described in the Scope of Work\n"
 
-    return {
-        "document_text": document_text,
-    }
+    template_guidance = ""
+    if template_text and template_text.strip():
+        template_guidance = f"""
+TEMPLATE-DRIVEN FORMAT REQUIREMENT:
+- A user-provided SOW template is supplied below.
+- Keep the template's section structure, heading style, numbering style, and formatting pattern as closely as possible.
+- Replace template placeholders with extracted values when available.
+- If template content conflicts with extracted values, extracted values take priority.
+- Keep legal completeness and enforceability in final output.
 
+<USER_TEMPLATE>
+{template_text}
+</USER_TEMPLATE>
+"""
 
-# ============================================================
-# NODE: LLM_FIELD_EXTRACTION
-# ============================================================
+    return f"""You are a senior legal contract drafter. Generate a COMPLETE, REAL Statement of Work (SOW) document — not a template or outline. Write the full legal text for every section, ready for signature.
 
-async def llm_field_extraction_node(state: ContractDraftState):
-    """Use LLM to extract structured fields from document text."""
-    logger.info("[LLM_FIELD_EXTRACTION] Extracting fields via LLM")
+Use the extracted contract data below to populate the document. Where data is marked [____], keep the placeholder.
+{template_guidance}
 
-    mapping = load_field_mapping()
-    field_definitions = mapping.get("field_definitions", [])
+---
 
-    extracted = await ask_llm_to_extract_fields(state.document_text, field_definitions)
-    template_text = extract_optional_template_text(state.template)
-    if template_text:
-        extracted["__template_text"] = template_text
+NOW GENERATE THE FULL SOW DOCUMENT IN THIS EXACT FORMAT:
 
-    logger.info("[LLM_FIELD_EXTRACTION] Extracted %d fields", len(extracted))
-    return {
-        "extracted_fields": extracted,
-    }
+---
 
+**STATEMENT OF WORK**
 
-# ============================================================
-# NODE: VALIDATE_FIELDS
-# ============================================================
+**{agreement_title}**
 
-def validate_fields_node(state: ContractDraftState):
-    """Validate extracted fields against field_mapping.json required fields."""
-    logger.info("[VALIDATE_FIELDS] Validating extracted fields")
+**SOW Reference No.:** [Auto-generated]
+**Effective Date:** {effective_date}
+**Expiration Date:** {expiration_date}
 
-    mapping = load_field_mapping()
-    field_definitions = mapping.get("field_definitions", [])
+---
 
-    result = validate_extracted_fields(state.extracted_fields, field_definitions)
+**PARTIES**
 
-    return {
-        "validation_passed": result["valid"],
-        "missing_fields": result["missing_fields"],
-    }
+This Statement of Work ("SOW") is entered into as of {effective_date} ("Effective Date") by and between:
 
+**"{party_1}"** ({party_1_type}), hereinafter referred to as the "Service Provider"
 
-# ============================================================
-# NODE: DRAFT_GENERATION
-# ============================================================
+AND
 
-async def draft_generation_node(state: ContractDraftState):
-    """Use LLM to generate SOW contract draft from extracted fields."""
-    active_type = get_active_contract_type(state.contract_type)
+**"{party_2}"** ({party_2_type}), hereinafter referred to as the "Client"
+Contact: {contact_email}
 
-    logger.info("[DRAFT_GENERATION] Generating %s draft", active_type)
-    template_text = str(state.extracted_fields.get("__template_text", "") or "")
-    if not template_text and state.template:
-        template_text = extract_optional_template_text(state.template)
+(each a "Party" and collectively the "Parties")
 
-    prompt = build_sow_generation_prompt(
-        extracted_fields=state.extracted_fields,
-        contract_type=active_type,
-        template_text=template_text,
-    )
+---
 
-    response = await llm.ainvoke([HumanMessage(content=prompt)])
-    draft_text = response.content if hasattr(response, "content") else str(response)
+Write the following sections with FULL legal text (not bullet points or outlines):
 
-    return {
-        "draft_content": draft_text,
-    }
+**1. RECITALS**
+Write 2-3 paragraphs explaining why the Parties are entering this SOW, the business context, and the purpose of the engagement.
 
+**2. DEFINITIONS**
+Define at least these terms with proper legal definitions: "Confidential Information", "Deliverables", "Intellectual Property", "Services", "Work Product", "Acceptance Criteria", "Change Order", "Project Manager".
 
-# ============================================================
-# NODE: ASSEMBLE_RESPONSE
-# ============================================================
+**3. SCOPE OF WORK**
+Use this scope description and expand it into formal legal language with numbered sub-sections:
+{scope_description}
 
-def assemble_response_node(state: ContractDraftState):
-    """Build the final response JSON."""
-    logger.info("[ASSEMBLE_RESPONSE] Building final response")
+**4. DELIVERABLES AND MILESTONES**
+Present deliverables in a table format:
 
-    return {
-        "final_response": build_draft_generated_response(
-            contract_type_dict=state.contract_type,
-            prid=state.prid,
-            flex_id=state.flex_id,
-            extracted_fields=state.extracted_fields,
-            draft_content=state.draft_content,
-        ),
-    }
+Deliverables extracted from the document:
+{deliverables_list}
+Based on the above deliverables, generate a detailed table with these columns: #, Deliverable Name, Description, Due Date, Acceptance Criteria. Fill in realistic details for each deliverable based on the scope and timeline ({timeline_start} to {timeline_end}).
 
+Add an "Acceptance Process" sub-section: Client has 10 business days to review. Written acceptance or rejection with reasons. Deemed accepted if no response within review period.
 
-# ============================================================
-# BUILD GRAPH (single graph for both initial and resume flows)
-# ============================================================
+**5. PROJECT TIMELINE**
+State Project Start as {timeline_start} and Project End as {timeline_end}, and include a milestone schedule table based on the deliverables above.
 
-def build_contract_draft_graph():
-    graph = StateGraph(ContractDraftState)
+**6. COMMERCIAL TERMS AND PAYMENT**
+Write full payment clauses covering:
+- Total Contract Value: {currency} {total_value:,}
+- Pricing Model: {pricing_model}
+- Payment Terms: {payment_terms}
+- Invoice submission process, payment due dates
+- Late payment penalties (1.5% per month on overdue amounts)
+- Expense reimbursement policy (pre-approved expenses only)
 
-    graph.add_node("EXTRACT_DOCUMENT", extract_document_node)
-    graph.add_node("LLM_FIELD_EXTRACTION", llm_field_extraction_node)
-    graph.add_node("VALIDATE_FIELDS", validate_fields_node)
-    graph.add_node("DRAFT_GENERATION", draft_generation_node)
-    graph.add_node("ASSEMBLE_RESPONSE", assemble_response_node)
+**7. CONFIDENTIALITY**
+{"Write a full mutual confidentiality clause covering: definition of Confidential Information, obligations of receiving party, permitted disclosures, return/destruction of information, survival period of 3 years after termination." if confidentiality_required else "No confidentiality clause required for this SOW."}
 
-    # Entry: route based on whether we already have validated fields
-    graph.set_conditional_entry_point(
-        lambda state: "DRAFT_GENERATION"
-        if state.validation_passed and state.extracted_fields
-        else "EXTRACT_DOCUMENT"
-    )
+**8. INTELLECTUAL PROPERTY**
+Write clauses covering:
+- All Work Product created under this SOW belongs to Client upon full payment
+- Service Provider retains ownership of pre-existing IP
+- Service Provider grants Client a perpetual, non-exclusive license to pre-existing IP embedded in Deliverables
+- No open-source software without prior written approval
 
-    # Extraction flow
-    graph.add_edge("EXTRACT_DOCUMENT", "LLM_FIELD_EXTRACTION")
-    graph.add_edge("LLM_FIELD_EXTRACTION", "VALIDATE_FIELDS")
-    graph.add_conditional_edges(
-        "VALIDATE_FIELDS",
-        lambda state: "DRAFT_GENERATION" if state.validation_passed else END,
-    )
+**9. LIABILITY AND INDEMNIFICATION**
+- Liability Cap Type: {liability_cap_type}
+- Liability Cap Value: {liability_cap_value}
+- Write full limitation of liability clause with carve-outs for gross negligence, willful misconduct, and IP infringement
+{"- Write mutual indemnification clause covering third-party claims, IP infringement, and breach of confidentiality" if indemnity_required else ""}
 
-    # Draft generation flow
-    graph.add_edge("DRAFT_GENERATION", "ASSEMBLE_RESPONSE")
-    graph.add_edge("ASSEMBLE_RESPONSE", END)
+**10. TERM AND TERMINATION**
+- Term: {effective_date} to {expiration_date}
+- Termination for convenience: {termination_notice}
+- Termination for cause: 30 days written notice with cure period
+- Write effects of termination: payment for work completed, return of materials, survival clauses
 
-    return graph.compile()
+**11. GOVERNING LAW AND DISPUTE RESOLUTION**
+- Governing Law: {governing_law}
+- Jurisdiction: {jurisdiction}
+- Write dispute resolution process: negotiation (30 days) → mediation → binding arbitration
 
+**12. GENERAL PROVISIONS**
+Write standard clauses for: Force Majeure, Assignment, Amendments, Entire Agreement, Severability, Waiver, Notices, Independent Contractor, Counterparts.
 
-# ============================================================
-# PUBLIC API
-# ============================================================
+**13. SIGNATURE BLOCK**
 
-async def run_contract_draft_graph(input_data: dict) -> dict:
-    """Step 1: Extract document, extract fields via LLM, validate.
-    Returns missing fields if validation fails, or the generated draft if all fields are present."""
-    graph = build_contract_draft_graph()
+IN WITNESS WHEREOF, the Parties have executed this Statement of Work as of the Effective Date.
 
-    initial_state = ContractDraftState(
-        contract_type=input_data.get("contract_type", {}),
-        document_upload=input_data.get("document_upload", {}),
-        supporting_document=input_data.get("supporting_document", {}),
-        prid=input_data.get("prid", ""),
-        flex_id=input_data.get("flex_id", ""),
-        template=input_data.get("template", {}),
-        lookup_in_icertis=input_data.get("lookup_in_icertis", False),
-    )
+| | **{party_1}** | **{party_2}** |
+|---|---|---|
+| **Signature** | _________________________ | _________________________ |
+| **Name** | [____] | [____] |
+| **Title** | [____] | [____] |
+| **Date** | [____] | [____] |
 
-    result = await graph.ainvoke(initial_state)
+---
 
-    if not result.get("validation_passed", False):
-        return build_validation_requirement_response(
-            "Required fields are missing. Please provide the following fields.",
-            missing_fields=result.get("missing_fields", []),
-            extracted_fields=result.get("extracted_fields", {}),
-        )
-
-    return result.get("final_response", {})
+CRITICAL INSTRUCTIONS:
+- Write REAL legal text, not summaries or bullet lists
+- Keep the exact section headings and order shown above (1 through 13)
+- Every section must have complete, enforceable contract language
+- Use "shall" for obligations, "may" for permissions
+- Cross-reference other sections where appropriate (e.g., "as defined in Section 2")
+- Use consistent defined terms throughout (capitalize them)
+- The output must be a complete, signable SOW document
+- Use prose paragraphs for clauses; include tables only where explicitly requested above
+- Do NOT include any commentary, notes, explanations, or markdown code fences
+- Output ONLY the final SOW document text
+"""
 
 
-async def resume_contract_draft_graph(input_data: dict) -> dict:
-    """Step 2: User provides the missing fields. Merge into extracted_fields,
-    re-validate, and proceed to draft generation using the same graph."""
+def build_sow_targeted_edit_prompt(
+    previous_draft_content: str,
+    changed_fields: dict,
+    contract_type: str,
+) -> str:
+    """Build a strict surgical-edit prompt that preserves unchanged text."""
+    changed_fields_json = json.dumps(changed_fields, indent=2, ensure_ascii=True)
 
-    extracted_fields = dict(input_data.get("extracted_fields", {}) or {})
-    user_filled_fields = input_data.get("user_filled_fields", {})
+    return f"""You are a senior legal contract editor.
 
-    # Merge user-provided values into extracted fields
-    extracted_fields.update(user_filled_fields)
+Your task is to perform a STRICT, SURGICAL edit of an existing {contract_type} draft.
 
-    # Re-validate before invoking graph
-    validation = validate_required_fields(extracted_fields)
+IMPORTANT EDIT INPUTS
+- Existing draft (source of truth): between <EXISTING_DRAFT> tags.
+- Changed extracted fields only: between <CHANGED_FIELDS_JSON> tags.
 
-    if not validation["valid"]:
-        return build_validation_requirement_response(
-            "Required fields are still missing. Please provide the following fields.",
-            missing_fields=validation["missing_fields"],
-            extracted_fields=extracted_fields,
-        )
+<CHANGED_FIELDS_JSON>
+{changed_fields_json}
+</CHANGED_FIELDS_JSON>
 
-    # Validation passed — same graph, but entry router skips to DRAFT_GENERATION
-    graph = build_contract_draft_graph()
+<EXISTING_DRAFT>
+{previous_draft_content}
+</EXISTING_DRAFT>
 
-    initial_state = ContractDraftState(
-        contract_type=input_data.get("contract_type", {}),
-        prid=input_data.get("prid", ""),
-        flex_id=input_data.get("flex_id", ""),
-        extracted_fields=extracted_fields,
-        validation_passed=True,
-    )
+STRICT EDITING RULES
+1. Edit ONLY the portions directly impacted by the changed fields.
+2. Preserve ALL unrelated text exactly as-is:
+   - same section order and headings
+   - same paragraph structure
+   - same tables and signature block layout
+3. Do NOT rewrite, paraphrase, or improve unrelated sections.
+4. Do NOT add new sections or remove existing sections.
+5. Keep legal tone and existing formatting consistent with the original draft.
+6. If a changed field appears in multiple places (e.g. parties/signature), update those references only.
+7. If no meaningful edits are required, return the original draft unchanged.
 
-    result = await graph.ainvoke(initial_state)
-    return result.get("final_response", {})
-
-
-def _has_required_sow_headings(content: str) -> bool:
-    """Basic guard that checks top-level sections still exist."""
-    required_headings = (
-        "**PARTIES**",
-        "**3. SCOPE OF WORK**",
-        "**6. COMMERCIAL TERMS AND PAYMENT**",
-        "**13. SIGNATURE BLOCK**",
-    )
-    return all(h in content for h in required_headings)
-
-
-async def resume_contract_draft_targeted_edit_graph(input_data: dict) -> dict:
-    """Step 2b: Apply surgical edits to prior draft using changed fields only."""
-    extracted_fields = dict(input_data.get("extracted_fields", {}) or {})
-    user_filled_fields = dict(input_data.get("user_filled_fields", {}) or {})
-    previous_draft_content = str(input_data.get("previous_draft_content", "") or "")
-    changed_field_keys = input_data.get("changed_field_keys", [])
-    original_extracted_fields = dict(input_data.get("extracted_fields", {}) or {})
-    contract_type_dict = input_data.get("contract_type", {})
-    prid = input_data.get("prid", "")
-    flex_id = input_data.get("flex_id", "")
-
-    if not previous_draft_content.strip():
-        return {
-            "status": "error",
-            "message": "previous_draft_content is required for targeted resume-edit.",
-        }
-
-    if not user_filled_fields:
-        # Nothing changed: return previous draft unchanged and keep response shape.
-        return build_draft_generated_response(
-            contract_type_dict=contract_type_dict,
-            prid=prid,
-            flex_id=flex_id,
-            extracted_fields=extracted_fields,
-            draft_content=previous_draft_content,
-        )
-
-    extracted_fields.update(user_filled_fields)
-    effective_changed_keys = changed_field_keys or list(user_filled_fields.keys())
-    if not any(original_extracted_fields.get(key) != extracted_fields.get(key) for key in effective_changed_keys):
-        return build_draft_generated_response(
-            contract_type_dict=contract_type_dict,
-            prid=prid,
-            flex_id=flex_id,
-            extracted_fields=extracted_fields,
-            draft_content=previous_draft_content,
-        )
-
-    validation = validate_required_fields(extracted_fields)
-    if not validation["valid"]:
-        return build_validation_requirement_response(
-            "Required fields are still missing. Please provide the following fields.",
-            missing_fields=validation["missing_fields"],
-            extracted_fields=extracted_fields,
-        )
-
-    active_type = get_active_contract_type(contract_type_dict)
-    changed_fields_payload = {
-        key: {
-            "old": original_extracted_fields.get(key),
-            "new": extracted_fields.get(key),
-        }
-        for key in effective_changed_keys
-    }
-    prompt = build_sow_targeted_edit_prompt(
-        previous_draft_content=previous_draft_content,
-        changed_fields=changed_fields_payload,
-        contract_type=active_type,
-    )
-    response = await llm.ainvoke([HumanMessage(content=prompt)])
-    draft_text = response.content if hasattr(response, "content") else str(response)
-    draft_text = str(draft_text).strip()
-    if draft_text.startswith("```"):
-        draft_text = draft_text.strip("`")
-        if draft_text.lower().startswith("markdown"):
-            draft_text = draft_text[8:].strip()
-
-    if not draft_text or not _has_required_sow_headings(draft_text):
-        logger.warning(
-            "[TARGETED_RESUME_EDIT] Invalid targeted-edit output; retrying with full regenerate prompt."
-        )
-        template_text = str(extracted_fields.get(INTERNAL_TEMPLATE_TEXT_KEY, "") or "")
-        full_prompt = build_sow_generation_prompt(
-            extracted_fields=extracted_fields,
-            contract_type=active_type,
-            template_text=template_text,
-        )
-        full_response = await llm.ainvoke([HumanMessage(content=full_prompt)])
-        draft_text = full_response.content if hasattr(full_response, "content") else str(full_response)
-        draft_text = str(draft_text).strip()
-        if draft_text.startswith("```"):
-            draft_text = draft_text.strip("`")
-            if draft_text.lower().startswith("markdown"):
-                draft_text = draft_text[8:].strip()
-
-    if not draft_text:
-        logger.warning(
-            "[TARGETED_RESUME_EDIT] Empty regenerate output; using previous draft as last fallback."
-        )
-        draft_text = previous_draft_content.strip()
-
-    return build_draft_generated_response(
-        contract_type_dict=contract_type_dict,
-        prid=prid,
-        flex_id=flex_id,
-        extracted_fields=extracted_fields,
-        draft_content=draft_text,
-    )
-
+OUTPUT FORMAT
+- Return ONLY the final revised draft text.
+- No preface, no explanations, no markdown code fences.
+"""
