@@ -1,454 +1,700 @@
-from datetime import datetime, timezone
-import logging
-from typing import Any, Dict, List
-
-from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage
-
-from app.core.deps import get_llm_client_agent
-
-from .schema import ContractDraftState
-from .prompt import build_sow_generation_prompt, build_sow_targeted_edit_prompt
-from .validation import (
-    extract_document_text,
-    extract_document_text_from_bytes,
-    ask_llm_to_extract_fields,
-    validate_extracted_fields,
-    load_field_mapping,
-)
-
-logger = logging.getLogger(__name__)
-
-llm = get_llm_client_agent()
-
-
-# ============================================================
-# HELPER: resolve active contract type from toggle dict
-# ============================================================
-
-def get_active_contract_type(contract_type_dict: Dict[str, bool]) -> str:
-    """Return the contract type key that is True (e.g. 'SOW')."""
-    type_map = {
-        "statement_of_work": "SOW",
-        "engagement_letter": "Engagement Letter",
-        "master_services_agreement": "MSA",
-        "non_disclosure_agreement": "NDA",
-        "product_license_agreement": "Product License Agreement",
-    }
-    for key, active in contract_type_dict.items():
-        if active:
-            return type_map.get(key, key.upper())
-    return "SOW"
-
-
-def build_draft_generated_response(
-    *,
-    contract_type_dict: Dict[str, bool],
-    prid: str,
-    flex_id: str,
-    extracted_fields: Dict[str, Any],
-    draft_content: str,
-    template_text: str = "",
-) -> Dict[str, Any]:
-    """Build a consistent draft_generated response payload."""
-    return {
-        "status": "draft_generated",
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "contract_type": get_active_contract_type(contract_type_dict),
-        "prid": prid,
-        "flex_id": flex_id,
-        "extracted_fields": extracted_fields,
-        "draft_content": draft_content,
-        "template_text": template_text,
-    }
-
-
-def build_validation_requirement_response(
-    message: str,
-    *,
-    missing_fields: List[Dict[str, Any]],
-    extracted_fields: Dict[str, Any],
-    template_text: str = "",
-) -> Dict[str, Any]:
-    """Build a consistent validation_requirement_to_fulfill response payload."""
-    return {
-        "status": "validation_requirement_to_fulfill",
-        "message": message,
-        "missing_fields": missing_fields,
-        "extracted_fields": extracted_fields,
-        "template_text": template_text,
-    }
-
-
-def validate_required_fields(extracted_fields: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate extracted fields against required field mapping definitions."""
-    mapping = load_field_mapping()
-    field_definitions = mapping.get("field_definitions", [])
-    return validate_extracted_fields(extracted_fields, field_definitions)
-
-
-def extract_optional_template_text(template_payload: Dict[str, Any]) -> str:
-    """Extract text from optional template upload payload."""
-    payload = template_payload or {}
-    file_bytes = payload.get("file_bytes")
-    file_path = (payload.get("file_path") or "").strip()
-    if file_bytes is not None:
-        file_name = payload.get("file_name") or "template"
-        raw = file_bytes if isinstance(file_bytes, (bytes, bytearray)) else bytes(file_bytes)
-        try:
-            return extract_document_text_from_bytes(raw, str(file_name))
-        except Exception as exc:
-            logger.warning("[TEMPLATE] Failed to extract template text from bytes: %s", exc)
-            return ""
-    if file_path:
-        try:
-            return extract_document_text(file_path)
-        except Exception as exc:
-            logger.warning("[TEMPLATE] Failed to extract template text from path: %s", exc)
-            return ""
-    return ""
-
-
-# ============================================================
-# NODE: EXTRACT_DOCUMENT
-# ============================================================
-
-def extract_document_node(state: ContractDraftState):
-    """Read the uploaded document and extract text content.
-
-    Supports either:
-    - Server path: ``document_upload.file_path`` (JSON / CLI)
-    - Browser upload: ``document_upload.file_bytes`` + ``file_name`` (multipart, no temp file)
-    """
-    du = state.document_upload or {}
-    file_bytes = du.get("file_bytes")
-    file_path = (du.get("file_path") or "").strip()
-
-    if file_bytes is not None:
-        file_name = du.get("file_name") or "document"
-        if isinstance(file_name, str) and not file_name.strip():
-            file_name = "document"
-        logger.info("[EXTRACT_DOCUMENT] Extracting text from in-memory upload (%s)", file_name)
-        raw = file_bytes if isinstance(file_bytes, (bytes, bytearray)) else bytes(file_bytes)
-        document_text = extract_document_text_from_bytes(raw, str(file_name))
-    elif file_path:
-        logger.info("[EXTRACT_DOCUMENT] Extracting text from path %s", file_path)
-        document_text = extract_document_text(file_path)
-    else:
-        raise ValueError(
-            "document_upload must include either 'file_bytes' + 'file_name' (browser) "
-            "or 'file_path' (server path)"
-        )
-
-    return {
-        "document_text": document_text,
-    }
-
-
-# ============================================================
-# NODE: LLM_FIELD_EXTRACTION
-# ============================================================
-
-async def llm_field_extraction_node(state: ContractDraftState):
-    """Use LLM to extract structured fields from document text."""
-    logger.info("[LLM_FIELD_EXTRACTION] Extracting fields via LLM")
-
-    mapping = load_field_mapping()
-    field_definitions = mapping.get("field_definitions", [])
-
-    extracted = await ask_llm_to_extract_fields(state.document_text, field_definitions)
-    template_text = extract_optional_template_text(state.template)
-
-    logger.info("[LLM_FIELD_EXTRACTION] Extracted %d fields", len(extracted))
-    return {
-        "extracted_fields": extracted,
-        "template_text": template_text,
-    }
-
-
-# ============================================================
-# NODE: VALIDATE_FIELDS
-# ============================================================
-
-def validate_fields_node(state: ContractDraftState):
-    """Validate extracted fields against field_mapping.json required fields."""
-    logger.info("[VALIDATE_FIELDS] Validating extracted fields")
-
-    mapping = load_field_mapping()
-    field_definitions = mapping.get("field_definitions", [])
-
-    result = validate_extracted_fields(state.extracted_fields, field_definitions)
-
-    return {
-        "validation_passed": result["valid"],
-        "missing_fields": result["missing_fields"],
-    }
-
-
-# ============================================================
-# NODE: DRAFT_GENERATION
-# ============================================================
-
-async def draft_generation_node(state: ContractDraftState):
-    """Use LLM to generate SOW contract draft from extracted fields."""
-    active_type = get_active_contract_type(state.contract_type)
-
-    logger.info("[DRAFT_GENERATION] Generating %s draft", active_type)
-    template_text = str(state.template_text or "")
-    if not template_text and state.template:
-        template_text = extract_optional_template_text(state.template)
-
-    prompt = build_sow_generation_prompt(
-        extracted_fields=state.extracted_fields,
-        contract_type=active_type,
-        template_text=template_text,
-    )
-
-    response = await llm.ainvoke([HumanMessage(content=prompt)])
-    draft_text = response.content if hasattr(response, "content") else str(response)
-
-    return {
-        "draft_content": draft_text,
-    }
-
-
-# ============================================================
-# NODE: ASSEMBLE_RESPONSE
-# ============================================================
-
-def assemble_response_node(state: ContractDraftState):
-    """Build the final response JSON."""
-    logger.info("[ASSEMBLE_RESPONSE] Building final response")
-
-    return {
-        "final_response": build_draft_generated_response(
-            contract_type_dict=state.contract_type,
-            prid=state.prid,
-            flex_id=state.flex_id,
-            extracted_fields=state.extracted_fields,
-            draft_content=state.draft_content,
-            template_text=state.template_text,
-        ),
-    }
-
-
-# ============================================================
-# BUILD GRAPH (single graph for both initial and resume flows)
-# ============================================================
-
-def build_contract_draft_graph():
-    graph = StateGraph(ContractDraftState)
-
-    graph.add_node("EXTRACT_DOCUMENT", extract_document_node)
-    graph.add_node("LLM_FIELD_EXTRACTION", llm_field_extraction_node)
-    graph.add_node("VALIDATE_FIELDS", validate_fields_node)
-    graph.add_node("DRAFT_GENERATION", draft_generation_node)
-    graph.add_node("ASSEMBLE_RESPONSE", assemble_response_node)
-
-    # Entry: route based on whether we already have validated fields
-    graph.set_conditional_entry_point(
-        lambda state: "DRAFT_GENERATION"
-        if state.validation_passed and state.extracted_fields
-        else "EXTRACT_DOCUMENT"
-    )
-
-    # Extraction flow
-    graph.add_edge("EXTRACT_DOCUMENT", "LLM_FIELD_EXTRACTION")
-    graph.add_edge("LLM_FIELD_EXTRACTION", "VALIDATE_FIELDS")
-    graph.add_conditional_edges(
-        "VALIDATE_FIELDS",
-        lambda state: "DRAFT_GENERATION" if state.validation_passed else END,
-    )
-
-    # Draft generation flow
-    graph.add_edge("DRAFT_GENERATION", "ASSEMBLE_RESPONSE")
-    graph.add_edge("ASSEMBLE_RESPONSE", END)
-
-    return graph.compile()
-
-
-# ============================================================
-# PUBLIC API
-# ============================================================
-
-async def run_contract_draft_graph(input_data: dict) -> dict:
-    """Step 1: Extract document, extract fields via LLM, validate.
-    Returns missing fields if validation fails, or the generated draft if all fields are present."""
-    graph = build_contract_draft_graph()
-
-    initial_state = ContractDraftState(
-        contract_type=input_data.get("contract_type", {}),
-        document_upload=input_data.get("document_upload", {}),
-        supporting_document=input_data.get("supporting_document", {}),
-        prid=input_data.get("prid", ""),
-        flex_id=input_data.get("flex_id", ""),
-        template=input_data.get("template", {}),
-        lookup_in_icertis=input_data.get("lookup_in_icertis", False),
-        template_text=input_data.get("template_text", ""),
-    )
-
-    result = await graph.ainvoke(initial_state)
-
-    if not result.get("validation_passed", False):
-        return build_validation_requirement_response(
-            "Required fields are missing. Please provide the following fields.",
-            missing_fields=result.get("missing_fields", []),
-            extracted_fields=result.get("extracted_fields", {}),
-            template_text=result.get("template_text", ""),
-        )
-
-    return result.get("final_response", {})
-
-
-async def resume_contract_draft_graph(input_data: dict) -> dict:
-    """Step 2: User provides the missing fields. Merge into extracted_fields,
-    re-validate, and proceed to draft generation using the same graph."""
-
-    extracted_fields = dict(input_data.get("extracted_fields", {}) or {})
-    user_filled_fields = input_data.get("user_filled_fields", {})
-    template_text = input_data.get("template_text", "")
-
-    # Merge user-provided values into extracted fields
-    extracted_fields.update(user_filled_fields)
-
-    # Re-validate before invoking graph
-    validation = validate_required_fields(extracted_fields)
-
-    if not validation["valid"]:
-        return build_validation_requirement_response(
-            "Required fields are still missing. Please provide the following fields.",
-            missing_fields=validation["missing_fields"],
-            extracted_fields=extracted_fields,
-            template_text=template_text,
-        )
-
-    # Validation passed — same graph, but entry router skips to DRAFT_GENERATION
-    graph = build_contract_draft_graph()
-
-    initial_state = ContractDraftState(
-        contract_type=input_data.get("contract_type", {}),
-        prid=input_data.get("prid", ""),
-        flex_id=input_data.get("flex_id", ""),
-        extracted_fields=extracted_fields,
-        validation_passed=True,
-        template_text=template_text,
-    )
-
-    result = await graph.ainvoke(initial_state)
-    return result.get("final_response", {})
-
-
-def _has_required_sow_headings(content: str) -> bool:
-    """Basic guard that checks top-level sections still exist."""
-    required_headings = (
-        "**PARTIES**",
-        "**3. SCOPE OF WORK**",
-        "**6. COMMERCIAL TERMS AND PAYMENT**",
-        "**13. SIGNATURE BLOCK**",
-    )
-    return all(h in content for h in required_headings)
-
-
-async def resume_contract_draft_targeted_edit_graph(input_data: dict) -> dict:
-    """Step 2b: Apply surgical edits to prior draft using changed fields only."""
-    extracted_fields = dict(input_data.get("extracted_fields", {}) or {})
-    user_filled_fields = dict(input_data.get("user_filled_fields", {}) or {})
-    previous_draft_content = str(input_data.get("previous_draft_content", "") or "")
-    changed_field_keys = input_data.get("changed_field_keys", [])
-    original_extracted_fields = dict(input_data.get("extracted_fields", {}) or {})
-    contract_type_dict = input_data.get("contract_type", {})
-    prid = input_data.get("prid", "")
-    flex_id = input_data.get("flex_id", "")
-    template_text = input_data.get("template_text", "")
-
-    if not previous_draft_content.strip():
-        return {
-            "status": "error",
-            "message": "previous_draft_content is required for targeted resume-edit.",
+import { JsonPipe } from '@angular/common';
+import { Component, Input, OnInit, OnDestroy, ViewChild, ElementRef } from '@angular/core';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { FormsModule } from '@angular/forms';
+import { firstValueFrom, Subject, takeUntil } from 'rxjs';
+import { DdcFlowService } from '../../../core/services/ddc-flow.service';
+import { ChatEditWorkflowService } from '../../../core/services/chat-edit-workflow.service';
+import {
+  ChatService,
+  ContractMissingField,
+  ContractTypeFlags,
+} from '../../../core/services/chat.service';
+import { FileUploadComponent } from '../../../shared/ui/components/file-upload/file-upload.component';
+import { renderMarkdownForDisplay } from '../../../core/utils/edit-content.utils';
+
+/** One saved SOW draft response (user can switch between versions after regenerate). */
+export interface SowDraftVersion {
+  markdown: string;
+  extractedFields: Record<string, unknown>;
+}
+
+@Component({
+  selector: 'app-slide-creation-prompt-flow',
+  imports: [FormsModule, JsonPipe, FileUploadComponent],
+  templateUrl: './slide-creation-prompt-flow.component.html',
+  styleUrls: ['./slide-creation-prompt-flow.component.scss'],
+})
+export class SlideCreationPromptFlowComponent implements OnInit, OnDestroy {
+  @Input() hideBackButton = false;
+  @Input() openedFrom: 'quick-action' | 'guided-dialog' | null = null;
+  @ViewChild('scopeOfWorkUpload') scopeOfWorkUpload?: FileUploadComponent;
+  @ViewChild('supportingDocUpload') supportingDocUpload?: FileUploadComponent;
+  @ViewChild('sowTemplateUpload') sowTemplateUpload?: FileUploadComponent;
+  @ViewChild('missingFieldsPanel') missingFieldsPanel?: ElementRef<HTMLElement>;
+
+  isOpen = false;
+  isGenerating = false;
+  /** Legacy HTML banner (errors, ticket success) */
+  generatedContent = '';
+
+  scopeOfWorkFile: File | null = null;
+  supportingDocFile: File | null = null;
+  sowTemplateFile: File | null = null;
+
+  scopeOfWorkUploadError = false;
+  supportingDocUploadError = false;
+  sowTemplateUploadError = false;
+
+  prid = '';
+  flexId = '';
+  lookupInIcertis = false;
+
+  showMissingFieldsStep = false;
+  /** API message when validation fails (optional) */
+  validationStepMessage = '';
+  missingFields: ContractMissingField[] = [];
+  /** Latest merged extracted fields from the API (for resume + display) */
+  extractedFieldsState: Record<string, unknown> = {};
+  userFilledFields: Record<string, unknown> = {};
+  templateTextContext = '';
+
+  draftMarkdown = '';
+  draftHtmlSafe: SafeHtml | null = null;
+  showExtractedSummary = false;
+
+  /** Successful drafts in order; regenerating appends Version 2, 3, … */
+  sowDraftVersions: SowDraftVersion[] = [];
+  /** Index into `sowDraftVersions` for the body + extracted fields shown. */
+  selectedSowVersionIndex = 0;
+  /** Next successful `draft_generated` replaces all versions or appends (after regenerate). */
+  private nextSowDraftMode: 'replace' | 'append' = 'replace';
+
+  /** Snapshot when a draft succeeds — used to merge edits on resume/regenerate. */
+  extractedFieldsBaselineSnapshot: Record<string, unknown> = {};
+  /** Inline edit of extracted fields after draft (triggers resume → draft LLM again). */
+  editingExtractedFields = false;
+  editableExtractedStrings: Record<string, string> = {};
+
+  /** Set when user runs Generate (shown during missing-fields step) */
+  lastScopeOfWorkFileName = '';
+
+  /** Show draft-result hint only after a successful "Apply changes & regenerate draft" from extracted fields. */
+  showDraftResultHintAfterApplyRegenerate = false;
+
+  private destroy$ = new Subject<void>();
+
+  constructor(
+    private ddcFlowService: DdcFlowService,
+    private chatService: ChatService,
+    private chatEditWorkflow: ChatEditWorkflowService,
+    private sanitizer: DomSanitizer
+  ) {}
+
+  ngOnInit(): void {
+    this.ddcFlowService.activeFlow$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(flow => {
+        this.isOpen = flow === 'slide-creation-prompt';
+        if (this.isOpen) {
+          this.resetForm();
         }
+      });
+  }
 
-    if not user_filled_fields:
-        # Nothing changed: return previous draft unchanged and keep response shape.
-        return build_draft_generated_response(
-            contract_type_dict=contract_type_dict,
-            prid=prid,
-            flex_id=flex_id,
-            extracted_fields=extracted_fields,
-            draft_content=previous_draft_content,
-            template_text=template_text,
-        )
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
+  }
 
-    extracted_fields.update(user_filled_fields)
-    effective_changed_keys = changed_field_keys or list(user_filled_fields.keys())
-    if not any(original_extracted_fields.get(key) != extracted_fields.get(key) for key in effective_changed_keys):
-        return build_draft_generated_response(
-            contract_type_dict=contract_type_dict,
-            prid=prid,
-            flex_id=flex_id,
-            extracted_fields=extracted_fields,
-            draft_content=previous_draft_content,
-            template_text=template_text,
-        )
+  resetForm(): void {
+    this.scopeOfWorkFile = null;
+    this.supportingDocFile = null;
+    this.sowTemplateFile = null;
+    this.prid = '';
+    this.flexId = '';
+    this.lookupInIcertis = false;
+    this.generatedContent = '';
+    this.isGenerating = false;
+    this.scopeOfWorkUploadError = false;
+    this.supportingDocUploadError = false;
+    this.sowTemplateUploadError = false;
+    this.showMissingFieldsStep = false;
+    this.validationStepMessage = '';
+    this.missingFields = [];
+    this.extractedFieldsState = {};
+    this.userFilledFields = {};
+    this.templateTextContext = '';
+    this.draftMarkdown = '';
+    this.draftHtmlSafe = null;
+    this.showExtractedSummary = false;
+    this.sowDraftVersions = [];
+    this.selectedSowVersionIndex = 0;
+    this.nextSowDraftMode = 'replace';
+    this.extractedFieldsBaselineSnapshot = {};
+    this.editingExtractedFields = false;
+    this.editableExtractedStrings = {};
+    this.lastScopeOfWorkFileName = '';
+    this.showDraftResultHintAfterApplyRegenerate = false;
+  }
 
-    validation = validate_required_fields(extracted_fields)
-    if not validation["valid"]:
-        return build_validation_requirement_response(
-            "Required fields are still missing. Please provide the following fields.",
-            missing_fields=validation["missing_fields"],
-            extracted_fields=extracted_fields,
-            template_text=template_text,
-        )
+  /** This flow is SOW-only; backend `contract_type` always has `statement_of_work: true`. */
+  getContractTypeFlags(): ContractTypeFlags {
+    return {
+      statement_of_work: true,
+      engagement_letter: false,
+      master_services_agreement: false,
+      non_disclosure_agreement: false,
+      product_license_agreement: false,
+    };
+  }
 
-    active_type = get_active_contract_type(contract_type_dict)
-    changed_fields_payload = {
-        key: {
-            "old": original_extracted_fields.get(key),
-            "new": extracted_fields.get(key),
-        }
-        for key in effective_changed_keys
+  onScopeOfWorkSelected(file: File): void {
+    const acceptedFormats = ['.doc', '.docx', '.pdf', '.pptx', '.xlsx'];
+    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+
+    if (!acceptedFormats.includes(fileExtension)) {
+      this.scopeOfWorkUploadError = true;
+      this.scopeOfWorkUpload?.reset();
+      return;
     }
-    prompt = build_sow_targeted_edit_prompt(
-        previous_draft_content=previous_draft_content,
-        changed_fields=changed_fields_payload,
-        contract_type=active_type,
-    )
-    response = await llm.ainvoke([HumanMessage(content=prompt)])
-    draft_text = response.content if hasattr(response, "content") else str(response)
-    draft_text = str(draft_text).strip()
-    if draft_text.startswith("```"):
-        draft_text = draft_text.strip("`")
-        if draft_text.lower().startswith("markdown"):
-            draft_text = draft_text[8:].strip()
 
-    if not draft_text or not _has_required_sow_headings(draft_text):
-        logger.warning(
-            "[TARGETED_RESUME_EDIT] Invalid targeted-edit output; retrying with full regenerate prompt."
-        )
-        full_prompt = build_sow_generation_prompt(
-            extracted_fields=extracted_fields,
-            contract_type=active_type,
-            template_text=template_text,
-        )
-        full_response = await llm.ainvoke([HumanMessage(content=full_prompt)])
-        draft_text = full_response.content if hasattr(full_response, "content") else str(full_response)
-        draft_text = str(draft_text).strip()
-        if draft_text.startswith("```"):
-            draft_text = draft_text.strip("`")
-            if draft_text.lower().startswith("markdown"):
-                draft_text = draft_text[8:].strip()
+    this.scopeOfWorkUploadError = false;
+    this.scopeOfWorkFile = file;
+  }
 
-    if not draft_text:
-        logger.warning(
-            "[TARGETED_RESUME_EDIT] Empty regenerate output; using previous draft as last fallback."
-        )
-        draft_text = previous_draft_content.strip()
+  onScopeOfWorkRemoved(): void {
+    this.scopeOfWorkFile = null;
+    this.scopeOfWorkUploadError = false;
+  }
 
-    return build_draft_generated_response(
-        contract_type_dict=contract_type_dict,
-        prid=prid,
-        flex_id=flex_id,
-        extracted_fields=extracted_fields,
-        draft_content=draft_text,
-        template_text=template_text,
-    )
+  onSupportingDocSelected(file: File): void {
+    const acceptedFormats = ['.doc', '.docx', '.pdf', '.pptx'];
+    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
 
+    if (!acceptedFormats.includes(fileExtension)) {
+      this.supportingDocUploadError = true;
+      this.supportingDocUpload?.reset();
+      return;
+    }
+
+    this.supportingDocUploadError = false;
+    this.supportingDocFile = file;
+  }
+
+  onSupportingDocRemoved(): void {
+    this.supportingDocFile = null;
+    this.supportingDocUploadError = false;
+  }
+
+  onSowTemplateSelected(file: File): void {
+    const acceptedFormats = ['.doc', '.docx', '.pdf', '.pptx'];
+    const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+
+    if (!acceptedFormats.includes(fileExtension)) {
+      this.sowTemplateUploadError = true;
+      this.sowTemplateUpload?.reset();
+      return;
+    }
+
+    this.sowTemplateUploadError = false;
+    this.sowTemplateFile = file;
+  }
+
+  onSowTemplateRemoved(): void {
+    this.sowTemplateFile = null;
+    this.sowTemplateUploadError = false;
+  }
+
+  get canGenerate(): boolean {
+    return !!(
+      this.scopeOfWorkFile &&
+      this.prid.trim() &&
+      this.flexId.trim() &&
+      !this.isGenerating
+    );
+  }
+
+  get canSubmitMissingFields(): boolean {
+    if (this.missingFields.length === 0) {
+      return false;
+    }
+    for (const f of this.missingFields) {
+      const v = this.userFilledFields[f.field_key];
+      const t = (f.type || 'text').toLowerCase();
+      switch (t) {
+        case 'boolean':
+          break;
+        case 'number':
+          if (v === '' || v === undefined || v === null || Number.isNaN(Number(v))) {
+            return false;
+          }
+          break;
+        case 'dropdown':
+          if (v === undefined || v === null || (typeof v === 'string' && !String(v).trim())) {
+            return false;
+          }
+          break;
+        default:
+          if (v === undefined || v === null || (typeof v === 'string' && !v.trim())) {
+            return false;
+          }
+      }
+    }
+    return true;
+  }
+
+  close(): void {
+    this.ddcFlowService.closeFlow();
+  }
+
+  back(): void {
+    this.ddcFlowService.closeFlow();
+    this.ddcFlowService.openGuidedDialog();
+  }
+
+  private buildMultipartFormData(): FormData {
+    const fd = new FormData();
+    fd.append('document_file', this.scopeOfWorkFile!);
+    fd.append('contract_type', JSON.stringify(this.getContractTypeFlags()));
+    fd.append('prid', this.prid.trim());
+    fd.append('flex_id', this.flexId.trim());
+    fd.append('lookup_in_icertis', String(this.lookupInIcertis));
+    if (this.supportingDocFile) {
+      fd.append('supporting_document_file', this.supportingDocFile);
+    }
+    if (this.sowTemplateFile) {
+      fd.append('template_file', this.sowTemplateFile);
+    }
+    return fd;
+  }
+
+  /**
+   * Initialize controls for each missing field. Prefill from `extractedFieldsState`
+   * when the API returned a partial value (backend still lists field as missing if empty).
+   */
+  private fieldHasUsableInput(f: ContractMissingField, v: unknown): boolean {
+    const t = (f.type || 'text').toLowerCase();
+    if (v === undefined) {
+      return false;
+    }
+    if (t === 'boolean') {
+      return true;
+    }
+    if (t === 'number') {
+      return v !== null && v !== '' && !Number.isNaN(Number(v));
+    }
+    if (v === null) {
+      return false;
+    }
+    if (typeof v === 'string') {
+      return v.trim().length > 0;
+    }
+    return true;
+  }
+
+  private initUserFilledFromMissing(missing: ContractMissingField[]): void {
+    const next: Record<string, unknown> = { ...this.userFilledFields };
+    for (const f of missing) {
+      const key = f.field_key;
+      const fromApi = this.extractedFieldsState[key];
+      const t = (f.type || 'text').toLowerCase();
+
+      if (this.fieldHasUsableInput(f, next[key])) {
+        continue;
+      }
+
+      if (fromApi !== undefined && fromApi !== null) {
+        if (typeof fromApi === 'string' && fromApi.trim()) {
+          next[key] = t === 'date' ? this.normalizeDateForInput(fromApi) : fromApi;
+          continue;
+        }
+        if (typeof fromApi === 'number' && !Number.isNaN(fromApi)) {
+          next[key] = fromApi;
+          continue;
+        }
+        if (typeof fromApi === 'boolean') {
+          next[key] = fromApi;
+          continue;
+        }
+      }
+
+      if (next[key] === undefined) {
+        if (t === 'boolean') {
+          next[key] = false;
+        } else if (t === 'number') {
+          next[key] = null;
+        } else {
+          next[key] = '';
+        }
+      }
+    }
+    this.userFilledFields = { ...next };
+  }
+
+  /** Normalize ISO or loose date strings to yyyy-mm-dd for input[type=date] */
+  private normalizeDateForInput(value: string): string {
+    const s = value.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      return s;
+    }
+    const d = Date.parse(s);
+    if (!Number.isNaN(d)) {
+      const x = new Date(d);
+      const y = x.getFullYear();
+      const m = String(x.getMonth() + 1).padStart(2, '0');
+      const day = String(x.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+    return '';
+  }
+
+  /** Coerce value for resume payload to match backend / field_mapping types */
+  private coerceUserValue(field: ContractMissingField, raw: unknown): unknown {
+    const t = (field.type || 'text').toLowerCase();
+    switch (t) {
+      case 'number': {
+        const n = typeof raw === 'number' ? raw : Number(raw);
+        return Number.isNaN(n) ? null : n;
+      }
+      case 'boolean':
+        return Boolean(raw);
+      case 'date':
+        if (typeof raw === 'string' && raw.trim()) {
+          return raw.trim();
+        }
+        return raw ?? '';
+      default:
+        return raw;
+    }
+  }
+
+  /** Return to full form without losing files; user can click Generate again */
+  backToDocumentForm(): void {
+    this.showMissingFieldsStep = false;
+    this.validationStepMessage = '';
+    this.missingFields = [];
+    this.userFilledFields = {};
+    this.generatedContent = '';
+  }
+
+  /** Lowercase type for @switch in template (backend may vary casing). */
+  normalizedFieldType(field: ContractMissingField): string {
+    return (field.type || 'text').toLowerCase();
+  }
+
+  private setDraftHtmlFromMarkdown(md: string): void {
+    this.draftMarkdown = md;
+    if (!md?.trim()) {
+      this.draftHtmlSafe = null;
+      return;
+    }
+    this.draftHtmlSafe = this.sanitizer.bypassSecurityTrustHtml(renderMarkdownForDisplay(md));
+  }
+
+  /** True when the selected draft is the latest (edits / resume baseline apply here only). */
+  isViewingLatestSowVersion(): boolean {
+    return (
+      this.sowDraftVersions.length > 0 &&
+      this.selectedSowVersionIndex === this.sowDraftVersions.length - 1
+    );
+  }
+
+  /** While a new version is being generated, keep prior version(s) in tabs but hide the body. */
+  showRegeneratingPlaceholder(): boolean {
+    return this.isGenerating && this.nextSowDraftMode === 'append';
+  }
+
+  selectSowVersion(index: number): void {
+    if (index < 0 || index >= this.sowDraftVersions.length) {
+      return;
+    }
+    this.selectedSowVersionIndex = index;
+    const v = this.sowDraftVersions[index];
+    this.extractedFieldsState = JSON.parse(JSON.stringify(v.extractedFields)) as Record<string, unknown>;
+    this.setDraftHtmlFromMarkdown(v.markdown);
+    this.cancelEditingExtractedFields();
+  }
+
+  private handleDraftResponse(res: Record<string, unknown>): void {
+    const status = String(res['status'] ?? '').trim();
+    if (status === 'validation_requirement_to_fulfill') {
+      this.showMissingFieldsStep = true;
+      this.validationStepMessage =
+        typeof res['message'] === 'string' ? res['message'] : '';
+      this.missingFields = Array.isArray(res['missing_fields'])
+        ? (res['missing_fields'] as ContractMissingField[])
+        : [];
+      this.extractedFieldsState = {
+        ...((res['extracted_fields'] as Record<string, unknown>) || {}),
+      };
+      this.templateTextContext = typeof res['template_text'] === 'string' ? res['template_text'] : '';
+      this.initUserFilledFromMissing(this.missingFields);
+      if (this.sowDraftVersions.length > 0) {
+        const last = this.sowDraftVersions[this.sowDraftVersions.length - 1];
+        this.selectedSowVersionIndex = this.sowDraftVersions.length - 1;
+        this.setDraftHtmlFromMarkdown(last.markdown);
+      } else {
+        this.draftMarkdown = '';
+        this.draftHtmlSafe = null;
+      }
+      this.generatedContent = '';
+      if (this.missingFields.length > 0) {
+        setTimeout(() => {
+          this.missingFieldsPanel?.nativeElement?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start',
+          });
+        }, 100);
+      }
+      return;
+    }
+    if (status === 'draft_generated') {
+      this.showMissingFieldsStep = false;
+      this.validationStepMessage = '';
+      this.missingFields = [];
+      const extracted = {
+        ...((res['extracted_fields'] as Record<string, unknown>) || {}),
+      };
+      this.templateTextContext = typeof res['template_text'] === 'string' ? res['template_text'] : '';
+      const content = (res['draft_content'] as string) || '';
+      const entry: SowDraftVersion = {
+        markdown: content,
+        extractedFields: extracted,
+      };
+
+      if (this.nextSowDraftMode === 'append' && this.sowDraftVersions.length > 0) {
+        this.sowDraftVersions = [...this.sowDraftVersions, entry];
+      } else {
+        this.sowDraftVersions = [entry];
+      }
+      this.selectedSowVersionIndex = this.sowDraftVersions.length - 1;
+      this.nextSowDraftMode = 'replace';
+
+      this.extractedFieldsState = JSON.parse(JSON.stringify(extracted)) as Record<string, unknown>;
+      this.extractedFieldsBaselineSnapshot = JSON.parse(
+        JSON.stringify(extracted)
+      ) as Record<string, unknown>;
+      this.editingExtractedFields = false;
+      this.editableExtractedStrings = {};
+      this.setDraftHtmlFromMarkdown(content);
+      this.generatedContent = '';
+      return;
+    }
+    this.generatedContent =
+      'Unexpected response from contract draft service. Please try again or contact support.';
+  }
+
+  async generate(): Promise<void> {
+    if (!this.canGenerate || !this.scopeOfWorkFile) {
+      return;
+    }
+
+    this.nextSowDraftMode = 'replace';
+    this.isGenerating = true;
+    this.generatedContent = '';
+    this.showMissingFieldsStep = false;
+    this.showDraftResultHintAfterApplyRegenerate = false;
+
+    try {
+      this.lastScopeOfWorkFileName = this.scopeOfWorkFile?.name || '';
+      const formData = this.buildMultipartFormData();
+      const res = (await firstValueFrom(
+        this.chatService.postContractDraftMultipart(formData)
+      )) as Record<string, unknown>;
+
+      this.handleDraftResponse(res);
+    } catch (e) {
+      console.error('[SlideCreationPromptFlow] Contract draft failed', e);
+      this.generatedContent =
+        'An error occurred while generating the draft contract. Please try again.';
+      this.draftHtmlSafe = null;
+      this.draftMarkdown = '';
+      this.sowDraftVersions = [];
+      this.selectedSowVersionIndex = 0;
+    } finally {
+      this.isGenerating = false;
+    }
+  }
+
+  async submitMissingFields(): Promise<void> {
+    if (!this.canSubmitMissingFields) {
+      return;
+    }
+
+    this.nextSowDraftMode = this.sowDraftVersions.length > 0 ? 'append' : 'replace';
+
+    const user_filled_fields: Record<string, unknown> = {};
+    for (const f of this.missingFields) {
+      const raw = this.userFilledFields[f.field_key];
+      user_filled_fields[f.field_key] = this.coerceUserValue(f, raw);
+    }
+
+    this.isGenerating = true;
+    try {
+      const res = (await firstValueFrom(
+        this.chatService.postContractDraftResume({
+          contract_type: this.getContractTypeFlags(),
+          prid: this.prid.trim(),
+          flex_id: this.flexId.trim(),
+          extracted_fields: JSON.parse(JSON.stringify(this.extractedFieldsState)) as Record<string, unknown>,
+          user_filled_fields,
+          template_text: this.templateTextContext,
+        })
+      )) as Record<string, unknown>;
+
+      this.handleDraftResponse(res);
+    } catch (e) {
+      console.error('[SlideCreationPromptFlow] Resume draft failed', e);
+      this.generatedContent =
+        'An error occurred while submitting required fields. Please try again.';
+    } finally {
+      this.isGenerating = false;
+    }
+  }
+
+  /**
+   * Send the draft for the **currently selected version** to the main chat via TL chat bridge
+   * (same path as guided TL content). Closes the SOW modal without prefilling the composer.
+   */
+  generateSowInChat(): void {
+    const v = this.sowDraftVersions[this.selectedSowVersionIndex];
+    const body = v?.markdown?.trim() || this.draftMarkdown?.trim();
+    if (!body) {
+      return;
+    }
+    const versionNumber = this.selectedSowVersionIndex + 1;
+    this.chatEditWorkflow.pushSowDraftToChat(body, versionNumber);
+    this.ddcFlowService.closeFlow();
+  }
+
+  startEditingExtractedFields(): void {
+    if (!this.isViewingLatestSowVersion()) {
+      return;
+    }
+    this.editingExtractedFields = true;
+    const next: Record<string, string> = {};
+    for (const [k, v] of Object.entries(this.extractedFieldsState)) {
+      next[k] = this.formatFieldForInput(v);
+    }
+    this.editableExtractedStrings = next;
+  }
+
+  cancelEditingExtractedFields(): void {
+    this.editingExtractedFields = false;
+    this.editableExtractedStrings = {};
+  }
+
+  onEditableExtractedChange(key: string, value: string): void {
+    this.editableExtractedStrings = { ...this.editableExtractedStrings, [key]: value };
+  }
+
+  async applyExtractedEditsAndRegenerate(): Promise<void> {
+    if (!this.editingExtractedFields || !this.isViewingLatestSowVersion()) {
+      return;
+    }
+
+    this.nextSowDraftMode = 'append';
+
+    const user_filled_fields: Record<string, unknown> = {};
+    const changed_field_keys: string[] = [];
+    for (const key of Object.keys(this.editableExtractedStrings)) {
+      const orig = this.extractedFieldsBaselineSnapshot[key];
+      const parsed = this.parseEditableFieldValue(this.editableExtractedStrings[key], orig);
+      if (!this.areFieldValuesEqual(orig, parsed)) {
+        user_filled_fields[key] = parsed;
+        changed_field_keys.push(key);
+      }
+    }
+
+    this.isGenerating = true;
+    try {
+      const res = (await firstValueFrom(
+        this.chatService.postContractDraftResumeEdit({
+          contract_type: this.getContractTypeFlags(),
+          prid: this.prid.trim(),
+          flex_id: this.flexId.trim(),
+          extracted_fields: JSON.parse(JSON.stringify(this.extractedFieldsBaselineSnapshot)) as Record<
+            string,
+            unknown
+          >,
+          user_filled_fields,
+          previous_draft_content: this.draftMarkdown ?? '',
+          changed_field_keys,
+          template_text: this.templateTextContext,
+        })
+      )) as Record<string, unknown>;
+
+      this.handleDraftResponse(res);
+      this.cancelEditingExtractedFields();
+      if (String(res['status'] ?? '').trim() === 'draft_generated') {
+        this.showDraftResultHintAfterApplyRegenerate = true;
+      }
+    } catch (e) {
+      console.error('[SlideCreationPromptFlow] Regenerate from edited fields failed', e);
+      this.generatedContent =
+        'An error occurred while regenerating the draft. Please try again.';
+    } finally {
+      this.isGenerating = false;
+    }
+  }
+
+  private formatFieldForInput(v: unknown): string {
+    if (v === null || v === undefined) {
+      return '';
+    }
+    if (typeof v === 'object') {
+      return JSON.stringify(v);
+    }
+    return String(v);
+  }
+
+  private parseEditableFieldValue(raw: string, original: unknown): unknown {
+    const s = raw.trim();
+    if (original === undefined) {
+      if (s === '') {
+        return '';
+      }
+      try {
+        return JSON.parse(s);
+      } catch {
+        return s;
+      }
+    }
+    if (original === null && s === '') {
+      return null;
+    }
+    if (typeof original === 'number') {
+      const n = Number(s);
+      return Number.isNaN(n) ? original : n;
+    }
+    if (typeof original === 'boolean') {
+      const low = s.toLowerCase();
+      return low === 'true' || low === '1' || low === 'yes';
+    }
+    if (original !== null && typeof original === 'object') {
+      try {
+        return JSON.parse(s || 'null');
+      } catch {
+        return raw;
+      }
+    }
+    return s;
+  }
+
+  private areFieldValuesEqual(a: unknown, b: unknown): boolean {
+    if (a === b) {
+      return true;
+    }
+    try {
+      return JSON.stringify(a) === JSON.stringify(b);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Entries for *ngFor over extracted_fields (object keys) */
+  extractedFieldEntries(): { key: string; value: unknown }[] {
+    return Object.entries(this.extractedFieldsState).map(([key, value]) => ({ key, value }));
+  }
+}
